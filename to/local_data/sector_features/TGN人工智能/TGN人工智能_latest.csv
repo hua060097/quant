@@ -1,0 +1,2 @@
+date,open_avg,high_avg,low_avg,close_avg,volume_avg,amount_avg,change_avg,active_count,ma5_avg,ma10_avg,ma20_avg,ma60_avg,price_above_ma5_ratio,price_above_ma20_ratio,total_amount,volume_change_ratio,price_volume_correlation,limit_up_ratio,limit_down_ratio,sector_name,stock_count
+20230110,382.606,387.856,380.602,385.662,476743.0,1711499500.0,0.0,5,0.0,0.0,0.0,0.0,0.0,0.0,8557498000.0,1.0,0.0,0.0,0.0,TGN人工智能,6

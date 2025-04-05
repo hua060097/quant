@@ -1,0 +1,23 @@
+{
+  "20230102": {
+    "is_trading_day": true
+  },
+  "20230103": {
+    "is_trading_day": true
+  },
+  "20230104": {
+    "is_trading_day": true
+  },
+  "20230105": {
+    "is_trading_day": true
+  },
+  "20230106": {
+    "is_trading_day": true
+  },
+  "20230109": {
+    "is_trading_day": true
+  },
+  "20230110": {
+    "is_trading_day": true
+  }
+}

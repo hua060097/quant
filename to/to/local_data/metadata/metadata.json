@@ -1,0 +1,16 @@
+{
+  "last_update": {
+    "daily": null,
+    "minute": null,
+    "calendar": "20250405"
+  },
+  "stock_list": [],
+  "partitions": {
+    "daily": [],
+    "minute": []
+  },
+  "calendar_range": {
+    "start": "20230103",
+    "end": "20250403"
+  }
+}
