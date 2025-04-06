@@ -24,6 +24,7 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """优化DataFrame的数据类型，减少内存占用
     
     对不同类型的列应用最合适的数据类型，降低内存占用。
+    浮点数值会被四舍五入到小数点后两位，以减少存储空间和提高计算速度。
     
     Args:
         df: 输入DataFrame
@@ -40,6 +41,11 @@ def optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     for col in result.select_dtypes(include=['int64', 'float64']).columns:
         # 检查是否有缺失值
         has_nan = result[col].isna().any()
+        
+        # 对于浮点数列，先四舍五入到小数点后两位
+        if pd.api.types.is_float_dtype(result[col]):
+            result[col] = result[col].round(2)
+            
         col_min = result[col].min()
         col_max = result[col].max()
         
@@ -105,7 +111,7 @@ def save_features(
         df: 特征DataFrame
         file_path: 输出文件路径
         format: 输出格式，支持'parquet', 'csv', 'pickle'
-        compress: 是否压缩数据
+        compress: 是否压缩数据（注意：CSV格式默认不压缩，即使compress=True）
         optimize: 是否优化数据类型
         **kwargs: 传递给底层保存函数的额外参数
         
@@ -130,8 +136,9 @@ def save_features(
             compression = 'snappy' if compress else None
             df.to_parquet(path_obj, compression=compression, **kwargs)
         elif format.lower() == 'csv':
-            compression = 'gzip' if compress else None
-            df.to_csv(path_obj, compression=compression, index=False, **kwargs)
+            # CSV格式不使用压缩，确保可以直接阅读
+            compression = None  # 即使compress=True，也不对CSV使用压缩
+            df.to_csv(path_obj, compression=compression, index=False, encoding='utf-8', **kwargs)
         elif format.lower() == 'pickle':
             compression = 'gzip' if compress else None
             df.to_pickle(path_obj, compression=compression, **kwargs)
@@ -139,7 +146,7 @@ def save_features(
             logger.warning(f"不支持的存储格式: {format}")
             return False
         
-        logger.debug(f"成功保存特征数据: {path_obj}, 格式: {format}, 压缩: {compress}")
+        logger.debug(f"成功保存特征数据: {path_obj}, 格式: {format}, 压缩: {compress if format.lower() != 'csv' else False}")
         return True
     except Exception as e:
         logger.error(f"保存特征数据失败: {path_obj}, 错误: {e}")

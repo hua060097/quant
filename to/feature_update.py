@@ -421,7 +421,35 @@ class FeatureUpdateManager:
             date_int = int(date_str)
             is_processed = False
             
-            for range_start, range_end in processed_ranges:
+            for date_range in processed_ranges:
+                range_start, range_end = date_range
+                
+                # 确保range_start和range_end是整数类型，如果是字符串则转换
+                if isinstance(range_start, str):
+                    # 尝试将字符串转换为整数
+                    try:
+                        if range_start.isdigit():
+                            range_start = int(range_start)
+                        else:
+                            # 尝试将日期字符串转换为统一格式
+                            range_start = int(pd.to_datetime(range_start).strftime('%Y%m%d'))
+                    except:
+                        logger.warning(f"无法将range_start转换为整数: {range_start}")
+                        continue
+                        
+                if isinstance(range_end, str):
+                    # 尝试将字符串转换为整数
+                    try:
+                        if range_end.isdigit():
+                            range_end = int(range_end)
+                        else:
+                            # 尝试将日期字符串转换为统一格式
+                            range_end = int(pd.to_datetime(range_end).strftime('%Y%m%d'))
+                    except:
+                        logger.warning(f"无法将range_end转换为整数: {range_end}")
+                        continue
+                
+                # 现在进行比较
                 if range_start <= date_int <= range_end:
                     is_processed = True
                     break

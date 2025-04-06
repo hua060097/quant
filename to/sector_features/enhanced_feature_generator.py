@@ -242,8 +242,14 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
                             if isinstance(td, pd.Timestamp):
                                 trading_dts.append(td)
                             else:
-                                trading_dts.append(pd.to_datetime(td))
-                        except:
+                                # 确保字符串转换为datetime时格式正确
+                                td_str = str(td).replace('-', '').replace('/', '')
+                                if td_str.isdigit() and len(td_str) >= 8:  # 确保是有效的日期格式
+                                    trading_dts.append(pd.to_datetime(td_str[:8], format='%Y%m%d'))
+                                else:
+                                    trading_dts.append(pd.to_datetime(td))
+                        except Exception as e:
+                            logger.warning(f"转换日期 {td} 失败: {e}")
                             pass
                     
                     if trading_dts:
@@ -261,20 +267,35 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
             
             if current_date_index > 0:
                 # 获取前一个交易日
-                prev_date_value = trading_days_list[current_date_index - 1]
-                # 确保前一交易日格式正确
-                if isinstance(prev_date_value, pd.Timestamp):
-                    prev_date = prev_date_value.strftime('%Y%m%d')
-                else:
-                    prev_date = str(prev_date_value).replace('-', '').replace('/', '')
+                prev_trading_day = trading_days_list[current_date_index - 1]
                 
-                return prev_date
+                # 确保返回格式统一为YYYYMMDD字符串
+                if isinstance(prev_trading_day, pd.Timestamp):
+                    return prev_trading_day.strftime('%Y%m%d')
+                elif isinstance(prev_trading_day, datetime):
+                    return prev_trading_day.strftime('%Y%m%d')
+                else:
+                    # 将其他格式转换为标准字符串格式
+                    prev_trading_day_str = str(prev_trading_day)
+                    # 移除所有分隔符并确保格式正确
+                    prev_date_normalized = prev_trading_day_str.replace('-', '').replace('/', '')
+                    if prev_date_normalized.isdigit() and len(prev_date_normalized) >= 8:
+                        return prev_date_normalized[:8]  # 只取前8位，保证是YYYYMMDD格式
+                    else:
+                        try:
+                            # 尝试解析日期字符串并转换为标准格式
+                            dt = pd.to_datetime(prev_trading_day_str)
+                            return dt.strftime('%Y%m%d')
+                        except:
+                            # 无法解析则原样返回
+                            return prev_trading_day_str
+                
             else:
-                logger.warning(f"无法在交易日历中找到日期 {date_str} 的位置，无法确定前一交易日")
+                logger.warning(f"无法找到日期 {date_str} 的前一个交易日")
                 return None
                 
         except Exception as e:
-            logger.error(f"获取日期 {date_str} 的前一个交易日失败: {str(e)}")
+            logger.error(f"获取日期 {date_str} 的前一个交易日失败: {e}")
             return None
         
     def _calculate_limit_features(self, sector, stocks, date):
@@ -456,64 +477,52 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
         return features
         
     def generate_sector_features_for_date(self, sector, date, preloaded_data=None):
-        """为指定日期生成板块特征，增强版本
+        """计算指定日期的增强板块特征
+        
+        包括基础特征和高级特征（涨跌停、排名占比、趋势强度等）
         
         Args:
             sector: 板块名称
-            date: 日期字符串，格式为YYYYMMDD
-            preloaded_data: 预加载的数据，如果为None则自动加载
+            date: 日期
+            preloaded_data: 预加载的数据，如果提供则不再重新加载
             
         Returns:
-            特征DataFrame
+            (成功标志, 板块特征DataFrame)
         """
         try:
-            # 调用父类方法获取基础特征
-            base_features_df = super().generate_sector_features_for_date(sector, date, preloaded_data)
+            # 首先获取基础特征
+            success, base_features_df = super().generate_sector_features_for_date(sector, date, preloaded_data)
             
-            if base_features_df.empty:
-                logger.warning(f"板块 {sector} 在日期 {date} 的基础特征为空")
-                return base_features_df
+            if not success or base_features_df is None or base_features_df.empty:
+                logger.warning(f"无法获取板块 {sector} 在日期 {date} 的基础特征")
+                return False, None
                 
-            # 获取板块成分股
-            stocks = self.sector_mapping.get(sector, [])
+            # 获取板块股票
+            stocks = self._get_sector_stocks(sector)
             if not stocks:
-                # 尝试从stock_sectors_mapping获取
-                from to.stock_sectors_mapping import get_sector_stocks
-                stocks = get_sector_stocks(sector_name=sector)
-                
-            if not stocks:
-                logger.warning(f"板块 {sector} 没有找到成分股，无法计算增强特征")
-                return base_features_df
-                
-            # 1. 计算涨跌停相关特征
+                logger.warning(f"板块 {sector} 没有成分股")
+                return False, None
+            
+            # 增加涨跌停特征
             limit_features = self._calculate_limit_features(sector, stocks, date)
+            if limit_features:
+                for feature_name, feature_value in limit_features.items():
+                    base_features_df[feature_name] = feature_value
             
-            # 2. 计算排名相关特征
+            # 增加排名特征
             ranking_features = self._calculate_ranking_features(sector, stocks, date)
-            
-            # 3. 计算资金流向特征
-            # 这部分需要额外的资金流向数据，这里暂不实现
-            
-            # 合并所有特征
-            # 将字典转换为Series
-            enhanced_features = pd.Series({**limit_features, **ranking_features})
-            
-            # 合并到基础特征中
-            for feature, value in enhanced_features.items():
-                base_features_df[feature] = value
-                
-            logger.info(f"成功为板块 {sector} 在日期 {date} 生成增强特征")
-            return base_features_df
+            if ranking_features:
+                for feature_name, feature_value in ranking_features.items():
+                    base_features_df[feature_name] = feature_value
+                    
+            # 返回合并后的特征
+            logger.debug(f"成功生成板块 {sector} 在日期 {date} 的增强特征，共 {len(base_features_df.columns)} 个特征")
+            return True, base_features_df
             
         except Exception as e:
             logger.error(f"生成板块 {sector} 在日期 {date} 的增强特征时出错: {str(e)}")
             logger.error(traceback.format_exc())
-            
-            # 如果增强特征生成失败，至少返回基础特征
-            try:
-                return super().generate_sector_features_for_date(sector, date, preloaded_data)
-            except:
-                return pd.DataFrame()
+            return False, None
 
     def generate_and_save_features(self, sector, start_date, end_date):
         """生成并保存板块特征数据
@@ -558,10 +567,10 @@ if __name__ == "__main__":
     
     # 生成特征
     date = '20230103'
-    features = enhanced_generator.generate_sector_features_for_date(sector, date)
+    success, features = enhanced_generator.generate_sector_features_for_date(sector, date)
     
     # 打印特征
-    if features.empty:
+    if not success or features is None or features.empty:
         print("未能生成特征")
     else:
         for k, v in features.items():

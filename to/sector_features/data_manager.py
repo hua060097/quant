@@ -82,7 +82,56 @@ class SectorFeatureManager:
             features_df = self.features_cache[cache_key]
             return features_df
         
-        # 获取特征文件
+        # 构建板块目录路径
+        sector_dir = os.path.join(self.data_dir, sector_name)
+        if not os.path.exists(sector_dir):
+            logger.warning(f"板块 {sector_name} 的数据目录不存在")
+            return pd.DataFrame()
+        
+        # 优先尝试读取Parquet文件
+        parquet_file = os.path.join(sector_dir, f"{sector_name}_features.parquet")
+        if os.path.exists(parquet_file):
+            try:
+                # 构建过滤条件
+                filters = []
+                if start_date:
+                    # 转换为日期格式
+                    start_dt = pd.to_datetime(start_date, format='%Y%m%d')
+                    filters.append(('date', '>=', start_dt))
+                
+                if end_date:
+                    # 转换为日期格式
+                    end_dt = pd.to_datetime(end_date, format='%Y%m%d')
+                    filters.append(('date', '<=', end_dt))
+                
+                # 根据是否有过滤条件决定如何读取
+                if filters:
+                    # 有日期过滤
+                    features_df = pd.read_parquet(parquet_file, filters=filters)
+                else:
+                    # 无过滤
+                    features_df = pd.read_parquet(parquet_file)
+                
+                # 确保日期列是日期类型
+                if 'date' in features_df.columns and not pd.api.types.is_datetime64_any_dtype(features_df['date']):
+                    features_df['date'] = pd.to_datetime(features_df['date'])
+                
+                # 设置索引
+                if 'date' in features_df.columns:
+                    features_df.set_index('date', inplace=True)
+                
+                # 存入缓存
+                if use_cache:
+                    self.features_cache[cache_key] = features_df
+                
+                logger.info(f"从Parquet文件加载板块 {sector_name} 的特征数据，共 {len(features_df)} 行")
+                return features_df
+            
+            except Exception as e:
+                logger.error(f"从Parquet文件加载板块 {sector_name} 特征失败: {e}")
+                # 回退到CSV格式
+        
+        # 回退到CSV格式，获取特征文件
         feature_files = self.get_sector_files(sector_name)
         if not feature_files:
             logger.warning(f"板块 {sector_name} 没有可用的特征文件")
@@ -137,32 +186,97 @@ class SectorFeatureManager:
         logger.info(f"成功加载板块 {sector_name} 的特征数据，共 {len(features_df)} 行")
         return features_df
     
-    def get_latest_features(self, sector_name: str) -> pd.DataFrame:
+    def get_latest_features(self, sector_name: str, use_cache: bool = True) -> pd.DataFrame:
         """获取指定板块的最新特征数据
         
         Args:
             sector_name: 板块名称
+            use_cache: 是否使用缓存
             
         Returns:
             板块最新特征DataFrame
         """
-        latest_file = os.path.join(self.data_dir, sector_name, f"{sector_name}_latest.csv")
-        if not os.path.exists(latest_file):
-            logger.warning(f"板块 {sector_name} 没有最新特征文件")
+        # 检查缓存
+        cache_key = f"{sector_name}_latest"
+        if use_cache and cache_key in self.features_cache:
+            logger.debug(f"使用缓存加载板块 {sector_name} 的最新特征数据")
+            return self.features_cache[cache_key]
+        
+        # 构建板块目录路径
+        sector_dir = os.path.join(self.data_dir, sector_name)
+        if not os.path.exists(sector_dir):
+            logger.warning(f"板块 {sector_name} 的数据目录不存在")
             return pd.DataFrame()
         
-        try:
-            df = pd.read_csv(latest_file)
+        # 首先尝试读取专门的最新特征文件
+        latest_file = os.path.join(sector_dir, f"{sector_name}_latest.csv")
+        if os.path.exists(latest_file):
+            try:
+                latest_df = pd.read_csv(latest_file)
+                
+                # 确保日期列格式正确
+                if 'date' in latest_df.columns:
+                    latest_df['date'] = pd.to_datetime(latest_df['date'])
+                    latest_df.set_index('date', inplace=True)
+                
+                # 存入缓存
+                if use_cache:
+                    self.features_cache[cache_key] = latest_df
+                
+                logger.info(f"从最新特征文件加载板块 {sector_name} 的特征数据，日期: {latest_df.index[0] if not latest_df.empty else '未知'}")
+                return latest_df
             
-            # 确保日期列格式正确
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
-                df.set_index('date', inplace=True)
+            except Exception as e:
+                logger.error(f"从最新特征文件加载板块 {sector_name} 特征失败: {e}")
+        
+        # 尝试从Parquet文件获取最新日期的数据
+        parquet_file = os.path.join(sector_dir, f"{sector_name}_features.parquet")
+        if os.path.exists(parquet_file):
+            try:
+                # 读取所有日期列数据
+                dates_df = pd.read_parquet(parquet_file, columns=['date'])
+                
+                # 确保日期列是日期类型
+                if 'date' in dates_df.columns and not pd.api.types.is_datetime64_any_dtype(dates_df['date']):
+                    dates_df['date'] = pd.to_datetime(dates_df['date'])
+                
+                # 获取最大日期
+                if not dates_df.empty:
+                    max_date = dates_df['date'].max()
+                    
+                    # 使用过滤条件读取最新日期的数据
+                    latest_df = pd.read_parquet(parquet_file, filters=[('date', '==', max_date)])
+                    
+                    # 设置索引
+                    if 'date' in latest_df.columns:
+                        latest_df.set_index('date', inplace=True)
+                    
+                    # 存入缓存
+                    if use_cache:
+                        self.features_cache[cache_key] = latest_df
+                    
+                    logger.info(f"从Parquet文件加载板块 {sector_name} 的最新特征数据，日期: {max_date}")
+                    return latest_df
             
-            return df
-        except Exception as e:
-            logger.error(f"加载最新特征文件 {latest_file} 时出错: {str(e)}")
+            except Exception as e:
+                logger.error(f"从Parquet文件获取板块 {sector_name} 最新特征失败: {e}")
+        
+        # 回退方案：加载所有特征数据并获取最新日期的数据
+        features_df = self.load_sector_features(sector_name, use_cache=use_cache)
+        if features_df.empty:
+            logger.warning(f"板块 {sector_name} 没有可用的特征数据")
             return pd.DataFrame()
+        
+        # 获取最新日期的数据
+        latest_date = features_df.index.max()
+        latest_df = features_df.loc[latest_date:latest_date]
+        
+        # 存入缓存
+        if use_cache:
+            self.features_cache[cache_key] = latest_df
+        
+        logger.info(f"从所有特征数据中获取板块 {sector_name} 的最新特征数据，日期: {latest_date}")
+        return latest_df
     
     def get_sector_feature_date_range(self, sector_name: str) -> Tuple[Optional[str], Optional[str]]:
         """获取指定板块特征数据的日期范围

@@ -49,13 +49,9 @@ def load_sector_features(
     global _FEATURE_CACHE
     
     # 检查缓存
-    cache_key = f"{sector}_{start_date}_{end_date}"
+    cache_key = f"{sector}_{start_date}_{end_date}_{'-'.join(features) if features else 'all'}"
     if use_cache and cache_key in _FEATURE_CACHE:
         df = _FEATURE_CACHE[cache_key]
-        # 如果指定了特征列表，筛选特征
-        if features:
-            required_cols = ['date'] + features
-            df = df[required_cols]
         return df
     
     # 构建板块特征文件路径
@@ -66,49 +62,143 @@ def load_sector_features(
         logger.warning(f"板块 {sector} 特征目录不存在: {sector_path}")
         return pd.DataFrame()
     
-    # 尝试读取特征文件
+    # 尝试读取Parquet特征文件
     try:
-        feature_file = sector_path / f"{sector}_features.csv"
+        # 优先使用Parquet文件，更高效
+        parquet_file = sector_path / f"{sector}_features.parquet"
         
         # 检查文件是否存在
-        if not feature_file.exists():
-            logger.warning(f"板块 {sector} 特征文件不存在: {feature_file}")
-            return pd.DataFrame()
+        if not parquet_file.exists():
+            logger.warning(f"板块 {sector} Parquet特征文件不存在: {parquet_file}")
+            # 回退到查找老格式的CSV文件
+            return _load_legacy_csv_features(sector, sector_path, start_date, end_date, features)
         
-        # 读取CSV文件
-        df = pd.read_csv(feature_file)
-        
-        # 确保日期列是字符串格式
-        if 'date' in df.columns:
-            df['date'] = df['date'].astype(str)
-        else:
-            logger.warning(f"板块 {sector} 特征文件缺少日期列")
-            return pd.DataFrame()
-        
-        # 按日期筛选
+        # 读取Parquet文件，有日期过滤时更高效
+        filters = []
         if start_date:
-            df = df[df['date'] >= start_date]
-        if end_date:
-            df = df[df['date'] <= end_date]
-        
-        # 如果指定了特征列表，筛选特征
-        if features:
-            available_features = list(set(df.columns) & set(features))
-            if len(available_features) < len(features):
-                missing = set(features) - set(available_features)
-                logger.warning(f"板块 {sector} 缺少部分特征: {missing}")
+            # 转换为日期格式
+            start_dt = pd.to_datetime(start_date, format='%Y%m%d')
+            filters.append(('date', '>=', start_dt))
             
-            required_cols = ['date'] + available_features
-            df = df[required_cols]
+        if end_date:
+            # 转换为日期格式
+            end_dt = pd.to_datetime(end_date, format='%Y%m%d')
+            filters.append(('date', '<=', end_dt))
+            
+        # 根据是否有过滤条件和特征列表决定如何读取
+        if filters and features:
+            # 有日期过滤和特征过滤
+            df = pd.read_parquet(
+                parquet_file, 
+                filters=filters, 
+                columns=['date'] + features
+            )
+        elif filters:
+            # 只有日期过滤
+            df = pd.read_parquet(parquet_file, filters=filters)
+        elif features:
+            # 只有特征过滤
+            df = pd.read_parquet(parquet_file, columns=['date'] + features)
+        else:
+            # 无过滤
+            df = pd.read_parquet(parquet_file)
+        
+        # 确保日期列是日期类型
+        if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
+            df['date'] = pd.to_datetime(df['date'])
+        
+        # 按日期排序
+        if 'date' in df.columns:
+            df = df.sort_values('date')
         
         # 更新缓存
         if use_cache:
             _FEATURE_CACHE[cache_key] = df.copy()
         
+        logger.info(f"从Parquet文件加载板块 {sector} 特征数据，共 {len(df)} 行")
         return df
     
     except Exception as e:
-        logger.error(f"加载板块 {sector} 特征失败: {e}")
+        logger.error(f"从Parquet文件加载板块 {sector} 特征失败: {e}")
+        # 回退到查找老格式的CSV文件
+        return _load_legacy_csv_features(sector, sector_path, start_date, end_date, features)
+
+
+def _load_legacy_csv_features(sector: str, sector_path: Path, start_date: str = None, end_date: str = None, features: List[str] = None) -> pd.DataFrame:
+    """加载传统格式的CSV特征文件(向后兼容)
+    
+    Args:
+        sector: 板块名称
+        sector_path: 板块目录路径
+        start_date: 开始日期
+        end_date: 结束日期
+        features: 特征列表
+        
+    Returns:
+        特征DataFrame
+    """
+    try:
+        # 查找可能的CSV特征文件
+        feature_file = sector_path / f"{sector}_features.csv"
+        date_range_files = list(sector_path.glob("*.csv"))
+        
+        if feature_file.exists():
+            # 使用主特征文件
+            df = pd.read_csv(feature_file)
+        elif date_range_files:
+            # 合并所有日期范围文件
+            dfs = []
+            for file in date_range_files:
+                if not file.name.endswith('_latest.csv'):  # 排除latest文件
+                    try:
+                        temp_df = pd.read_csv(file)
+                        dfs.append(temp_df)
+                    except Exception as file_e:
+                        logger.warning(f"读取文件 {file} 失败: {file_e}")
+            
+            if not dfs:
+                logger.warning(f"板块 {sector} 没有有效的CSV特征文件")
+                return pd.DataFrame()
+                
+            # 合并并去重
+            df = pd.concat(dfs, ignore_index=True)
+            df = df.drop_duplicates(subset=['date'], keep='last')
+        else:
+            logger.warning(f"板块 {sector} 没有找到特征文件")
+            return pd.DataFrame()
+        
+        # 确保日期列是日期时间类型
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+        
+        # 按日期筛选
+        if start_date:
+            start_dt = pd.to_datetime(start_date, format='%Y%m%d')
+            df = df[df['date'] >= start_dt]
+            
+        if end_date:
+            end_dt = pd.to_datetime(end_date, format='%Y%m%d')
+            df = df[df['date'] <= end_dt]
+        
+        # 筛选特征
+        if features:
+            required_cols = ['date'] + features
+            available_cols = [col for col in required_cols if col in df.columns]
+            missing_cols = set(required_cols) - set(available_cols)
+            
+            if missing_cols:
+                logger.warning(f"特征列 {missing_cols} 在板块 {sector} 的特征数据中不存在")
+                
+            df = df[available_cols]
+        
+        # 按日期排序
+        df = df.sort_values('date')
+        
+        logger.info(f"从CSV文件加载板块 {sector} 特征数据，共 {len(df)} 行")
+        return df
+        
+    except Exception as e:
+        logger.error(f"加载传统格式特征文件失败: {e}")
         return pd.DataFrame()
 
 
