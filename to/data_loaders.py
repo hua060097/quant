@@ -33,7 +33,6 @@ def get_data_loader():
     if _DATA_LOADER is None:
         # 尝试初始化真实数据源
         try:
-            import xtquant.xtdata as xtdata
             from to.advanced_quant_data import ParquetDataStorage
             _DATA_LOADER = ParquetDataStorage()
             logger.info("使用真实数据源: ParquetDataStorage")

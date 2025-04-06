@@ -56,7 +56,7 @@ def get_data_path(relative_path: str = '') -> Path:
     Returns:
         完整路径
     """
-    data_dir = get_project_path('local_data')
+    data_dir = get_project_path('to/local_data')
     
     # 确保目录存在
     data_dir.mkdir(parents=True, exist_ok=True)

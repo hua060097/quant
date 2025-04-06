@@ -666,7 +666,7 @@ class AdvancedQuantModel:
         if not hasattr(self, 'sectors') or not self.sectors:
             logger.info("板块数据未加载，尝试加载...")
             try:
-                self._load_sector_data()
+            self._load_sector_data()
                 if not self.sectors:
                     logger.error("加载板块数据后仍为空，无法加载模型。")
                     return False    
@@ -1655,7 +1655,7 @@ class AdvancedQuantModel:
 
         if not stocks:
             self.logger.warning("股票列表为空，无法提取特征")
-            return None, None
+                    return None, None
                     
         # --- 路径定义 ---
         # 假设 ParquetDataStorage 实例存储在 self.storage
@@ -1670,7 +1670,7 @@ class AdvancedQuantModel:
                 self.logger.warning("自动初始化了一个 ParquetDataStorage 实例")
             except Exception as storage_init_err:
                 self.logger.error(f"自动初始化 ParquetDataStorage 失败: {storage_init_err}. 无法确定数据路径。")
-                return None, None
+                    return None, None
         else:
              base_data_dir = Path(self.storage.base_dir) # 使用 storage 的 base_dir
 
@@ -1773,7 +1773,7 @@ class AdvancedQuantModel:
                  closest_past_date = max(past_dates)
                  self.logger.warning(f"指定日期 {date} 不是交易日，使用最近的过去交易日 {closest_past_date} 代替进行标签计算。")
                  date_for_label = closest_past_date # 使用找到的最近日期继续
-            else:
+                    else:
                  date_for_label = date
 
             current_date_index = trading_dates.index(date_for_label)

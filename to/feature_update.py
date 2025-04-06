@@ -12,7 +12,7 @@ import json
 import logging
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Union, List, Tuple, Set, Any
 
@@ -339,7 +339,7 @@ class FeatureUpdateManager:
         start_date: str, 
         end_date: str
     ) -> List[str]:
-        """获取需要处理的缺失日期
+        """获取需要处理的日期列表
         
         Args:
             sector: 板块名称
@@ -347,82 +347,90 @@ class FeatureUpdateManager:
             end_date: 结束日期，格式为YYYYMMDD
             
         Returns:
-            缺失日期列表
+            需要处理的日期列表
         """
-        # 获取特征信息
+        # 获取板块特征信息
         feature_info = self.get_feature_info(sector)
-        date_ranges = feature_info.get('date_ranges', [])
         
-        # 将日期转换为数值进行比较
-        start_date_int = int(start_date)
-        end_date_int = int(end_date)
+        # 获取已处理的日期范围
+        processed_ranges = feature_info.get('date_ranges', [])
         
-        # 将所有已有日期范围转换为数值
-        processed_ranges = []
-        for range_start, range_end in date_ranges:
-            try:
-                range_start_int = int(range_start)
-                range_end_int = int(range_end)
-                processed_ranges.append((range_start_int, range_end_int))
-            except (ValueError, TypeError):
-                logger.warning(f"无效的日期范围: {[range_start, range_end]}")
-        
-        # 获取交易日历
+        # 尝试获取交易日历 - 使用data_loaders中的方法
         try:
-            # 导入交易日历模块
-            from to.data_loaders import get_trading_days
+            # 动态导入，避免循环依赖
+            import importlib
+            module = importlib.import_module('to.data_loaders')
+            get_trading_days = getattr(module, 'get_trading_days')
+            
+            # 获取所有交易日
             all_trading_days = get_trading_days(start_date, end_date)
-        except Exception as e:
-            logger.error(f"获取交易日历失败: {e}")
-            # 生成日期范围作为备选
-            all_trading_days = []
-            current = start_date_int
-            while current <= end_date_int:
-                all_trading_days.append(str(current))
-                # 简单地递增日期，可能不准确
-                year = current // 10000
-                month = (current // 100) % 100
-                day = current % 100
+            logger.debug(f"获取到交易日期列表，类型: {type(all_trading_days)}")
+            
+            # 处理不同类型的交易日期返回值
+            if isinstance(all_trading_days, pd.DataFrame):
+                # 如果是DataFrame，提取date_str列或date列的值
+                if 'date_str' in all_trading_days.columns:
+                    date_list = all_trading_days['date_str'].astype(str).tolist()
+                elif 'date' in all_trading_days.columns:
+                    date_list = all_trading_days['date'].astype(str).tolist()
+                else:
+                    # 如果没有合适的列，尝试使用索引
+                    date_list = [str(d).replace('-', '') for d in all_trading_days.index]
+                logger.debug(f"从DataFrame中提取日期列表，共 {len(date_list)} 个日期")
+            else:
+                # 否则保持原样，假设是列表形式
+                date_list = list(all_trading_days)
                 
-                day += 1
-                if day > 28:  # 简化处理，每月按28天计算
-                    day = 1
-                    month += 1
-                    if month > 12:
-                        month = 1
-                        year += 1
+            # 过滤掉非法日期格式
+            date_list = [d for d in date_list if isinstance(d, str) and d.isdigit() and len(d) == 8]
+            logger.debug(f"过滤后的日期列表，共 {len(date_list)} 个有效日期")
+            
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"无法导入get_trading_days函数: {e}")
+            # 如果无法导入，则生成日期序列
+            date_list = []
+            try:
+                start = datetime.strptime(start_date, "%Y%m%d")
+                end = datetime.strptime(end_date, "%Y%m%d")
+                delta = (end - start).days + 1
                 
-                current = year * 10000 + month * 100 + day
+                # 生成日期序列
+                for i in range(delta):
+                    dt = start + timedelta(days=i)
+                    # 跳过周末
+                    if dt.weekday() < 5:  # 0-4表示周一至周五
+                        date_list.append(dt.strftime("%Y%m%d"))
+            except Exception as e:
+                logger.error(f"生成日期序列时出错: {e}")
+                return []
+        
+        # 如果processed_ranges为空，所有日期都需要处理
+        if not processed_ranges:
+            return date_list
         
         # 检查每个交易日是否已处理
         missing_dates = []
         
-        for date in all_trading_days:
-            # 过滤掉特殊值'date_str'和非字符串类型
-            if date == 'date_str':
-                logger.warning(f"跳过特殊值'date_str'")
+        for date_str in date_list:
+            # 检查日期格式
+            if not date_str.isdigit() or len(date_str) != 8:
+                logger.warning(f"跳过无效日期格式: {date_str}")
                 continue
                 
-            if not isinstance(date, str):
-                logger.warning(f"跳过非字符串类型日期: {date}, 类型: {type(date)}")
-                continue
-                
-            # 确保字符串可以转换为整数
-            try:
-                date_int = int(date)
-                is_processed = False
-                
-                for range_start, range_end in processed_ranges:
-                    if range_start <= date_int <= range_end:
-                        is_processed = True
-                        break
-                
-                if not is_processed:
-                    missing_dates.append(date)
-            except ValueError:
-                logger.warning(f"跳过无法转换为整数的日期: {date}")
-                continue
+            # 转换为整数进行比较
+            date_int = int(date_str)
+            is_processed = False
+            
+            for range_start, range_end in processed_ranges:
+                if range_start <= date_int <= range_end:
+                    is_processed = True
+                    break
+            
+            # 如果日期未处理，添加到缺失列表
+            if not is_processed:
+                missing_dates.append(date_str)
         
+        logger.info(f"板块 {sector} 在日期范围 {start_date} - {end_date} 中有 {len(missing_dates)} 个日期需要处理")
         return missing_dates
     
     def merge_feature_files(self, sector: str) -> bool:

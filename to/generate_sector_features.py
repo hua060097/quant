@@ -25,9 +25,17 @@ from datetime import datetime
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import List, Dict, Tuple, Set, Optional, Union, Any, Callable
+import traceback
 
 # 设置导入路径，确保能够找到模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,  # 改回INFO以减少日志输出
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # 导入自定义优化模块
 try:
@@ -57,6 +65,14 @@ except ImportError:
         logger.error("无法导入自定义模块，请检查路径设置")
         raise
 
+# 导入板块特征生成相关模块
+try:
+    from to.sector_features.technical_indicators import TechnicalIndicators
+    from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator
+except ImportError:
+    logger.error("无法导入板块特征生成模块，请检查路径设置")
+    raise
+
 # 导入业务逻辑相关模块
 try:
     # 尝试直接导入
@@ -71,13 +87,6 @@ except ImportError:
         logger.error("无法导入业务逻辑模块，请检查路径设置")
         raise
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,  # 改回INFO以减少日志输出
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # 特征生成参数
 DEFAULT_START_DATE = "20180101"
 DEFAULT_END_DATE = datetime.now().strftime("%Y%m%d")
@@ -85,100 +94,17 @@ DEFAULT_MAX_WORKERS = 4
 DEFAULT_BATCH_SIZE = 30
 DEFAULT_MIN_RECORDS_PER_FILE = 250  # 单个特征文件的最小记录数
 
-# Numba JIT加速的技术指标计算函数
-try:
-    from numba import jit, prange
-    import numpy as np
+# 数据加载器包装类，提供统一接口
+class DataLoaderWrapper:
+    """数据加载器包装类，为特征生成器提供统一的数据访问接口"""
     
-    @jit(nopython=True, parallel=True)
-    def calculate_ma_fast(values, window):
-        """使用Numba加速的移动平均计算"""
-        n = len(values)
-        result = np.full(n, np.nan)
-        
-        for i in prange(window - 1, n):
-            result[i] = np.mean(values[i - window + 1:i + 1])
-            
-        return result
+    def get_daily_data(self, stocks, start_date, end_date):
+        """获取股票日线数据"""
+        return get_daily_data(stocks, start_date, end_date)
     
-    @jit(nopython=True)
-    def calculate_ema_fast(values, span):
-        """使用Numba加速的指数移动平均计算"""
-        n = len(values)
-        result = np.full(n, np.nan)
-        alpha = 2.0 / (span + 1.0)
-        
-        # 初始化第一个有效值
-        for i in range(n):
-            if not np.isnan(values[i]):
-                result[i] = values[i]
-                break
-        
-        # 计算EMA
-        for i in range(i + 1, n):
-            if not np.isnan(values[i]):
-                result[i] = alpha * values[i] + (1 - alpha) * result[i - 1]
-            else:
-                result[i] = result[i - 1]
-                
-        return result
-    
-    @jit(nopython=True)
-    def calculate_macd_fast(values, fast_span=12, slow_span=26, signal_span=9):
-        """使用Numba加速的MACD指标计算"""
-        ema_fast = calculate_ema_fast(values, fast_span)
-        ema_slow = calculate_ema_fast(values, slow_span)
-        
-        macd = ema_fast - ema_slow
-        signal = calculate_ema_fast(macd, signal_span)
-        hist = macd - signal
-        
-        return macd, signal, hist
-    
-    @jit(nopython=True, parallel=True)
-    def calculate_rsi_fast(values, window=14):
-        """使用Numba加速的RSI指标计算"""
-        n = len(values)
-        deltas = np.zeros(n)
-        result = np.full(n, np.nan)
-        
-        # 计算价格变化
-        for i in range(1, n):
-            deltas[i] = values[i] - values[i-1]
-        
-        # 计算RSI
-        up_sum = np.zeros(n)
-        down_sum = np.zeros(n)
-        
-        for i in range(1, n):
-            if deltas[i] > 0:
-                up_sum[i] = up_sum[i-1] + deltas[i]
-                down_sum[i] = down_sum[i-1]
-            elif deltas[i] < 0:
-                up_sum[i] = up_sum[i-1]
-                down_sum[i] = down_sum[i-1] - deltas[i]
-            else:
-                up_sum[i] = up_sum[i-1]
-                down_sum[i] = down_sum[i-1]
-            
-            if i >= window:
-                avg_up = (up_sum[i] - up_sum[i-window]) / window
-                avg_down = (down_sum[i] - down_sum[i-window]) / window
-                
-                if avg_down == 0:
-                    result[i] = 100.0
-                else:
-                    rs = avg_up / avg_down
-                    result[i] = 100.0 - (100.0 / (1.0 + rs))
-        
-        return result
-    
-    HAS_NUMBA = True
-    logger.info("使用Numba加速技术指标计算")
-except ImportError:
-    HAS_NUMBA = False
-    logger.warning("Numba未安装，使用pandas计算技术指标")
-
+    def get_trading_days(self, start_date, end_date):
+        """获取交易日列表"""
+        return get_trading_days(start_date, end_date)
 
 class SectorFeatureManager:
     """板块特征管理类
@@ -224,9 +150,31 @@ class SectorFeatureManager:
         
         # 缓存统计信息
         self._feature_info_cache = {}
+        
+        # 数据提供者
+        self.data_provider = DataLoaderWrapper()
+        
+        # 创建EnhancedSectorFeatureGenerator实例
+        from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator
+        from to.sector_features.technical_indicators import TechnicalIndicators
+        from to.stock_sectors_mapping import get_sector_stocks
+        
+        # 创建板块映射
+        self.sector_mapping = {}
+        for sector in get_tng_sectors():
+            self.sector_mapping[sector] = get_sector_stocks(sector_name=sector)
+            
+        # 初始化增强特征生成器
+        self.feature_generator = EnhancedSectorFeatureGenerator(
+            data_provider=self.data_provider,
+            sector_mapping=self.sector_mapping,
+            output_dir=self.output_dir
+        )
     
     def calculate_sector_features_for_date(self, date: str, sector: str) -> pd.DataFrame:
         """计算特定日期的板块特征
+        
+        使用EnhancedSectorFeatureGenerator生成综合特征
         
         Args:
             date: 目标日期，字符串格式，如"20230101"
@@ -236,212 +184,36 @@ class SectorFeatureManager:
             板块特征DataFrame
         """
         try:
-            # 获取板块内的股票
-            stocks = get_sector_stocks(sector, date)
+            logger.info(f"使用增强特征生成器计算板块 {sector} 在日期 {date} 的特征")
             
-            if not stocks:
-                logger.warning(f"日期 {date} 板块 {sector} 没有股票")
-                return pd.DataFrame()
+            # 使用EnhancedSectorFeatureGenerator生成特征
+            features_df = self.feature_generator.generate_sector_features_for_date(sector, date)
             
-            # 获取股票的日线数据
-            stock_data = get_daily_data(stocks, date, date)
+            if features_df.empty:
+                logger.warning(f"日期 {date} 板块 {sector} 没有生成特征")
+                # 创建一个包含最基本信息的空特征DataFrame
+                features_df = pd.DataFrame({
+                    'date': [date],
+                    'sector_name': [sector],
+                    'stock_count': [len(self.sector_mapping.get(sector, []))]
+                })
             
-            if stock_data.empty:
-                logger.warning(f"日期 {date} 板块 {sector} 没有行情数据")
-                return pd.DataFrame()
-            
-            # 计算板块特征
-            stock_count = len(stocks)
-            
-            # 计算板块内股票的平均价格和交易量
-            open_avg = stock_data['open'].mean()
-            high_avg = stock_data['high'].mean()
-            low_avg = stock_data['low'].mean()
-            close_avg = stock_data['close'].mean()
-            volume_avg = stock_data['volume'].mean()
-            amount_avg = stock_data['amount'].mean() if 'amount' in stock_data.columns else 0
-            
-            # 计算涨跌幅
-            if 'change' in stock_data.columns:
-                change_avg = stock_data['change'].mean()
-            else:
-                change_avg = 0
-            
-            # 计算活跃股票数量
-            active_count = len(stock_data[stock_data['volume'] > 0])
-            
-            # 计算均线特征
-            ma5_avg = stock_data['ma5'].mean() if 'ma5' in stock_data.columns else 0
-            ma10_avg = stock_data['ma10'].mean() if 'ma10' in stock_data.columns else 0
-            ma20_avg = stock_data['ma20'].mean() if 'ma20' in stock_data.columns else 0
-            ma60_avg = stock_data['ma60'].mean() if 'ma60' in stock_data.columns else 0
-            
-            # 计算股价位于均线上方的比例
-            if 'close' in stock_data.columns and 'ma5' in stock_data.columns:
-                price_above_ma5_ratio = (stock_data['close'] > stock_data['ma5']).mean()
-            else:
-                price_above_ma5_ratio = 0
-            
-            if 'close' in stock_data.columns and 'ma20' in stock_data.columns:
-                price_above_ma20_ratio = (stock_data['close'] > stock_data['ma20']).mean()
-            else:
-                price_above_ma20_ratio = 0
-            
-            # 计算总成交额
-            total_amount = stock_data['amount'].sum() if 'amount' in stock_data.columns else 0
-            
-            # 计算成交量变化率
-            if 'volume' in stock_data.columns and 'volume_ma5' in stock_data.columns and stock_data['volume_ma5'].mean() > 0:
-                volume_change_ratio = (stock_data['volume'] / stock_data['volume_ma5']).mean()
-            else:
-                volume_change_ratio = 1.0
+            # 确保有date列
+            if 'date' not in features_df.columns:
+                features_df['date'] = date
                 
-            # 计算量价相关性（使用近期数据）
-            price_volume_correlation = 0.0
-            
-            # 计算涨跌停比例
-            if 'is_limit_up' in stock_data.columns:
-                limit_up_ratio = stock_data['is_limit_up'].mean()
-            else:
-                limit_up_ratio = 0
-                
-            if 'is_limit_down' in stock_data.columns:
-                limit_down_ratio = stock_data['is_limit_down'].mean()
-            else:
-                limit_down_ratio = 0
-            
-            # 创建特征DataFrame
-            features = pd.DataFrame({
-                'date': [date],
-                'open_avg': [open_avg],
-                'high_avg': [high_avg],
-                'low_avg': [low_avg],
-                'close_avg': [close_avg],
-                'volume_avg': [volume_avg],
-                'amount_avg': [amount_avg],
-                'change_avg': [change_avg],
-                'active_count': [active_count],
-                'ma5_avg': [ma5_avg],
-                'ma10_avg': [ma10_avg],
-                'ma20_avg': [ma20_avg],
-                'ma60_avg': [ma60_avg],
-                'price_above_ma5_ratio': [price_above_ma5_ratio],
-                'price_above_ma20_ratio': [price_above_ma20_ratio],
-                'total_amount': [total_amount],
-                'volume_change_ratio': [volume_change_ratio],
-                'price_volume_correlation': [price_volume_correlation],
-                'limit_up_ratio': [limit_up_ratio],
-                'limit_down_ratio': [limit_down_ratio],
-                'sector_name': [sector],
-                'stock_count': [stock_count]
-            })
+            # 确保有sector_name列
+            if 'sector_name' not in features_df.columns:
+                features_df['sector_name'] = sector
             
             # 使用数据类型优化
-            features = optimize_dtypes(features)
+            features_df = optimize_dtypes(features_df)
             
-            return features
+            return features_df
         except Exception as e:
             logger.error(f"处理日期 {date} 板块 {sector} 时出错: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return pd.DataFrame()
-    
-    def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """添加技术指标
-        
-        使用Numba加速的技术指标计算函数增加板块特征。
-        
-        Args:
-            df: 板块特征DataFrame
-            
-        Returns:
-            添加技术指标后的DataFrame
-        """
-        if df.empty or 'close_avg' not in df.columns:
-            return df
-        
-        # 确保日期是升序排列的
-        df = df.sort_values('date')
-        
-        # 使用内存优化
-        df = optimize_dtypes(df)
-        
-        # 计算板块的技术指标
-        close_values = df['close_avg'].values
-        
-        # 检查是否可以使用Numba加速
-        try:
-            from numba import jit
-            using_numba = True
-            logger.debug("将使用Numba加速技术指标计算")
-        except ImportError:
-            using_numba = False
-            logger.debug("Numba未安装，将使用pandas计算技术指标")
-        
-        if using_numba and HAS_NUMBA:
-            # 使用Numba加速的指标计算
-            try:
-                # 计算移动平均
-                df['ma5'] = calculate_ma_fast(close_values, 5)
-                df['ma10'] = calculate_ma_fast(close_values, 10)
-                df['ma20'] = calculate_ma_fast(close_values, 20)
-                df['ma60'] = calculate_ma_fast(close_values, 60)
-                
-                # 计算MACD
-                macd, signal, hist = calculate_macd_fast(close_values)
-                df['macd'] = macd
-                df['macd_signal'] = signal
-                df['macd_hist'] = hist
-                
-                # 计算RSI
-                df['rsi'] = calculate_rsi_fast(close_values)
-                
-            except Exception as e:
-                logger.error(f"Numba加速计算技术指标失败: {e}，使用pandas计算")
-                using_numba = False
-        
-        if not using_numba or not HAS_NUMBA:
-            # 使用pandas计算技术指标
-            # 1. 计算移动平均
-            df['ma5'] = df['close_avg'].rolling(window=5).mean()
-            df['ma10'] = df['close_avg'].rolling(window=10).mean()
-            df['ma20'] = df['close_avg'].rolling(window=20).mean()
-            df['ma60'] = df['close_avg'].rolling(window=60).mean()
-            
-            # 2. 计算EMA
-            df['ema12'] = df['close_avg'].ewm(span=12, adjust=False).mean()
-            df['ema26'] = df['close_avg'].ewm(span=26, adjust=False).mean()
-            
-            # 3. 计算MACD
-            df['macd'] = df['ema12'] - df['ema26']
-            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-            df['macd_hist'] = df['macd'] - df['macd_signal']
-            
-            # 4. 计算RSI
-            delta = df['close_avg'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # 5. 计算布林带
-        df['bollinger_mid'] = df['close_avg'].rolling(window=20).mean()
-        df['bollinger_std'] = df['close_avg'].rolling(window=20).std()
-        df['bollinger_upper'] = df['bollinger_mid'] + 2 * df['bollinger_std']
-        df['bollinger_lower'] = df['bollinger_mid'] - 2 * df['bollinger_std']
-        
-        # 6. 计算VWAP(成交量加权平均价)
-        if 'volume_avg' in df.columns:
-            df['vwap'] = (df['close_avg'] * df['volume_avg']).rolling(window=20).sum() / df['volume_avg'].rolling(window=20).sum()
-        
-        # 7. 计算动量指标
-        df['momentum'] = df['close_avg'] / df['close_avg'].shift(10) - 1
-        
-        # 8. 计算波动率
-        df['volatility'] = df['close_avg'].rolling(window=20).std() / df['close_avg'].rolling(window=20).mean()
-        
-        # 再次优化数据类型
-        df = optimize_dtypes(df)
-        
-        return df
 
     def process_date(self, date: Union[str, pd.Timestamp], sector: str) -> Tuple[bool, Optional[pd.DataFrame]]:
         """处理单个日期的板块特征
@@ -467,24 +239,35 @@ class SectorFeatureManager:
                 date_str = str(date)
             
             # 生成板块特征
+            logger.debug(f"为日期 {date_str} 板块 {sector} 生成特征")
             df = self.calculate_sector_features_for_date(date_str, sector)
             
             if df.empty:
-                logger.warning(f"日期 {date} 板块 {sector} 没有特征数据")
+                logger.warning(f"日期 {date_str} 板块 {sector} 没有特征数据")
                 return False, None
             
-            # 添加日期和板块名称
+            # 添加日期和板块名称（如果不存在）
             if 'date' not in df.columns:
                 df['date'] = date_str
             if 'sector_name' not in df.columns:
                 df['sector_name'] = sector
             
-            # 保存日期特征文件
-            success, file_path = self.save_features(df, sector, date_str)
-            
-            return success, df
+            # 尝试保存特征到文件
+            try:
+                success, file_path = self.save_features(df, sector, date_str)
+                logger.debug(f"保存特征文件结果: success={success}, path={file_path}")
+                
+                # 即使保存失败，仍然返回计算好的DataFrame
+                return success, df
+            except Exception as e:
+                logger.error(f"保存日期 {date_str} 板块 {sector} 特征文件时出错: {e}")
+                logger.error(f"错误详情: {traceback.format_exc()}")
+                # 失败时也返回计算好的DataFrame
+                return False, df
+                
         except Exception as e:
             logger.error(f"处理日期 {date} 板块 {sector} 特征时出错: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return False, None
 
     def process_sector(
@@ -541,7 +324,6 @@ class SectorFeatureManager:
                 # 增量更新，只处理未生成特征的日期
                 try:
                     logger.debug(f"请求增量更新日期: {sector}, {start_date} - {end_date}")
-                    from feature_update import update_features_incrementally
                     dates_to_process = update_features_incrementally(sector, start_date, end_date, self.output_dir)
                     logger.debug(f"获取到增量更新日期，类型: {type(dates_to_process)}, 内容预览: {str(dates_to_process)[:100]} [...] (如果太长)")
                     
@@ -918,240 +700,314 @@ class SectorFeatureManager:
         
         logger.info(f"内存使用: {memory_info.rss / (1024 * 1024):.2f} MB")
 
-    def save_features(self, df: pd.DataFrame, sector: str, date: Optional[str] = None) -> Tuple[bool, Path]:
-        """保存板块特征数据
+    def save_features(self, df: pd.DataFrame, sector: str, date: str) -> Tuple[bool, Path]:
+        """保存特征到文件
         
         Args:
             df: 特征DataFrame
             sector: 板块名称
-            date: 可选的日期标记，用于增量更新
+            date: 日期字符串，格式为YYYYMMDD
             
         Returns:
-            (是否保存成功, 保存的文件路径)
+            (是否成功, 文件路径)
         """
-        # 获取输出格式
-        output_format = getattr(self, '_output_format', 'parquet')
+        if df.empty:
+            logger.warning(f"特征DataFrame为空，不保存 板块: {sector} 日期: {date}")
+            return False, None
         
-        sector_dir = Path(self.output_dir) / sector
+        # 确保板块目录存在
+        sector_dir = self.output_dir / sector
         sector_dir.mkdir(parents=True, exist_ok=True)
         
-        if date:
-            # 按日期保存单独的文件
-            file_name = f"{sector}_{date}.{output_format}"
-        else:
-            # 保存完整特征
-            file_name = f"{sector}.{output_format}"
-        
-        file_path = sector_dir / file_name
+        # 设置输出文件路径
+        file_path = sector_dir / f"{sector}_{date}.csv"
         
         try:
-            from feature_compress import save_features as save_features_func
-            success = save_features_func(
-                df, 
-                file_path, 
-                format=output_format,
-                compress=True,
-                optimize=True
-            )
+            # 使用feature_compress中的save_features，包含数据类型优化
+            df_optimized = optimize_dtypes(df)
+            success = save_features(df_optimized, file_path, format='csv')
             
             if success:
-                logger.debug(f"成功保存板块 {sector} 的特征数据到 {file_path}")
+                logger.info(f"成功保存特征到文件: {file_path}")
+                
+                # 使用特征更新管理器更新元数据
+                self.feature_update_manager.update_sector_metadata(sector)
+                
+                # 保存最新特征
+                latest_file_path = sector_dir / f"{sector}_latest.csv"
+                save_features(df_optimized, latest_file_path, format='csv')
+                
                 return True, file_path
             else:
-                logger.error(f"保存板块 {sector} 的特征数据失败")
+                logger.error(f"保存特征文件失败: {file_path}")
                 return False, file_path
+            
         except Exception as e:
-            logger.error(f"保存板块 {sector} 的特征数据时发生错误: {e}")
+            logger.error(f"保存特征文件时出错: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return False, file_path
-
-    def load_features(self, sector: str) -> pd.DataFrame:
-        """加载板块特征数据
+        
+    def merge_features(self, sector: str) -> bool:
+        """合并板块特征文件
+        
+        将同一板块的多个特征文件合并为一个文件，优化存储和读取效率
         
         Args:
             sector: 板块名称
             
         Returns:
+            是否成功合并
+        """
+        try:
+            # 使用特征更新管理器合并特征文件
+            success = self.feature_update_manager.merge_feature_files(sector)
+            
+            if success:
+                logger.info(f"成功合并板块 {sector} 的特征文件")
+                
+                # 更新元数据
+                self.feature_update_manager.update_sector_metadata(sector)
+            else:
+                logger.error(f"合并板块 {sector} 的特征文件失败")
+            
+            return success
+        except Exception as e:
+            logger.error(f"合并特征文件时出错: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return False
+
+    def generate_features(
+        self, 
+        sectors: List[str], 
+        start_date: str, 
+        end_date: str, 
+        force_update: bool = False,
+        batch_size: Optional[int] = None,
+        merge_after_generation: bool = True
+    ) -> Dict[str, int]:
+        """生成板块特征
+        
+        Args:
+            sectors: 板块名称列表
+            start_date: 开始日期
+            end_date: 结束日期
+            force_update: 是否强制重新生成
+            batch_size: 每批处理的日期数
+            merge_after_generation: 是否在生成后合并特征文件
+            
+        Returns:
+            特征生成统计字典 {板块名称: 成功天数}
+        """
+        try:
+            # 开始计时
+            start_time = time.time()
+            logger.info(f"开始为 {len(sectors)} 个板块生成特征，时间范围: {start_date} - {end_date}")
+            
+            # 跟踪结果
+            results = {}
+            
+            # 并行处理每个板块
+            with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+                # 提交任务
+                futures = []
+                for sector in sectors:
+                    # 如果不强制重新生成，先检查需要处理的日期
+                    if not force_update:
+                        # 获取需要增量更新的日期
+                        missing_dates = update_features_incrementally(sector, start_date, end_date, self.output_dir)
+                        
+                        # 如果没有需要更新的日期，跳过
+                        if not missing_dates:
+                            logger.info(f"板块 {sector} 在 {start_date} - {end_date} 已有特征数据，跳过")
+                            results[sector] = 0
+                            continue
+                        
+                        logger.info(f"板块 {sector} 需要更新 {len(missing_dates)} 个日期的特征")
+                    else:
+                        # 获取所有交易日
+                        try:
+                            missing_dates = get_trading_days(start_date, end_date)
+                        except Exception as e:
+                            logger.error(f"获取交易日失败: {e}")
+                            missing_dates = []
+                        
+                        logger.info(f"强制更新板块 {sector} 的所有特征，共 {len(missing_dates)} 个日期")
+                    
+                    # 处理每个板块
+                    future = executor.submit(
+                        self.process_sector,
+                        sector,
+                        start_date,
+                        end_date,
+                        force_update,
+                        batch_size
+                    )
+                    futures.append((future, sector))
+                
+                # 收集结果
+                for future, sector in futures:
+                    try:
+                        sector_name, processed_dates = future.result()
+                        results[sector_name] = len(processed_dates)
+                        logger.info(f"板块 {sector_name} 处理完成，成功生成 {len(processed_dates)} 天的特征")
+                    except Exception as e:
+                        logger.error(f"处理板块 {sector} 时出错: {e}")
+                        logger.error(f"错误详情: {traceback.format_exc()}")
+                        results[sector] = 0
+            
+            # 在生成后合并特征文件
+            if merge_after_generation:
+                for sector in sectors:
+                    try:
+                        logger.info(f"正在合并板块 {sector} 的特征文件")
+                        self.merge_features(sector)
+                    except Exception as e:
+                        logger.error(f"合并板块 {sector} 的特征文件时出错: {e}")
+            
+            # 计算总处理时间
+            elapsed_time = time.time() - start_time
+            logger.info(f"特征生成完成，耗时: {elapsed_time:.2f} 秒")
+            
+            # 清理缓存，释放内存
+            self._feature_info_cache = {}
+            gc.collect()
+            
+            return results
+        
+        except Exception as e:
+            logger.error(f"生成板块特征时出错: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return {sector: 0 for sector in sectors}
+    
+    def load_features(self, sector: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
+        """加载板块特征数据
+        
+        Args:
+            sector: 板块名称
+            start_date: 开始日期，可选
+            end_date: 结束日期，可选
+            
+        Returns:
             板块特征DataFrame
         """
-        sector_dir = Path(self.output_dir) / sector
-        
-        # 首先尝试加载Parquet文件
-        parquet_path = sector_dir / f"{sector}.parquet"
-        if parquet_path.exists():
-            try:
-                from feature_compress import load_features as load_features_func
-                df = load_features_func(parquet_path)
-                if not df.empty:
-                    logger.debug(f"已从Parquet文件加载板块 {sector} 的特征数据")
-                    return df
-            except Exception as e:
-                logger.warning(f"加载Parquet文件 {parquet_path} 失败: {e}")
-        
-        # 如果Parquet文件不存在或加载失败，尝试加载CSV文件
-        csv_path = sector_dir / f"{sector}.csv"
-        if csv_path.exists():
-            try:
-                df = pd.read_csv(csv_path)
-                if not df.empty:
-                    logger.debug(f"已从CSV文件加载板块 {sector} 的特征数据")
-                    return df
-            except Exception as e:
-                logger.warning(f"加载CSV文件 {csv_path} 失败: {e}")
-        
-        # 如果都不存在，加载所有日期文件
         try:
-            # 查找所有日期文件
-            date_files = list(sector_dir.glob(f"{sector}_*.parquet"))
+            from to.feature_loader import load_sector_features
             
-            if not date_files:
-                date_files = list(sector_dir.glob(f"{sector}_*.csv"))
+            # 使用feature_loader加载特征
+            df = load_sector_features(sector, start_date, end_date)
             
-            if date_files:
-                # 加载所有日期文件
-                dfs = []
-                for file_path in date_files:
-                    try:
-                        if file_path.suffix.lower() == '.parquet':
-                            from feature_compress import load_features as load_features_func
-                            df = load_features_func(file_path)
-                        else:
-                            df = pd.read_csv(file_path)
-                        
-                        if not df.empty:
-                            dfs.append(df)
-                    except Exception as e:
-                        logger.warning(f"加载文件 {file_path} 失败: {e}")
-                
-                if len(dfs) > 0:  # 使用len()检查而不是直接用dfs作为布尔值
-                    # 合并所有数据框
-                    df = pd.concat(dfs, ignore_index=True)
-                    # 去重并排序
-                    if 'date' in df.columns:
-                        df = df.drop_duplicates(subset=['date']).sort_values('date')
-                    logger.debug(f"已从 {len(date_files)} 个日期文件加载板块 {sector} 的特征数据")
-                    return df
+            if df.empty:
+                logger.warning(f"未找到板块 {sector} 的特征数据")
+            else:
+                logger.info(f"成功加载板块 {sector} 的特征数据，共 {len(df)} 行")
+            
+            return df
         except Exception as e:
-            logger.warning(f"加载板块 {sector} 的日期文件失败: {e}")
-        
-        # 返回空DataFrame
-        logger.warning(f"未找到板块 {sector} 的特征数据")
-        return pd.DataFrame()
+            logger.error(f"加载板块 {sector} 的特征数据失败: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return pd.DataFrame()
 
-
-def generate_features(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    sectors: Optional[List[str]] = None,
-    force_update: bool = False,
-    max_workers: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    output_dir: Optional[Union[str, Path]] = None,
-    output_format: str = 'parquet'  # 指定输出格式
-) -> Dict[str, List[str]]:
-    """生成板块特征
-    
-    Args:
-        start_date: 开始日期，格式为YYYYMMDD，None则使用当前日期
-        end_date: 结束日期，格式为YYYYMMDD，None则使用当前日期
-        sectors: 板块列表，None则使用所有板块
-        force_update: 是否强制重新生成
-        max_workers: 最大工作进程数，None则使用默认值
-        batch_size: 每批处理的日期数量，None则使用默认值
-        output_dir: 输出目录，None则使用默认目录
-        output_format: 输出格式，'parquet'或'csv'，默认为'parquet'
-        
-    Returns:
-        处理结果字典，键为板块名称，值为处理的日期列表
-    """
-    # 创建特征管理器
-    feature_manager = SectorFeatureManager(
-        output_dir=output_dir,
-        max_workers=max_workers,
-        batch_size=batch_size
-    )
-    
-    # 处理日期范围
-    return feature_manager.process_date_range(
-        start_date=start_date,
-        end_date=end_date,
-        sectors=sectors,
-        force_update=force_update,
-        max_workers=max_workers,
-        batch_size=batch_size,
-        output_format=output_format  # 传递输出格式
-    )
-
-
-def main():
-    """命令行入口函数"""
-    import argparse
-    
+def parse_args():
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(description='生成板块特征数据')
     
-    # 添加支持连字符和下划线的参数
-    parser.add_argument('--start-date', '--start_date', type=str, help='开始日期，格式为YYYYMMDD')
-    parser.add_argument('--end-date', '--end_date', type=str, help='结束日期，格式为YYYYMMDD')
-    parser.add_argument('--sectors', type=str, help='板块列表，用逗号分隔')
-    parser.add_argument('--force-update', '--force_update', action='store_true', help='强制重新生成所有特征')
-    parser.add_argument('--max-workers', '--max_workers', type=int, help='最大工作进程数')
-    parser.add_argument('--batch-size', '--batch_size', type=int, help='每批处理的日期数量')
-    parser.add_argument('--output-dir', '--output_dir', type=str, help='输出目录')
-    parser.add_argument('--use-parquet', '--use_parquet', action='store_true', default=True, 
-                        help='使用Parquet格式保存所有特征数据(默认启用)')
-    parser.add_argument('--csv-only', '--csv_only', action='store_true', 
-                        help='只使用CSV格式保存特征(调试用，不建议用于大量数据)')
+    # 板块选项
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--sector', type=str, help='指定处理的板块名称')
+    group.add_argument('--all-sectors', '--all_sectors', action='store_true', help='处理所有板块')
     
-    args = parser.parse_args()
+    # 日期选项
+    parser.add_argument('--start-date', '--start_date', dest='start_date', type=str, 
+                      default=DEFAULT_START_DATE, help=f'开始日期，格式为YYYYMMDD，默认：{DEFAULT_START_DATE}')
+    parser.add_argument('--end-date', '--end_date', dest='end_date', type=str, 
+                      default=DEFAULT_END_DATE, help=f'结束日期，格式为YYYYMMDD，默认：{DEFAULT_END_DATE}')
     
-    # 默认使用当前日期
-    if not args.start_date or not args.end_date:
-        from datetime import datetime, timedelta
-        today = datetime.now()
-        if not args.end_date:
-            args.end_date = today.strftime('%Y%m%d')
-        if not args.start_date:
-            start_date = today - timedelta(days=30)
-            args.start_date = start_date.strftime('%Y%m%d')
+    # 更新模式
+    update_mode = parser.add_mutually_exclusive_group()
+    update_mode.add_argument('--force', action='store_true', help='强制重新生成所有特征')
+    update_mode.add_argument('--incremental', action='store_true', help='增量更新，只处理缺失的日期')
     
-    # 解析板块列表
-    sectors = None
-    if args.sectors:
-        sectors = [s.strip() for s in args.sectors.split(',')]
+    # 优化选项
+    parser.add_argument('--max-workers', '--max_workers', dest='max_workers', type=int, 
+                       default=DEFAULT_MAX_WORKERS, help=f'最大工作进程数，默认：{DEFAULT_MAX_WORKERS}')
+    parser.add_argument('--batch-size', '--batch_size', dest='batch_size', type=int, 
+                       default=DEFAULT_BATCH_SIZE, help=f'每批处理的日期数量，默认：{DEFAULT_BATCH_SIZE}')
+    parser.add_argument('--no-merge', '--no_merge', dest='no_merge', action='store_true', 
+                       help='不合并特征文件，用于调试')
     
-    # 检查使用的存储格式
-    if args.csv_only:
-        output_format = 'csv'
-        logger.info("将只使用CSV格式保存特征数据(通常用于调试)")
-    else:
-        output_format = 'parquet'
-        logger.info("将使用Parquet格式保存完整特征数据，并为每个板块生成最后一个交易日的CSV文件用于快速查看")
+    # 其他选项
+    parser.add_argument('--output-dir', '--output_dir', dest='output_dir', type=str, 
+                       help='输出目录，默认使用系统配置目录')
+    parser.add_argument('--debug', action='store_true', help='启用调试日志')
     
-    # 生成特征
-    result = generate_features(
-        start_date=args.start_date,
-        end_date=args.end_date,
-        sectors=sectors,
-        force_update=args.force_update,
-        max_workers=args.max_workers,
-        batch_size=args.batch_size,
-        output_dir=args.output_dir,
-        output_format=output_format
-    )
-    
-    # 输出处理结果
-    total_sectors = len(result)
-    total_dates = sum(len(dates) for _, dates in result.items())
-    logger.info(f"完成所有板块特征处理，共处理了 {total_sectors} 个板块的 {total_dates} 个日期数据")
-    
-    # 优化存储
-    feature_manager = SectorFeatureManager(
-        output_dir=args.output_dir,
-        max_workers=args.max_workers,
-        batch_size=args.batch_size
-    )
-    feature_manager.optimize_storage()
+    return parser.parse_args()
 
-
+def main():
+    """主函数"""
+    args = parse_args()
+    
+    # 验证输入
+    if args.sector is None and args.all_sectors is False:
+        logger.error("必须指定至少一个板块名称或使用 --all_sectors")
+        sys.exit(1)
+        
+    # 设置日志级别
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        
+    # 强制更新和增量更新不能同时设置
+    if args.force and args.incremental:
+        logger.error("--force和--incremental不能同时设置")
+        sys.exit(1)
+        
+    # 初始化内存映射管理器
+    memory_map_manager = get_memory_map_manager()
+    
+    try:
+        # 决定要处理的板块
+        if args.all_sectors:
+            sectors = get_tng_sectors()
+            logger.info(f"处理所有板块 ({len(sectors)} 个)")
+        else:
+            sectors = [args.sector]
+            logger.info(f"处理板块: {args.sector}")
+        
+        # 设置日期范围
+        start_date = args.start_date
+        end_date = args.end_date
+        logger.info(f"日期范围: {start_date} - {end_date}")
+        
+        # 创建特征管理器
+        manager = SectorFeatureManager(
+            output_dir=args.output_dir,
+            max_workers=args.max_workers,
+            batch_size=args.batch_size
+        )
+        
+        # 生成特征
+        results = manager.generate_features(
+            sectors=sectors,
+            start_date=start_date,
+            end_date=end_date,
+            force_update=args.force,
+            batch_size=args.batch_size,
+            merge_after_generation=not args.no_merge
+        )
+        
+        # 打印结果
+        total_features = sum(results.values())
+        logger.info(f"特征生成完成，总共生成 {total_features} 天的特征")
+        for sector, count in results.items():
+            logger.info(f"板块 {sector}: {count} 天")
+            
+    except Exception as e:
+        logger.error(f"生成特征时出错: {e}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+    finally:
+        # 清理资源
+        memory_map_manager.close_all()
+        
 if __name__ == "__main__":
     main()
 
