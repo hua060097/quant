@@ -526,15 +526,19 @@ def _load_sector_features(start_date, end_date, feature_dir=None):
     import logging
     import glob
     from datetime import datetime
+    from pathlib import Path
     
     logger = logging.getLogger(__name__)
     
     try:
         # 如果未指定特征目录，使用默认配置
         if feature_dir is None:
-            from config import get_config
-            config = get_config()
-            feature_dir = config.get('data_dirs', {}).get('features', 'to/local_data/features')
+            try:
+                from config import get_config
+                config = get_config()
+                feature_dir = config.get('data_dirs', {}).get('features', 'to/local_data/features')
+            except:
+                feature_dir = 'to/local_data/features'
             
         # 构建板块特征目录
         sector_feature_dir = os.path.join(feature_dir, "..", "sector_features")
@@ -543,53 +547,132 @@ def _load_sector_features(start_date, end_date, feature_dir=None):
         if not os.path.exists(sector_feature_dir):
             logger.error(f"板块特征目录不存在: {sector_feature_dir}")
             return None
-            
-        # 获取所有板块特征文件
-        sector_files = glob.glob(os.path.join(sector_feature_dir, "*", "*.csv"))
         
-        if not sector_files:
-            logger.error(f"在目录 {sector_feature_dir} 中未找到板块特征文件")
-            return None
-            
         # 解析日期范围
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y%m%d')
         if isinstance(end_date, str):
             end_date = datetime.strptime(end_date, '%Y%m%d')
             
+        # 获取所有板块目录
+        all_sector_dirs = [d for d in os.listdir(sector_feature_dir) 
+                          if os.path.isdir(os.path.join(sector_feature_dir, d))]
+            
+        if not all_sector_dirs:
+            logger.error(f"在目录 {sector_feature_dir} 中未找到板块目录")
+            return None
+        
         # 加载并合并所有板块特征
         all_sector_data = []
-        for file_path in sector_files:
-            try:
-                # 从文件路径提取板块名称
-                sector_name = os.path.basename(os.path.dirname(file_path))
-                
-                # 读取CSV文件
-                df = pd.read_csv(file_path)
-                
-                # 添加板块名称
-                df['sector_name'] = sector_name
-                
-                # 筛选日期范围
-                df['date'] = pd.to_datetime(df['date'])
-                df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-                
-                if not df.empty:
-                    all_sector_data.append(df)
+        for sector_name in all_sector_dirs:
+            sector_dir = os.path.join(sector_feature_dir, sector_name)
+            
+            # 优先尝试读取 {sector}_features.parquet
+            features_parquet = os.path.join(sector_dir, f"{sector_name}_features.parquet")
+            regular_parquet = os.path.join(sector_dir, f"{sector_name}.parquet")
+            latest_csv = os.path.join(sector_dir, f"{sector_name}_latest.csv")
+            
+            # 尝试加载主要的parquet文件
+            if os.path.exists(features_parquet):
+                try:
+                    df = pd.read_parquet(features_parquet)
+                    df['sector_name'] = sector_name
                     
-            except Exception as e:
-                logger.warning(f"加载板块特征文件 {file_path} 失败: {e}")
+                    # 确保日期列是日期类型
+                    if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
+                        df['date'] = pd.to_datetime(df['date'])
+                    
+                    # 筛选日期范围
+                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+                    
+                    if not df.empty:
+                        all_sector_data.append(df)
+                        logger.info(f"成功加载板块 {sector_name} 的特征 (features parquet), 包含 {len(df)} 条记录")
+                        continue
+                except Exception as e:
+                    logger.warning(f"加载 {features_parquet} 失败: {e}")
+            
+            # 如果 _features.parquet 不存在或加载失败，尝试加载 .parquet
+            if os.path.exists(regular_parquet):
+                try:
+                    df = pd.read_parquet(regular_parquet)
+                    df['sector_name'] = sector_name
+                    
+                    # 确保日期列是日期类型
+                    if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
+                        df['date'] = pd.to_datetime(df['date'])
+                    
+                    # 筛选日期范围
+                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+                    
+                    if not df.empty:
+                        all_sector_data.append(df)
+                        logger.info(f"成功加载板块 {sector_name} 的特征 (regular parquet), 包含 {len(df)} 条记录")
+                        continue
+                except Exception as e:
+                    logger.warning(f"加载 {regular_parquet} 失败: {e}")
+            
+            # 如果parquet文件都不存在或加载失败，尝试加载CSV文件
+            if os.path.exists(latest_csv):
+                try:
+                    df = pd.read_csv(latest_csv)
+                    df['sector_name'] = sector_name
+                    
+                    # 确保日期列是日期类型
+                    if 'date' in df.columns:
+                        df['date'] = pd.to_datetime(df['date'])
+                    
+                    # 筛选日期范围
+                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+                    
+                    if not df.empty:
+                        all_sector_data.append(df)
+                        logger.info(f"成功加载板块 {sector_name} 的特征 (latest csv), 包含 {len(df)} 条记录")
+                        continue
+                except Exception as e:
+                    logger.warning(f"加载 {latest_csv} 失败: {e}")
+            
+            # 尝试查找日期特征文件
+            date_files = glob.glob(os.path.join(sector_dir, f"{sector_name}_20*.parquet"))
+            if date_files:
+                dfs = []
+                for file_path in date_files:
+                    try:
+                        df = pd.read_parquet(file_path)
+                        dfs.append(df)
+                    except Exception as e:
+                        logger.warning(f"加载 {file_path} 失败: {e}")
                 
+                if dfs:
+                    combined_df = pd.concat(dfs, ignore_index=True)
+                    combined_df['sector_name'] = sector_name
+                    
+                    # 确保日期列是日期类型
+                    if 'date' in combined_df.columns and not pd.api.types.is_datetime64_any_dtype(combined_df['date']):
+                        combined_df['date'] = pd.to_datetime(combined_df['date'])
+                    
+                    # 筛选日期范围
+                    combined_df = combined_df[(combined_df['date'] >= start_date) & (combined_df['date'] <= end_date)]
+                    
+                    if not combined_df.empty:
+                        all_sector_data.append(combined_df)
+                        logger.info(f"成功加载板块 {sector_name} 的特征 (date parquet files), 包含 {len(combined_df)} 条记录")
+                        continue
+            
+            logger.warning(f"未能加载板块 {sector_name} 的任何特征数据")
+        
         if not all_sector_data:
             logger.error("未能加载任何板块特征数据")
             return None
             
         # 合并所有板块数据
         combined_data = pd.concat(all_sector_data, ignore_index=True)
+        logger.info(f"共加载 {len(combined_data)} 条板块特征记录，涵盖 {combined_data['sector_name'].nunique()} 个板块")
         return combined_data
         
     except Exception as e:
         logger.error(f"加载板块特征时出错: {e}")
+        logger.error(f"错误详情: {traceback.format_exc()}")
         return None
 
 def _load_market_features(start_date, end_date, index_code="000001.SH"):

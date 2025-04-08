@@ -31,22 +31,55 @@ def load_sector_features(sector_name: str,
     else:
         data_dir = Path(data_dir)
     
-    # 构建文件路径
-    feature_file = data_dir / "sector" / f"{sector_name}.parquet"
+    # 构建板块目录
+    sector_dir = data_dir / sector_name
     
-    # 检查文件是否存在
-    if not feature_file.exists():
-        logger.warning(f"板块特征文件不存在: {feature_file}")
+    # 检查目录是否存在
+    if not sector_dir.exists():
+        logger.warning(f"板块目录不存在: {sector_dir}")
         return pd.DataFrame()
     
     try:
-        # 读取Parquet文件
-        df = pd.read_parquet(feature_file)
+        df = pd.DataFrame()
         
-        # 确保索引是日期类型
-        if not isinstance(df.index, pd.DatetimeIndex):
-            if 'date' in df.columns:
-                df.set_index('date', inplace=True)
+        # 按优先级尝试加载不同格式的文件
+        # 1. 首先尝试加载 {sector_name}_features.parquet
+        features_parquet = sector_dir / f"{sector_name}_features.parquet"
+        if features_parquet.exists():
+            try:
+                df = pd.read_parquet(features_parquet)
+                logger.info(f"从 {features_parquet} 加载板块特征")
+            except Exception as e:
+                logger.warning(f"加载 {features_parquet} 失败: {e}")
+        
+        # 2. 如果features文件加载失败，尝试加载 {sector_name}.parquet
+        if df.empty:
+            regular_parquet = sector_dir / f"{sector_name}.parquet"
+            if regular_parquet.exists():
+                try:
+                    df = pd.read_parquet(regular_parquet)
+                    logger.info(f"从 {regular_parquet} 加载板块特征")
+                except Exception as e:
+                    logger.warning(f"加载 {regular_parquet} 失败: {e}")
+        
+        # 3. 如果还是加载失败，尝试加载 {sector_name}_latest.csv
+        if df.empty:
+            latest_csv = sector_dir / f"{sector_name}_latest.csv"
+            if latest_csv.exists():
+                try:
+                    df = pd.read_csv(latest_csv)
+                    logger.info(f"从 {latest_csv} 加载板块特征")
+                except Exception as e:
+                    logger.warning(f"加载 {latest_csv} 失败: {e}")
+        
+        # 如果所有加载尝试都失败
+        if df.empty:
+            logger.warning(f"未能加载板块 {sector_name} 的任何特征文件")
+            return pd.DataFrame()
+        
+        # 确保date列是日期时间类型
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
         
         # 过滤日期范围
         if start_date or end_date:
@@ -56,11 +89,15 @@ def load_sector_features(sector_name: str,
             
             # 过滤日期范围
             if start_dt and end_dt:
-                df = df[(df.index >= start_dt) & (df.index <= end_dt)]
+                df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
             elif start_dt:
-                df = df[df.index >= start_dt]
+                df = df[df['date'] >= start_dt]
             elif end_dt:
-                df = df[df.index <= end_dt]
+                df = df[df['date'] <= end_dt]
+        
+        # 添加板块名称列（如果不存在）
+        if 'sector_name' not in df.columns:
+            df['sector_name'] = sector_name
         
         logger.info(f"成功加载板块 {sector_name} 的特征数据，共 {len(df)} 行")
         return df
@@ -92,12 +129,20 @@ def load_sector_features_for_date(sector_name: str,
     # 将日期转换为pandas日期时间对象
     date_dt = pd.to_datetime(date)
     
+    # 确保'date'列存在
+    if 'date' not in df.columns:
+        logger.warning(f"板块特征数据中没有'date'列")
+        return {}
+    
     # 获取指定日期的数据
-    if date_dt in df.index:
+    date_rows = df[df['date'] == date_dt]
+    
+    if not date_rows.empty:
+        # 获取第一行（如果有多行匹配，只取第一行）
+        row = date_rows.iloc[0]
         # 将Series转换为字典
-        row = df.loc[date_dt]
         features = row.to_dict()
-        features['date'] = date  # 添加日期字段
+        features['date'] = date  # 确保日期字段使用原始格式
         return features
     else:
         logger.warning(f"板块 {sector_name} 在日期 {date} 没有特征数据")
@@ -114,9 +159,9 @@ def get_available_sectors(data_dir: Optional[str] = None) -> List[str]:
     """
     # 设置默认数据目录
     if data_dir is None:
-        data_dir = Path(os.getcwd()) / "to" / "local_data" / "sector_features" / "sector"
+        data_dir = Path(os.getcwd()) / "to" / "local_data" / "sector_features"
     else:
-        data_dir = Path(data_dir) / "sector"
+        data_dir = Path(data_dir)
     
     # 检查目录是否存在
     if not data_dir.exists():
@@ -124,11 +169,11 @@ def get_available_sectors(data_dir: Optional[str] = None) -> List[str]:
         return []
     
     try:
-        # 获取所有parquet文件
-        feature_files = list(data_dir.glob("*.parquet"))
+        # 获取所有子目录（每个子目录对应一个板块）
+        sector_dirs = [d for d in data_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
         
         # 提取板块名称
-        sector_names = [file.stem for file in feature_files]
+        sector_names = [directory.name for directory in sector_dirs]
         
         logger.info(f"找到 {len(sector_names)} 个可用板块")
         return sector_names
