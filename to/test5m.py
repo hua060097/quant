@@ -80,7 +80,7 @@ def main():
     # 待测试的股票列表
     stock_list = [
         "sh.600000", "sh.600036", "sh.601398", "sh.601288",
-        "sz.000001", "sz.000002", "sz.000063", "sz.000333"
+        "sz.000001", "sz.000002", "sz.000063", "sz.000333","sh.600410"
     ]
     
     # 使用较少进程（最多2个）
@@ -117,6 +117,7 @@ def main():
             print(f"获取 {stock} 数据: {len(df)} 条记录")
         else:
             print(f"获取 {stock} 数据: 无记录")
+        print(f"stock: {stock}, data_list: {data_list}")
     
     bs.logout()
     single_end = time.time()

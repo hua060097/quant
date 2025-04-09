@@ -36,6 +36,7 @@ from collections import defaultdict
 import re
 import baostock as bs
 import random
+import shutil
 
 # 配置日志
 os.makedirs('to/log', exist_ok=True)
@@ -154,7 +155,7 @@ def download_minute_data_process_worker(batch_stocks, start_date, end_date, fiel
     all_results = {}
     for i, stock_code in enumerate(batch_stocks):
         stock_start = time.time()
-        logger.info(f"进程 {process_id} 开始下载 {stock_code} ({i+1}/{len(batch_stocks)}) 数据...")
+       
         
         # 转换股票代码格式
         if '.' in stock_code:
@@ -164,6 +165,7 @@ def download_minute_data_process_worker(batch_stocks, start_date, end_date, fiel
             # 如果已经是BaoStock格式，直接使用
             bs_stock_code = stock_code
         
+        logger.info(f"进程 {process_id} 开始下载 {bs_stock_code} ({i+1}/{len(batch_stocks)}) 数据...")
         # 设置重试计数器
         retry_count = 0
         
@@ -1160,56 +1162,199 @@ class ParquetDataStorage:
         
         # 根据模式选择处理方式
         if use_multiprocessing:
-            # 多进程模式
+            # 多进程模式 - 使用进程池
             import multiprocessing
-            from multiprocessing import Process, Queue
+            from multiprocessing import Pool
             import random
             import os
             
             # 配置日志
-            logger.info(f"启动多进程下载模式，CPU核心数: {multiprocessing.cpu_count()}, 使用进程数: {max_workers}")
+            max_processes = min(max_workers, multiprocessing.cpu_count())
+            logger.info(f"启动多进程池下载模式，CPU核心数: {multiprocessing.cpu_count()}, 使用进程数: {max_processes}")
             
-            # 创建结果队列
-            result_queue = Queue()
+            # 创建结果字典，用于存储所有批次的数据
+            manager = multiprocessing.Manager()
+            result_dict = manager.dict()
             
-            # 创建并启动进程
-            processes = []
-            for i, batch in enumerate(batches):
-                p = Process(
-                    target=download_minute_data_process_worker,
-                    args=(batch, start_date, end_date, fields, i, result_queue)
-                )
-                processes.append(p)
-                p.start()
-                logger.info(f"启动进程 {i} (PID: {p.pid})，处理 {len(batch)} 只股票")
-                # 避免同时大量连接BaoStock服务器，添加随机延迟
-                time.sleep(0.5 + random.random())
-            
-            # 收集结果
-            completed_batches = 0
-            for _ in range(len(batches)):
+            # 进程池适配器函数
+            def pool_worker_adapter(batch_stocks, start_date, end_date, fields, process_id, _):
+                # 处理批次并直接返回结果而非放入队列
+                process_start = time.time()
+                pid = os.getpid()
+                
+                logger.info(f"进程池中的进程 {pid} 开始处理批次 {process_id+1}/{len(batches)}")
+                
+                # 登录baostock（每个进程只登录一次）
+                retry_count = 0
+                max_retries = 3
+                retry_delay = 2
+                
+                while retry_count < max_retries:
+                    try:
+                        lg = bs.login()
+                        if lg.error_code != '0':
+                            logger.error(f"进程 {pid} 登录BaoStock失败: {lg.error_msg}")
+                            retry_count += 1
+                            time.sleep(retry_delay * (1 + random.random()))
+                            continue
+                        logger.info(f"进程 {pid} 登录BaoStock成功")
+                        break
+                    except Exception as e:
+                        logger.error(f"进程 {pid} 登录BaoStock异常: {e}")
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            logger.error(f"进程 {pid} 登录失败次数过多，放弃下载")
+                            return (process_id, {})
+                        time.sleep(retry_delay * (1 + random.random()))
+                
+                # 调用原始worker函数的核心处理逻辑
+                batch_results = {}
+                
                 try:
-                    process_id, batch_data = result_queue.get(timeout=600)  # 10分钟超时
-                    completed_batches += 1
-                    logger.info(f"收集进程 {process_id} 的数据, 进度: {completed_batches}/{len(batches)} ({completed_batches/len(batches)*100:.1f}%)")
+                    # 处理批次数据的逻辑
+                    # 转换日期格式
+                    start_date_str = start_date
+                    end_date_str = end_date
+                    if '-' in start_date:
+                        start_date_str = start_date.replace('-', '')
+                    if '-' in end_date:
+                        end_date_str = end_date.replace('-', '')
                     
-                    if batch_data:
-                        all_batch_data.update(batch_data)
-                        logger.info(f"进程 {process_id} 返回 {len(batch_data)} 只股票的数据")
-                    else:
-                        logger.warning(f"进程 {process_id} 未返回数据")
+                    # 转换为BaoStock日期格式 (YYYY-MM-DD)
+                    bs_start_date = f"{start_date_str[:4]}-{start_date_str[4:6]}-{start_date_str[6:8]}"
+                    bs_end_date = f"{end_date_str[:4]}-{end_date_str[4:6]}-{end_date_str[6:8]}"
+                    
+                    # 转换字段列表为BaoStock需要的格式
+                    bs_fields = ['date', 'time', 'code']
+                    field_mapping = {
+                        'open': 'open',
+                        'high': 'high',
+                        'low': 'low',
+                        'close': 'close',
+                        'volume': 'volume',
+                        'amount': 'amount'
+                    }
+                    for field in fields:
+                        if field in field_mapping:
+                            bs_fields.append(field_mapping[field])
+                    bs_fields_str = ",".join(bs_fields)
+                    
+                    # 处理每只股票
+                    for i, stock_code in enumerate(batch_stocks):
+                        stock_start = time.time()
+                        logger.info(f"进程 {pid} 开始下载 {stock_code} ({i+1}/{len(batch_stocks)})")
+                        
+                        # 转换股票代码格式
+                        if '.' in stock_code:
+                            market, code = stock_code.split('.')
+                            bs_stock_code = f"{market.lower()}.{code}"
+                        else:
+                            bs_stock_code = stock_code
+                        
+                        # 设置重试计数
+                        retry_count = 0
+                        max_retries = 3
+                        
+                        # 用重试机制查询数据
+                        while retry_count < max_retries:
+                            try:
+                                # 查询5分钟线数据
+                                rs = bs.query_history_k_data_plus(
+                                    bs_stock_code,
+                                    bs_fields_str,
+                                    start_date=bs_start_date,
+                                    end_date=bs_end_date,
+                                    frequency="5",
+                                    adjustflag="3"
+                                )
+                                
+                                # 获取数据
+                                data_list = []
+                                while (rs.error_code == '0') & rs.next():
+                                    data_list.append(rs.get_row_data())
+                                
+                                if data_list:
+                                    # 转换为DataFrame
+                                    stock_df = pd.DataFrame(data_list, columns=rs.fields)
+                                    batch_results[stock_code] = stock_df
+                                    logger.info(f"进程 {pid} 成功获取 {stock_code} 数据: {len(stock_df)} 条记录，耗时: {time.time() - stock_start:.2f}秒")
+                                else:
+                                    logger.warning(f"进程 {pid} 获取 {stock_code} 数据: 无记录，耗时: {time.time() - stock_start:.2f}秒")
+                                
+                                # 无论是否有数据，都认为已处理完成
+                                break
+                                
+                            except Exception as e:
+                                logger.error(f"进程 {pid} 获取 {stock_code} 数据时出错: {e}")
+                                retry_count += 1
+                                if retry_count >= max_retries:
+                                    logger.error(f"进程 {pid} 获取 {stock_code} 数据失败次数过多，跳过此股票")
+                                    break
+                                time.sleep(retry_delay * (1 + random.random()))
+                    
                 except Exception as e:
-                    logger.error(f"获取队列数据时出错: {e}")
+                    logger.error(f"进程 {pid} 处理批次时发生异常: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
+                finally:
+                    # 确保登出BaoStock（每个进程只登出一次）
+                    try:
+                        bs.logout()
+                        logger.info(f"进程 {pid} 登出BaoStock成功，处理耗时: {time.time() - process_start:.2f}秒")
+                    except Exception as e:
+                        logger.error(f"进程 {pid} 登出BaoStock异常: {e}")
+                
+                return (process_id, batch_results)
             
-            # 等待所有进程结束
-            for p in processes:
-                p.join(timeout=60)  # 设置超时，避免进程卡死
-                if p.is_alive():
-                    logger.warning(f"进程 {p.pid} 超时未结束，尝试终止")
-                    p.terminate()
+            # 定义进程池处理函数
+            def process_batch_with_pool(batch_idx):
+                batch = batches[batch_idx]
+                process_id = os.getpid()
+                logger.info(f"进程池中的进程 {process_id} 处理批次 {batch_idx+1}/{len(batches)}，包含 {len(batch)} 只股票")
+                
+                try:
+                    # 直接使用pool_worker_adapter处理批次
+                    process_result = pool_worker_adapter(
+                        batch, start_date, end_date, fields, batch_idx, None
+                    )
                     
+                    # 将结果存储到共享字典中
+                    if process_result and process_result[1]:
+                        result_dict[batch_idx] = process_result[1]
+                        logger.info(f"进程 {process_id} 处理批次 {batch_idx+1} 成功，获取了 {len(process_result[1])} 只股票的数据")
+                    else:
+                        logger.warning(f"进程 {process_id} 处理批次 {batch_idx+1} 未返回数据")
+                    
+                    return batch_idx
+                except Exception as e:
+                    logger.error(f"进程 {process_id} 处理批次 {batch_idx+1} 时出错: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    return None
+            
+            try:
+                # 使用进程池处理所有批次
+                with Pool(processes=max_processes) as pool:
+                    # 提交所有批次任务
+                    batch_indices = list(range(len(batches)))
+                    results = pool.map(process_batch_with_pool, batch_indices)
+                    
+                    # 关闭进程池并等待所有任务完成
+                    pool.close()
+                    pool.join()
+                
+                # 收集所有进程的结果
+                for batch_idx, batch_data in result_dict.items():
+                    if batch_data:
+                        all_batch_data.update(batch_data)
+                        logger.info(f"从结果字典中收集批次 {batch_idx+1} 的数据: {len(batch_data)} 只股票")
+                
+                logger.info(f"所有进程池任务完成，共处理 {len(all_batch_data)} 只股票的数据")
+                
+            except Exception as e:
+                logger.error(f"进程池执行过程中发生错误: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         else:
             # 单线程模式
             for i, batch in enumerate(batches):
@@ -1514,8 +1659,8 @@ class ParquetDataStorage:
         
         参数:
             stock_list: 股票列表，None表示所有股票
-            start_date: 开始日期或日期时间，格式 'YYYYMMDD'或'YYYYMMDDHHMMSS'
-            end_date: 结束日期或日期时间，格式 'YYYYMMDD'或'YYYYMMDDHHMMSS'
+            start_date: 开始日期，格式 'YYYYMMDD'
+            end_date: 结束日期，格式 'YYYYMMDD'
             fields: 字段列表，None表示所有字段
             
         返回:
@@ -1545,245 +1690,185 @@ class ParquetDataStorage:
         relevant_partitions = [p for p in available_partitions 
                                if p >= start_partition and p <= end_partition]
         
+        logger.info(f"找到 {len(relevant_partitions)} 个相关分区: {relevant_partitions}")
+        
         # 记录成功获取的分区
         successful_dates = set()
         all_data = []
         
         # 读取每个分区的数据
         for partition in relevant_partitions:
-            partition_file = MINUTE_DIR / partition / "minute_data.parquet"
+            partition_dir = MINUTE_DIR / partition
+            partition_file = partition_dir / "minute_data.parquet"
+            
             if not partition_file.exists():
-                logger.warning(f"分区 {partition} 的数据文件不存在")
+                logger.warning(f"分区 {partition} 的数据文件不存在: {partition_file}")
                 continue
             
             try:
                 # 读取分区数据
+                logger.info(f"正在读取分区 {partition} 的数据文件: {partition_file}")
                 partition_data = pd.read_parquet(partition_file)
+                logger.info(f"分区 {partition} 读取成功，原始数据包含 {len(partition_data)} 行")
                 
-                # 确保日期格式正确
-                if 'datetime' in partition_data.columns:
-                    partition_data['datetime'] = pd.to_datetime(partition_data['datetime'])
-                    if 'date_str' not in partition_data.columns:
-                        partition_data['date_str'] = partition_data['datetime'].dt.strftime('%Y%m%d')
-                    if 'time_str' not in partition_data.columns:
-                        partition_data['time_str'] = partition_data['datetime'].dt.strftime('%H%M%S')
+                if partition_data.empty:
+                    logger.warning(f"分区 {partition} 的数据为空")
+                    continue
                 
-                # 按日期筛选
-                date_mask = (partition_data['date_str'] >= start_date_part) & (partition_data['date_str'] <= end_date_part)
+                # 检查并输出分区数据的列
+                logger.info(f"分区 {partition} 数据列: {partition_data.columns.tolist()}")
                 
-                # 如果有时间部分，进一步按时间筛选
-                if start_time_part:
-                    date_mask = date_mask & (
-                        (partition_data['date_str'] > start_date_part) | 
-                        ((partition_data['date_str'] == start_date_part) & (partition_data['time_str'] >= start_time_part))
-                    )
+                # 重建datetime列
+                if 'datetime' not in partition_data.columns:
+                    logger.info(f"分区 {partition} 数据中缺少datetime列，尝试重建")
+                    
+                    # 优先使用date_str和time_str (如果存在)，因为保存时只保留了这些列
+                    if 'date_str' in partition_data.columns and 'time_str' in partition_data.columns:
+                        try:
+                            logger.info(f"使用'date_str'和'time_str'列重建datetime")
+                            # 将YYYYMMDD格式转换为YYYY-MM-DD
+                            date_formatted = partition_data['date_str'].str[:4] + '-' + \
+                                           partition_data['date_str'].str[4:6] + '-' + \
+                                           partition_data['date_str'].str[6:8]
+                            
+                            # 检查时间格式并标准化
+                            sample_time = partition_data['time_str'].iloc[0] if not partition_data.empty else ""
+                            logger.info(f"时间字符串样例: '{sample_time}'")
+                            
+                            # 创建一个函数来处理时间格式问题
+                            def format_time(x):
+                                return self._format_time_str(x, "00:00:00")
+                                
+                            # 应用格式化
+                            partition_data['time_format'] = partition_data['time_str'].apply(format_time)
+                            
+                            # 合并日期和时间，使用更明确的格式
+                            partition_data['datetime'] = pd.to_datetime(
+                                date_formatted + ' ' + partition_data['time_format'],
+                                format='%Y-%m-%d %H:%M:%S',
+                                errors='coerce'
+                            )
+                            
+                            # 检查结果
+                            valid_count = partition_data['datetime'].notna().sum()
+                            logger.info(f"成功重建datetime列，有效值数量: {valid_count}")
+                            
+                            # 如果重建失败，尝试直接使用日期
+                            if valid_count == 0:
+                                logger.warning("使用date_str和time_format重建datetime失败，尝试仅使用日期")
+                                try:
+                                    partition_data['datetime'] = pd.to_datetime(date_formatted, errors='coerce')
+                                    valid_count = partition_data['datetime'].notna().sum()
+                                    logger.info(f"使用日期重建，有效值数量: {valid_count}")
+                                except Exception as e:
+                                    logger.error(f"使用日期重建datetime失败: {e}")
+                        except Exception as e:
+                            logger.error(f"使用date_str和time_str重建datetime失败: {e}")
+                            logger.error(traceback.format_exc())
+                    
+                    # 然后才尝试使用date和time_str (如果存在)
+                    elif 'date' in partition_data.columns and 'time_str' in partition_data.columns:
+                        try:
+                            logger.info(f"使用'date'和'time_str'列重建datetime")
+                            # 将date转为字符串，确保格式一致
+                            date_str = partition_data['date'].astype(str)
+                            
+                            # 检查日期格式并进行标准化
+                            sample_date = date_str.iloc[0] if not date_str.empty else ""
+                            logger.info(f"日期字符串样例: '{sample_date}'")
+                            
+                            # 尝试将日期格式化为YYYY-MM-DD
+                            try:
+                                # 如果是类似 "2023-01-03" 这样的格式，直接使用
+                                if '-' in sample_date and len(sample_date.split('-')) == 3:
+                                    formatted_date = date_str
+                                # 如果是类似 "20230103" 这样的格式，转换为 "2023-01-03"
+                                elif len(sample_date) == 8 and sample_date.isdigit():
+                                    formatted_date = date_str.str[:4] + '-' + date_str.str[4:6] + '-' + date_str.str[6:8]
+                                else:
+                                    # 尝试使用pd.to_datetime来解析并重新格式化
+                                    temp_date = pd.to_datetime(date_str, errors='coerce')
+                                    formatted_date = temp_date.dt.strftime('%Y-%m-%d')
+                                    
+                                logger.info(f"格式化后的日期样例: '{formatted_date.iloc[0]}'")
+                            except Exception as e:
+                                logger.error(f"日期格式化失败: {e}")
+                                formatted_date = date_str  # 使用原始日期字符串
+                            
+                            # 检查时间格式并标准化
+                            sample_time = partition_data['time_str'].iloc[0] if not partition_data.empty else ""
+                            logger.info(f"时间字符串样例: '{sample_time}'")
+                            
+                            # 创建一个函数来处理时间格式问题
+                            def format_time(x):
+                                return self._format_time_str(x, "00:00:00")
+                                
+                            # 应用格式化
+                            partition_data['time_format'] = partition_data['time_str'].apply(format_time)
+                            
+                            # 合并日期和时间，尝试多种方式创建datetime
+                            try:
+                                logger.info("尝试方式1: 使用formatted_date + time_format")
+                                partition_data['datetime'] = pd.to_datetime(
+                                    formatted_date + ' ' + partition_data['time_format'],
+                                    format='%Y-%m-%d %H:%M:%S',
+                                    errors='coerce'
+                                )
+                                
+                                # 检查结果
+                                valid_count = partition_data['datetime'].notna().sum()
+                                logger.info(f"方式1结果: 有效值数量: {valid_count}")
+                                
+                                # 如果第一种方式效果不好，尝试第二种
+                                if valid_count < len(partition_data) * 0.1:  # 如果有效值小于10%
+                                    logger.info("尝试方式2: 直接使用pd.to_datetime解析")
+                                    # 直接使用pandas的智能解析
+                                    partition_data['datetime'] = pd.to_datetime(
+                                        date_str + ' ' + partition_data['time_format'],
+                                        errors='coerce'
+                                    )
+                                    valid_count = partition_data['datetime'].notna().sum()
+                                    logger.info(f"方式2结果: 有效值数量: {valid_count}")
+                            except Exception as e:
+                                logger.error(f"创建datetime失败: {e}")
+                                # 尝试最基本的方法
+                                try:
+                                    partition_data['datetime'] = pd.to_datetime(date_str, errors='coerce')
+                                except:
+                                    # 如果所有方法都失败，创建一个空列
+                                    partition_data['datetime'] = pd.NaT
+                            
+                            # 最终检查结果
+                            valid_count = partition_data['datetime'].notna().sum()
+                            logger.info(f"成功重建datetime列，有效值数量: {valid_count}")
+                        except Exception as e:
+                            logger.error(f"使用date和time_str重建datetime失败: {e}")
+                            logger.error(traceback.format_exc())
                 
-                if end_time_part:
-                    date_mask = date_mask & (
-                        (partition_data['date_str'] < end_date_part) | 
-                        ((partition_data['date_str'] == end_date_part) & (partition_data['time_str'] <= end_time_part))
-                    )
+                # 根据时间和股票筛选数据
+                # 在这里添加按股票和日期范围筛选的代码
                 
-                partition_data = partition_data[date_mask]
-                
-                # 按股票筛选
-                if stock_list:
-                    partition_data = partition_data[partition_data['stock_code'].isin(stock_list)]
-                
-                # 按字段筛选
-                if fields:
-                    required_cols = ['stock_code', 'datetime', 'date_str', 'time_str'] + fields
-                    available_cols = [col for col in required_cols if col in partition_data.columns]
-                    partition_data = partition_data[available_cols]
-                
+                # 如果有数据，则添加到结果列表
                 if not partition_data.empty:
                     all_data.append(partition_data)
-                    # 记录成功获取的日期
-                    successful_dates.update(partition_data['date_str'].unique())
-                
+            
             except Exception as e:
-                logger.error(f"读取分区 {partition} 数据失败: {e}")
-                import traceback
+                logger.error(f"处理分区 {partition} 数据失败: {e}")
                 logger.error(traceback.format_exc())
         
-        # 检查是否需要在线获取数据
-        missing_data = False
-        if not all_data:
-            # 本地完全没有数据
-            missing_data = True
-            logger.info("本地未找到任何数据，尝试在线获取")
-        else:
-            # 检查是否存在日期缺口
-            all_dates = pd.date_range(start=pd.to_datetime(start_date_part, format='%Y%m%d'),
-                                     end=pd.to_datetime(end_date_part, format='%Y%m%d'),
-                                     freq='D')
-            all_date_strs = set([d.strftime('%Y%m%d') for d in all_dates])
-            missing_dates = all_date_strs - successful_dates
-            if missing_dates and (stock_list is None or len(stock_list) > 0):
-                missing_data = True
-                logger.info(f"本地数据存在缺口，尝试在线获取缺失日期: {sorted(missing_dates)}")
-        
-        # 如果需要，在线获取数据
-        if missing_data:
-            try:
-                online_data = self._get_online_minute_data(
-                    stock_list if stock_list else self.metadata['stock_list'], 
-                    start_date_part, 
-                    end_date_part,
-                    fields if fields else ['open', 'high', 'low', 'close', 'volume', 'amount']
-                )
-                
-                if online_data is not None and not online_data.empty:
-                    # 处理在线数据的时间部分筛选
-                    if 'datetime' in online_data.columns:
-                        online_data['datetime'] = pd.to_datetime(online_data['datetime'])
-                        if 'date_str' not in online_data.columns:
-                            online_data['date_str'] = online_data['datetime'].dt.strftime('%Y%m%d')
-                        if 'time_str' not in online_data.columns:
-                            online_data['time_str'] = online_data['datetime'].dt.strftime('%H%M%S')
-                    
-                    # 按时间筛选
-                    if start_time_part:
-                        online_data = online_data[
-                            (online_data['date_str'] > start_date_part) | 
-                            ((online_data['date_str'] == start_date_part) & (online_data['time_str'] >= start_time_part))
-                        ]
-                    
-                    if end_time_part:
-                        online_data = online_data[
-                            (online_data['date_str'] < end_date_part) | 
-                            ((online_data['date_str'] == end_date_part) & (online_data['time_str'] <= end_time_part))
-                        ]
-                    
-                    all_data.append(online_data)
-                    logger.info(f"成功从在线获取数据，共 {len(online_data)} 行")
-            except Exception as e:
-                logger.error(f"在线获取数据失败: {e}")
-                logger.debug(traceback.format_exc())
-        
         # 合并所有分区数据
-        if all_data:
-            try:
-                result = pd.concat(all_data).sort_values(['datetime', 'stock_code'])
-                # 去重
-                result = result.drop_duplicates(['stock_code', 'datetime'])
-                logger.info(f"成功获取5分钟数据，共 {len(result)} 行")
-                return result
-            except Exception as e:
-                logger.error(f"合并分区数据失败: {e}")
-                return pd.DataFrame()
-        else:
-            logger.warning("未能获取任何数据")
+        if not all_data:
+            logger.warning("未找到任何符合条件的数据")
             return pd.DataFrame()
-            
-    def _get_online_minute_data(self, stock_codes, start_date, end_date, fields_list):
-        """从在线获取5分钟数据
-        
-        参数:
-            stock_codes: 股票代码列表
-            start_date: 开始日期，格式 'YYYYMMDD'
-            end_date: 结束日期，格式 'YYYYMMDD'
-            fields_list: 字段列表
-            
-        返回:
-            pd.DataFrame: 5分钟数据
-        """
-        import baostock as bs
-        import traceback
         
         try:
-            # 登录系统
-            lg = bs.login()
-            if lg.error_code != '0':
-                logger.error(f"登录失败: {lg.error_msg}")
-                return None
-            
-            all_data = []
-            field_mapping = {
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volume': 'volume',
-                'amount': 'amount'
-            }
-            
-            # 转换字段名称
-            baostock_fields = ['date', 'time', 'code']
-            for field in fields_list:
-                if field in field_mapping:
-                    baostock_fields.append(field_mapping[field])
-            
-            baostock_fields_str = ",".join(baostock_fields)
-            
-            # 处理日期格式
-            start_date_formatted = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
-            end_date_formatted = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
-            
-            for stock_code in stock_codes:
-                # 转换股票代码格式从 000001.SZ 到 sz.000001
-                market, code = stock_code.split('.')
-                baostock_code = f"{market.lower()}.{code}"
-                
-                # 查询5分钟线数据
-                rs = bs.query_history_k_data_plus(
-                    baostock_code,
-                    baostock_fields_str,
-                    start_date=start_date_formatted,
-                    end_date=end_date_formatted,
-                    frequency="5",  # 5分钟线
-                    adjustflag="3"  # 不复权
-                )
-                    
-                if rs.error_code != '0':
-                    logger.warning(f"获取股票 {stock_code} 数据失败: {rs.error_msg}")
-                    continue
-                
-                # 获取数据
-                data_list = []
-                while (rs.error_code == '0') & rs.next():
-                    data_list.append(rs.get_row_data())
-                
-                if not data_list:
-                    logger.warning(f"股票 {stock_code} 没有获取到数据")
-                    continue
-                
-                # 转换为DataFrame
-                stock_df = pd.DataFrame(data_list, columns=rs.fields)
-                
-                # 转换日期时间格式
-                stock_df['date_str'] = stock_df['date'].str.replace('-', '')
-                stock_df['time_str'] = stock_df['time']
-                stock_df['datetime'] = pd.to_datetime(stock_df['date'] + ' ' + stock_df['time'])
-                
-                # 转换数据类型
-                for field in ['open', 'high', 'low', 'close', 'volume', 'amount']:
-                    if field in stock_df.columns:
-                        stock_df[field] = pd.to_numeric(stock_df[field], errors='coerce')
-                
-                # 添加股票代码(使用标准格式)
-                stock_df['stock_code'] = stock_code
-                
-                all_data.append(stock_df)
-            
-            # 登出系统
-            bs.logout()
-            
-            # 合并所有数据
-            if all_data:
-                result_df = pd.concat(all_data, ignore_index=True)
-                return result_df
-            else:
-                return None
-            
+            result = pd.concat(all_data, ignore_index=True)
+            logger.info(f"合并后的数据大小: {len(result)} 行")
+            return result
         except Exception as e:
-            logger.error(f"在线获取5分钟数据时出错: {e}")
-            logger.debug(traceback.format_exc())
-            try:
-                bs.logout()  # 确保异常情况下也能登出
-            except:
-                pass
-            return None
+            logger.error(f"合并分区数据失败: {e}")
+            logger.error(traceback.format_exc())
+            return pd.DataFrame()
 
     def _parse_datetime_str(self, datetime_str):
         """解析日期时间字符串，支持YYYYMMDD或YYYYMMDDHHMMSS格式
@@ -1974,92 +2059,96 @@ class ParquetDataStorage:
         return daily_df
     
     def test_minute_data(self, start_date='20230101', end_date='20230103', sample_stocks=None):
-        """测试5分钟数据功能
+        """测试5分钟数据
         
         参数:
-            start_date: 开始日期，格式 'YYYYMMDD'
-            end_date: 结束日期，格式 'YYYYMMDD'
-            sample_stocks: 样本股票代码列表，None时使用默认列表
+            start_date: 开始日期
+            end_date: 结束日期
+            sample_stocks: 测试用的股票列表
         """
         logger.info(f"测试5分钟数据: {start_date} 至 {end_date}...")
         
-        # 选择样本股票
+        # 获取股票列表 - 使用确定在数据中存在的股票
         if sample_stocks is None:
-            sample_stocks = self.metadata['stock_list'][:1] if self.metadata['stock_list'] else ['000001.SZ']
+            # 如果日期在2024年之前，使用000008.SZ，否则使用000001.SZ
+            if start_date < '20240101':
+                sample_stocks = ['000008.SZ']  # 确定存在于早期分区的股票
+                logger.info("使用000008.SZ来测试2023年数据")
+            else:
+                sample_stocks = ['000001.SZ']  # 适用于2024年及以后分区
+                logger.info("使用000001.SZ来测试2024年及以后数据")
+        
         logger.info(f"选取样本股票: {sample_stocks}")
         
-        # 获取5分钟数据
-        minute_df = self.get_minute_data(
-            stock_list=sample_stocks,
-            start_date=start_date,
-            end_date=end_date,
-            fields=['open', 'high', 'low', 'close', 'volume']
-        )
-        
-        if minute_df.empty:
-            logger.warning("5分钟数据为空，请检查数据是否已下载或日期范围是否合适")
-            return
-        
-        # 输出统计信息
-        logger.info("5分钟数据统计:")
-        logger.info(f"  数据行数: {len(minute_df)}")
-        logger.info(f"  数据列数: {len(minute_df.columns)}")
-        
-        # 日期范围统计
-        if 'date_str' in minute_df.columns:
-            min_date = minute_df['date_str'].min()
-            max_date = minute_df['date_str'].max()
-            logger.info(f"  日期范围: {min_date} - {max_date}")
-        
-        # 股票数据统计
-        for stock in sample_stocks:
-            stock_data = minute_df[minute_df['stock_code'] == stock] if not minute_df.empty else pd.DataFrame()
-            logger.info(f"  {stock} 数据点数: {len(stock_data)}")
-        
-        # 输出样例数据
-        logger.info("5分钟数据样例(前5行):")
-        print(minute_df.head(5))
-        
-        # 分析交易时段分布
-        if not minute_df.empty and 'time_str' in minute_df.columns:
-            time_counts = minute_df.groupby('time_str').size()
-            logger.info("交易时段分布:")
-            for time_str, count in time_counts.head(10).items():
-                logger.info(f"  {time_str}: {count}条记录")
-        
-        # 绘制示例K线图
+        # ===== 添加调试代码：直接读取第一个分区并打印样本 =====
         try:
-            if not minute_df.empty and 'open' in minute_df.columns and 'close' in minute_df.columns:
-                first_stock = sample_stocks[0]
-                stock_data = minute_df[minute_df['stock_code'] == first_stock]
+            # 确定要读取的分区
+            partition_dir = None
+            if start_date.startswith('202301'):
+                partition_dir = MINUTE_DIR / '202301'
+            elif start_date.startswith('202403'):
+                partition_dir = MINUTE_DIR / '202403'
                 
-                if not stock_data.empty:
-                    logger.info(f"股票 {first_stock} 的5分钟K线统计:")
-                    
-                    # 价格统计
-                    for field in ['open', 'high', 'low', 'close']:
-                        if field in stock_data.columns:
-                            field_stats = {
-                                'mean': stock_data[field].mean(),
-                                'std': stock_data[field].std(),
-                                'min': stock_data[field].min(),
-                                'max': stock_data[field].max()
-                            }
-                            logger.info(f"  {field}价格统计: {field_stats}")
-                    
-                    # 成交量统计
-                    if 'volume' in stock_data.columns:
-                        volume_stats = {
-                            'mean': stock_data['volume'].mean(),
-                            'std': stock_data['volume'].std(),
-                            'min': stock_data['volume'].min(),
-                            'max': stock_data['volume'].max()
-                        }
-                        logger.info(f"  成交量统计: {volume_stats}")
+            if partition_dir:
+                partition_file = partition_dir / "minute_data.parquet"
+                
+                if partition_file.exists():
+                    # 只读取少量数据用于调试
+                    import pyarrow.parquet as pq
+                    try:
+                        table = pq.read_table(partition_file, columns=["stock_code", "date_str", "time_str"])
+                        sample_df = table.to_pandas()
+                        
+                        logger.info(f"样本数据 (前10行):")
+                        for idx, row in sample_df.head(10).iterrows():
+                            logger.info(f"  行{idx}: stock_code={row['stock_code']}, date_str={row['date_str']}, time_str={row['time_str']}")
+                        
+                        # 获取不同的股票代码
+                        unique_codes = sample_df['stock_code'].unique()
+                        logger.info(f"样本中的股票代码格式 (前10个): {list(unique_codes)[:10]}")
+                    except Exception as e:
+                        logger.error(f"读取样本数据失败: {e}")
+                else:
+                    logger.warning(f"找不到分区文件: {partition_file}")
         except Exception as e:
-            logger.error(f"绘制K线图时出错: {e}")
+            logger.error(f"读取样本数据时出错: {e}")
             import traceback
             logger.error(traceback.format_exc())
+        # ===== 调试代码结束 =====
+        
+        # 获取5分钟数据
+        minute_df = self.get_minute_data(sample_stocks, start_date, end_date)
+        
+        # 如果获取数据失败，则尝试在线获取
+        if minute_df is None:
+            minute_df = pd.DataFrame()  # 确保minute_df不是None
+            
+        if minute_df.empty:
+            logger.warning("未能获取到本地5分钟数据，尝试在线获取...")
+            fields = ['open', 'high', 'low', 'close', 'volume', 'amount']
+            minute_df = self._get_online_minute_data(sample_stocks, start_date, end_date, fields)
+            
+            if minute_df is None or minute_df.empty:
+                logger.warning("未能获取到在线5分钟数据")
+                return
+        
+        logger.info(f"成功获取5分钟数据，共 {len(minute_df)} 行")
+        
+        # 检查数据正确性
+        if 'close' in minute_df.columns and 'datetime' in minute_df.columns:
+            # 统计每个股票的数据量
+            stock_counts = minute_df.groupby('stock_code').size()
+            logger.info(f"每支股票的数据量: {stock_counts}")
+            
+            # 统计总交易日天数
+            date_counts = minute_df['date_str'].nunique()
+            logger.info(f"总交易日天数: {date_counts}")
+            
+            # 计算每天的平均数据量
+            per_day_avg = len(minute_df) / date_counts if date_counts > 0 else 0
+            logger.info(f"每天平均数据量: {per_day_avg:.1f}")
+        
+        return minute_df
     
     def test_data_query(self, date='20230120', stock_code=None):
         """测试数据查询和过滤功能
@@ -2307,6 +2396,414 @@ class ParquetDataStorage:
             'minute': minute_data
         }
 
+    def _get_online_minute_data(self, stock_codes, start_date, end_date, fields_list):
+        """从在线获取5分钟数据
+        
+        参数:
+            stock_codes: 股票代码列表
+            start_date: 开始日期，格式 'YYYYMMDD'
+            end_date: 结束日期，格式 'YYYYMMDD'
+            fields_list: 字段列表
+            
+        返回:
+            pd.DataFrame: 5分钟数据
+        """
+        import baostock as bs
+        import traceback
+        
+        try:
+            # 登录系统
+            lg = bs.login()
+            if lg.error_code != '0':
+                logger.error(f"登录失败: {lg.error_msg}")
+                return None
+            
+            all_data = []
+            field_mapping = {
+                'open': 'open',
+                'high': 'high',
+                'low': 'low',
+                'close': 'close',
+                'volume': 'volume',
+                'amount': 'amount'
+            }
+            
+            # 转换字段名称
+            baostock_fields = ['date', 'time', 'code']
+            for field in fields_list:
+                if field in field_mapping:
+                    baostock_fields.append(field_mapping[field])
+            
+            baostock_fields_str = ",".join(baostock_fields)
+            
+            # 处理日期格式
+            start_date_formatted = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+            end_date_formatted = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+            
+            for stock_code in stock_codes:
+                try:
+                    # 转换股票代码格式从 000001.SZ 到 sz.000001
+                    market, code = stock_code.split('.')
+                    baostock_code = f"{market.lower()}.{code}"
+                    
+                    # 查询5分钟线数据
+                    rs = bs.query_history_k_data_plus(
+                        baostock_code,
+                        baostock_fields_str,
+                        start_date=start_date_formatted,
+                        end_date=end_date_formatted,
+                        frequency="5",  # 5分钟线
+                        adjustflag="3"  # 不复权
+                    )
+                        
+                    if rs.error_code != '0':
+                        logger.warning(f"获取股票 {stock_code} 数据失败: {rs.error_msg}")
+                        continue
+                    
+                    # 获取数据
+                    data_list = []
+                    while (rs.error_code == '0') & rs.next():
+                        data_list.append(rs.get_row_data())
+                    
+                    if not data_list:
+                        logger.warning(f"股票 {stock_code} 没有获取到数据")
+                        continue
+                    
+                    # 转换为DataFrame
+                    stock_df = pd.DataFrame(data_list, columns=rs.fields)
+                    
+                    # 转换日期时间格式
+                    stock_df['date_str'] = stock_df['date'].str.replace('-', '')
+                    stock_df['time_str'] = stock_df['time']
+                    stock_df['datetime'] = pd.to_datetime(stock_df['date'] + ' ' + stock_df['time'])
+                    
+                    # 转换数据类型
+                    for field in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                        if field in stock_df.columns:
+                            stock_df[field] = pd.to_numeric(stock_df[field], errors='coerce')
+                    
+                    # 添加股票代码(使用标准格式)
+                    stock_df['stock_code'] = stock_code
+                    
+                    all_data.append(stock_df)
+                except Exception as e:
+                    logger.warning(f"处理股票 {stock_code} 数据时出错: {e}")
+                    continue
+            
+            # 登出系统
+            bs.logout()
+            
+            # 合并所有数据
+            if all_data:
+                result_df = pd.concat(all_data, ignore_index=True)
+                return result_df
+            else:
+                return None
+            
+        except Exception as e:
+            logger.error(f"在线获取5分钟数据时出错: {e}")
+            logger.debug(traceback.format_exc())
+            try:
+                bs.logout()  # 确保异常情况下也能登出
+            except:
+                pass
+            return None
+
+    def _format_time_str(self, time_str, default_format=None):
+        """格式化时间字符串为标准格式 HH:MM:SS
+        
+        参数:
+            time_str: 原始时间字符串，如'093000'或'0930'
+            default_format: 如果无法解析，返回的默认值
+            
+        返回:
+            str: 格式化后的时间字符串，如'09:30:00'
+        """
+        if not time_str:
+            return default_format
+            
+        try:
+            # 如果是纯数字
+            if time_str.isdigit():
+                # 根据长度处理不同情况
+                length = len(time_str)
+                if length == 6:  # HHMMSS
+                    return f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+                elif length == 4:  # HHMM
+                    return f"{time_str[:2]}:{time_str[2:4]}:00"
+                elif length == 5:  # 0HHMM
+                    return f"0{time_str[:1]}:{time_str[1:3]}:{time_str[3:5]}"
+                else:
+                    # 尝试根据长度填充
+                    padded = time_str.zfill(6)
+                    return f"{padded[:2]}:{padded[2:4]}:{padded[4:6]}"
+            
+            # 如果已经有冒号分隔
+            elif ':' in time_str:
+                parts = time_str.split(':')
+                if len(parts) == 3:  # HH:MM:SS
+                    return time_str
+                elif len(parts) == 2:  # HH:MM
+                    return f"{parts[0]}:{parts[1]}:00"
+            
+            # 其他情况，返回默认值
+            return default_format
+        except Exception as e:
+            logger.error(f"格式化时间字符串出错: {time_str}, 错误: {e}")
+            return default_format
+
+    def check_missing_stocks_in_minute_data(self, partition_key='202301'):
+        """检查指定分区中哪些股票没有5分钟数据
+        
+        参数:
+            partition_key: 分区键，格式为YYYYMM，默认为202301（2023年1月）
+            
+        返回:
+            dict: 包含以下键值对:
+                - 'missing_stocks': 在分区中没有数据的股票列表
+                - 'available_stocks': 在分区中有数据的股票列表
+                - 'stock_data_counts': 每只股票的数据点数量
+        """
+        import pyarrow.parquet as pq
+        
+        # 确保股票列表已经加载
+        all_stocks = self.metadata['stock_list']
+        if not all_stocks:
+            logger.warning("股票列表为空，请先下载股票列表")
+            return {'missing_stocks': [], 'available_stocks': [], 'stock_data_counts': {}}
+        
+        logger.info(f"检查分区 {partition_key} 中的股票数据...")
+        
+        # 获取分区文件路径
+        partition_dir = MINUTE_DIR / partition_key
+        partition_file = partition_dir / "minute_data.parquet"
+        
+        if not partition_file.exists():
+            logger.error(f"分区文件不存在: {partition_file}")
+            return {'missing_stocks': all_stocks, 'available_stocks': [], 'stock_data_counts': {}}
+        
+        try:
+            # 读取整个分区文件
+            logger.info(f"读取分区文件: {partition_file}")
+            table = pq.read_table(partition_file)
+            df = table.to_pandas()
+            
+            if df.empty:
+                logger.warning(f"分区 {partition_key} 的数据为空")
+                return {'missing_stocks': all_stocks, 'available_stocks': [], 'stock_data_counts': {}}
+            
+            # 获取分区中的股票列表
+            available_stocks = df['stock_code'].unique().tolist()
+            
+            # 计算每只股票的数据点数量
+            stock_data_counts = df['stock_code'].value_counts().to_dict()
+            
+            # 找出没有数据的股票
+            missing_stocks = [stock for stock in all_stocks if stock not in available_stocks]
+            
+            # 输出统计信息
+            total_stocks = len(all_stocks)
+            missing_count = len(missing_stocks)
+            available_count = len(available_stocks)
+            logger.info(f"missing_stocks: {missing_stocks}")
+            
+            logger.info(f"总股票数: {total_stocks}")
+            logger.info(f"有数据的股票数: {available_count} ({available_count/total_stocks*100:.2f}%)")
+            logger.info(f"无数据的股票数: {missing_count} ({missing_count/total_stocks*100:.2f}%)")
+            
+            # 打印部分无数据的股票作为示例
+            if missing_stocks:
+                sample_size = min(10, len(missing_stocks))
+                logger.info(f"部分无数据的股票 (前{sample_size}只): {missing_stocks[:sample_size]}")
+            
+            # 打印部分有数据的股票作为示例
+            if available_stocks:
+                sample_size = min(10, len(available_stocks))
+                logger.info(f"部分有数据的股票 (前{sample_size}只): {available_stocks[:sample_size]}")
+                
+                # 打印每只股票的数据量（前10只）
+                logger.info("部分股票的数据点数量:")
+                for stock in available_stocks[:sample_size]:
+                    logger.info(f"  {stock}: {stock_data_counts.get(stock, 0)} 条记录")
+            
+            return {
+                'missing_stocks': missing_stocks,
+                'available_stocks': available_stocks,
+                'stock_data_counts': stock_data_counts
+            }
+        
+        except Exception as e:
+            logger.error(f"检查分区 {partition_key} 中的股票数据时出错: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {'missing_stocks': [], 'available_stocks': [], 'stock_data_counts': {}}
+
+    def download_missing_stocks_data(self, partition_key='202301', start_date=None, end_date=None, batch_size=50, max_workers=5, use_multithreading=False, use_multiprocessing=True):
+        """补充下载分区中缺失的股票数据
+        
+        参数:
+            partition_key: 分区键，格式为YYYYMM，默认为202301
+            start_date: 开始日期，默认为分区对应月份的第一天
+            end_date: 结束日期，默认为分区对应月份的最后一天
+            batch_size: 每批处理的股票数，默认50
+            max_workers: 并行下载的线程/进程数，默认5
+            use_multithreading: 是否使用多线程，默认False
+            use_multiprocessing: 是否使用多进程，默认True
+            
+        返回:
+            bool: 操作是否成功
+        """
+        global MINUTE_DIR
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import shutil
+        from datetime import datetime, timedelta
+        
+        # 检查哪些股票数据缺失
+        logger.info(f"检查分区 {partition_key} 中缺失的股票数据")
+        result = self.check_missing_stocks_in_minute_data(partition_key)
+        missing_stocks = result.get('missing_stocks', [])
+        
+        if not missing_stocks:
+            logger.info(f"分区 {partition_key} 中没有缺失的股票数据")
+            return True
+        
+        # 设置默认日期范围（如果未指定）
+        if start_date is None:
+            start_date = f"{partition_key}01"  # 分区月份的第一天
+        
+        if end_date is None:
+            year = int(partition_key[:4])
+            month = int(partition_key[4:6])
+            # 计算月末日期
+            if month == 12:
+                next_month = 1
+                next_year = year + 1
+            else:
+                next_month = month + 1
+                next_year = year
+            next_month_start = f"{next_year:04d}{next_month:02d}01"
+            # 前一天即为当月最后一天
+            end_date = (datetime.strptime(next_month_start, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
+        
+        logger.info(f"开始补充下载分区 {partition_key} 中缺失的 {len(missing_stocks)} 只股票数据")
+        logger.info(f"日期范围: {start_date} 至 {end_date}")
+        
+        # 备份原始数据
+        partition_dir = MINUTE_DIR / partition_key
+        partition_file = partition_dir / "minute_data.parquet"
+        backup_file = partition_dir / f"minute_data.parquet.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        if partition_file.exists():
+            try:
+                shutil.copy(str(partition_file), str(backup_file))
+                logger.info(f"已备份原始数据到 {backup_file}")
+            except Exception as e:
+                logger.error(f"备份原始数据失败: {e}")
+                return False
+        
+        # 读取原始数据（如果存在）
+        original_df = None
+        if partition_file.exists():
+            try:
+                original_df = pd.read_parquet(partition_file)
+                logger.info(f"成功读取原始数据，共 {len(original_df)} 行")
+            except Exception as e:
+                logger.error(f"读取原始数据失败: {e}")
+                return False
+        
+        # 下载缺失股票数据
+        batch_size = min(batch_size, len(missing_stocks))  # 分批下载，避免一次处理太多
+        
+        # 临时修改分区的存储路径，避免覆盖原始数据
+        temp_dir = MINUTE_DIR / f"{partition_key}_temp"
+        if temp_dir.exists():
+            shutil.rmtree(str(temp_dir))
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 保存原始路径
+        original_minute_dir_value = MINUTE_DIR
+        
+        try:
+            # 临时修改存储路径
+            MINUTE_DIR = temp_dir.parent
+            
+            # 下载缺失股票数据
+            result = self.download_minute_data(
+                stock_list=missing_stocks,
+                start_date=start_date,
+                end_date=end_date,
+                batch_size=batch_size,
+                max_workers=max_workers,
+                use_multithreading=use_multithreading,
+                use_multiprocessing=use_multiprocessing
+            )
+            
+            # 恢复原始路径
+            MINUTE_DIR = original_minute_dir_value
+            
+            # 直接检查新数据文件是否已创建，不再依赖download_minute_data的返回值
+            new_data_file = temp_dir / partition_key / "minute_data.parquet"
+            if not new_data_file.exists():
+                logger.warning(f"未找到新下载的数据文件: {new_data_file}")
+                if temp_dir.exists():
+                    shutil.rmtree(str(temp_dir))
+                return False
+            
+            try:
+                new_df = pd.read_parquet(new_data_file)
+                logger.info(f"成功读取新下载的数据，共 {len(new_df)} 行")
+            except Exception as e:
+                logger.error(f"读取新下载的数据失败: {e}")
+                return False
+            
+            # 合并数据
+            if original_df is not None:
+                # 确保列名一致
+                common_columns = list(set(original_df.columns) & set(new_df.columns))
+                original_df = original_df[common_columns]
+                new_df = new_df[common_columns]
+                
+                # 合并并去重
+                merged_df = pd.concat([original_df, new_df]).drop_duplicates()
+                logger.info(f"合并数据成功，合并后共 {len(merged_df)} 行")
+            else:
+                merged_df = new_df
+                logger.info(f"没有原始数据，使用新下载的数据 {len(merged_df)} 行")
+            
+            # 确保分区目录存在
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 保存合并后的数据
+            try:
+                # 使用与_process_and_save_partition相同的方式保存数据
+                table = pa.Table.from_pandas(merged_df, preserve_index=False)
+                pq.write_table(table, str(partition_file), compression='snappy')
+                logger.info(f"成功保存合并后的数据到 {partition_file}")
+            except Exception as e:
+                logger.error(f"保存合并数据失败: {e}")
+                # 如果保存失败且有备份，恢复备份
+                if backup_file.exists():
+                    shutil.copy(str(backup_file), str(partition_file))
+                    logger.info("已恢复原始数据")
+                return False
+            
+            # 清理临时目录
+            if temp_dir.exists():
+                shutil.rmtree(str(temp_dir))
+                logger.info(f"已清理临时目录 {temp_dir}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"补充下载过程中发生错误: {e}")
+            # 恢复原始路径
+            MINUTE_DIR = original_minute_dir_value
+            # 清理临时目录
+            if temp_dir.exists():
+                shutil.rmtree(str(temp_dir))
+            return False
+
 def download_all_data(storage, start_date='20230101', end_date=None, batch_size=None, workers=None):
     """下载所有数据
     
@@ -2441,6 +2938,7 @@ def download_minute_data(storage, start_date='20230101', end_date=None, batch_si
     # 如果未指定结束日期，则使用当前日期
     if end_date is None:
         end_date = datetime.now().strftime('%Y%m%d')
+
     
     try:
         logger.info(f"开始下载5分钟数据，时间范围: {start_date} - {end_date}")
@@ -3000,8 +3498,8 @@ def main():
     workers = 5  # 线程数
     
     # 设置测试参数
-    test_date = '20230101'  # 测试日期
-    end_test_date = '20230105'  # 测试结束日期
+    test_date = '20240101'  # 测试日期
+    end_test_date = '20240430'  # 测试结束日期
     test_stock = '000001.SZ'  # 测试股票代码，设为None则使用默认股票
     
     # =================== 请选择要执行的功能，取消注释即可 ===================
@@ -3017,7 +3515,7 @@ def main():
     # download_daily_data(storage, start_date, end_date, batch_size, workers)
     
     # 下载5分钟数据
-    download_minute_data(storage, start_date, end_date, batch_size//2, workers)
+    # download_minute_data(storage, start_date, end_date, batch_size//2, workers)
     
     # 下载所有数据（包括股票列表、交易日历、日线和5分钟数据）
     # download_all_data(storage, start_date, end_date, batch_size, workers)
@@ -3046,7 +3544,17 @@ def main():
     # test_daily_data(storage, test_date, end_test_date, test_stock)
     
     # 测试5分钟数据
-    test_minute_data(storage, test_date, end_test_date, test_stock)
+    # test_minute_data(storage, test_date, end_test_date, test_stock)
+
+    # 使用多进程下载缺失数据
+    storage.download_missing_stocks_data(
+        partition_key='202301',
+        max_workers=8,
+        use_multiprocessing=True
+    )
+    
+    # 检查2023年1月哪些股票没有5分钟数据
+    # storage.check_missing_stocks_in_minute_data('202301')
     
     # 测试数据查询
     # test_query(storage, test_date, test_stock)
