@@ -72,21 +72,21 @@ def download_a_shares_tick_data():
     ]
 
     # 设置时间范围：2023年6月至今
-    start_date = '20230316'
-    end_date = '20230317'
+    start_date = '20220316'
+    end_date = '20250317'
 
     print(f"下载时间范围: {start_date} - {end_date}")
 
     #初始化下载进度跟踪器
     progress = DownloadProgress()
 
-    stock_list = ['002715.SZ','605090.SH']
+    stock_list = ['399006.SZ','899050.BJ']
     # 下载tick数据
     print("开始下载沪深A股 5分钟 数据...")
     # Use 5m period as originally intended
     result = xtdata.download_history_data2(
         stock_list=stock_list,
-        period='5m',
+        period='1d',
         start_time=start_date,
         end_time=end_date,
         callback=progress.on_progress,
@@ -113,16 +113,18 @@ def download_a_shares_tick_data():
 
 
     # 测试获取某只股票的tick数据
-    test_code = '601222.SH'  # 贵州茅台
+    test_code = '399006.SZ'  # 贵州茅台
     print(f"验证股票 {test_code} 的5分钟数据...")
 
     try:
         test_data = xtdata.get_local_data(
             field_list=[], # Empty list to get all available fields
-            stock_list=['002715.SZ','605090.SH'],
-            period='5m',
-            start_time='20230316093500',
-            end_time='20230317094500'
+            stock_list=['399006.SZ'],
+            period='1d',
+            # start_time='20230316093500',
+            # end_time='20230317094500'
+            start_time='20220316',
+            end_time='20230325'
         )
 
         print(f"验证数据获取成功 : {test_data}.")

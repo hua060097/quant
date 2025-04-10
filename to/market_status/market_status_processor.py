@@ -11,6 +11,7 @@ from tqdm import tqdm
 from pathlib import Path
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import traceback
 
 # 添加项目根目录到导入路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -281,7 +282,7 @@ class MarketStatusProcessor:
             fields = ['open', 'high', 'low', 'close', 'volume']
             
             # 计算历史数据开始日期 (需要至少120天 + 一些缓冲)
-            required_history_days = 150
+            required_history_days = 180
             try:
                 request_start_date = self._str_to_date(start_date_str)
                 history_start_date = request_start_date - timedelta(days=required_history_days)
@@ -291,6 +292,7 @@ class MarketStatusProcessor:
                  # 如果无法解析日期，设置一个默认的回溯开始日期，或者采取其他策略
                  history_start_date_str = (datetime.now() - timedelta(days=required_history_days*2)).strftime('%Y%m%d')
 
+            print(f"start_date_str: {start_date_str}, end_date_str: {end_date_str}, history_start_date_str: {history_start_date_str}")
             # 获取市场数据
             try:
                 raw_data = xtdata.get_market_data(
@@ -846,6 +848,8 @@ class MarketStatusProcessor:
                 self.logger.info(f"未指定保存日期，使用当前日期: {save_date}")
             
             self.logger.info(f"保存市场状态数据到日期: {save_date}")
+
+            print(f"market_status: {market_status}")
             
             # 构建要保存的数据结构
             save_data = {
@@ -861,9 +865,11 @@ class MarketStatusProcessor:
                 },
                 'individual_status': {}
             }
+
+            # print(f"save_data: {save_data}")
             
             # 处理各指数的状态
-            for index_code, status in market_status.get('index_status', {}).items():
+            for index_code, status in market_status.get('individual_status', {}).items():
                 save_data['individual_status'][index_code] = {
                     'market_description': status.get('market_type', '中性盘整'),
                     'trend_score': status.get('trend_score', 0.0),
@@ -911,7 +917,7 @@ class MarketStatusProcessor:
         Args:
             query_date: str，查询日期，格式YYYYMMDD
         Returns:
-            dict: 市场状态数据
+            dict: 市场状态数据，修改为适合模型训练的结构
         """
         try:
             if query_date is None:
@@ -942,6 +948,21 @@ class MarketStatusProcessor:
                 market_status['market_cycle'] = cyb_data.get('cycle_description', '')
                 market_status['cycle_description'] = cyb_data.get('cycle_description', '')
                 market_status['trend_strength'] = cyb_data.get('total_score', 0)
+                
+                # 添加支撑位、压力位和涨跌幅数据
+                market_status['support_level'] = cyb_data.get('support', 0)
+                market_status['resistance_level'] = cyb_data.get('resistance', 0)
+                market_status['change_percent'] = cyb_data.get('change_percent', 0)
+                
+                # 确保得分指标都存在，并提供默认值
+                market_status['trend_score'] = cyb_data.get('trend_score', 0)  # 趋势得分：0-5，值越大表示上升趋势越强
+                market_status['position_score'] = cyb_data.get('position_score', 0)  # 位置得分：0-5，值越大表示位置越接近上轨
+                market_status['volume_score'] = cyb_data.get('volume_score', 0)  # 量能得分：0-5，值越大表示成交量越活跃
+                market_status['momentum_score'] = cyb_data.get('momentum_score', 0)  # 动能得分：0-5，值越大表示上升动能越强
+                market_status['volatility_score'] = cyb_data.get('volatility_score', 0)  # 波动得分：0-5，值越大表示波动越剧烈
+                market_status['structure_score'] = cyb_data.get('structure_score', 0)  # 结构得分：0-5，值越大表示上涨结构越健康
+                market_status['cycle_score'] = cyb_data.get('cycle_score', 0)  # 周期得分：0-5，值越大表示处于上升周期
+                market_status['total_score'] = cyb_data.get('total_score', 0)  # 总分：0-5，值越大表示市场整体向好
                 
             return market_status
             
@@ -2130,8 +2151,8 @@ if __name__ == "__main__":
     print("report = generate_market_report()")
     
     # 可以在这里添加示例调用
-    process_market_data(start_date='20230920', end_date='20240927', index_codes=['399006.SZ']) 
-    query_market_status(date='20240927')
+    process_market_data(start_date='20230101', end_date='20230103', index_codes=['399006.SZ']) 
+    query_market_status(date='20230103')
 
     # 添加main代码块，只有直接运行这个文件时才会执行
     # if __name__ == "__main__":

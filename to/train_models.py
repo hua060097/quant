@@ -541,7 +541,7 @@ def _load_sector_features(start_date, end_date, feature_dir=None):
                 feature_dir = 'to/local_data/features'
             
         # 构建板块特征目录
-        sector_feature_dir = os.path.join(feature_dir, "..", "sector_features")
+        sector_feature_dir = os.path.join(feature_dir, "\\", "sector_features")
         
         # 检查目录是否存在
         if not os.path.exists(sector_feature_dir):

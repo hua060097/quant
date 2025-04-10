@@ -1,23 +1,3767 @@
 {
-  "20230102": {
-    "is_trading_day": true
-  },
-  "20230103": {
-    "is_trading_day": true
-  },
-  "20230104": {
-    "is_trading_day": true
-  },
-  "20230105": {
-    "is_trading_day": true
-  },
-  "20230106": {
-    "is_trading_day": true
-  },
-  "20230109": {
-    "is_trading_day": true
-  },
-  "20230110": {
-    "is_trading_day": true
-  }
+    "20220705": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.9999999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 6.0,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 1.9999999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220706": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.01,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.7,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 1.01,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220707": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 3.0500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 9.5,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 3.0500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220708": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.94,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.8,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 1.94,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220711": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.71,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.7000000000000002,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 0.71,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220712": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.7899999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": -0.7899999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220713": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.08999999999999991,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.2999999999999998,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -0.08999999999999991,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220714": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.95,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.5,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": 0,
+                "total_score": 0.95,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220715": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.4500000000000001,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.5000000000000002,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -0.4500000000000001,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220718": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.39999999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.5,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": 0.39999999999999997,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220719": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.04,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -1.04,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220720": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.3599999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.7,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": 1.3599999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220721": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.44000000000000006,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -0.44000000000000006,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220722": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.46,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.7000000000000002,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": 0.46,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220725": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.3399999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -1.3399999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220726": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.69,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -2.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -0.69,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220727": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.74,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -2.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -0.74,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220728": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.04,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -1.04,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220729": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.3399999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.3,
+                "position_score": 0,
+                "volume_score": 0,
+                "momentum_score": -1,
+                "total_score": -1.3399999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220801": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220802": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.2399999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.3,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -1.2399999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220803": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.05,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -6.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -2.05,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220804": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.94,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -0.94,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220805": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.2,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": 0.2,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220808": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -0.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220809": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.10000000000000002,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.10000000000000002,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220810": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.14,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.14,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220811": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.5500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 7.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.5500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220812": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.35,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 3.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.35,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220815": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.3,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 6.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.3,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220816": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.0,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.0,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220817": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.9,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 8.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.9,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220818": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.9,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 8.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.9,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220819": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.06,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.7,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.06,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220822": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 3.2,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 9.5,
+                "position_score": 0,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 3.2,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220823": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 7.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 2.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220824": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.9600000000000002,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.9600000000000002,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220825": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.26,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.26,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220826": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.14,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.3,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.14,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220829": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.35,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.35,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220830": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.65,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.65,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220831": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220901": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.0999999999999996,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -6.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.0999999999999996,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220902": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.7,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.7,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220905": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.7,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.7,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220906": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.5499999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.5499999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220907": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.71,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -0.71,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220908": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.1500000000000004,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -6.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.1500000000000004,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220909": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 0.71,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -0.71,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220913": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.31,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.31,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220914": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.45,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.45,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220915": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.8999999999999995,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -9.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.8999999999999995,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220916": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.5999999999999996,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -8.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.5999999999999996,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220919": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.3,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.3,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220920": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.7,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.7,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220921": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.3,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.3,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220922": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.3,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.3,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220923": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 2.3,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.0,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.3,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220926": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 0,
+        "cycle_description": 0,
+        "trend_strength": 1.5499999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.5499999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220927": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.8099999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -0.8099999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220928": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.5500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.5500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220929": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.11,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -2.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.11,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20220930": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.5500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.5500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221010": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.5500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -7.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.5500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221011": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.65,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.65,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221012": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.59,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.3,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.59,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221013": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.21000000000000002,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.7000000000000002,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": -0.21000000000000002,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221014": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.49,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.49,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221017": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.79,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.79,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221018": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.39,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 3,
+                "total_score": 2.39,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221019": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.39,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.39,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221020": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.15,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 3.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.15,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221021": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.45,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.45,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221024": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.5499999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.5499999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221025": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.35,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": -0.35,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221026": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.49,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.49,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221027": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.35,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": -0.35,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221028": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.9499999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": -0.9499999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221031": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.85,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -2.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -0.85,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221101": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.7899999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.7899999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221102": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.7899999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.7899999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221103": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.29,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.2999999999999998,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.29,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221104": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 3.3900000000000006,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 8.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 3,
+                "total_score": 3.3900000000000006,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221107": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 2.49,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 3,
+                "total_score": 2.49,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221108": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.19,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 3.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.19,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221109": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.95,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 2.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.95,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221110": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.35000000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.35000000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221111": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 2.15,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 6.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 2.15,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221114": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.049999999999999975,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": -0.049999999999999975,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221115": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.39,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.39,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221116": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.4900000000000001,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.3,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.4900000000000001,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221117": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.15000000000000005,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.15000000000000005,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221118": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.44999999999999984,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 0.44999999999999984,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221121": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.45,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": 0,
+                "total_score": 1.45,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221122": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.4499999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -1.4499999999999997,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221123": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.15,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.5,
+                "position_score": -1,
+                "volume_score": 1,
+                "momentum_score": -1,
+                "total_score": -1.15,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221124": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.35,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.35,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221125": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 2.25,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -6.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.25,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221128": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.9500000000000002,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.9500000000000002,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221129": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.81,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -0.81,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221130": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.4100000000000001,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.4100000000000001,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221201": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.30999999999999994,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": -0.30999999999999994,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221202": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.1899999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.1899999999999997,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221205": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.1899999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.3,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.1899999999999997,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221206": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 2.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 7.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 2.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221207": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 3.0,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 7.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 3,
+                "total_score": 3.0,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221208": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 2.7,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 6.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 3,
+                "total_score": 2.7,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221209": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 8.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 3,
+                "total_score": 3.4,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221212": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 1.96,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.96,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221213": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 1.96,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.96,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221214": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 1.7599999999999998,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 5.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.7599999999999998,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221215": {
+        "market_type": 21,
+        "market_description": 21,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 1.3999999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 4.5,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 1.3999999999999997,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221216": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 0.56,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 1.7,
+                "position_score": 0,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.56,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221219": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.75,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -4.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.75,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221220": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.0500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.0500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221221": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 1.4500000000000002,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.4500000000000002,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221222": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.0500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.0500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221223": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.0500000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -5.5,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -2.0500000000000003,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221226": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.6099999999999999,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -0.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -0.6099999999999999,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221227": {
+        "market_type": 32,
+        "market_description": 32,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.7100000000000001,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -1.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": -0.7100000000000001,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221228": {
+        "market_type": 33,
+        "market_description": 33,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 1.4100000000000001,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": -3.7,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": -1,
+                "total_score": -1.4100000000000001,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221229": {
+        "market_type": 31,
+        "market_description": 31,
+        "market_cycle": 1,
+        "cycle_description": 1,
+        "trend_strength": 0.009999999999999967,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 0.30000000000000004,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": -0.009999999999999967,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20221230": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.84,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 3.3,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.84,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20230103": {
+        "market_type": 22,
+        "market_description": 22,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.89,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "market_description": "\u4e2d\u6027\u76d8\u6574",
+                "trend_score": 3.3,
+                "position_score": -1,
+                "volume_score": -1,
+                "momentum_score": 0,
+                "total_score": 0.89,
+                "technical_data": {
+                    "close": null,
+                    "ma5": null,
+                    "ma20": null,
+                    "rsi6": null,
+                    "macd": null
+                }
+            }
+        }
+    },
+    "20230104": {
+        "market_type": 23,
+        "market_description": 23,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 0.34999999999999987,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230105": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 2.6999999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230106": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 3.2,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230109": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 3,
+        "cycle_description": 3,
+        "trend_strength": 3.5,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230110": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.75,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230111": {
+        "market_type": 13,
+        "market_description": 13,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 2.1999999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230112": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.4,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230113": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.8000000000000003,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230116": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.9499999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230117": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.65,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230118": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.65,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230119": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.9499999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    },
+    "20230120": {
+        "market_type": 12,
+        "market_description": 12,
+        "market_cycle": 2,
+        "cycle_description": 2,
+        "trend_strength": 3.9499999999999997,
+        "signals": {
+            "trading_advice": "\u89c2\u671b\u4e3a\u4e3b\uff0c\u7b49\u5f85\u660e\u786e\u4fe1\u53f7",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {}
+    }
 }
