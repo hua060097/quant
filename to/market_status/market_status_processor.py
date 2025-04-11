@@ -42,7 +42,13 @@ except ImportError:
         print("无法预加载ParquetDataStorage模块，将在需要时尝试导入")
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('to/log/market_status_processor.log', encoding='utf-8')
+    ])
 logger = logging.getLogger(__name__)
 
 class MarketStatusProcessor:
@@ -459,6 +465,7 @@ class MarketStatusProcessor:
             # 分析市场状态 (传入转置后的字典)
             analyzer = MarketAnalyzer()
             market_status = analyzer.analyze_market_status(market_data_transposed, indicators)
+            print(f"market_status: {market_status}")
             
             # 保存分析结果
             process_dates = []
@@ -565,12 +572,20 @@ class MarketStatusProcessor:
                 bb_position[valid_width] = (close[valid_width] - bb_lower[valid_width]) / (bb_upper[valid_width] - bb_lower[valid_width])
 
                 # --- 其他依赖多日窗口的复杂计算 --- 
-                # --- 暂时注释或使用默认值 --- 
-                support_level = np.full_like(close, np.nan) 
-                resistance_level = np.full_like(close, np.nan)
-                price_structure = ['unknown'] * len(close) 
-                market_cycle = [0] * len(close)
-                # self.logger.debug(f"指数 {index_code}: 复杂指标计算完成")
+                # 实际计算支撑位和阻力位，而不是简单使用默认值
+                support_level = self._calculate_support_resistance(low, close, mode='support')
+                resistance_level = self._calculate_support_resistance(high, close, mode='resistance')
+
+                print(f"支撑位: {support_level}")
+                print(f"阻力位: {resistance_level}")
+                
+                # 分析价格结构
+                price_structure = self._analyze_price_structure(high, low, close)
+                
+                # 识别市场周期
+                market_cycle = self._identify_market_cycle(close, volume, macd)
+                
+                self.logger.debug(f"指数 {index_code}: 复杂指标计算完成")
 
                 # --- 结束指标计算 ---
                 
@@ -847,9 +862,9 @@ class MarketStatusProcessor:
                 save_date = datetime.now().strftime('%Y%m%d')
                 self.logger.info(f"未指定保存日期，使用当前日期: {save_date}")
             
-            self.logger.info(f"保存市场状态数据到日期: {save_date}")
+            # self.logger.info(f"保存市场状态数据到日期: {save_date}")
 
-            print(f"market_status: {market_status}")
+            # print(f"market_status: {market_status}")
             
             # 构建要保存的数据结构
             save_data = {
@@ -857,7 +872,7 @@ class MarketStatusProcessor:
                 'market_description': market_status.get('market_type', '中性盘整'),
                 'market_cycle': market_status.get('market_cycle', '蓄势'),
                 'cycle_description': market_status.get('market_cycle', '蓄势'),
-                'trend_strength': market_status.get('trend_strength', 0.0),
+                'trend_strength':  round(float(market_status.get('trend_strength', 0.0)), 2),  # 保持trend_strength的原始值
                 'signals': {
                     'trading_advice': market_status.get('trading_advice', '观望为主，等待明确信号'),
                     'risk_level': market_status.get('risk_level', 'low'),
@@ -870,20 +885,68 @@ class MarketStatusProcessor:
             
             # 处理各指数的状态
             for index_code, status in market_status.get('individual_status', {}).items():
+                # 获取market_status_info中的数据
+                market_status_info = status.get('market_status_info', {})
+                technical_data = status.get('technical_data', {})
+                market_data = status.get('market_data', {})
+                
+                # 构建保存结构
                 save_data['individual_status'][index_code] = {
-                    'market_description': status.get('market_type', '中性盘整'),
-                    'trend_score': status.get('trend_score', 0.0),
-                    'position_score': status.get('position_score', 0.0),
-                    'volume_score': status.get('volume_score', 0.0),
-                    'momentum_score': status.get('momentum_score', 0.0),
-                    'total_score': status.get('total_score', 0.0),
+                    # 主要评分指标
+                    'trend_score': round(float(status.get('trend_score', 0.0)), 2),
+                    'position_score': round(float(status.get('position_score', 0.0)), 2),
+                    'volume_score': round(float(status.get('volume_score', 0.0)), 2),
+                    'momentum_score': round(float(status.get('momentum_score', 0.0)), 2),
+                    'volatility_score': round(float(status.get('volatility_score', 0.0)), 2),
+                    'structure_score': round(float(status.get('structure_score', 0.0)), 2),
+                    'cycle_score': round(float(status.get('cycle_score', 0.0)), 2),
+                    'total_score': round(float(status.get('total_score', 0.0)), 2),
+                    
+                    # 市场状态信息
+                    'market_status_info': {
+                        'type_code': market_status_info.get('type_code', 32),
+                        'type_desc': market_status_info.get('type_desc', '中性盘整'),
+                        'cycle_code': market_status_info.get('cycle_code', 0),
+                        'cycle_desc': market_status_info.get('cycle_desc', '未知周期')
+                    },
+                    
+                    # 市场描述 (为了兼容性保留)
+                    'market_description': market_status_info.get('type_desc', '中性盘整'),
+                    'cycle_description': market_status_info.get('cycle_desc', '未知周期'),
+                    
+                    # 技术数据
                     'technical_data': {
-                        'close': status.get('technical_indicators', {}).get('收盘价'),
-                        'ma5': status.get('technical_indicators', {}).get('MA5'),
-                        'ma20': status.get('technical_indicators', {}).get('MA20'),
-                        'rsi6': status.get('technical_indicators', {}).get('RSI6'),
-                        'macd': status.get('technical_indicators', {}).get('MACD')
-                    }
+                        'close': self._round_float(technical_data.get('close')),
+                        'prev_close': self._round_float(technical_data.get('prev_close')),
+                        'ma5': self._round_float(technical_data.get('ma5')),
+                        'ma10': self._round_float(technical_data.get('ma10')),
+                        'ma20': self._round_float(technical_data.get('ma20')),
+                        'ma60': self._round_float(technical_data.get('ma60')),
+                        'rsi6': self._round_float(technical_data.get('rsi6')),
+                        'rsi12': self._round_float(technical_data.get('rsi12')),
+                        'macd': self._round_float(technical_data.get('macd')),
+                        'macd_signal': self._round_float(technical_data.get('macd_signal')),
+                        'macd_hist': self._round_float(technical_data.get('macd_hist')),
+                        'kdj_k': self._round_float(technical_data.get('kdj_k')),
+                        'kdj_d': self._round_float(technical_data.get('kdj_d')),
+                        'bb_width': self._round_float(technical_data.get('bb_width')),
+                        'bb_position': self._round_float(technical_data.get('bb_position'))
+                    },
+                    
+                    # 市场数据
+                    'market_data': {
+                        'close': self._round_float(market_data.get('close')),
+                        'open': self._round_float(market_data.get('open')),
+                        'high': self._round_float(market_data.get('high')),
+                        'low': self._round_float(market_data.get('low')),
+                        'volume': self._round_float(market_data.get('volume')),
+                        'daily_change_pct': self._round_float(market_data.get('daily_change_pct'))
+                    },
+                    
+                    # 单独的支撑位和阻力位
+                    'support': self._round_float(technical_data.get('support')),
+                    'resistance': self._round_float(technical_data.get('resistance')),
+                    'change_percent': self._round_float(market_data.get('daily_change_pct', 0.0))
                 }
             
             # 保存数据
@@ -898,10 +961,17 @@ class MarketStatusProcessor:
             if save_date not in self.metadata["available_dates"]:
                 self.metadata["available_dates"].append(save_date)
                 self.metadata["available_dates"].sort()
-            # 使用保存日期作为最后更新时间，而不是使用当前系统时间
-            formatted_date = f"{save_date[:4]}-{save_date[4:6]}-{save_date[6:]} 00:00:00"
-            self.metadata["last_update"] = formatted_date
-            self._save_metadata()
+                # 使用保存日期作为最后更新时间，而不是使用当前系统时间
+                formatted_date = f"{save_date[:4]}-{save_date[4:6]}-{save_date[6:]} 00:00:00"
+                self.metadata["last_update"] = formatted_date
+                self._save_metadata()
+                self.logger.info(f"成功新增 {save_date} 的市场状态数据")
+            else:
+                # 即使是已存在的日期，也需要更新最后更新时间
+                formatted_date = f"{save_date[:4]}-{save_date[4:6]}-{save_date[6:]} 00:00:00"
+                self.metadata["last_update"] = formatted_date
+                self._save_metadata()
+                self.logger.info(f"成功更新 {save_date} 的市场状态数据")
             
             self.logger.info(f"成功保存 {save_date} 的市场状态数据")
             return True
@@ -911,6 +981,23 @@ class MarketStatusProcessor:
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+    
+    def _round_float(self, value, digits=2):
+        """将浮点数四舍五入到指定小数位数
+        
+        Args:
+            value: 要四舍五入的值
+            digits: 小数位数，默认为2
+            
+        Returns:
+            float: 四舍五入后的值，如果输入不是数字则返回原值
+        """
+        try:
+            if value is None:
+                return None
+            return round(float(value), digits)
+        except (TypeError, ValueError):
+            return value
     
     def get_market_status(self, query_date=None):
         """获取市场状态数据
@@ -947,7 +1034,7 @@ class MarketStatusProcessor:
                 market_status['market_description'] = cyb_data.get('market_description', '')
                 market_status['market_cycle'] = cyb_data.get('cycle_description', '')
                 market_status['cycle_description'] = cyb_data.get('cycle_description', '')
-                market_status['trend_strength'] = cyb_data.get('total_score', 0)
+                market_status['trend_strength'] = cyb_data.get('total_score', 0)  # 使用实际的total_score作为trend_strength
                 
                 # 添加支撑位、压力位和涨跌幅数据
                 market_status['support_level'] = cyb_data.get('support', 0)
@@ -1223,7 +1310,7 @@ class MarketStatusProcessor:
                     'trading_advice': '观望为主，等待明确信号',
                     'risk_level': 'low',
                     'signal_strength': 0,
-                    'index_status': {}
+                    'individual_status': {}
                 }
                 
                 # 分析每个指数的状态
@@ -1255,36 +1342,86 @@ class MarketStatusProcessor:
                     market_type = self._determine_market_type(total_score)
                     
                     # 获取技术指标值（使用当前日期的值）
+                    close_value = None
+                    ma5_value = None
+                    ma20_value = None
+                    rsi6_value = None
+                    macd_value = None
+                    
+                    try:
+                        # 直接从当前数据获取收盘价
+                        if not index_current_data.empty:
+                            close_value = float(index_current_data['close'].values[0])
+                        
+                        # 从技术指标中获取MA5、MA20、RSI6、MACD
+                        if index_code in indicators:
+                            index_indicators = indicators[index_code]
+                            
+                            # 如果存在ma5数据并且长度足够，获取最新值
+                            if 'ma5' in index_indicators and len(index_indicators['ma5']) > 0:
+                                ma5_value = float(index_indicators['ma5'][-1])
+                                
+                            # 同理获取其他指标
+                            if 'ma20' in index_indicators and len(index_indicators['ma20']) > 0:
+                                ma20_value = float(index_indicators['ma20'][-1])
+                                
+                            if 'rsi6' in index_indicators and len(index_indicators['rsi6']) > 0:
+                                rsi6_value = float(index_indicators['rsi6'][-1])
+                                
+                            if 'macd' in index_indicators and len(index_indicators['macd']) > 0:
+                                macd_value = float(index_indicators['macd'][-1])
+                    except Exception as e:
+                        self.logger.warning(f"获取技术指标值时出错: {e}")
+                    
+                    # 构建技术指标字典
                     tech_indicators = {
-                        '收盘价': index_current_data['close'].values[0] if not index_current_data.empty else None,
-                        'MA5': indicators.get(index_code, {}).get('ma5', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('ma5') is not None and len(indicators.get(index_code, {}).get('ma5', [])) > len(index_historical_data) else None,
-                        'MA20': indicators.get(index_code, {}).get('ma20', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('ma20') is not None and len(indicators.get(index_code, {}).get('ma20', [])) > len(index_historical_data) else None,
-                        'RSI6': indicators.get(index_code, {}).get('rsi6', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('rsi6') is not None and len(indicators.get(index_code, {}).get('rsi6', [])) > len(index_historical_data) else None,
-                        'MACD': indicators.get(index_code, {}).get('macd', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('macd') is not None and len(indicators.get(index_code, {}).get('macd', [])) > len(index_historical_data) else None
+                        '收盘价': close_value,
+                        'MA5': ma5_value,
+                        'MA20': ma20_value,
+                        'RSI6': rsi6_value,
+                        'MACD': macd_value
                     }
+
+                    print(f"技术指标: {tech_indicators}")
+                    
+                    # 获取支撑位和阻力位
+                    support = indicators.get(index_code, {}).get('support_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('support_level') is not None and len(indicators.get(index_code, {}).get('support_level', [])) > len(index_historical_data) else None
+                    resistance = indicators.get(index_code, {}).get('resistance_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('resistance_level') is not None and len(indicators.get(index_code, {}).get('resistance_level', [])) > len(index_historical_data) else None
+                    
+                    # 计算涨跌幅
+                    change_percent = 0
+                    if len(index_historical_data) >= 2:
+                        prev_close = index_historical_data['close'].values[-2] if len(index_historical_data) > 1 else index_historical_data['close'].values[-1]
+                        curr_close = index_historical_data['close'].values[-1]
+                        change_percent = 100 * (curr_close - prev_close) / prev_close if prev_close != 0 else 0
                     
                     # 保存指数状态
-                    result['index_status'][index_code] = {
+                    result['individual_status'][index_code] = {
                         'market_type': market_type,
                         'trend_score': trend_score,
                         'position_score': position_score,
                         'volume_score': volume_score,
                         'momentum_score': momentum_score,
                         'total_score': total_score,
-                        'technical_indicators': tech_indicators
+                        'technical_indicators': tech_indicators,
+                        'support': support,
+                        'resistance': resistance,
+                        'change_percent': change_percent
                     }
                     
-                    # 更新整体市场状态
-                    result['trend_strength'] = max(result['trend_strength'], total_score)
+                    # 更新整体市场状态 - 修复trend_strength计算逻辑
+                    # 使用实际total_score值而不是负值
+                    if total_score > result['trend_strength']:
+                        result['trend_strength'] = total_score
                 
                 # 如果没有分析任何指数，则跳过当前日期
-                if not result['index_status']:
+                if not result['individual_status']:
                     continue
                 
                 # 确定整体市场类型和建议
-                result['market_type'] = self._determine_composite_market_type(result['index_status'])
+                result['market_type'] = self._determine_composite_market_type(result['individual_status'])
                 result['trading_advice'] = self._generate_trading_advice(result)
-                result['market_cycle'] = self._determine_market_cycle(result['index_status'])
+                result['market_cycle'] = self._determine_market_cycle(result['individual_status'])
                 result['signal_strength'] = self._calculate_signal_strength(result)
                 
                 # 将当前日期的分析结果添加到结果字典
@@ -1451,14 +1588,18 @@ class MarketStatusProcessor:
             signal_strength = result.get('signal_strength', 0)
             
             # 检查是否有创业板指数数据，因为短线交易主要关注创业板
-            has_gem_index = '399006.SZ' in result.get('index_status', {})
-            gem_index_data = result.get('index_status', {}).get('399006.SZ', {})
+            has_gem_index = '399006.SZ' in result.get('individual_status', {})
+            gem_index_data = result.get('individual_status', {}).get('399006.SZ', {})
             
             # 获取创业板的单日涨跌幅
             daily_change = None
             if has_gem_index:
-                tech_indicators = gem_index_data.get('technical_indicators', {})
-                daily_change = tech_indicators.get('涨跌幅')
+                # 直接从指数状态中获取涨跌幅
+                daily_change = gem_index_data.get('change_percent')
+                if daily_change is None:
+                    # 如果没有直接的涨跌幅数据，尝试从技术指标中获取
+                    tech_indicators = gem_index_data.get('technical_indicators', {})
+                    daily_change = tech_indicators.get('涨跌幅')
             
             # 根据市场类型和信号强度生成交易建议
             if market_type in [11, 12]:  # 强势上涨、加速上涨
@@ -1515,7 +1656,7 @@ class MarketStatusProcessor:
         """
         try:
             market_type = result.get('market_type', 32)
-            index_status = result.get('index_status', {})
+            index_status = result.get('individual_status', {})
             
             # 基础信号强度
             base_strength = 0
@@ -1533,8 +1674,12 @@ class MarketStatusProcessor:
             # 调整因子：检查创业板指数的单日涨跌幅
             adjustment = 0
             if '399006.SZ' in index_status:
-                tech_indicators = index_status.get('399006.SZ', {}).get('technical_indicators', {})
-                daily_change = tech_indicators.get('涨跌幅')
+                # 直接从指数状态中获取涨跌幅
+                daily_change = index_status.get('399006.SZ', {}).get('change_percent')
+                if daily_change is None:
+                    # 如果没有直接的涨跌幅数据，尝试从技术指标中获取
+                    tech_indicators = index_status.get('399006.SZ', {}).get('technical_indicators', {})
+                    daily_change = tech_indicators.get('涨跌幅')
                 
                 if daily_change is not None:
                     if abs(daily_change) > 7:  # 大幅波动
@@ -1558,15 +1703,34 @@ class MarketStatusProcessor:
         """保存市场状态数据到文件"""
         try:
             status_file = os.path.join(self.daily_status_dir, "market_status.json")
-            with open(status_file, "w") as f:
+            
+            # 增量更新逻辑：先检查文件是否存在并加载现有数据
+            existing_data = {}
+            if os.path.exists(status_file):
+                try:
+                    with open(status_file, "r", encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                    self.logger.info(f"加载现有市场状态数据，共 {len(existing_data)} 个日期")
+                except Exception as e:
+                    self.logger.warning(f"加载现有市场状态数据时出错: {str(e)}，将创建新文件")
+            
+            # 合并数据，新数据会覆盖同日期的旧数据
+            merged_data = {**existing_data, **self.market_status_data}
+            
+            # 保存合并后的数据
+            with open(status_file, "w", encoding='utf-8') as f:
                 # 使用自定义的序列化函数处理特殊类型
-                json.dump(self.market_status_data, f, indent=4, default=str)
-            self.logger.info(f"成功保存市场状态数据，包含 {len(self.market_status_data)} 个日期的数据")
+                json.dump(merged_data, f, indent=4, default=str, ensure_ascii=False)
+            
+            # 更新内存中的数据为合并后的数据
+            self.market_status_data = merged_data
+            
+            self.logger.info(f"成功保存市场状态数据，包含 {len(merged_data)} 个日期的数据")
             return True
         except Exception as e:
             # 记录更详细的错误信息，包括堆栈跟踪
             import traceback
-            error_msg = f"保存市场状态数据到文件 {status_file} 时出错: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"保存市场状态数据到文件时出错: {str(e)}\n{traceback.format_exc()}"
             self.logger.error(error_msg)
             return False
 
@@ -1607,6 +1771,12 @@ class MarketStatusProcessor:
                 print(f"当前状态: {cyb_status.get('market_description', '未知')}")
                 print(f"收盘价: {tech_data.get('close', 0):.2f}")
                 
+                # 获取涨跌幅
+                change_percent = cyb_status.get('change_percent', 0)
+                if change_percent != 0:
+                    change_color = "红" if change_percent > 0 else "绿"
+                    print(f"涨跌幅: {change_color}{change_percent:.2f}%")
+                
                 # 移动均线状态
                 ma5 = tech_data.get('ma5', 0)
                 ma20 = tech_data.get('ma20', 0)
@@ -1615,7 +1785,7 @@ class MarketStatusProcessor:
                 print("\n[趋势分析]")
                 # 短期趋势 (基于MA5与收盘价)
                 short_trend = "上涨" if close > ma5 else "下跌" if close < ma5 else "盘整"
-                short_strength = abs((close - ma5) / ma5 * 100)
+                short_strength = abs((close - ma5) / ma5 * 100) if ma5 > 0 else 0
                 if short_strength > 5:
                     short_trend = "强势" + short_trend
                 elif short_strength > 2:
@@ -1623,7 +1793,7 @@ class MarketStatusProcessor:
                 
                 # 中期趋势 (基于MA20与收盘价)
                 mid_trend = "上涨" if close > ma20 else "下跌" if close < ma20 else "盘整"
-                mid_strength = abs((close - ma20) / ma20 * 100)
+                mid_strength = abs((close - ma20) / ma20 * 100) if ma20 > 0 else 0
                 if mid_strength > 10:
                     mid_trend = "强势" + mid_trend
                 elif mid_strength > 5:
@@ -1638,8 +1808,8 @@ class MarketStatusProcessor:
                 elif long_strength > 7:
                     long_trend = "温和" + long_trend
                 
-                print(f"短期趋势: {short_trend} (收盘价 vs MA5: {(close - ma5) / ma5 * 100:.2f}%)")
-                print(f"中期趋势: {mid_trend} (收盘价 vs MA20: {(close - ma20) / ma20 * 100:.2f}%)")
+                print(f"短期趋势: {short_trend} (收盘价 vs MA5: {(close - ma5) / ma5 * 100:.2f}%" if ma5 > 0 else "短期趋势: 数据不足")
+                print(f"中期趋势: {mid_trend} (收盘价 vs MA20: {(close - ma20) / ma20 * 100:.2f}%" if ma20 > 0 else "中期趋势: 数据不足")
                 if ma60 > 0:
                     print(f"长期趋势: {long_trend} (收盘价 vs MA60: {(close - ma60) / ma60 * 100:.2f}%)")
                 
@@ -1670,10 +1840,16 @@ class MarketStatusProcessor:
                     print(f"布林带:     宽度={bb_width:.4f}, 位置={bb_position:.4f}")
                 
                 # 支撑与阻力
-                support = tech_data.get('support', 0)
-                resistance = tech_data.get('resistance', 0)
+                support = cyb_status.get('support', 0)
+                resistance = cyb_status.get('resistance', 0)
                 if support > 0 and resistance > 0:
                     print(f"价格区间:   支撑位={support:.2f}, 阻力位={resistance:.2f}")
+                else:
+                    # 尝试从market_status中获取
+                    support = market_status.get('support_level', 0)
+                    resistance = market_status.get('resistance_level', 0)
+                    if support > 0 and resistance > 0:
+                        print(f"价格区间:   支撑位={support:.2f}, 阻力位={resistance:.2f}")
             
             # 3. 多因素评分
             print("\n[多因素评分]")
@@ -1719,14 +1895,14 @@ def register_function(name, description):
     return decorator
 
 @register_function("process", "处理和存储大盘状态数据")
-def process_market_data(processor, start_date=None, end_date=None, index_codes=None, parallel=False):
+def process_market_data(processor, start_date=None, end_date=None, index_codes=None, parallel=True):
     """处理大盘状态数据并保存
     
     参数:
         processor (MarketStatusProcessor): 处理器实例
         start_date (str): 开始日期，格式YYYYMMDD，默认为过去30天
         end_date (str): 结束日期，格式YYYYMMDD，默认为当前日期
-        index_codes (list): 指数代码列表，默认为['399006.SZ','899050.BJ']
+        index_codes (list): 指数代码列表，默认为['399006.SZ']
         parallel (bool): 是否使用并行处理，默认为False
         
     返回:
@@ -1756,6 +1932,7 @@ def process_market_data(processor, start_date=None, end_date=None, index_codes=N
         
     # 串行处理
     if not parallel:
+        print(f"开始串行处理 {start_date} 至 {end_date} 的市场状态数据")
         logger.info(f"开始串行处理 {start_date} 至 {end_date} 的市场状态数据")
         success = processor.process_market_status(start_date, end_date, index_codes)
         
@@ -1780,7 +1957,7 @@ def process_market_data(processor, start_date=None, end_date=None, index_codes=N
         date_range = processor._get_date_range(start_date, end_date)
         
         # 创建进程池
-        with ProcessPoolExecutor(max_workers=8) as executor:
+        with ProcessPoolExecutor(max_workers=15) as executor:
             # 提交任务
             futures = {executor.submit(processor.process_market_status, processor._date_to_str(date), processor._date_to_str(date), index_codes): date for date in date_range}
             
@@ -2029,9 +2206,16 @@ def update_market_data(processor, start_date=None, end_date=None, index_codes=No
     target_dates = processor._get_date_range(start_date, end_date)
     target_date_strs = [processor._date_to_str(date) for date in target_dates]
     
+    # 记录更新前的市场状态数据数量
+    original_data_count = len(processor.market_status_data)
+    # 记录已存在但将被更新的日期
+    existing_dates_to_update = []
+    
     if force:
         # 强制更新所有日期
         dates_to_process = target_date_strs
+        # 找出已存在但将被更新的日期
+        existing_dates_to_update = [date for date in dates_to_process if date in processor.market_status_data]
     else:
         # 只处理未处理的日期
         dates_to_process = [date for date in target_date_strs if date not in available_dates]
@@ -2041,13 +2225,27 @@ def update_market_data(processor, start_date=None, end_date=None, index_codes=No
         return 0
     
     print(f"需要处理 {len(dates_to_process)} 个日期: {dates_to_process[0]} 至 {dates_to_process[-1]}")
+    if force and existing_dates_to_update:
+        print(f"其中 {len(existing_dates_to_update)} 个日期的数据将被覆盖更新")
     
     # 重新设置处理范围
     start_date = dates_to_process[0]
     end_date = dates_to_process[-1]
     
     processed_count = processor.process_market_status(start_date, end_date, index_codes=index_codes)
-    print(f"处理完成，共处理 {processed_count} 个交易日")
+    
+    # 计算更新统计信息
+    updated_data_count = len(processor.market_status_data)
+    new_data_count = updated_data_count - original_data_count
+    replaced_data_count = len(existing_dates_to_update)
+    
+    # 输出更详细的更新状态
+    print(f"处理完成，市场状态数据更新结果:")
+    print(f"  - 总数据量: {updated_data_count} 条")
+    print(f"  - 新增数据: {new_data_count} 条")
+    if force:
+        print(f"  - 覆盖更新: {replaced_data_count} 条")
+    print(f"  - 处理日期范围: {start_date} 至 {end_date}")
     
     return processed_count
 
@@ -2151,8 +2349,9 @@ if __name__ == "__main__":
     print("report = generate_market_report()")
     
     # 可以在这里添加示例调用
-    process_market_data(start_date='20230101', end_date='20230103', index_codes=['399006.SZ']) 
-    query_market_status(date='20230103')
+    # process_market_data(start_date='20230101', end_date='20250331', index_codes=['399006.SZ']) 
+    update_market_data(start_date='20240726', end_date='20250327', index_codes=['399006.SZ']) 
+    # query_market_status(date='20230103')
 
     # 添加main代码块，只有直接运行这个文件时才会执行
     # if __name__ == "__main__":

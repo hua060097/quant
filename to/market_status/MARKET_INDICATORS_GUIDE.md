@@ -193,14 +193,13 @@ total_score = (
 
 ## 3. 技术指标数据
 
-以下原始技术指标数据也会被保存，用于进一步分析和模型训练：
+以下原始技术指标数据会被保存在`technical_data`字典中，用于进一步分析和模型训练。所有数值数据均保留两位小数。
 
 ### MA系列 (移动平均线)
 - `ma5`: 5日移动平均线
 - `ma10`: 10日移动平均线
 - `ma20`: 20日移动平均线
 - `ma60`: 60日移动平均线
-- `ma120`: 120日移动平均线
 
 ### MACD (指数平滑异同平均线)
 - `macd`: MACD线，快线(EMA12)减慢线(EMA26)
@@ -210,39 +209,120 @@ total_score = (
 ### RSI (相对强弱指数)
 - `rsi6`: 6日相对强弱指数
 - `rsi12`: 12日相对强弱指数
-- `rsi24`: 24日相对强弱指数
 
 ### 布林带指标
-- `bb_upper`: 布林带上轨，MA20 + 2*标准差
-- `bb_middle`: 布林带中轨，即20日移动平均线
-- `bb_lower`: 布林带下轨，MA20 - 2*标准差
 - `bb_width`: 布林带宽度，(上轨-下轨)/中轨
 - `bb_position`: 价格在布林带中的相对位置，0表示在下轨，1表示在上轨
 
 ### KDJ指标
 - `kdj_k`: K值，当前收盘价在最近n天的高低点范围内的相对位置
 - `kdj_d`: D值，K值的移动平均
-- `kdj_j`: J值，3D-2K，反映价格波动的动力
 
 ### 价格相关指标
-- `support_level`: 支撑位，当前重要的价格支撑水平，价格下跌到此位置可能会获得支撑反弹
-- `resistance_level`: 压力位，当前重要的价格压力水平，价格上涨到此位置可能会遇到阻力回落
+- `close`: 当日收盘价
+- `prev_close`: 前一日收盘价
+- `support`: 支撑位，当前重要的价格支撑水平，价格下跌到此位置可能会获得支撑反弹
+- `resistance`: 压力位，当前重要的价格压力水平，价格上涨到此位置可能会遇到阻力回落
 - `change_percent`: 涨跌幅，相对于前一交易日的百分比变化，正值表示上涨，负值表示下跌
 
-支撑位和压力位的判断依据：
-- 历史成交密集区
-- 重要均线位置（如60日均线、20日均线）
-- 前期高点和低点
-- 整数价位（如100元、50元等整数关口）
-- 斐波那契回调位
+## 4. 市场数据
 
-## 4. 模型训练使用指南
+以下市场数据会被保存在`market_data`字典中，提供当日基础行情数据。所有数值数据均保留两位小数。
+
+- `open`: 当日开盘价
+- `high`: 当日最高价
+- `low`: 当日最低价
+- `close`: 当日收盘价
+- `volume`: 当日成交量
+- `daily_change_pct`: 当日涨跌幅百分比
+
+## 5. 市场状态信息
+
+市场状态信息会被保存在`market_status_info`字典中，提供对市场类型和周期的编码与描述。
+
+- `type_code`: 市场类型编码，如11(强势突破上涨)、32(中性盘整)等
+- `type_desc`: 市场类型描述文本
+- `cycle_code`: 市场周期编码，如1(积累期)、2(上升期)等
+- `cycle_desc`: 市场周期描述文本
+
+为了兼容性，以下字段也会单独保存在顶层：
+- `market_description`: 与`type_desc`相同，市场类型描述
+- `cycle_description`: 与`cycle_desc`相同，市场周期描述
+
+## 6. 数据格式示例
+
+以下是保存的市场状态数据结构示例：
+
+```json
+ "20240122": {
+        "market_type": 41,
+        "market_description": 41,
+        "market_cycle": 4,
+        "cycle_description": 4,
+        "trend_strength": 2.35,
+        "signals": {
+            "trading_advice": "观望为主，等待明确信号",
+            "risk_level": "low",
+            "strength": 0
+        },
+        "individual_status": {
+            "399006.SZ": {
+                "trend_score": -7.5,
+                "position_score": -1.0,
+                "volume_score": 1.0,
+                "momentum_score": -1.0,
+                "volatility_score": 3.0,
+                "structure_score": -1.0,
+                "cycle_score": -1.0,
+                "total_score": -2.35,
+                "market_status_info": {
+                    "type_code": 41,
+                    "type_desc": "盘跌下行",
+                    "cycle_code": 4,
+                    "cycle_desc": "下降期"
+                },
+                "market_description": "盘跌下行",
+                "cycle_description": "下降期",
+                "technical_data": {
+                    "close": 1666.88,
+                    "prev_close": 1715.44,
+                    "ma5": 1713.3,
+                    "ma10": 1734.45,
+                    "ma20": 1778.89,
+                    "ma60": 1881.43,
+                    "rsi6": 25.19,
+                    "rsi12": 29.8,
+                    "macd": -44.68,
+                    "macd_signal": -38.77,
+                    "macd_hist": -11.82,
+                    "kdj_k": 21.37,
+                    "kdj_d": 22.4,
+                    "bb_width": 0.13,
+                    "bb_position": 0.02
+                },
+                "market_data": {
+                    "close": 1666.88,
+                    "open": 1710.29,
+                    "high": 1714.93,
+                    "low": 1657.35,
+                    "volume": 117732596.0,
+                    "daily_change_pct": -2.83
+                },
+                "support": 1678.43,
+                "resistance": 1666.88,
+                "change_percent": -2.83
+            }
+        }
+    }
+```
+
+## 7. 模型训练使用指南
 
 在 `train_sector_models.py` 中，以下特征被用于训练预测模型：
 
 1. **市场类型和周期特征**：
-   - `market_type_code`: 市场类型编码(数值)
-   - `market_cycle_code`: 市场周期编码(数值)
+   - `market_status_info.type_code`: 市场类型编码(数值)
+   - `market_status_info.cycle_code`: 市场周期编码(数值)
 
 2. **市场评分指标**：
    - `trend_score`: 趋势得分
@@ -255,18 +335,107 @@ total_score = (
    - `total_score`: 总分
 
 3. **技术指标派生特征**：
-   - `price_ma_ratio`: 价格与各均线的比值
-   - `ma_alignment`: 均线系统排列状况
-   - `vol_ma_ratio`: 成交量与成交量均线的比值
-   - `macd_trend`: MACD方向和强度
-   - `rsi_trend`: RSI方向和区域
-   - `bb_status`: 布林带状态指标
+   - `technical_data.close/technical_data.ma5`: 价格与5日均线的比值
+   - `technical_data.close/technical_data.ma20`: 价格与20日均线的比值
+   - `technical_data.close/technical_data.ma60`: 价格与60日均线的比值
+   - `technical_data.ma5/technical_data.ma20`: 短期均线与中期均线的比值
+   - `technical_data.macd_hist`: MACD柱状图数值，反映动量变化
+   - `technical_data.rsi6/50-1`: RSI相对中性位置的偏离度
+   - `technical_data.bb_position*2-1`: 布林带位置归一化到[-1,1]区间
+   - `technical_data.kdj_k-technical_data.kdj_d`: KD值差，反映短期动量变化
 
 4. **价格支撑压力特征**：
-   - `support_level`: 支撑位水平
-   - `resistance_level`: 压力位水平
+   - `support`: 支撑位水平
+   - `resistance`: 压力位水平
    - `change_percent`: 涨跌幅百分比
-   - `price_to_support_ratio`: 当前价格与支撑位的比率
-   - `price_to_resistance_ratio`: 当前价格与压力位的比率
+   - `technical_data.close/support-1`: 当前价格与支撑位的距离比率
+   - `resistance/technical_data.close-1`: 压力位与当前价格的距离比率
 
-通过这些特征的不同时间窗口(长期、短期)组合，可以有效地训练出预测市场未来走势的模型。 
+5. **市场数据特征**：
+   - `market_data.volume/previous_volume-1`: 成交量变化率
+   - `market_data.high-market_data.low)/market_data.close`: 日内波动率
+   - `(market_data.close-market_data.open)/market_data.open`: 日内涨跌幅
+   - `market_data.daily_change_pct`: 当日涨跌幅百分比
+
+通过组合这些特征的不同时间窗口(短期、中期、长期)值，可以有效地训练出预测市场未来走势的模型。所有数值特征在训练前会进行归一化和标准化处理，以提高模型的稳定性和性能。
+
+## 8. 使用场景和最佳实践
+
+### 回测系统集成
+
+市场状态数据特别适合集成到回测系统中，作为交易决策的重要依据：
+
+```python
+# 获取当日市场状态
+market_status = processor.get_market_status(date_str)
+
+# 根据市场状态调整策略参数
+if market_status['total_score'] > 3.5:
+    # 强势市场，更激进的策略参数
+    position_size = 1.0
+    stop_loss = 0.95
+elif market_status['total_score'] > 2.5:
+    # 中性市场，中等策略参数
+    position_size = 0.7
+    stop_loss = 0.97
+else:
+    # 弱势市场，保守策略参数
+    position_size = 0.3
+    stop_loss = 0.98
+```
+
+### 板块轮动模型增强
+
+通过结合市场状态分析，可以增强板块轮动模型的性能：
+
+```python
+# 获取市场状态和板块预测
+market_status = processor.get_market_status(date_str)
+sector_predictions = model.predict_sectors(features)
+
+# 根据市场状态调整板块选择
+if market_status['market_status_info']['type_code'] in [11, 12, 13]:
+    # 强势上涨市场，选择成长型板块
+    selected_sectors = filter_growth_sectors(sector_predictions)
+elif market_status['market_status_info']['type_code'] in [31, 32, 33]:
+    # 盘整市场，选择防御型板块
+    selected_sectors = filter_defensive_sectors(sector_predictions)
+else:
+    # 下跌市场，减少选股数量，提高选股标准
+    selected_sectors = filter_top_sectors(sector_predictions, threshold=0.8)
+```
+
+### 风险管理应用
+
+市场状态数据对风险管理特别有价值，可以用于动态调整风险暴露：
+
+```python
+# 获取市场状态
+market_status = processor.get_market_status(date_str)
+
+# 根据波动性得分调整仓位
+volatility = market_status['volatility_score']
+if volatility > 4.0:
+    # 高波动环境，减少仓位
+    risk_exposure = 0.6
+elif volatility > 3.0:
+    # 中等波动环境，保持适中仓位
+    risk_exposure = 0.8
+else:
+    # 低波动环境，可以增加仓位
+    risk_exposure = 1.0
+```
+
+## 9. 常见问题与解决方案
+
+### Q: 市场状态数据如何处理缺失值？
+A: 当某些技术指标无法计算时(如数据不足)，相应字段会设置为`null`。在使用时应当检查并提供合理的默认值。
+
+### Q: 如何解决历史数据回溯中的前瞻偏差？
+A: 确保在回测中，只使用截至当前日期可获得的市场状态数据，避免使用包含未来信息的特征。
+
+### Q: 不同市场环境下应该关注哪些指标？
+A: 
+- 上涨市场: `trend_score`, `momentum_score`, `volume_score`
+- 盘整市场: `position_score`, `volatility_score`, `support/resistance`
+- 下跌市场: `trend_score`, `structure_score`, `volume_score` 

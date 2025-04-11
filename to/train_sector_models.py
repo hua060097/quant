@@ -246,16 +246,93 @@ class SectorModelTrainer:
                 # 添加市场状态特征
                 market_status = self._load_market_status(date)
                 if market_status:
-                    # 提取需要的市场特征
+                    # 提取市场整体特征
                     sector_df['market_type'] = market_status.get('market_type', '32')  # 默认为中性盘整
                     sector_df['market_cycle'] = market_status.get('market_cycle', '2')  # 默认为上升期
                     sector_df['trend_strength'] = market_status.get('trend_strength', 0.0)
                     
-                    # 处理个股指标
+                    # 处理个股指标 - 使用创业板指数作为市场代表
                     if 'individual_status' in market_status and '399006.SZ' in market_status['individual_status']:
                         cyb_data = market_status['individual_status']['399006.SZ']
-                        sector_df['cyb_trend_score'] = cyb_data.get('trend_score', 0.0)
-                        sector_df['cyb_total_score'] = cyb_data.get('total_score', 0.0)
+                        
+                        # 市场评分指标
+                        sector_df['trend_score'] = cyb_data.get('trend_score', 0.0)
+                        sector_df['position_score'] = cyb_data.get('position_score', 0.0)
+                        sector_df['volume_score'] = cyb_data.get('volume_score', 0.0)
+                        sector_df['momentum_score'] = cyb_data.get('momentum_score', 0.0)
+                        sector_df['volatility_score'] = cyb_data.get('volatility_score', 0.0)
+                        sector_df['structure_score'] = cyb_data.get('structure_score', 0.0)
+                        sector_df['cycle_score'] = cyb_data.get('cycle_score', 0.0)
+                        sector_df['total_score'] = cyb_data.get('total_score', 0.0)
+                        
+                        # 市场类型和周期编码
+                        if 'market_status_info' in cyb_data:
+                            ms_info = cyb_data['market_status_info']
+                            sector_df['market_type_code'] = ms_info.get('type_code', 32)
+                            sector_df['market_cycle_code'] = ms_info.get('cycle_code', 2)
+                        
+                        # 技术指标派生特征
+                        if 'technical_data' in cyb_data:
+                            tech_data = cyb_data['technical_data']
+                            
+                            # 价格与均线关系
+                            close = tech_data.get('close', 0.0)
+                            ma5 = tech_data.get('ma5', 0.0)
+                            ma20 = tech_data.get('ma20', 0.0)
+                            ma60 = tech_data.get('ma60', 0.0)
+                            
+                            if ma5 > 0:
+                                sector_df['price_to_ma5'] = close / ma5
+                            if ma20 > 0:
+                                sector_df['price_to_ma20'] = close / ma20
+                            if ma60 > 0:
+                                sector_df['price_to_ma60'] = close / ma60
+                            if ma5 > 0 and ma20 > 0:
+                                sector_df['ma5_to_ma20'] = ma5 / ma20
+                            
+                            # 动量指标
+                            sector_df['macd_hist'] = tech_data.get('macd_hist', 0.0)
+                            
+                            rsi6 = tech_data.get('rsi6', 50.0)
+                            sector_df['rsi6_norm'] = rsi6 / 50.0 - 1.0  # 归一化到[-1,1]区间
+                            
+                            bb_pos = tech_data.get('bb_position', 0.5)
+                            sector_df['bb_position_norm'] = bb_pos * 2 - 1  # 归一化到[-1,1]区间
+                            
+                            kdj_k = tech_data.get('kdj_k', 50.0)
+                            kdj_d = tech_data.get('kdj_d', 50.0)
+                            sector_df['kdj_diff'] = kdj_k - kdj_d
+                            
+                        # 价格支撑压力特征
+                        support = cyb_data.get('support', 0.0)
+                        resistance = cyb_data.get('resistance', 0.0)
+                        change_percent = cyb_data.get('change_percent', 0.0)
+                        
+                        sector_df['change_percent'] = change_percent
+                        
+                        if support > 0 and close > 0:
+                            sector_df['price_to_support'] = close / support - 1.0
+                        if resistance > 0 and close > 0:
+                            sector_df['resistance_to_price'] = resistance / close - 1.0
+                        
+                        # 市场数据特征
+                        if 'market_data' in cyb_data:
+                            mkt_data = cyb_data['market_data']
+                            open_price = mkt_data.get('open', 0.0)
+                            high = mkt_data.get('high', 0.0)
+                            low = mkt_data.get('low', 0.0)
+                            volume = mkt_data.get('volume', 0.0)
+                            
+                            # 当日波动率
+                            if close > 0 and high > low:
+                                sector_df['intraday_volatility'] = (high - low) / close
+                            
+                            # 日内涨跌
+                            if open_price > 0:
+                                sector_df['intraday_return'] = (close - open_price) / open_price
+                            
+                            # 成交量指标已通过volume_score体现
+                            sector_df['volume'] = volume
                         
                 feature_dfs.append(sector_df)
                 

@@ -526,7 +526,7 @@ class MarketAnalyzer:
                 },
                 'technical_data': { # 保存当日的数值
                     'close': current_close, 'prev_close': prev_close,
-                    'ma5': ma5_val, 'ma20': ma20_val, 'ma60': ma60_val,
+                    'ma5': ma5_val, 'ma10': ma10_val, 'ma20': ma20_val, 'ma60': ma60_val,
                     'rsi6': rsi6_val, 'rsi12': rsi12_val, # 确保 rsi12_val 已提取
                     'macd': macd_val, 'macd_signal': macd_signal_val, 'macd_hist': macd_hist_val,
                     'kdj_k': kdj_k_val, 'kdj_d': kdj_d_val, # 确保 kdj 值已提取
