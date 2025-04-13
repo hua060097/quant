@@ -19,7 +19,7 @@ import gc
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import xgboost as xgb
 import lightgbm as lgb
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
@@ -28,6 +28,8 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.linear_model import Ridge
 import copy
+import pickle
+import inspect
 
 # 设置日志
 logging.basicConfig(
@@ -151,10 +153,11 @@ class SectorModelTrainer:
             # 构建文件路径 - 按板块代码划分目录
             # 优先加载优化后的主特征文件
             main_features_path = self.sector_features_dir / sector_code / f"{sector_code}_features.parquet"
+            print(f"main_features_path: {main_features_path}")
             
             if main_features_path.exists():
                 # 如果主特征文件存在，直接读取并筛选日期
-                self.logger.debug(f"尝试从主特征文件加载板块 {sector_code} 的日期 {date} 数据")
+                self.logger.warning(f"尝试从主特征文件加载板块 {sector_code} 的日期 {date} 数据")
                 df = pd.read_parquet(main_features_path)
                 
                 # 筛选指定日期
@@ -169,33 +172,33 @@ class SectorModelTrainer:
                         return date_df
                 
                 self.logger.debug(f"主特征文件中未找到日期 {date} 的数据")
-            
-            # 尝试加载单日期特征文件
-            date_file = self.sector_features_dir / sector_code / f"{sector_code}_{date}.parquet"
-            if date_file.exists():
-                self.logger.debug(f"尝试从单日期文件加载板块 {sector_code} 的日期 {date} 数据")
-                df = pd.read_parquet(date_file)
-                return df
-            
-            # 尝试加载原始合并特征文件
-            orig_file = self.sector_features_dir / sector_code / f"{sector_code}.parquet"
-            if orig_file.exists():
-                self.logger.debug(f"尝试从原始合并文件加载板块 {sector_code} 的日期 {date} 数据")
-                df = pd.read_parquet(orig_file)
+            else:
+                # 尝试加载单日期特征文件
+                date_file = self.sector_features_dir / sector_code / f"{sector_code}_{date}.parquet"
+                if date_file.exists():
+                    self.logger.debug(f"尝试从单日期文件加载板块 {sector_code} 的日期 {date} 数据")
+                    df = pd.read_parquet(date_file)
+                    return df
                 
-                # 筛选指定日期
-                if 'date' in df.columns:
-                    date_df = df[df['date'] == date].copy()
-                    if not date_df.empty:
-                        return date_df
+                # 尝试加载原始合并特征文件
+                orig_file = self.sector_features_dir / sector_code / f"{sector_code}.parquet"
+                if orig_file.exists():
+                    self.logger.debug(f"尝试从原始合并文件加载板块 {sector_code} 的日期 {date} 数据")
+                    df = pd.read_parquet(orig_file)
                     
-                if 'date_str' in df.columns:
-                    date_df = df[df['date_str'] == date].copy()
-                    if not date_df.empty:
-                        return date_df
-            
-            self.logger.warning(f"未找到板块 {sector_code} 在日期 {date} 的特征数据")
-            return None
+                    # 筛选指定日期
+                    if 'date' in df.columns:
+                        date_df = df[df['date'] == date].copy()
+                        if not date_df.empty:
+                            return date_df
+                        
+                    if 'date_str' in df.columns:
+                        date_df = df[df['date_str'] == date].copy()
+                        if not date_df.empty:
+                            return date_df
+                
+                self.logger.warning(f"未找到板块 {sector_code} 在日期 {date} 的特征数据")
+                return None
         except Exception as e:
             self.logger.error(f"加载板块 {sector_code} 在日期 {date} 的特征数据时出错: {e}")
             return None
@@ -226,9 +229,10 @@ class SectorModelTrainer:
             else:
                 self.logger.warning(f"日期 {date} 的市场状态数据不存在")
                 return None
+                
         except Exception as e:
-            self.logger.error(f"加载市场状态数据时出错: {e}")
-            self.logger.error(traceback.format_exc())
+            self.logger.error(f"加载日期 {date} 的市场状态数据时出错: {e}")
+            self.logger.exception(e)
             return None
 
     def _build_features_for_date_range(self, sector_code, end_date, lookback_days=60, forward_days=5):
@@ -530,7 +534,7 @@ class SectorModelTrainer:
         self.logger.info(f"准备好板块 {sector_code} 的训练数据，特征数: {X.shape[1]}，样本数: {len(y)}")
         
         # 划分训练集和测试集
-        X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
+        X_train, X_test, y_reg_train, y_reg_test, weights_train, weights_test = train_test_split(
             X, y, weights, test_size=0.2, shuffle=False
         )
         
@@ -549,18 +553,24 @@ class SectorModelTrainer:
                 random_state=42
             )
             
+            # 创建早停回调
+            early_stopping_callback = xgb.callback.EarlyStopping(
+                rounds=10,
+                metric_name='rmse',
+                data_name='validation_0'
+            )
+            
             xgb_model.fit(
-                X_train, y_train,
+                X_train, y_reg_train,
                 sample_weight=weights_train,
-                eval_set=[(X_test, y_test)],
-                early_stopping_rounds=10,
+                eval_set=[(X_test, y_reg_test)],
+                callbacks=[early_stopping_callback],
                 verbose=False
             )
             
             models['xgboost'] = xgb_model
             predictions['xgboost'] = xgb_model.predict(X_test)
-            
-            self.logger.info(f"XGBoost 模型训练完成，测试集 MSE: {mean_squared_error(y_test, predictions['xgboost']):.6f}")
+            self.logger.info(f"XGBoost 模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['xgboost']):.6f}")
             
         except Exception as e:
             self.logger.error(f"训练 XGBoost 模型出错: {e}")
@@ -578,18 +588,24 @@ class SectorModelTrainer:
                 random_state=42
             )
             
+            # 创建LightGBM早停回调
+            early_stopping_callback = lgb.early_stopping(
+                stopping_rounds=10,
+                verbose=False
+            )
+            
             lgb_model.fit(
-                X_train, y_train,
+                X_train, y_reg_train,
                 sample_weight=weights_train,
-                eval_set=[(X_test, y_test)],
-                early_stopping_rounds=10,
+                eval_set=[(X_test, y_reg_test)],
+                callbacks=[early_stopping_callback],
                 verbose=False
             )
             
             models['lightgbm'] = lgb_model
             predictions['lightgbm'] = lgb_model.predict(X_test)
             
-            self.logger.info(f"LightGBM 模型训练完成，测试集 MSE: {mean_squared_error(y_test, predictions['lightgbm']):.6f}")
+            self.logger.info(f"LightGBM 模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['lightgbm']):.6f}")
             
         except Exception as e:
             self.logger.error(f"训练 LightGBM 模型出错: {e}")
@@ -600,17 +616,18 @@ class SectorModelTrainer:
             try:
                 # 构建液体神经网络模型
                 lnn_model = self.LiquidNetModel(
-                    input_dim=X.shape[1],
-                    hidden_dims=[64, 32],
-                    output_dim=1,
-                    lr=0.001
+                    input_size=X.shape[1],
+                    hidden_size=64,
+                    output_size=1,
+                    num_layers=2,
+                    learning_rate=0.001
                 )
                 
                 lnn_model.fit(
-                    X_train.values, y_train.values.reshape(-1, 1),
+                    X_train.values, y_reg_train.values.reshape(-1, 1),
                     batch_size=32,
                     epochs=50,
-                    validation_data=(X_test.values, y_test.values.reshape(-1, 1)),
+                    validation_data=(X_test.values, y_reg_test.values.reshape(-1, 1)),
                     verbose=0
                 )
                 
@@ -618,7 +635,7 @@ class SectorModelTrainer:
                 preds = lnn_model.predict(X_test.values)
                 predictions['lnn'] = preds.flatten()
                 
-                self.logger.info(f"液体神经网络模型训练完成，测试集 MSE: {mean_squared_error(y_test, predictions['lnn']):.6f}")
+                self.logger.info(f"液体神经网络模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['lnn']):.6f}")
                 
             except Exception as e:
                 self.logger.error(f"训练液体神经网络模型出错: {e}")
@@ -641,8 +658,8 @@ class SectorModelTrainer:
             
             # 计算每个模型的性能指标
             for model_name, preds in predictions.items():
-                mse = mean_squared_error(y_test, preds)
-                r2 = r2_score(y_test, preds)
+                mse = mean_squared_error(y_reg_test, preds)
+                r2 = r2_score(y_reg_test, preds)
                 result['performance'][model_name] = {
                     'mse': mse,
                     'r2': r2
@@ -761,67 +778,125 @@ class SectorModelTrainer:
         Returns:
             dict: 包含各板块特征数据的字典，键为板块代码
         """
+        if not sector_list:
+            self.logger.warning("板块列表为空")
+            return None
+            
+        # 将日期统一格式为字符串
+        date = str(date)
+        
+        self.logger.info(f"加载日期 {date} 的 {len(sector_list)} 个板块特征")
+        
+        # 逐个加载板块特征
         features_dict = {}
         
         for sector_code in sector_list:
             try:
                 # 构建文件路径 - 按板块名称划分目录
-                # 首选加载优化后的主特征文件
-                main_features_path = self.sector_features_dir / f"{sector_code}" / f"{sector_code}_features.parquet"
-                single_date_path = self.sector_features_dir / f"{sector_code}" / f"{sector_code}_{date}.parquet"
-                merged_file_path = self.sector_features_dir / f"{sector_code}" / f"{sector_code}.parquet"
+                sector_dir = self.sector_features_dir / f"{sector_code}"
                 
-                # 尝试从主特征文件加载
+                # 尝试多种格式的文件
+                # 1. 优先加载优化后的主特征文件
+                main_features_path = sector_dir / f"{sector_code}_features.parquet"
+                
+                # 2. 加载单日期特征文件
+                single_date_path = sector_dir / f"{sector_code}_{date}.parquet"
+                
+                # 3. 加载原始合并特征文件
+                merged_file_path = sector_dir / f"{sector_code}.parquet"
+                # print(f"main_features_path: {main_features_path}")
+                
+                # 优先从主特征文件加载
                 if main_features_path.exists():
-                    self.logger.debug(f"尝试从主特征文件加载板块 {sector_code} 的数据")
-                    df = pd.read_parquet(main_features_path)
-                    
-                    # 筛选指定日期
-                    date_df = None
-                    if 'date' in df.columns:
-                        date_df = df[df['date'] == date].copy()
-                    elif 'date_str' in df.columns:
-                        date_df = df[df['date_str'] == date].copy()
-                    
-                    if date_df is not None and not date_df.empty:
-                        features_dict[sector_code] = date_df.iloc[0].to_dict()
-                        self.logger.debug(f"从主特征文件成功加载板块 {sector_code} 日期 {date} 的数据")
-                        continue
+                    try:
+                        # self.logger.warning(f"尝试从主特征文件加载板块 {sector_code} 的数据 {date}")
+                        df = pd.read_parquet(main_features_path)
+                        
+                        # 筛选指定日期
+                        date_df = None
+                        
+                        # 尝试不同列名的日期列
+                        for date_col in ['date', 'date_str', '日期']:
+                            if date_col in df.columns:
+                                date_df = df[df[date_col] == date].copy()
+                                if not date_df.empty:
+                                    break
+                        
+                        if date_df is not None and not date_df.empty:
+                            row_dict = date_df.iloc[0].to_dict()
+                            # 确保字典的键是字符串而不是数字
+                            cleaned_dict = {}
+                            for k, v in row_dict.items():
+                                # 如果键是数字或者索引，将其转换为字符串类型的名称
+                                if isinstance(k, (int, np.integer)):
+                                    cleaned_dict[f"feature_{k}"] = v
+                                else:
+                                    cleaned_dict[k] = v
+                            
+                            features_dict[sector_code] = cleaned_dict
+                            self.logger.debug(f"从主特征文件成功加载板块 {sector_code} 日期 {date} 的数据")
+                            continue
+                    except Exception as e:
+                        self.logger.warning(f"从主特征文件加载板块 {sector_code} 数据时出错: {e}")
                 
-                # 尝试加载单日期特征文件
+                # 如果主特征文件不存在或者未找到指定日期，尝试单日期文件
                 elif single_date_path.exists():
-                    self.logger.debug(f"尝试从单日期文件加载板块 {sector_code} 的数据")
-                    df = pd.read_parquet(single_date_path)
-                    if not df.empty:
-                        features_dict[sector_code] = df.iloc[0].to_dict()
-                        self.logger.debug(f"从单日期文件成功加载板块 {sector_code} 日期 {date} 的数据")
-                        continue
+                    try:
+                        self.logger.debug(f"尝试从单日期文件加载板块 {sector_code} 的数据")
+                        df = pd.read_parquet(single_date_path)
+                        if not df.empty:
+                            row_dict = df.iloc[0].to_dict()
+                            # 确保字典的键是字符串而不是数字
+                            cleaned_dict = {}
+                            for k, v in row_dict.items():
+                                if isinstance(k, (int, np.integer)):
+                                    cleaned_dict[f"feature_{k}"] = v
+                                else:
+                                    cleaned_dict[k] = v
+                                    
+                            features_dict[sector_code] = cleaned_dict
+                            self.logger.debug(f"从单日期文件成功加载板块 {sector_code} 日期 {date} 的数据")
+                            continue
+                    except Exception as e:
+                        self.logger.warning(f"从单日期文件加载板块 {sector_code} 数据时出错: {e}")
                 
                 # 尝试加载原始合并特征文件
                 elif merged_file_path.exists():
-                    self.logger.debug(f"尝试从原始合并文件加载板块 {sector_code} 的数据")
-                    df = pd.read_parquet(merged_file_path)
-                    
-                    # 筛选指定日期
-                    date_df = None
-                    if 'date' in df.columns:
-                        date_df = df[df['date'] == date].copy()
-                    elif 'date_str' in df.columns:
-                        date_df = df[df['date_str'] == date].copy()
-                    
-                    if date_df is not None and not date_df.empty:
-                        features_dict[sector_code] = date_df.iloc[0].to_dict()
-                        self.logger.debug(f"从原始合并文件成功加载板块 {sector_code} 日期 {date} 的数据")
-                        continue
+                    try:
+                        self.logger.debug(f"尝试从原始合并文件加载板块 {sector_code} 的数据")
+                        df = pd.read_parquet(merged_file_path)
+                        
+                        # 筛选指定日期
+                        date_df = None
+                        
+                        # 尝试不同列名的日期列
+                        for date_col in ['date', 'date_str', '日期']:
+                            if date_col in df.columns:
+                                date_df = df[df[date_col] == date].copy()
+                                if not date_df.empty:
+                                    break
+                        
+                        if date_df is not None and not date_df.empty:
+                            row_dict = date_df.iloc[0].to_dict()
+                            # 确保字典的键是字符串而不是数字
+                            cleaned_dict = {}
+                            for k, v in row_dict.items():
+                                if isinstance(k, (int, np.integer)):
+                                    cleaned_dict[f"feature_{k}"] = v
+                                else:
+                                    cleaned_dict[k] = v
+                                    
+                            features_dict[sector_code] = cleaned_dict
+                            self.logger.debug(f"从原始合并文件成功加载板块 {sector_code} 日期 {date} 的数据")
+                            continue
+                    except Exception as e:
+                        self.logger.warning(f"从原始合并文件加载板块 {sector_code} 数据时出错: {e}")
                 
-                self.logger.warning(f"未找到板块 {sector_code} 日期 {date} 的特征数据: 尝试路径 {main_features_path}, {single_date_path}, {merged_file_path}")
+                self.logger.warning(f"未找到板块 {sector_code} 日期 {date} 的特征数据")
+                
             except Exception as e:
                 self.logger.error(f"加载板块 {sector_code} 日期 {date} 的特征时出错: {e}")
-        
-        # 返回特征字典
-        if not features_dict:
-            self.logger.warning(f"日期 {date} 未找到任何板块数据")
-            return None
+                self.logger.exception(e)
         
         return features_dict
 
@@ -962,8 +1037,33 @@ class SectorModelTrainer:
             return None
             
         # 将所有特征合并为一个DataFrame
-        features_df = pd.DataFrame(all_features)
-        
+        try:
+            # 首先检查所有特征的键是否一致
+            all_keys = set()
+            for feature_dict in all_features:
+                all_keys.update(feature_dict.keys())
+            
+            # 确保每个特征字典都有所有的键，如果没有则补充为None
+            standardized_features = []
+            for feature_dict in all_features:
+                standardized_dict = {key: feature_dict.get(key, None) for key in all_keys}
+                standardized_features.append(standardized_dict)
+            
+            # 检查并打印特征字典的键
+            if standardized_features:
+                self.logger.debug(f"特征字典键样例: {list(standardized_features[0].keys())[:10]}...")
+            
+            # 使用标准化的特征字典创建DataFrame
+            features_df = pd.DataFrame(standardized_features)
+            
+            # 检查DataFrame的列名
+            self.logger.debug(f"DataFrame列名: {features_df.columns[:10]}...")
+            
+        except Exception as e:
+            self.logger.error(f"将特征列表转换为DataFrame时出错: {e}")
+            self.logger.error(traceback.format_exc())
+            return None
+            
         # 计算未来收益率排名
         date_groups = features_df.groupby('current_date')
         
@@ -992,7 +1092,7 @@ class SectorModelTrainer:
         result_df = pd.concat(ranked_features, ignore_index=True)
         
         # 筛选掉训练开始日期前的数据，因为我们仅收集它们用于构建回溯特征
-        result_df = result_df[result_df['current_date'] >= start_date]
+        result_df = result_df[pd.to_datetime(result_df['current_date']) >= pd.to_datetime(start_date)]
         
         self.logger.info(f"成功构建板块轮动特征数据集，共 {len(result_df)} 条记录，涵盖 {result_df['current_date'].nunique()} 个交易日")
         
@@ -1024,7 +1124,7 @@ class SectorModelTrainer:
                 
         # 打印数据集情况
         self.logger.info(f"数据集情况: 总数据量 {len(features_df)}, 日期数 {features_df['current_date'].nunique()}")
-        self.logger.info(f"特征列: {sorted(features_df.columns)}")
+        self.logger.info(f"特征列: {list(features_df.columns)}")
         
         # 检查顶尖表现板块的比例
         top_ratio = features_df['is_top_performer'].mean()
@@ -1084,21 +1184,23 @@ class SectorModelTrainer:
                 colsample_bytree=0.8,
                 objective='reg:squarederror',
                 tree_method='hist',
-                random_state=42
+                random_state=42,
+                callbacks=[xgb.callback.EarlyStopping(
+                    rounds=10,
+                    metric_name='rmse',
+                    data_name='validation_0'
+                )]
             )
             
             # 使用eval_set参数而非早停回合
             eval_set = [(X_test, y_reg_test)]
             
+            # 训练模型
             xgb_reg.fit(
                 X_train, y_reg_train,
                 eval_set=eval_set,
-                eval_metric='rmse',
                 verbose=False
             )
-            
-            # 如需使用早停，通过回调实现
-            callbacks = [xgb.callback.EarlyStopping(rounds=50, save_best=True)]
             
             y_reg_pred = xgb_reg.predict(X_test)
             rmse = np.sqrt(mean_squared_error(y_reg_test, y_reg_pred))
@@ -1113,81 +1215,109 @@ class SectorModelTrainer:
         # 2. XGBoost分类器 - 预测是否为顶尖表现板块
         self.logger.info("开始训练XGBoost分类器...")
         try:
-            # 计算类别权重
-            class_count = y_cls_train.value_counts()
-            total = len(y_cls_train)
+            # 计算类别权重以应对不平衡数据（避免除以零）
+            if np.sum(y_cls_train == 0) > 0 and np.sum(y_cls_train == 1) > 0:
+                scale = np.sum(y_cls_train == 0) / np.sum(y_cls_train == 1)
+            else:
+                scale = 1.0  # 避免除以零
             
-            # 确保不会出现除零错误
-            weight_0 = total / (2 * class_count.get(False, 1)) if class_count.get(False, 0) > 0 else 1.0
-            weight_1 = total / (2 * class_count.get(True, 1)) if class_count.get(True, 0) > 0 else 1.0
-            
-            scale = 1 / (weight_0 + weight_1)  # 缩放以使权重和为1
-            weight_0 *= scale
-            weight_1 *= scale
-            
-            xgb_cls = xgb.XGBClassifier(
+            # 创建XGBoost分类器
+            xgb_clf = xgb.XGBClassifier(
                 n_estimators=100,
-                learning_rate=0.05,
-                max_depth=5,
+                learning_rate=0.1,
+                max_depth=4,
                 min_child_weight=1,
                 gamma=0,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 objective='binary:logistic',
+                scale_pos_weight=scale,
                 random_state=42,
-                scale_pos_weight=weight_1/weight_0 if weight_0 > 0 else 1.0
+                use_label_encoder=False,
+                eval_metric='auc',
+                callbacks=[xgb.callback.EarlyStopping(
+                    rounds=10,
+                    metric_name='auc',
+                    data_name='validation_0'
+                )]
             )
+
             
-            # 使用回调函数设置早停
-            xgb_cls.fit(
-                X_train, y_cls_train,
-                eval_set=[(X_test, y_cls_test)],
-                callbacks=[xgb.callback.EarlyStopping(rounds=10, metric_name='logloss', save_best=True)]
-            )
+            # 使用回调进行早停
+            eval_set = [(X_test, y_cls_test)]
             
-            # 评估
-            y_cls_pred = xgb_cls.predict(X_test)
-            accuracy = accuracy_score(y_cls_test, y_cls_pred)
-            precision = precision_score(y_cls_test, y_cls_pred)
-            recall = recall_score(y_cls_test, y_cls_pred)
-            f1 = f1_score(y_cls_test, y_cls_pred)
-            self.logger.info(f"XGBoost分类器 - 准确率: {accuracy:.6f}, 精确率: {precision:.6f}, 召回率: {recall:.6f}, F1: {f1:.6f}")
-            
-            models['xgb_classifier'] = xgb_cls
-        except Exception as e:
-            self.logger.error(f"训练XGBoost分类器时出错: {e}")
-            
-        # 3. LightGBM回归器
-        self.logger.info("开始训练LightGBM回归器...")
-        try:
-            lgb_reg = lgb.LGBMRegressor(
-                n_estimators=200,
-                num_leaves=31,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42
-            )
-            
-            # 使用eval_set参数传递验证集
-            eval_set = [(X_test, y_reg_test)]
-            
-            lgb_reg.fit(
-                X_train, y_reg_train,
+            # 训练模型
+            xgb_clf.fit(
+                X_train, 
+                y_cls_train,
                 eval_set=eval_set,
-                eval_metric='rmse',
-                callbacks=[lgb.early_stopping(stopping_rounds=50)],
                 verbose=False
             )
             
-            y_reg_pred = lgb_reg.predict(X_test)
-            rmse = np.sqrt(mean_squared_error(y_reg_test, y_reg_pred))
-            r2 = r2_score(y_reg_test, y_reg_pred)
-            self.logger.info(f"LightGBM回归器 - RMSE: {rmse:.6f}, R2: {r2:.6f}")
+            # 计算性能指标
+            y_pred_clf = xgb_clf.predict(X_test)
+            y_pred_prob_clf = xgb_clf.predict_proba(X_test)[:, 1]
+            
+            perf_clf = {
+                'accuracy': accuracy_score(y_cls_test, y_pred_clf),
+                'precision': precision_score(y_cls_test, y_pred_clf, zero_division=0),
+                'recall': recall_score(y_cls_test, y_pred_clf, zero_division=0),
+                'f1': f1_score(y_cls_test, y_pred_clf, zero_division=0),
+                'auc': roc_auc_score(y_cls_test, y_pred_prob_clf) if len(np.unique(y_cls_test)) > 1 else 0
+            }
+            
+            self.logger.info(f"XGBoost分类器性能: "
+                            f"准确率={perf_clf['accuracy']:.4f}, "
+                            f"精确率={perf_clf['precision']:.4f}, "
+                            f"召回率={perf_clf['recall']:.4f}, "
+                            f"F1={perf_clf['f1']:.4f}, "
+                            f"AUC={perf_clf['auc']:.4f}")
+            
+            models['xgb_classifier'] = xgb_clf
+        except Exception as e:
+            self.logger.error(f"训练XGBoost分类器失败: {e}")
+            self.logger.error(traceback.format_exc())
+        
+        # 3. LightGBM回归器
+        self.logger.info("开始训练LightGBM回归器...")
+        try:
+            # 创建LightGBM回归器
+            lgb_reg = lgb.LGBMRegressor(
+                n_estimators=100,
+                learning_rate=0.05,
+                max_depth=5,
+                num_leaves=31,
+                min_child_samples=20,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                objective='regression'
+            )
+            
+            # 准备评估集
+            eval_set = [(X_test, y_reg_test)] if X_test is not None else None
+            callbacks = [lgb.early_stopping(stopping_rounds=10)]
+            
+            # 训练模型
+            lgb_reg.fit(
+                X_train, 
+                y_reg_train,
+                eval_set=eval_set,
+                callbacks=callbacks
+                # 移除verbose参数
+            )
+            
+            # 计算性能指标
+            y_pred_lgb = lgb_reg.predict(X_test)
+            mse_lgb = mean_squared_error(y_reg_test, y_pred_lgb)
+            rmse_lgb = np.sqrt(mse_lgb)
+            r2_lgb = r2_score(y_reg_test, y_pred_lgb)
+            
+            self.logger.info(f"LightGBM回归器性能: RMSE={rmse_lgb:.4f}, R2={r2_lgb:.4f}")
             
             models['lgb_regressor'] = lgb_reg
         except Exception as e:
-            self.logger.error(f"训练LightGBM回归器时出错: {e}")
+            self.logger.error(f"训练LightGBM回归器失败: {e}")
             self.logger.error(traceback.format_exc())
         
         # 4. 神经网络回归器
@@ -1203,7 +1333,7 @@ class SectorModelTrainer:
             
             # 构建神经网络
             input_size = X_train_scaled.shape[1]
-            hidden_size = [64, 32]
+            hidden_size = [128, 64]
             output_size = 1
             
             # 导入LiquidNetModel
@@ -1211,23 +1341,60 @@ class SectorModelTrainer:
                 sys.path.append(str(get_project_root() / "to"))
                 from Liquid.nn.liquid.liquid_network import LiquidNetModel
                 
-                # 根据LiquidNetModel实际API创建实例
-                net = LiquidNetModel(
-                    input_size=input_size,  # 使用input_size而非input_dim
-                    hidden_size=hidden_size,
-                    output_size=output_size,
-                    learning_rate=0.001,
-                    dropout_rate=0.3
-                )
+                # 添加一个更健壮的参数调整机制
+                try:
+                    # 首先尝试获取LiquidNetModel的构造函数参数
+                    import inspect
+                    model_params = inspect.signature(LiquidNetModel.__init__).parameters.keys()
+                    
+                    # 根据实际API参数构建参数字典
+                    net_params = {}
+                    if 'input_size' in model_params:
+                        net_params['input_size'] = input_size
+                    elif 'input_dim' in model_params:
+                        net_params['input_dim'] = input_size
+                        
+                    if 'output_size' in model_params:
+                        net_params['output_size'] = output_size
+                    elif 'output_dim' in model_params:
+                        net_params['output_dim'] = output_size
+                        
+                    if 'hidden_size' in model_params:
+                        net_params['hidden_size'] = hidden_size[0] if isinstance(hidden_size, list) else hidden_size
+                    elif 'hidden_dim' in model_params or 'hidden_dims' in model_params:
+                        param_name = 'hidden_dim' if 'hidden_dim' in model_params else 'hidden_dims'
+                        net_params[param_name] = hidden_size
+                        
+                    # 添加其他通用参数
+                    net_params['num_layers'] = len(hidden_size) if isinstance(hidden_size, list) else 2
+                    net_params['learning_rate'] = 0.0005  # 降低学习率
+                    # 删除dropout参数 - LiquidNetModel不支持此参数
+                    
+                    # 使用参数字典初始化模型
+                    net = LiquidNetModel(**net_params)
+                    
+                except Exception as param_error:
+                    self.logger.warning(f"使用自动参数调整初始化LiquidNetModel失败: {param_error}")
+                    
+                    # 回退到标准参数初始化
+                    net = LiquidNetModel(
+                        input_size=input_size,
+                        output_size=output_size,
+                        hidden_size=hidden_size[0] if isinstance(hidden_size, list) else hidden_size,
+                        num_layers=len(hidden_size) if isinstance(hidden_size, list) else 2,
+                        learning_rate=0.0005
+                        # 删除dropout参数 - LiquidNetModel不支持此参数
+                    )
                 
                 # 使用LiquidNetModel的fit方法训练
                 net.fit(
                     X_train_scaled, y_reg_train.values.reshape(-1, 1),
-                    validation_data=(X_test_scaled, y_test_tensor.numpy()),
-                    batch_size=64,
-                    epochs=50,
-                    patience=10,
-                    verbose=True
+                    validation_data=(X_test_scaled, y_reg_test.values.reshape(-1, 1)),
+                    batch_size=32,
+                    epochs=100,
+                    patience=15,
+                    verbose=1
+                    # 移除l2_reg参数 - 不支持
                 )
                 
                 # 评估
@@ -1346,13 +1513,29 @@ class SectorModelTrainer:
                 xgb_pred = models['xgb_regressor'].predict(X_test)
                 lgb_pred = models['lgb_regressor'].predict(X_test)
                 
+                # 初始化nn_pred为None
+                nn_pred = None
+                
                 # 如果神经网络模型也存在
                 if 'nn_regressor' in models:
                     net = models['nn_regressor']
-                    net.eval()
-                    with torch.no_grad():
-                        nn_pred = net(X_test_tensor).numpy().flatten()
-                else:
+                    # 检查是否为PyTorch模型还是LiquidNetModel
+                    if isinstance(net, torch.nn.Module):
+                        # PyTorch模型
+                        net.eval()
+                        
+                        # 确保X_test_tensor已定义
+                        X_test_tensor = torch.FloatTensor(X_test_scaled)
+                            
+                        with torch.no_grad():
+                            nn_pred = net(X_test_tensor).numpy().flatten()
+                    else:
+                        # LiquidNetModel
+                        nn_pred = net.predict(X_test_scaled).flatten()
+                
+                # 确保nn_pred已定义
+                if nn_pred is None:
+                    # 如果没有神经网络预测，使用零向量
                     nn_pred = np.zeros_like(xgb_pred)
                 
                 # 创建堆叠特征
@@ -1390,6 +1573,90 @@ class SectorModelTrainer:
             }
             
             self.logger.info(f"成功训练板块轮动模型 {model_name}，共包含 {len(models) - 2} 个子模型")
+            
+            # 保存训练好的模型
+            model_base_dir = self.model_dir / model_name
+            ensure_dir(model_base_dir)
+            
+            # 保存特征列
+            feature_file = model_base_dir / "feature_columns.json"
+            with open(feature_file, "w") as f:
+                json.dump(feature_cols, f)
+                
+            # 保存各个子模型
+            if 'xgb_regressor' in models:
+                model_file = model_base_dir / "xgb_return_model.json"
+                models['xgb_regressor'].save_model(str(model_file))
+                self.logger.info(f"XGBoost回归器已保存到 {model_file}")
+                
+            if 'xgb_classifier' in models:
+                model_file = model_base_dir / "xgb_clf_model.json"
+                models['xgb_classifier'].save_model(str(model_file))
+                self.logger.info(f"XGBoost分类器已保存到 {model_file}")
+                
+            if 'lgb_regressor' in models:
+                model_file = model_base_dir / "lgb_return_model.txt"
+                models['lgb_regressor'].booster_.save_model(str(model_file))
+                self.logger.info(f"LightGBM回归器已保存到 {model_file}")
+                
+            if 'nn_regressor' in models:
+                try:
+                    model_dir = model_base_dir / "lnn_return_model"
+                    net = models['nn_regressor']
+                    
+                    # 判断是LiquidNetModel还是PyTorch模型
+                    if hasattr(net, 'save'):
+                        # LiquidNetModel有save方法
+                        net.save(model_dir)
+                        self.logger.info(f"神经网络回归器已保存到 {model_dir}")
+                    else:
+                        # PyTorch模型
+                        ensure_dir(model_dir)
+                        torch.save(net.state_dict(), model_dir / "model.pt")
+                        # 保存一些额外信息
+                        with open(model_dir / "architecture.json", "w") as f:
+                            json.dump({
+                                "input_size": input_size,
+                                "hidden_size": hidden_size,
+                                "output_size": output_size,
+                                "type": "SimpleNN"
+                            }, f)
+                        self.logger.info(f"PyTorch神经网络已保存到 {model_dir}")
+                except Exception as e:
+                    self.logger.error(f"保存神经网络模型时出错: {e}")
+                    
+            if 'stacking_model' in models:
+                try:
+                    model_file = model_base_dir / "stacking_model.pkl"
+                    with open(model_file, 'wb') as f:
+                        pickle.dump(models['stacking_model'], f)
+                    self.logger.info(f"堆叠模型已保存到 {model_file}")
+                except Exception as e:
+                    self.logger.error(f"保存堆叠模型时出错: {e}")
+                    
+            if 'scaler' in models:
+                try:
+                    scaler_file = model_base_dir / "scaler.pkl"
+                    with open(scaler_file, 'wb') as f:
+                        pickle.dump(models['scaler'], f)
+                    self.logger.info(f"特征缩放器已保存到 {scaler_file}")
+                except Exception as e:
+                    self.logger.error(f"保存特征缩放器时出错: {e}")
+                    
+            # 保存元数据
+            metadata_file = model_base_dir / "metadata.json"
+            with open(metadata_file, "w") as f:
+                metadata = {
+                    'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'feature_count': len(feature_cols),
+                    'train_samples': len(X_train),
+                    'test_samples': len(X_test),
+                    'top_performer_ratio': float(top_ratio),
+                    'models': [k for k in models.keys() if k not in ['feature_columns', 'scaler', 'metadata']]
+                }
+                json.dump(metadata, f, indent=2)
+                
+            self.logger.info(f"板块轮动模型 {model_name} 训练成功，模型已保存到 {model_base_dir}")
             return models
         else:
             self.logger.error(f"训练板块轮动模型 {model_name} 失败，未能成功训练任何子模型")
@@ -1545,14 +1812,35 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
     predictions = {}
     for model_type, model in loaded_models.items():
         try:
+            # 确保特征数据符合要求
+            features = X.copy()
+            
+            # 检查NaN和无穷值
+            if features.isna().any().any() or np.isinf(features.values).any():
+                self.logger.warning(f"特征数据中包含NaN或无穷值，将进行填充")
+                features = features.fillna(0)
+                features = features.replace([np.inf, -np.inf], 0)
+            
             if model_type.startswith('xgb'):
-                preds = model.predict(X)
+                preds = model.predict(features)
                 predictions[model_type] = preds
             elif model_type.startswith('lgb'):
-                preds = model.predict(X)
+                # LightGBM模型需要特殊处理
+                if isinstance(model, lgb.Booster):
+                    # 直接使用Booster预测
+                    preds = model.predict(features)
+                else:
+                    # 使用LGBMRegressor预测
+                    preds = model.predict(features)
                 predictions[model_type] = preds
             elif model_type.startswith('lnn'):
-                preds = model.predict(X.values).flatten()
+                # 尝试使用LiquidNetModel预测
+                try:
+                    # 使用numpy数组预测
+                    preds = model.predict(features.values).flatten()
+                except:
+                    # 尝试使用其他格式
+                    preds = model.predict(features).flatten()
                 predictions[model_type] = preds
         except Exception as e:
             logger.error(f"使用模型 {model_type} 预测出错: {e}")
@@ -1695,9 +1983,9 @@ def main():
         # 训练模式
         # 设置默认日期
         if not args.start_date:
-            args.start_date = '20230501'
+            args.start_date = '20240501'
         if not args.end_date:
-            args.end_date = '20230610'
+            args.end_date = '20241231'
         
         # 创建训练器
         trainer = SectorModelTrainer(model_dir=model_dir, use_lnn=args.use_lnn)

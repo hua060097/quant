@@ -742,7 +742,7 @@ if __name__ == "__main__":
     # 通过注释/取消注释下面的行来选择要执行的功能
     
     # 1. 更新所有排名数据（从START_DATE到当前日期）
-    update_all_rankings()
+    # update_all_rankings()
     
     # 2. 只更新当天的排名数据
     # update_today_rankings()
@@ -751,7 +751,7 @@ if __name__ == "__main__":
     # update_date_range('20230901', '20230930')
     
     # 4. 查看特定日期的排名数据
-    # print_all_rankings_for_date('20250313', 10)
+    print_all_rankings_for_date('20230317', 10)
     
     # 5. 导出示例：获取某一天的十日涨幅排名并导出为CSV
     # df = get_ten_day_rise_ranking('20230901')

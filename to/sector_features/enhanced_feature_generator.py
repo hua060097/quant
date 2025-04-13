@@ -77,31 +77,30 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
             date: 日期字符串
             
         Returns:
-            排名DataFrame
+            排名字典，包含四种排名数据
         """
-        if not self.ranking_data_path:
-            return None
-            
+        from stock_daily_rankings import get_all_rankings_for_date
+        
         # 检查缓存
         if date in self.ranking_cache:
             return self.ranking_cache[date]
             
         try:
-            # 构建排名文件路径
-            ranking_file = os.path.join(self.ranking_data_path, f"ranking_{date}.parquet")
+            # 使用stock_daily_rankings.py提供的API获取排名数据
+            all_rankings = get_all_rankings_for_date(date, as_dataframe=True)
             
-            if not os.path.exists(ranking_file):
-                logger.warning(f"日期 {date} 的排名文件不存在: {ranking_file}")
+            if all_rankings is None:
+                logger.warning(f"日期 {date} 的排名数据获取失败")
                 return None
                 
-            # 读取排名数据
-            ranking_df = pd.read_parquet(ranking_file)
-            
             # 缓存结果
-            self.ranking_cache[date] = ranking_df
+            self.ranking_cache[date] = all_rankings
             
-            logger.debug(f"成功加载日期 {date} 的排名数据，共 {len(ranking_df)} 行")
-            return ranking_df
+            logger.debug(f"成功加载日期 {date} 的排名数据，包含十日涨幅:{len(all_rankings['ten_day_rise'])}条，"
+                        f"日涨幅:{len(all_rankings['daily_rise'])}条，"
+                        f"日跌幅:{len(all_rankings['daily_fall'])}条，"
+                        f"成交额:{len(all_rankings['daily_amount'])}条")
+            return all_rankings
             
         except Exception as e:
             logger.error(f"加载日期 {date} 的排名数据失败: {str(e)}")
@@ -406,69 +405,73 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
             特征字典
         """
         features = {
-            'top_volume_ratio': 0.0,
-            'top_change_ratio': 0.0,
-            'top_turn_ratio': 0.0,
-            'top100_count': 0
+            # 十日涨幅排名特征
+            'ten_day_rise_count': 0,         # 板块内股票在十日涨幅榜的数量
+            'ten_day_rise_ratio': 0.0,       # 板块内股票在十日涨幅榜的占比
+            # 当日涨幅排名特征
+            'daily_rise_count': 0,           # 板块内股票在日涨幅榜的数量
+            'daily_rise_ratio': 0.0,         # 板块内股票在日涨幅榜的占比
+            # 当日跌幅排名特征
+            'daily_fall_count': 0,           # 板块内股票在日跌幅榜的数量
+            'daily_fall_ratio': 0.0,         # 板块内股票在日跌幅榜的占比
+            # 成交额排名特征
+            'daily_amount_count': 0,         # 板块内股票在成交额榜的数量
+            'daily_amount_ratio': 0.0        # 板块内股票在成交额榜的占比
         }
         
         try:
             # 加载排名数据
-            ranking_df = self._load_sector_rankings(date)
-            if ranking_df is None or ranking_df.empty:
+            rankings = self._load_sector_rankings(date)
+            if rankings is None:
                 logger.warning(f"日期 {date} 的排名数据为空，无法计算排名特征")
                 return features
                 
             # 创建股票集合，便于快速查找
             stocks_set = set(stocks)
             
-            def calculate_weighted_ranking(ranking_df, stocks_set):
-                """计算加权排名
-                
-                给排名靠前的股票更高的权重，计算板块内股票的加权排名比例
-                
-                Args:
-                    ranking_df: 排名DataFrame
-                    stocks_set: 板块股票集合
-                    
-                Returns:
-                    加权排名比例
-                """
-                total_weight = sum(1/(i+1) for i in range(self.top_n))
-                sector_weight = 0
-                
-                for i, row in ranking_df.iterrows():
-                    if i >= self.top_n:
-                        break
-                        
-                    if row['stock_code'] in stocks_set:
+            # 计算十日涨幅排名特征
+            if 'ten_day_rise' in rankings and not rankings['ten_day_rise'].empty:
+                ten_day_stocks = set(rankings['ten_day_rise']['code'])
+                intersection = ten_day_stocks.intersection(stocks_set)
+                features['ten_day_rise_count'] = len(intersection)
+                features['ten_day_rise_ratio'] = len(intersection) / len(ten_day_stocks) if len(ten_day_stocks) > 0 else 0.0
+            
+            # 计算日涨幅排名特征
+            if 'daily_rise' in rankings and not rankings['daily_rise'].empty:
+                daily_rise_stocks = set(rankings['daily_rise']['code'])
+                intersection = daily_rise_stocks.intersection(stocks_set)
+                features['daily_rise_count'] = len(intersection)
+                features['daily_rise_ratio'] = len(intersection) / len(daily_rise_stocks) if len(daily_rise_stocks) > 0 else 0.0
+            
+            # 计算日跌幅排名特征
+            if 'daily_fall' in rankings and not rankings['daily_fall'].empty:
+                daily_fall_stocks = set(rankings['daily_fall']['code'])
+                intersection = daily_fall_stocks.intersection(stocks_set)
+                features['daily_fall_count'] = len(intersection)
+                features['daily_fall_ratio'] = len(intersection) / len(daily_fall_stocks) if len(daily_fall_stocks) > 0 else 0.0
+            
+            # 计算成交额排名特征
+            if 'daily_amount' in rankings and not rankings['daily_amount'].empty:
+                daily_amount_stocks = set(rankings['daily_amount']['code'])
+                intersection = daily_amount_stocks.intersection(stocks_set)
+                features['daily_amount_count'] = len(intersection)
+                features['daily_amount_ratio'] = len(intersection) / len(daily_amount_stocks) if len(daily_amount_stocks) > 0 else 0.0
+            
+            # 计算加权特征：根据排名位置加权
+            if 'ten_day_rise' in rankings and not rankings['ten_day_rise'].empty:
+                weighted_score = 0
+                for i, row in rankings['ten_day_rise'].iterrows():
+                    if row['code'] in stocks_set:
                         # 排名越靠前，权重越大
-                        sector_weight += 1/(i+1)
-                        
-                return sector_weight / total_weight if total_weight > 0 else 0
-            
-            # 计算各类排名特征
-            # 1. 成交量排名
-            if 'volume_rank' in ranking_df.columns:
-                volume_ranking = ranking_df.sort_values('volume_rank')
-                features['top_volume_ratio'] = calculate_weighted_ranking(volume_ranking, stocks_set)
+                        rank_weight = 1.0 / (i + 1)
+                        weighted_score += rank_weight
+                # 归一化
+                features['ten_day_rise_weighted'] = weighted_score
+            else:
+                features['ten_day_rise_weighted'] = 0.0
                 
-            # 2. 涨跌幅排名
-            if 'change_rank' in ranking_df.columns:
-                change_ranking = ranking_df.sort_values('change_rank')
-                features['top_change_ratio'] = calculate_weighted_ranking(change_ranking, stocks_set)
-                
-            # 3. 换手率排名
-            if 'turnover_rank' in ranking_df.columns:
-                turn_ranking = ranking_df.sort_values('turnover_rank')
-                features['top_turn_ratio'] = calculate_weighted_ranking(turn_ranking, stocks_set)
-                
-            # 4. Top100股票数量
-            top100_stocks = set(ranking_df.iloc[:100]['stock_code']) if len(ranking_df) >= 100 else set()
-            features['top100_count'] = len(top100_stocks.intersection(stocks_set))
-            
-            logger.debug(f"板块 {sector} 在日期 {date} 的成交量排名比例: {features['top_volume_ratio']:.2f}, "
-                        f"涨跌幅排名比例: {features['top_change_ratio']:.2f}")
+            logger.debug(f"板块 {sector} 在日期 {date} 的十日涨幅榜占比: {features['ten_day_rise_ratio']:.2f}, "
+                        f"日涨幅榜占比: {features['daily_rise_ratio']:.2f}")
                         
         except Exception as e:
             logger.error(f"计算板块 {sector} 在日期 {date} 的排名特征时出错: {str(e)}")
@@ -543,10 +546,10 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
     # 导入必要的模块
-    from to.sector_features.data_provider import XtDataProvider
+    from to.generate_sector_features import DataLoaderWrapper
     
     # 初始化数据提供器
-    data_provider = XtDataProvider()
+    data_provider = DataLoaderWrapper()
     
     # 获取板块映射
     sector = "TGN人工智能"
