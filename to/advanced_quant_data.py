@@ -51,7 +51,7 @@ warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning
 
 # 定义数据目录
 DATA_ROOT = Path("to/local_data")
-DAILY_DIR = DATA_ROOT / "daily"
+DAILY_DIR = DATA_ROOT / "daily" 
 MINUTE_DIR = DATA_ROOT / "minute"
 CALENDAR_DIR = DATA_ROOT / "calendar"
 METADATA_DIR = DATA_ROOT / "metadata"
@@ -1321,7 +1321,6 @@ class ParquetDataStorage:
                 if invalid_mask.any():
                     logger.warning(f"从交易日历中移除了 {invalid_mask.sum()} 个特殊值'date_str'")
                     calendar_df = calendar_df[~invalid_mask]
-            
             # 如果指定了日期范围，则筛选
             if start_date or end_date:
                 if start_date:
