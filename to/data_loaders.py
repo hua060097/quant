@@ -10,6 +10,8 @@ import os
 import logging
 import pandas as pd
 from typing import List, Dict, Optional, Union, Any
+from pathlib import Path
+import json
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -17,6 +19,22 @@ logger = logging.getLogger(__name__)
 # 全局数据加载器实例
 _DATA_LOADER = None
 
+# 获取项目根目录
+def get_project_root():
+    """获取项目根目录"""
+    current_file = Path(__file__).resolve()
+    return current_file.parent.parent
+
+# 路径设置
+def get_data_path(relative_path=None):
+    """获取数据目录路径"""
+    project_root = get_project_root()
+    data_path = project_root / "to" / "local_data"
+    if relative_path:
+        return data_path / relative_path
+    return data_path
+
+market_status_dir = get_data_path("market_status/daily")
 
 def get_data_loader():
     """获取全局数据加载器实例
@@ -42,6 +60,39 @@ def get_data_loader():
             raise ImportError(f"无法加载真实数据源，请确保安装了xtquant并配置了正确的环境: {e}")
     
     return _DATA_LOADER
+
+
+def _load_market_status(self, date):
+    """
+    加载市场状态数据
+        
+    Args:
+        date: 日期，格式为YYYYMMDD
+            
+    Returns:
+        dict: 市场状态数据
+    """
+    try:
+        # 加载市场状态数据
+        status_file = market_status_dir / "market_status.json"
+        if not status_file.exists():
+            self.logger.warning(f"市场状态文件不存在: {status_file}")
+            return None
+                
+        with open(status_file, "r") as f:
+            market_status_data = json.load(f)
+                
+        # 获取特定日期的市场状态
+        if date in market_status_data:
+            return market_status_data[date]
+        else:
+            self.logger.warning(f"日期 {date} 的市场状态数据不存在")
+            return None
+                
+    except Exception as e:
+            self.logger.error(f"加载日期 {date} 的市场状态数据时出错: {e}")
+            self.logger.exception(e)
+            return None
 
 
 def get_trading_days(start_date: str, end_date: str) -> List[str]:

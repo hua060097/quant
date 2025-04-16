@@ -344,8 +344,25 @@ class SectorModelTrainer:
                         support = cyb_data.get('support', 0.0)
                         resistance = cyb_data.get('resistance', 0.0)
                         change_percent = cyb_data.get('change_percent', 0.0)
+                        profit_loss_ratio_14 = cyb_data.get('profit_loss_ratio_14', 0.0)
+                        profit_loss_ratio_30 = cyb_data.get('profit_loss_ratio_30', 0.0)
+
+                        sector_df['market_profit_loss_ratio_14'] = profit_loss_ratio_14
+                        sector_df['market_profit_loss_ratio_30'] = profit_loss_ratio_30
                         
-                        sector_df['change_percent'] = change_percent
+                        # 市场涨跌幅(创业板)
+                        sector_df['market_change_percent'] = change_percent
+                        
+                        # 计算板块相对于创业板的相对涨幅
+                        if 'change_percent' in sector_df.columns:
+                            # 如果板块数据已经有涨跌幅，计算相对涨幅(差值)
+                            sector_df['relative_change_diff'] = sector_df['change_percent'] - change_percent
+                            # 计算相对涨幅比值(如果创业板不是0才计算比值)
+                            if abs(change_percent) > 0.001:
+                                sector_df['relative_change_ratio'] = sector_df['change_percent'] / change_percent
+                            else:
+                                # 如果创业板涨跌幅接近0，使用差值替代
+                                sector_df['relative_change_ratio'] = sector_df['relative_change_diff']
                         
                         if support > 0 and close > 0:
                             sector_df['price_to_support'] = close / support - 1.0
@@ -1722,6 +1739,8 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
             current_features['structure_score'] = cyb_data.get('structure_score', 0.0)
             current_features['cycle_score'] = cyb_data.get('cycle_score', 0.0)
             current_features['total_score'] = cyb_data.get('total_score', 0.0)
+            current_features['profit_loss_ratio_14'] = cyb_data.get('profit_loss_ratio_14', 0.0)
+            current_features['profit_loss_ratio_30'] = cyb_data.get('profit_loss_ratio_30', 0.0)
             
             # 技术指标派生特征
             if 'technical_data' in cyb_data:

@@ -552,7 +552,7 @@ class MarketStatusProcessor:
                 ma20 = self._calculate_ma(close, 20)
                 ma60 = self._calculate_ma(close, 60)
                 ma120 = self._calculate_ma(close, 120)
-                
+             
                 macd, macd_signal, macd_hist = self._calculate_macd(close)
                 
                 rsi6 = self._calculate_rsi(close, 6)
@@ -576,8 +576,13 @@ class MarketStatusProcessor:
                 support_level = self._calculate_support_resistance(low, close, mode='support')
                 resistance_level = self._calculate_support_resistance(high, close, mode='resistance')
 
-                print(f"支撑位: {support_level}")
-                print(f"阻力位: {resistance_level}")
+                # 计算盈亏比指标
+                profit_loss_ratio_14 = self._calculate_profit_loss_ratio(close, support_level, resistance_level, n=14)
+                profit_loss_ratio_30 = self._calculate_profit_loss_ratio(close, support_level, resistance_level, n=30)
+
+                print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
+                print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
+            
                 
                 # 分析价格结构
                 price_structure = self._analyze_price_structure(high, low, close)
@@ -607,7 +612,9 @@ class MarketStatusProcessor:
                     'open_series': open_series,
                     'high_series': high_series,
                     'low_series': low_series,
-                    'volume_series': volume_series
+                    'volume_series': volume_series,
+                    'profit_loss_ratio_14': profit_loss_ratio_14,
+                    'profit_loss_ratio_30': profit_loss_ratio_30    
                 }
                 self.logger.info(f"成功计算指数 {index_code} 的指标")
 
@@ -645,6 +652,128 @@ class MarketStatusProcessor:
             self.logger.error(f"计算移动平均线时出错: {str(e)}")
             return np.array([np.nan])
             
+    def _calculate_profit_loss_ratio(self, data, support_level, resistance_level, n=14):
+        """计算盈亏比 - 基于支撑位和阻力位的风险收益比率分析
+        
+        专业量化分析方法：
+        1. 充分利用完整历史数据，无需设置初始默认值
+        2. 使用真实波动范围(ATR)进行风险评估
+        3. 基于价格在支撑位和阻力位之间的相对位置调整盈亏比
+        4. 应用专业平滑算法提高指标稳定性
+        
+        Args:
+            data: numpy.array，价格数据（收盘价）
+            support_level: numpy.array，支撑位
+            resistance_level: numpy.array，阻力位
+            n: int，计算周期（用于平滑处理）
+            
+        Returns:
+            numpy.array: 专业计算的盈亏比，基于历史数据
+        """
+        try:
+            # 初始化结果数组
+            profit_loss_ratio = np.zeros_like(data)
+            
+            # 数据有效性检查
+            if len(data) < 2:
+                self.logger.warning("计算盈亏比的数据点数不足")
+                return profit_loss_ratio
+            
+            # 计算真实波动范围(TR)
+            tr_array = np.zeros_like(data)
+            
+            # 利用完整历史数据计算TR，不使用默认初始值
+            for i in range(1, len(data)):
+                # 真实波动范围定义：当日最高价与最低价的差值、当日最高价与前收的差值、当日最低价与前收的差值，三者中的最大值
+                # 由于我们只有收盘价，因此使用相邻两天收盘价的差值作为真实波动范围的近似
+                tr_array[i] = abs(data[i] - data[i-1])
+            
+            # 计算ATR - 使用完整历史数据
+            atr = np.zeros_like(data)
+            
+            # 从第n天开始，前n-1天设为NaN表示无足够数据计算
+            for i in range(n, len(data)):
+                atr[i] = np.mean(tr_array[i-n+1:i+1])
+            
+            # 为前n-1天设置合理的ATR值 - 使用可用的最早ATR值
+            if n < len(data):
+                first_valid_atr = atr[n]
+                atr[:n] = first_valid_atr
+            
+            # 计算每个时间点的盈亏比
+            for i in range(len(data)):
+                current_price = data[i]
+                current_support = support_level[i]
+                current_resistance = resistance_level[i]
+                current_atr = atr[i]
+                
+                # 验证支撑位和阻力位的有效性
+                # 支撑位必须低于当前价格，阻力位必须高于当前价格
+                if current_support >= current_price or current_resistance <= current_price:
+                    # 无效的支撑位或阻力位 - 使用基于ATR的动态计算
+                    price_range = current_atr * 2
+                    current_support = current_price - price_range
+                    current_resistance = current_price + price_range
+                
+                # 计算风险和收益空间
+                upside_potential = max(0.001, current_resistance - current_price)
+                downside_risk = max(0.001, current_price - current_support)
+                
+                # 根据专业的风险收益分析计算盈亏比
+                # 参考: https://www.investopedia.com/terms/p/profit_loss_ratio.asp
+                raw_ratio = upside_potential / downside_risk
+                
+                # 根据ATR进行风险调整
+                atr_factor = current_atr / current_price
+                
+                # 价格在支撑位和阻力位间的相对位置
+                if current_resistance > current_support:  # 避免除以零
+                    price_position = (current_price - current_support) / (current_resistance - current_support)
+                    
+                    # 动态调整盈亏比 - 基于价格位置的专业风险调整
+                    if price_position < 0.25:  # 接近支撑位
+                        position_factor = 1.2  # 上涨空间大，提高盈亏比
+                    elif price_position > 0.75:  # 接近阻力位
+                        position_factor = 0.8  # 下跌风险大，降低盈亏比
+                    else:  # 位于中间区域
+                        position_factor = 1.0
+                else:
+                    # 支撑位和阻力位重合的极端情况
+                    position_factor = 1.0
+                
+                # 将ATR和位置因素纳入计算
+                adjusted_ratio = raw_ratio * position_factor * (1 + atr_factor)
+                
+                # 根据专业交易标准限制盈亏比范围
+                profit_loss_ratio[i] = min(max(adjusted_ratio, 0.2), 5.0)
+            
+            # 使用专业的移动平均平滑处理
+            if n > 1:
+                # 保存原始计算结果
+                raw_result = np.copy(profit_loss_ratio)
+                
+                # 应用加权移动平均平滑
+                for i in range(n, len(profit_loss_ratio)):
+                    # 使用线性加权，最近的数据权重更大
+                    weights = np.linspace(1, 2, n)
+                    weighted_sum = np.sum(raw_result[i-n+1:i+1] * weights)
+                    profit_loss_ratio[i] = weighted_sum / np.sum(weights)
+            
+            # 确保前n日的盈亏比也有合理的值 - 使用后向填充
+            if n < len(profit_loss_ratio):
+                # 计算最早n个有效值的平均值
+                early_avg = np.mean(profit_loss_ratio[n:min(n*2, len(profit_loss_ratio))])
+                # 应用到前n个值
+                profit_loss_ratio[:n] = early_avg
+            
+            return profit_loss_ratio
+            
+        except Exception as e:
+            self.logger.error(f"计算盈亏比时出错: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return np.ones_like(data)  # 出错时返回中性值
+    
     def _calculate_macd(self, data):
         """计算MACD指标
         Args:
@@ -946,6 +1075,8 @@ class MarketStatusProcessor:
                     # 单独的支撑位和阻力位
                     'support': self._round_float(technical_data.get('support')),
                     'resistance': self._round_float(technical_data.get('resistance')),
+                    'profit_loss_ratio_14': self._round_float(technical_data.get('profit_loss_ratio_14')),
+                    'profit_loss_ratio_30': self._round_float(technical_data.get('profit_loss_ratio_30')),
                     'change_percent': self._round_float(market_data.get('daily_change_pct', 0.0))
                 }
             
@@ -1257,184 +1388,188 @@ class MarketStatusProcessor:
             self.logger.error(f"目录验证失败: {str(e)}")
             raise
 
-    def analyze_market_status(self, market_data):
-        """分析市场状态
-        Args:
-            market_data: DataFrame，包含市场数据
-        Returns:
-            dict: 以日期为键的市场状态分析结果字典
-        """
-        try:
-            if market_data is None or market_data.empty:
-                self.logger.error("市场数据为空，无法进行分析")
-                return None
+    # def analyze_market_status(self, market_data):
+    #     """分析市场状态
+    #     Args:
+    #         market_data: DataFrame，包含市场数据
+    #     Returns:
+    #         dict: 以日期为键的市场状态分析结果字典
+    #     """
+    #     try:
+    #         if market_data is None or market_data.empty:
+    #             self.logger.error("市场数据为空，无法进行分析")
+    #             return None
                 
-            # 检查数据完整性
-            required_fields = ['open', 'high', 'low', 'close', 'volume']
-            for field in required_fields:
-                if field not in market_data.columns:
-                    self.logger.error(f"缺少必要的数据字段: {field}")
-                    return None
+    #         # 检查数据完整性
+    #         required_fields = ['open', 'high', 'low', 'close', 'volume']
+    #         for field in required_fields:
+    #             if field not in market_data.columns:
+    #                 self.logger.error(f"缺少必要的数据字段: {field}")
+    #                 return None
             
-            # 计算技术指标
-            indicators = self._calculate_indicators(market_data)
-            if not indicators:
-                self.logger.error("计算技术指标失败")
-                return None
+    #         # 计算技术指标
+    #         indicators = self._calculate_indicators(market_data)
+    #         if not indicators:
+    #             self.logger.error("计算技术指标失败")
+    #             return None
             
-            # 获取数据中的所有日期
-            all_dates = sorted(market_data.index.unique())
-            self.logger.info(f"开始分析 {len(all_dates)} 个交易日的市场状态")
+    #         # 获取数据中的所有日期
+    #         all_dates = sorted(market_data.index.unique())
+    #         self.logger.info(f"开始分析 {len(all_dates)} 个交易日的市场状态")
             
-            # 创建以日期为键的结果字典
-            date_results = {}
+    #         # 创建以日期为键的结果字典
+    #         date_results = {}
             
-            # 为每个日期分析市场状态
-            for current_date in all_dates:
-                # 过滤出当前日期的数据
-                current_data = market_data.loc[current_date]
+    #         # 为每个日期分析市场状态
+    #         for current_date in all_dates:
+    #             # 过滤出当前日期的数据
+    #             current_data = market_data.loc[current_date]
                 
-                # 如果当前日期只有一条记录，需要转换为DataFrame
-                if not isinstance(current_data, pd.DataFrame):
-                    current_data = pd.DataFrame([current_data])
+    #             # 如果当前日期只有一条记录，需要转换为DataFrame
+    #             if not isinstance(current_data, pd.DataFrame):
+    #                 current_data = pd.DataFrame([current_data])
                 
-                # 确保有足够的数据进行分析
-                if len(current_data) == 0 or 'code' not in current_data.columns:
-                    continue
+    #             # 确保有足够的数据进行分析
+    #             if len(current_data) == 0 or 'code' not in current_data.columns:
+    #                 continue
                 
-                # 初始化当前日期的结果字典
-                result = {
-                    'market_type': '中性盘整',  # 默认市场类型
-                    'market_cycle': '蓄势',     # 默认市场周期
-                    'trend_strength': 0.0,      # 趋势强度
-                    'trading_advice': '观望为主，等待明确信号',
-                    'risk_level': 'low',
-                    'signal_strength': 0,
-                    'individual_status': {}
-                }
+    #             # 初始化当前日期的结果字典
+    #             result = {
+    #                 'market_type': '中性盘整',  # 默认市场类型
+    #                 'market_cycle': '蓄势',     # 默认市场周期
+    #                 'trend_strength': 0.0,      # 趋势强度
+    #                 'trading_advice': '观望为主，等待明确信号',
+    #                 'risk_level': 'low',
+    #                 'signal_strength': 0,
+    #                 'individual_status': {}
+    #             }
                 
-                # 分析每个指数的状态
-                for index_code in current_data['code'].unique():
-                    # 获取当前指数的历史数据用于计算指标
-                    index_historical_data = market_data[market_data['code'] == index_code]
-                    index_historical_data = index_historical_data.loc[:current_date]  # 只使用当前日期及之前的数据
+    #             # 分析每个指数的状态
+    #             for index_code in current_data['code'].unique():
+    #                 # 获取当前指数的历史数据用于计算指标
+    #                 index_historical_data = market_data[market_data['code'] == index_code]
+    #                 index_historical_data = index_historical_data.loc[:current_date]  # 只使用当前日期及之前的数据
                     
-                    if len(index_historical_data) < 20:  # 确保有足够的历史数据
-                        self.logger.warning(f"日期 {current_date} 的指数 {index_code} 历史数据不足，跳过分析")
-                        continue
+    #                 if len(index_historical_data) < 20:  # 确保有足够的历史数据
+    #                     self.logger.warning(f"日期 {current_date} 的指数 {index_code} 历史数据不足，跳过分析")
+    #                     continue
                     
-                    # 获取当前日期的指数数据
-                    index_current_data = current_data[current_data['code'] == index_code]
+    #                 # 获取当前日期的指数数据
+    #                 index_current_data = current_data[current_data['code'] == index_code]
                     
-                    if len(index_current_data) == 0:
-                        continue
+    #                 if len(index_current_data) == 0:
+    #                     continue
                     
-                    # 计算各项得分
-                    trend_score = self._calculate_trend_score(index_historical_data, indicators.get(index_code, {}))
-                    position_score = self._calculate_position_score(index_historical_data, indicators.get(index_code, {}))
-                    volume_score = self._calculate_volume_score(index_historical_data)
-                    momentum_score = self._calculate_momentum_score(index_historical_data, indicators.get(index_code, {}))
+    #                 # 计算各项得分
+    #                 trend_score = self._calculate_trend_score(index_historical_data, indicators.get(index_code, {}))
+    #                 position_score = self._calculate_position_score(index_historical_data, indicators.get(index_code, {}))
+    #                 volume_score = self._calculate_volume_score(index_historical_data)
+    #                 momentum_score = self._calculate_momentum_score(index_historical_data, indicators.get(index_code, {}))
                     
-                    # 计算总分
-                    total_score = (trend_score + position_score + volume_score + momentum_score) / 4
+    #                 # 计算总分
+    #                 total_score = (trend_score + position_score + volume_score + momentum_score) / 4
                     
-                    # 确定市场类型
-                    market_type = self._determine_market_type(total_score)
+    #                 # 确定市场类型
+    #                 market_type = self._determine_market_type(total_score)
                     
-                    # 获取技术指标值（使用当前日期的值）
-                    close_value = None
-                    ma5_value = None
-                    ma20_value = None
-                    rsi6_value = None
-                    macd_value = None
+    #                 # 获取技术指标值（使用当前日期的值）
+    #                 close_value = None
+    #                 ma5_value = None
+    #                 ma20_value = None
+    #                 rsi6_value = None
+    #                 macd_value = None
                     
-                    try:
-                        # 直接从当前数据获取收盘价
-                        if not index_current_data.empty:
-                            close_value = float(index_current_data['close'].values[0])
+    #                 try:
+    #                     # 直接从当前数据获取收盘价
+    #                     if not index_current_data.empty:
+    #                         close_value = float(index_current_data['close'].values[0])
                         
-                        # 从技术指标中获取MA5、MA20、RSI6、MACD
-                        if index_code in indicators:
-                            index_indicators = indicators[index_code]
+    #                     # 从技术指标中获取MA5、MA20、RSI6、MACD
+    #                     if index_code in indicators:
+    #                         index_indicators = indicators[index_code]
                             
-                            # 如果存在ma5数据并且长度足够，获取最新值
-                            if 'ma5' in index_indicators and len(index_indicators['ma5']) > 0:
-                                ma5_value = float(index_indicators['ma5'][-1])
+    #                         # 如果存在ma5数据并且长度足够，获取最新值
+    #                         if 'ma5' in index_indicators and len(index_indicators['ma5']) > 0:
+    #                             ma5_value = float(index_indicators['ma5'][-1])
                                 
-                            # 同理获取其他指标
-                            if 'ma20' in index_indicators and len(index_indicators['ma20']) > 0:
-                                ma20_value = float(index_indicators['ma20'][-1])
+    #                         # 同理获取其他指标
+    #                         if 'ma20' in index_indicators and len(index_indicators['ma20']) > 0:
+    #                             ma20_value = float(index_indicators['ma20'][-1])
                                 
-                            if 'rsi6' in index_indicators and len(index_indicators['rsi6']) > 0:
-                                rsi6_value = float(index_indicators['rsi6'][-1])
+    #                         if 'rsi6' in index_indicators and len(index_indicators['rsi6']) > 0:
+    #                             rsi6_value = float(index_indicators['rsi6'][-1])
                                 
-                            if 'macd' in index_indicators and len(index_indicators['macd']) > 0:
-                                macd_value = float(index_indicators['macd'][-1])
-                    except Exception as e:
-                        self.logger.warning(f"获取技术指标值时出错: {e}")
+    #                         if 'macd' in index_indicators and len(index_indicators['macd']) > 0:
+    #                             macd_value = float(index_indicators['macd'][-1])
+    #                 except Exception as e:
+    #                     self.logger.warning(f"获取技术指标值时出错: {e}")
                     
-                    # 构建技术指标字典
-                    tech_indicators = {
-                        '收盘价': close_value,
-                        'MA5': ma5_value,
-                        'MA20': ma20_value,
-                        'RSI6': rsi6_value,
-                        'MACD': macd_value
-                    }
+    #                 # 构建技术指标字典
+    #                 tech_indicators = {
+    #                     '收盘价': close_value,
+    #                     'MA5': ma5_value,
+    #                     'MA20': ma20_value,
+    #                     'RSI6': rsi6_value,
+    #                     'MACD': macd_value
+    #                 }
 
-                    print(f"技术指标: {tech_indicators}")
+    #                 print(f"技术指标: {tech_indicators}")
                     
-                    # 获取支撑位和阻力位
-                    support = indicators.get(index_code, {}).get('support_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('support_level') is not None and len(indicators.get(index_code, {}).get('support_level', [])) > len(index_historical_data) else None
-                    resistance = indicators.get(index_code, {}).get('resistance_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('resistance_level') is not None and len(indicators.get(index_code, {}).get('resistance_level', [])) > len(index_historical_data) else None
+    #                 # 获取支撑位和阻力位
+    #                 support = indicators.get(index_code, {}).get('support_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('support_level') is not None and len(indicators.get(index_code, {}).get('support_level', [])) > len(index_historical_data) else None
+    #                 resistance = indicators.get(index_code, {}).get('resistance_level', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('resistance_level') is not None and len(indicators.get(index_code, {}).get('resistance_level', [])) > len(index_historical_data) else None
+    #                 profit_loss_ratio_14 = indicators.get(index_code, {}).get('profit_loss_ratio_14', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('profit_loss_ratio_14') is not None and len(indicators.get(index_code, {}).get('profit_loss_ratio_14', [])) > len(index_historical_data) else None
+    #                 profit_loss_ratio_30 = indicators.get(index_code, {}).get('profit_loss_ratio_30', [])[-len(index_historical_data):][0] if indicators.get(index_code, {}).get('profit_loss_ratio_30') is not None and len(indicators.get(index_code, {}).get('profit_loss_ratio_30', [])) > len(index_historical_data) else None
                     
-                    # 计算涨跌幅
-                    change_percent = 0
-                    if len(index_historical_data) >= 2:
-                        prev_close = index_historical_data['close'].values[-2] if len(index_historical_data) > 1 else index_historical_data['close'].values[-1]
-                        curr_close = index_historical_data['close'].values[-1]
-                        change_percent = 100 * (curr_close - prev_close) / prev_close if prev_close != 0 else 0
+    #                 # 计算涨跌幅
+    #                 change_percent = 0
+    #                 if len(index_historical_data) >= 2:
+    #                     prev_close = index_historical_data['close'].values[-2] if len(index_historical_data) > 1 else index_historical_data['close'].values[-1]
+    #                     curr_close = index_historical_data['close'].values[-1]
+    #                     change_percent = 100 * (curr_close - prev_close) / prev_close if prev_close != 0 else 0
                     
-                    # 保存指数状态
-                    result['individual_status'][index_code] = {
-                        'market_type': market_type,
-                        'trend_score': trend_score,
-                        'position_score': position_score,
-                        'volume_score': volume_score,
-                        'momentum_score': momentum_score,
-                        'total_score': total_score,
-                        'technical_indicators': tech_indicators,
-                        'support': support,
-                        'resistance': resistance,
-                        'change_percent': change_percent
-                    }
+    #                 # 保存指数状态
+    #                 result['individual_status'][index_code] = {
+    #                     'market_type': market_type,
+    #                     'trend_score': trend_score,
+    #                     'position_score': position_score,
+    #                     'volume_score': volume_score,
+    #                     'momentum_score': momentum_score,
+    #                     'total_score': total_score,
+    #                     'technical_indicators': tech_indicators,
+    #                     'support': support,
+    #                     'resistance': resistance,
+    #                     'profit_loss_ratio_14': profit_loss_ratio_14,
+    #                     'profit_loss_ratio_30': profit_loss_ratio_30,
+    #                     'change_percent': change_percent
+    #                 }
                     
-                    # 更新整体市场状态 - 修复trend_strength计算逻辑
-                    # 使用实际total_score值而不是负值
-                    if total_score > result['trend_strength']:
-                        result['trend_strength'] = total_score
+    #                 # 更新整体市场状态 - 修复trend_strength计算逻辑
+    #                 # 使用实际total_score值而不是负值
+    #                 if total_score > result['trend_strength']:
+    #                     result['trend_strength'] = total_score
                 
-                # 如果没有分析任何指数，则跳过当前日期
-                if not result['individual_status']:
-                    continue
+    #             # 如果没有分析任何指数，则跳过当前日期
+    #             if not result['individual_status']:
+    #                 continue
                 
-                # 确定整体市场类型和建议
-                result['market_type'] = self._determine_composite_market_type(result['individual_status'])
-                result['trading_advice'] = self._generate_trading_advice(result)
-                result['market_cycle'] = self._determine_market_cycle(result['individual_status'])
-                result['signal_strength'] = self._calculate_signal_strength(result)
+    #             # 确定整体市场类型和建议
+    #             result['market_type'] = self._determine_composite_market_type(result['individual_status'])
+    #             result['trading_advice'] = self._generate_trading_advice(result)
+    #             result['market_cycle'] = self._determine_market_cycle(result['individual_status'])
+    #             result['signal_strength'] = self._calculate_signal_strength(result)
                 
-                # 将当前日期的分析结果添加到结果字典
-                date_results[current_date] = result
+    #             # 将当前日期的分析结果添加到结果字典
+    #             date_results[current_date] = result
             
-            self.logger.info(f"成功分析 {len(date_results)} 个交易日的市场状态")
-            return date_results
+    #         self.logger.info(f"成功分析 {len(date_results)} 个交易日的市场状态")
+    #         return date_results
             
-        except Exception as e:
-            self.logger.error(f"分析市场状态时出错: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return None
+    #     except Exception as e:
+    #         self.logger.error(f"分析市场状态时出错: {str(e)}")
+    #         import traceback
+    #         self.logger.error(traceback.format_exc())
+    #         return None
     
     def _calculate_trend_score(self, data, indicators):
         """计算趋势得分"""
@@ -1895,7 +2030,7 @@ def register_function(name, description):
     return decorator
 
 @register_function("process", "处理和存储大盘状态数据")
-def process_market_data(processor, start_date=None, end_date=None, index_codes=None, parallel=True):
+def process_market_data(processor, start_date=None, end_date=None, index_codes=None, parallel=False):
     """处理大盘状态数据并保存
     
     参数:
@@ -2349,10 +2484,9 @@ if __name__ == "__main__":
     print("report = generate_market_report()")
     
     # 可以在这里添加示例调用
-    # process_market_data(start_date='20230101', end_date='20250331', index_codes=['399006.SZ']) 
-    update_market_data(start_date='20240726', end_date='20250327', index_codes=['399006.SZ']) 
+    process_market_data(start_date='20230101', end_date='20250331', index_codes=['399006.SZ']) 
+    # update_market_data(start_date='20240726', end_date='20250327', index_codes=['399006.SZ']) 
     # query_market_status(date='20230103')
-
     # 添加main代码块，只有直接运行这个文件时才会执行
     # if __name__ == "__main__":
     #     # 初始化处理器实例

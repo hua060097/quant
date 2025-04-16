@@ -340,7 +340,12 @@ class MarketAnalyzer:
                 current_high = high_series.iloc[i]
                 current_low = low_series.iloc[i]
                 current_volume = volume_series.iloc[i]
-                
+                profit_loss_ratio_14 = indicators['profit_loss_ratio_14'][i]
+                profit_loss_ratio_30 = indicators['profit_loss_ratio_30'][i]
+
+                print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
+                print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
+               
                 # 检查关键值是否为 NaN (可能影响评分)
                 nan_indicators = []
                 if np.isnan(current_close): nan_indicators.append("close")
@@ -531,7 +536,8 @@ class MarketAnalyzer:
                     'macd': macd_val, 'macd_signal': macd_signal_val, 'macd_hist': macd_hist_val,
                     'kdj_k': kdj_k_val, 'kdj_d': kdj_d_val, # 确保 kdj 值已提取
                     'bb_width': bb_width_val, 'bb_position': bb_position_val, # 确保 bb 值已提取
-                    'support': support_level_val, 'resistance': resistance_level_val
+                    'support': support_level_val, 'resistance': resistance_level_val,
+                    'profit_loss_ratio_14': profit_loss_ratio_14, 'profit_loss_ratio_30': profit_loss_ratio_30
                 },
                 'market_data': { # 保存当日的数值
                     'close': current_close, 'open': current_open, 'high': current_high,
@@ -913,7 +919,14 @@ class MarketAnalyzer:
     
     def _calculate_support_resistance(self, price_data, close_data, mode='support'):
         """
-        计算支撑位或阻力位 - 向量化实现
+        计算支撑位或阻力位 - 专业版向量化实现
+        
+        改进要点：
+        1. 使用多重时间窗口分析
+        2. 考虑价格触及次数权重
+        3. 结合价格波动率进行动态调整
+        4. 确保支撑位始终低于当前价格，阻力位始终高于当前价格
+        5. 使用指数平滑处理，减少虚假信号
         
         参数:
             price_data (np.array): 价格数据(最低价/最高价)
@@ -925,35 +938,106 @@ class MarketAnalyzer:
         """
         result = np.zeros_like(price_data)
         
-        # 默认值使用当前价格
+        # 初始化结果数组，使用收盘价作为基准
         result[:] = close_data
         
-        # 窗口大小
-        window = 20
+        # 设置多重时间窗口
+        windows = [10, 20, 40]  # 短期、中期、长期窗口
+        weights = [0.5, 0.3, 0.2]  # 对应的权重
         
-        if len(price_data) < window:
+        # 计算ATR用于动态调整
+        tr = np.zeros_like(price_data)
+        for i in range(1, len(price_data)):
+            high = max(price_data[i], close_data[i-1])
+            low = min(price_data[i], close_data[i-1])
+            tr[i] = high - low
+        
+        # 计算20日ATR
+        atr = np.zeros_like(price_data)
+        atr[20] = np.mean(tr[1:21])
+        for i in range(21, len(price_data)):
+            atr[i] = (atr[i-1] * 19 + tr[i]) / 20
+        
+        if len(price_data) < max(windows):
             return result
             
-        for i in range(window, len(price_data)):
-            window_prices = price_data[i-window:i]
+        for i in range(max(windows), len(price_data)):
+            levels = []  # 存储各个窗口计算出的水平
             
-            if mode == 'support':
-                # 支撑位：找出窗口内的低点
-                min_indices = np.where(np.diff(np.signbit(np.diff(window_prices))) > 0)[0] + 1
-                if len(min_indices) > 0:
-                    min_prices = window_prices[min_indices]
-                    # 找出最显著的（频率最高或最近的）支撑位
-                    if len(min_prices) > 0:
-                        result[i] = min_prices[-1]  # 使用最近的低点
-            else:
-                # 阻力位：找出窗口内的高点
-                max_indices = np.where(np.diff(np.signbit(np.diff(window_prices))) < 0)[0] + 1
-                if len(max_indices) > 0:
-                    max_prices = window_prices[max_indices]
-                    # 找出最显著的（频率最高或最近的）阻力位
-                    if len(max_prices) > 0:
-                        result[i] = max_prices[-1]  # 使用最近的高点
+            for window, weight in zip(windows, weights):
+                window_prices = price_data[i-window:i]
+                window_closes = close_data[i-window:i]
+                current_price = close_data[i]
                 
+                if mode == 'support':
+                    # 支撑位：找出窗口内的低点
+                    min_indices = np.where(np.diff(np.signbit(np.diff(window_prices))) > 0)[0] + 1
+                    if len(min_indices) > 0:
+                        min_prices = window_prices[min_indices]
+                        
+                        # 计算各个低点被触及的次数
+                        touch_counts = []
+                        for price in min_prices:
+                            # 价格在支撑位附近的次数（使用ATR的10%作为范围）
+                            tolerance = atr[i] * 0.1
+                            touches = np.sum(np.abs(window_prices - price) <= tolerance)
+                            touch_counts.append(touches)
+                        
+                        if touch_counts:
+                            # 选择触及次数最多的支撑位
+                            max_touches_idx = np.argmax(touch_counts)
+                            level = min_prices[max_touches_idx]
+                            
+                            # 确保支撑位低于当前价格
+                            if level >= current_price:
+                                level = current_price - atr[i] * 0.5
+                                
+                            levels.append((level, weight * touch_counts[max_touches_idx]))
+                else:
+                    # 阻力位：找出窗口内的高点
+                    max_indices = np.where(np.diff(np.signbit(np.diff(window_prices))) < 0)[0] + 1
+                    if len(max_indices) > 0:
+                        max_prices = window_prices[max_indices]
+                        
+                        # 计算各个高点被触及的次数
+                        touch_counts = []
+                        for price in max_prices:
+                            # 价格在阻力位附近的次数（使用ATR的10%作为范围）
+                            tolerance = atr[i] * 0.1
+                            touches = np.sum(np.abs(window_prices - price) <= tolerance)
+                            touch_counts.append(touches)
+                        
+                        if touch_counts:
+                            # 选择触及次数最多的阻力位
+                            max_touches_idx = np.argmax(touch_counts)
+                            level = max_prices[max_touches_idx]
+                            
+                            # 确保阻力位高于当前价格
+                            if level <= current_price:
+                                level = current_price + atr[i] * 0.5
+                                
+                            levels.append((level, weight * touch_counts[max_touches_idx]))
+            
+            if levels:
+                # 计算加权平均水平
+                weighted_sum = sum(level * weight for level, weight in levels)
+                total_weight = sum(weight for _, weight in levels)
+                
+                if total_weight > 0:
+                    result[i] = weighted_sum / total_weight
+                    
+                    # 最终验证：确保支撑位和阻力位的有效性
+                    current_price = close_data[i]
+                    if mode == 'support' and result[i] >= current_price:
+                        result[i] = current_price - atr[i] * 0.5
+                    elif mode == 'resistance' and result[i] <= current_price:
+                        result[i] = current_price + atr[i] * 0.5
+            
+            # 使用指数平滑处理
+            if i > 0:
+                alpha = 0.2  # 平滑因子
+                result[i] = alpha * result[i] + (1 - alpha) * result[i-1]
+        
         return result
         
     def _analyze_price_structure(self, high, low, close):
