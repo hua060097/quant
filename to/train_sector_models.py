@@ -357,12 +357,42 @@ class SectorModelTrainer:
                         if 'change_percent' in sector_df.columns:
                             # 如果板块数据已经有涨跌幅，计算相对涨幅(差值)
                             sector_df['relative_change_diff'] = sector_df['change_percent'] - change_percent
-                            # 计算相对涨幅比值(如果创业板不是0才计算比值)
-                            if abs(change_percent) > 0.001:
-                                sector_df['relative_change_ratio'] = sector_df['change_percent'] / change_percent
+                            
+                                
+                            # 添加相对强度指标 - 计算相对于创业板的累积相对强度
+                            # 使用指数平滑方式计算，避免单日异常值的影响
+                            alpha = 0.3  # 平滑系数
+                            if 'relative_strength_index' in sector_df.columns:
+                                # 如果已有相对强度指标，进行更新
+                                current_rsi = sector_df['relative_strength_index'].iloc[0]
+                                # 使用EMA更新相对强度
+                                sector_df['relative_strength_index'] = alpha * sector_df['relative_change_diff'] + (1 - alpha) * current_rsi
                             else:
-                                # 如果创业板涨跌幅接近0，使用差值替代
-                                sector_df['relative_change_ratio'] = sector_df['relative_change_diff']
+                                # 首次计算，直接使用相对涨幅差
+                                sector_df['relative_strength_index'] = sector_df['relative_change_diff']
+                                
+                            # 计算相对于大盘的Beta和Alpha指标
+                            # Beta表示板块波动与大盘相关性，Alpha表示超额收益
+                            if 'volatility' in sector_df.columns and 'market_volatility' in sector_df.columns:
+                                market_vol = sector_df['market_volatility'].iloc[0]
+                                sector_vol = sector_df['volatility'].iloc[0]
+                                if market_vol > 0:
+                                    # 计算Beta系数(近似) - 波动率比值
+                                    sector_df['beta_estimate'] = sector_vol / market_vol
+                                    
+                                    # 计算风险调整后的相对收益 (Alpha近似)
+                                    sector_df['alpha_estimate'] = sector_df['change_percent'] - sector_df['beta_estimate'] * change_percent
+                                    
+                            # 添加相对强度区间划分
+                            # 创建区间类别：强于大盘、弱于大盘、与大盘同步
+                            threshold = 0.5  # 设置相对差异阈值
+                            conditions = [
+                                sector_df['relative_change_diff'] > threshold,  # 强于大盘
+                                sector_df['relative_change_diff'] < -threshold,  # 弱于大盘
+                            ]
+                            choices = ['stronger', 'weaker']
+                            default = 'neutral'  # 与大盘同步
+                            sector_df['relative_strength_category'] = np.select(conditions, choices, default=default)
                         
                         if support > 0 and close > 0:
                             sector_df['price_to_support'] = close / support - 1.0
