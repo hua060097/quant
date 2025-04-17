@@ -30,6 +30,7 @@ from sklearn.linear_model import Ridge
 import copy
 import pickle
 import inspect
+import bisect
 
 # 设置日志
 logging.basicConfig(
@@ -236,17 +237,16 @@ class SectorModelTrainer:
             return None
 
     def _build_features_for_date_range(self, sector_code, end_date, lookback_days=60, forward_days=5):
-        """
-        为指定日期范围构建特征数据
+        """构建指定日期范围内的特征数据
         
         Args:
             sector_code: 板块代码
-            end_date: 结束日期，格式为YYYYMMDD
-            lookback_days: 回溯天数
-            forward_days: 预测未来几天
+            end_date: 结束日期
+            lookback_days: 回溯天数，默认60天
+            forward_days: 预测未来天数，默认5天
             
         Returns:
-            DataFrame: 特征数据
+            特征DataFrame，包含标签
         """
         # 确定日期范围
         end_idx = self.trading_days.index(end_date) if end_date in self.trading_days else -1
@@ -437,99 +437,271 @@ class SectorModelTrainer:
         features_df['label_date'] = label_date
         features_df['future_return'] = label_df['sector_pct_chg'].values[0] if 'sector_pct_chg' in label_df.columns else 0.0
         
-        return features_df
+        # 在现有特征基础上添加时序动态特征
+        # 获取历史数据用于计算时序特征
+        feature_dates = []
+        end_idx = self.trading_days.index(end_date)
+        history_lookback = min(60, lookback_days)  # 最大60天历史数据
+        start_idx = max(0, end_idx - history_lookback)
+        feature_dates = self.trading_days[start_idx:end_idx+1]
+        
+        if len(feature_dates) >= 5 and 'sector_df' in locals() and sector_df is not None:
+            # 收集历史数据
+            historical_dfs = []
+            for date in feature_dates[-10:]:  # 使用最近10天数据
+                df = self._load_sector_features(sector_code, date)
+                if df is not None and not df.empty:
+                    # 加载该日期的市场状态数据
+                    market_status = self._load_market_status(date)
+                    if market_status and 'individual_status' in market_status and '399006.SZ' in market_status['individual_status']:
+                        cyb_data = market_status['individual_status']['399006.SZ']
+                        if 'change_percent' in df.columns:
+                            df['date'] = date
+                            df['market_change_percent'] = cyb_data.get('change_percent', 0.0)
+                            df['relative_change_diff'] = df['change_percent'] - df['market_change_percent']
+                            historical_dfs.append(df)
+        
+            if len(historical_dfs) >= 5:  # 至少需要5天数据
+                # 合并历史数据
+                historical_df = pd.concat(historical_dfs).sort_values('date')
+                
+                # 1. 相对强度时序特征
+                if 'relative_change_diff' in historical_df.columns:
+                    # 计算相对强度变化趋势（斜率）
+                    recent_values = historical_df['relative_change_diff'].tail(5).values
+                    if len(recent_values) >= 3:
+                        slope = np.polyfit(range(len(recent_values)), recent_values, 1)[0]
+                        sector_df['rel_strength_trend'] = slope * 5  # 标准化为5日总变化量
+                    
+                    # 相对强度加速度
+                    if len(historical_df) >= 5:
+                        recent_change = historical_df['relative_change_diff'].tail(3).mean()
+                        previous_change = historical_df['relative_change_diff'].tail(5).head(2).mean()
+                        sector_df['rel_strength_acceleration'] = recent_change - previous_change
+                    
+                    # 相对强度一致性（5天中相对强度为正的天数比例）
+                    sector_df['rel_strength_consistency'] = (historical_df['relative_change_diff'].tail(5) > 0).mean()
+                
+                # 2. 价格动量特征增强
+                if 'change_percent' in historical_df.columns:
+                    # 短期动量
+                    sector_df['momentum_3d'] = historical_df['change_percent'].tail(3).sum()
+                    # 与市场短期动量对比
+                    if 'market_change_percent' in historical_df.columns:
+                        market_momentum_3d = historical_df['market_change_percent'].tail(3).sum()
+                        sector_df['relative_momentum_3d'] = sector_df['momentum_3d'] - market_momentum_3d
+                
+                # 3. 波动性特征增强
+                if 'volatility' in historical_df.columns and len(historical_df['volatility']) >= 5:
+                    recent_vol = historical_df['volatility'].tail(3).mean()
+                    prev_vol = historical_df['volatility'].tail(5).head(2).mean()
+                    if prev_vol > 0:
+                        sector_df['volatility_change_ratio'] = recent_vol / prev_vol
+                
+                # 4. 季节性特征
+                if end_date:
+                    month = pd.to_datetime(end_date).month
+                    sector_df['month'] = month
+                    # A股市场季节性轮动特征
+                    sector_df['quarter_start'] = 1 if month in [1, 4, 7, 10] else 0
+                    sector_df['year_end'] = 1 if month in [11, 12] else 0
+        
+        return sector_df
 
-    def _prepare_training_data(self, sector_code, start_date, end_date):
-        """
-        准备训练数据
+    def _prepare_training_data_enhanced(self, sector_code, start_date, end_date):
+        """增强版训练数据准备，优化特征组合并支持回测
         
         Args:
             sector_code: 板块代码
-            start_date: 开始日期，格式为YYYYMMDD
-            end_date: 结束日期，格式为YYYYMMDD
+            start_date: 开始日期
+            end_date: 结束日期
             
         Returns:
-            tuple: (X, y) 特征和标签
+            X: 特征矩阵
+            y: 标签向量
+            weights: 样本权重
         """
-        # 确定日期范围
-        try:
-            start_idx = self.trading_days.index(start_date) if start_date in self.trading_days else 0
-            end_idx = self.trading_days.index(end_date) if end_date in self.trading_days else -1
+        # 基本日期处理
+        start_idx = self.trading_days.index(start_date) if start_date in self.trading_days else 0
+        end_idx = self.trading_days.index(end_date) if end_date in self.trading_days else -1
+        
+        if start_idx > end_idx or end_idx == -1:
+            self.logger.warning(f"日期范围 {start_date} - {end_date} 无效")
+            return None, None, None
             
-            if start_idx > end_idx or end_idx == -1:
-                self.logger.warning(f"日期范围 {start_date} - {end_date} 无效")
-                return None, None
+        trading_range = self.trading_days[start_idx:end_idx+1]
+        
+        # 收集所有日期的特征
+        all_features = []
+        feature_dates = []  # 记录特征生成的日期，用于回测
+        self.logger.info(f"为板块 {sector_code} 构建 {len(trading_range)} 天的特征数据")
+        
+        # 增加进度跟踪
+        processed = 0
+        total = len(trading_range)
+        
+        for date in trading_range:
+            # 显示进度
+            processed += 1
+            if processed % 20 == 0 or processed == total:
+                self.logger.info(f"进度: {processed}/{total} ({processed/total*100:.1f}%)")
+            
+            # 短期特征
+            short_features = self._build_features_for_date_range(
+                sector_code, date, 
+                lookback_days=self.lookback_short, 
+                forward_days=self.forward_days
+            )
+            
+            # 长期特征
+            long_features = self._build_features_for_date_range(
+                sector_code, date, 
+                lookback_days=self.lookback_long, 
+                forward_days=self.forward_days
+            )
+            
+            # 合并特征与标记日期
+            if short_features is not None and long_features is not None:
+                # 为区分特征来源，添加前缀
+                short_cols = {}
+                long_cols = {}
                 
-            trading_range = self.trading_days[start_idx:end_idx+1]
-            
-            # 收集所有日期的特征
-            all_features = []
-            
-            # 使用短期和长期两种回溯
-            for date in trading_range:
-                # 短期特征
-                short_features = self._build_features_for_date_range(
-                    sector_code, date, 
-                    lookback_days=self.lookback_short, 
-                    forward_days=self.forward_days
+                # 排除不需要加前缀的通用列
+                exclude_prefix = ['feature_date', 'label_date', 'future_return', 'sector_code', 'date']
+                
+                for col in short_features.columns:
+                    if col not in exclude_prefix:
+                        short_cols[col] = f'short_{col}'
+                
+                for col in long_features.columns:
+                    if col not in exclude_prefix:
+                        long_cols[col] = f'long_{col}'
+                
+                # 重命名列添加前缀
+                short_features.rename(columns=short_cols, inplace=True)
+                long_features.rename(columns=long_cols, inplace=True)
+                
+                # 确保合并的键存在
+                if 'date' not in short_features.columns:
+                    short_features['date'] = date
+                
+                if 'date' not in long_features.columns:
+                    long_features['date'] = date
+                
+                # 合并特征
+                merged_features = pd.merge(
+                    short_features,
+                    long_features,
+                    on='date',
+                    how='inner',
+                    suffixes=('', '_long')
                 )
                 
-                # 长期特征
-                long_features = self._build_features_for_date_range(
-                    sector_code, date, 
-                    lookback_days=self.lookback_long, 
-                    forward_days=self.forward_days
-                )
-                
-                # 合并短期和长期特征
-                if short_features is not None and long_features is not None:
-                    # 为区分特征来源，添加前缀
-                    for col in short_features.columns:
-                        if col not in ['feature_date', 'label_date', 'future_return', 'sector_code']:
-                            short_features.rename(columns={col: f'short_{col}'}, inplace=True)
-                            
-                    for col in long_features.columns:
-                        if col not in ['feature_date', 'label_date', 'future_return', 'sector_code']:
-                            long_features.rename(columns={col: f'long_{col}'}, inplace=True)
+                if not merged_features.empty:
+                    # 添加回测需要的信息
+                    merged_features['prediction_date'] = date  # 特征生成日期
+                    if 'label_date' in merged_features.columns:
+                        merged_features['target_date'] = merged_features['label_date']  # 预测目标日期
+                    elif 'label_date' in short_features.columns:
+                        merged_features['target_date'] = short_features['label_date']
                     
-                    # 合并特征
-                    merged_features = pd.merge(
-                        short_features[['feature_date', 'label_date', 'future_return'] + [c for c in short_features.columns if c.startswith('short_')]],
-                        long_features[['feature_date'] + [c for c in long_features.columns if c.startswith('long_')]],
-                        on='feature_date',
-                        how='inner'
-                    )
+                    # 添加市场环境特征
+                    market_status = self._load_market_status(date)
+                    if market_status and 'market_type' in market_status:
+                        merged_features['market_type'] = market_status['market_type']
+                        merged_features['market_cycle'] = market_status.get('market_cycle', 0)
+                        merged_features['trend_strength'] = market_status.get('trend_strength', 0)
                     
-                    if not merged_features.empty:
-                        all_features.append(merged_features)
-                
-            if not all_features:
-                self.logger.warning(f"板块 {sector_code} 在日期范围 {start_date} - {end_date} 内没有可用的特征数据")
-                return None, None
-                
-            # 合并所有日期的特征
+                    # 动态特征工程 - 基于市场环境
+                    self._add_dynamic_features(merged_features, market_status)
+                    
+                    feature_dates.append(date)
+                    all_features.append(merged_features)
+        
+        # 合并数据
+        if all_features:
             training_df = pd.concat(all_features, ignore_index=True)
+            
+            # 保存回测元数据
+            training_df['sector_code'] = sector_code
+            training_df['is_training_data'] = True
+            
+            # 准备特征与标签
+            label_col = 'future_return'
+            if label_col not in training_df.columns and 'future_return_x' in training_df.columns:
+                training_df[label_col] = training_df['future_return_x']
+            
+            # 排除不作为特征的列
+            exclude_cols = ['date', 'feature_date', 'label_date', 'future_return', 
+                            'future_return_x', 'future_return_y', 'prediction_date', 
+                            'target_date', 'sector_code', 'is_training_data']
+            
+            feature_cols = [c for c in training_df.columns if c not in exclude_cols]
             
             # 添加时间衰减权重
             training_df['time_weight'] = self._calculate_time_decay_weights(training_df)
             
-            # 准备特征和标签
-            feature_cols = [c for c in training_df.columns if (c.startswith('short_') or c.startswith('long_')) 
-                          and c not in ['feature_date', 'label_date', 'future_return', 'time_weight']]
-            
             X = training_df[feature_cols].copy()
-            y = training_df['future_return'].copy()
+            y = training_df[label_col].copy()
             weights = training_df['time_weight'].copy()
             
             # 处理缺失值
             X = X.fillna(0)
             
-            return X, y, weights
+            # 保存完整DataFrame以用于回测
+            self.feature_columns = feature_cols  # 保存特征列名
+            self.backtest_features = training_df  # 保存完整数据用于回测
             
-        except Exception as e:
-            self.logger.error(f"准备板块 {sector_code} 的训练数据出错: {e}")
-            self.logger.error(traceback.format_exc())
+            return X, y, weights
+        else:
             return None, None, None
+
+    def _add_dynamic_features(self, features_df, market_status):
+        """基于市场环境动态添加或增强特征
+        
+        Args:
+            features_df: 特征DataFrame
+            market_status: 市场状态数据
+        """
+        if features_df is None or features_df.empty:
+            return features_df
+        
+        if market_status is None:
+            return features_df
+        
+        # 获取市场类型
+        market_type = market_status.get('market_type', 0)
+        market_cycle = market_status.get('market_cycle', 0)
+        
+        # 根据市场环境构建组合特征
+        # 1. 牛市环境 - 强化动量和相对强度特征
+        if market_type in [11, 12, 13, 21, 22, 23]:  # 上涨趋势
+            # 动量和相对强度综合
+            if 'short_momentum_3d' in features_df.columns and 'short_rel_strength_trend' in features_df.columns:
+                features_df['bull_momentum_strength'] = features_df['short_momentum_3d'] * features_df['short_rel_strength_trend']
+    
+        # 2. 震荡市场 - 强化相对强度和波动性特征
+        elif market_type in [31, 32, 33]:  # 盘整趋势
+            # 相对强度和波动性综合
+            if 'short_rel_strength_consistency' in features_df.columns and 'short_volatility' in features_df.columns:
+                vol = features_df['short_volatility']
+                consistency = features_df['short_rel_strength_consistency']
+                if not (vol.isnull().all() or consistency.isnull().all()):
+                    vol_norm = vol / vol.max() if vol.max() > 0 else 0
+                    features_df['range_rel_strength_stability'] = consistency * (1 - vol_norm)
+    
+        # 3. 熊市环境 - 强化波动率比率和趋势效率特征
+        elif market_type in [41, 42, 43, 51, 52, 53]:  # 下跌趋势
+            # 防守性指标
+            if 'short_volatility_change_ratio' in features_df.columns and 'long_volatility' in features_df.columns:
+                vol_change = features_df['short_volatility_change_ratio']
+                long_vol = features_df['long_volatility']
+                if not (vol_change.isnull().all() or long_vol.isnull().all()):
+                    vol_change.fillna(1, inplace=True)
+                    long_vol.fillna(long_vol.mean(), inplace=True)
+                    features_df['bear_defensive_score'] = (1 / vol_change) * (1 / long_vol)
+    
+        return features_df
 
     def _calculate_time_decay_weights(self, df):
         """
@@ -558,163 +730,90 @@ class SectorModelTrainer:
             return pd.Series(1.0, index=df.index)
     
     def train_sector_model(self, sector_code, start_date, end_date):
-        """
-        训练特定板块的模型
+        """训练板块预测模型
+        
+        使用增强版的数据准备函数处理数据
         
         Args:
             sector_code: 板块代码
-            start_date: 开始日期，格式为YYYYMMDD
-            end_date: 结束日期，格式为YYYYMMDD
+            start_date: 训练开始日期
+            end_date: 训练结束日期
             
         Returns:
-            dict: 训练结果
+            训练好的模型dict
         """
-        self.logger.info(f"开始训练板块 {sector_code} 的模型，日期范围: {start_date} - {end_date}")
+        self.logger.info(f"开始训练板块 {sector_code} 的模型，时间范围: {start_date} - {end_date}")
         
-        # 准备训练数据
-        X, y, weights = self._prepare_training_data(sector_code, start_date, end_date)
+        # 使用增强版数据准备
+        X, y, weights = self._prepare_training_data_enhanced(sector_code, start_date, end_date)
         
-        if X is None or y is None or X.empty or len(y) == 0:
-            self.logger.warning(f"板块 {sector_code} 没有足够的训练数据")
+        if X is None or y is None:
+            self.logger.error(f"无法获取板块 {sector_code} 的训练数据")
             return None
-            
-        self.logger.info(f"准备好板块 {sector_code} 的训练数据，特征数: {X.shape[1]}，样本数: {len(y)}")
         
-        # 划分训练集和测试集
-        X_train, X_test, y_reg_train, y_reg_test, weights_train, weights_test = train_test_split(
-            X, y, weights, test_size=0.2, shuffle=False
+        self.logger.info(f"成功获取 {len(X)} 条训练数据")
+        
+        # 特征标准化
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
+        
+        # 训练XGBoost模型
+        xgb_model = xgb.XGBRegressor(
+            objective='reg:squarederror',
+            n_estimators=100,
+            max_depth=4,
+            learning_rate=0.1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42
         )
         
-        models = {}
-        predictions = {}
-        
-        # 训练 XGBoost 模型
+        self.logger.info(f"开始训练XGBoost模型...")
         try:
-            xgb_model = xgb.XGBRegressor(
-                objective='reg:squarederror',
-                n_estimators=100,
-                max_depth=5,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42
-            )
+            xgb_model.fit(X_scaled, y, sample_weight=weights)
+            self.logger.info(f"XGBoost模型训练完成")
             
-            # 创建早停回调
-            early_stopping_callback = xgb.callback.EarlyStopping(
-                rounds=10,
-                metric_name='rmse',
-                data_name='validation_0'
-            )
+            # 获取特征重要性
+            importance = pd.DataFrame({
+                'feature': X.columns,
+                'importance': xgb_model.feature_importances_
+            }).sort_values('importance', ascending=False)
             
-            xgb_model.fit(
-                X_train, y_reg_train,
-                sample_weight=weights_train,
-                eval_set=[(X_test, y_reg_test)],
-                callbacks=[early_stopping_callback],
-                verbose=False
-            )
+            top_features = importance.head(20)
+            self.logger.info(f"Top 20 特征重要性:\n{top_features}")
             
-            models['xgboost'] = xgb_model
-            predictions['xgboost'] = xgb_model.predict(X_test)
-            self.logger.info(f"XGBoost 模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['xgboost']):.6f}")
-            
-        except Exception as e:
-            self.logger.error(f"训练 XGBoost 模型出错: {e}")
-            self.logger.error(traceback.format_exc())
-        
-        # 训练 LightGBM 模型
-        try:
+            # 训练LightGBM模型
             lgb_model = lgb.LGBMRegressor(
                 objective='regression',
                 n_estimators=100,
-                max_depth=6,
+                num_leaves=31,
                 learning_rate=0.1,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42
             )
             
-            # 创建LightGBM早停回调
-            early_stopping_callback = lgb.early_stopping(
-                stopping_rounds=10,
-                verbose=False
-            )
+            self.logger.info(f"开始训练LightGBM模型...")
+            lgb_model.fit(X_scaled, y, sample_weight=weights)
+            self.logger.info(f"LightGBM模型训练完成")
             
-            lgb_model.fit(
-                X_train, y_reg_train,
-                sample_weight=weights_train,
-                eval_set=[(X_test, y_reg_test)],
-                callbacks=[early_stopping_callback],
-                verbose=False
-            )
-            
-            models['lightgbm'] = lgb_model
-            predictions['lightgbm'] = lgb_model.predict(X_test)
-            
-            self.logger.info(f"LightGBM 模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['lightgbm']):.6f}")
-            
-        except Exception as e:
-            self.logger.error(f"训练 LightGBM 模型出错: {e}")
-            self.logger.error(traceback.format_exc())
-        
-        # 训练液体神经网络
-        if self.use_lnn:
-            try:
-                # 构建液体神经网络模型
-                lnn_model = self.LiquidNetModel(
-                    input_size=X.shape[1],
-                    hidden_size=64,
-                    output_size=1,
-                    num_layers=2,
-                    learning_rate=0.001
-                )
-                
-                lnn_model.fit(
-                    X_train.values, y_reg_train.values.reshape(-1, 1),
-                    batch_size=32,
-                    epochs=50,
-                    validation_data=(X_test.values, y_reg_test.values.reshape(-1, 1)),
-                    verbose=0
-                )
-                
-                models['lnn'] = lnn_model
-                preds = lnn_model.predict(X_test.values)
-                predictions['lnn'] = preds.flatten()
-                
-                self.logger.info(f"液体神经网络模型训练完成，测试集 MSE: {mean_squared_error(y_reg_test, predictions['lnn']):.6f}")
-                
-            except Exception as e:
-                self.logger.error(f"训练液体神经网络模型出错: {e}")
-                self.logger.error(traceback.format_exc())
-        
-        # 保存模型
-        if models:
-            self._save_models(sector_code, models, X.columns.tolist())
-            
-            # 返回训练结果
-            result = {
-                'sector_code': sector_code,
-                'start_date': start_date,
-                'end_date': end_date,
-                'feature_count': X.shape[1],
-                'sample_count': len(y),
-                'models': list(models.keys()),
-                'performance': {}
+            # 返回模型和相关数据
+            models = {
+                'xgb': xgb_model,
+                'lgb': lgb_model,
+                'scaler': scaler,
+                'feature_importance': importance.to_dict('records'),
+                'feature_columns': X.columns.tolist()
             }
             
-            # 计算每个模型的性能指标
-            for model_name, preds in predictions.items():
-                mse = mean_squared_error(y_reg_test, preds)
-                r2 = r2_score(y_reg_test, preds)
-                result['performance'][model_name] = {
-                    'mse': mse,
-                    'r2': r2
-                }
-                
-            return result
-        else:
-            self.logger.warning(f"板块 {sector_code} 没有成功训练任何模型")
+            # 保存模型
+            self._save_models(sector_code, models, X.columns.tolist())
+            
+            return models
+        except Exception as e:
+            self.logger.error(f"训练模型时出错: {str(e)}")
+            self.logger.error(traceback.format_exc())
             return None
 
     def _save_models(self, sector_code, models, feature_columns):
@@ -1708,6 +1807,383 @@ class SectorModelTrainer:
         else:
             self.logger.error(f"训练板块轮动模型 {model_name} 失败，未能成功训练任何子模型")
             return None
+
+    def prepare_backtest_data(self, sector_codes, start_date, end_date, model_version="latest"):
+        """准备回测数据
+        
+        Args:
+            sector_codes: 板块代码列表
+            start_date: 回测开始日期
+            end_date: 回测结束日期
+            model_version: 模型版本，默认使用最新
+            
+        Returns:
+            回测数据字典，包含每个日期的预测结果
+        """
+        backtest_results = {}
+        
+        # 获取交易日范围
+        if start_date not in self.trading_days:
+            start_idx = bisect.bisect_left(self.trading_days, start_date)
+            start_date = self.trading_days[start_idx] if start_idx < len(self.trading_days) else None
+        
+        if end_date not in self.trading_days:
+            end_idx = bisect.bisect_right(self.trading_days, end_date) - 1
+            end_date = self.trading_days[end_idx] if end_idx >= 0 else None
+        
+        if not start_date or not end_date or start_date > end_date:
+            self.logger.error(f"无效的回测日期范围: {start_date} - {end_date}")
+            return None
+        
+        # 确定回测日期列表
+        backtest_range = []
+        start_idx = self.trading_days.index(start_date)
+        end_idx = self.trading_days.index(end_date)
+        backtest_range = self.trading_days[start_idx:end_idx+1]
+        
+        # 加载模型
+        models = {}
+        for sector_code in sector_codes:
+            model_dir = self.model_dir / sector_code
+            if not model_dir.exists():
+                self.logger.warning(f"板块 {sector_code} 没有找到模型")
+                continue
+                
+            try:
+                # 加载特征列
+                with open(model_dir / "feature_columns.json", "r") as f:
+                    feature_columns = json.load(f)
+                    
+                # 加载模型
+                model_files = sorted(model_dir.glob("*_model.*"))
+                if not model_files:
+                    self.logger.warning(f"板块 {sector_code} 没有找到模型文件")
+                    continue
+                    
+                # 选择模型文件
+                model_path = None
+                for mf in model_files:
+                    if "xgboost" in str(mf):
+                        model_path = mf
+                        break
+                
+                if not model_path:
+                    self.logger.warning(f"板块 {sector_code} 没有找到XGBoost模型文件")
+                    continue
+                    
+                # 加载模型
+                model = xgb.XGBRegressor()
+                model.load_model(str(model_path))
+                
+                # 加载缩放器
+                scaler_path = model_dir / "scaler.pkl"
+                if scaler_path.exists():
+                    with open(scaler_path, "rb") as f:
+                        import pickle
+                        scaler = pickle.load(f)
+                else:
+                    scaler = StandardScaler()  # 默认缩放器
+                    
+                models[sector_code] = {
+                    "model": model,
+                    "scaler": scaler,
+                    "features": feature_columns
+                }
+                self.logger.info(f"成功加载板块 {sector_code} 的模型")
+            except Exception as e:
+                self.logger.error(f"加载板块 {sector_code} 模型时出错: {e}")
+                continue
+        
+        # 执行回测
+        for date in backtest_range:
+            date_results = {
+                "date": date,
+                "predictions": {}
+            }
+            
+            # 获取当前市场状态
+            market_status = self._load_market_status(date)
+            if not market_status:
+                self.logger.warning(f"日期 {date} 没有市场状态数据")
+                continue
+                
+            date_results["market_status"] = {
+                "market_type": market_status.get("market_type", "unknown"),
+                "market_cycle": market_status.get("market_cycle", "unknown"),
+                "trend_strength": market_status.get("trend_strength", 0.0)
+            }
+            
+            # 获取各板块预测
+            sector_predictions = {}
+            for sector_code, model_info in models.items():
+                # 构建特征
+                short_features = self._build_features_for_date_range(
+                    sector_code, date,
+                    lookback_days=self.lookback_short,
+                    forward_days=self.forward_days
+                )
+                
+                long_features = self._build_features_for_date_range(
+                    sector_code, date,
+                    lookback_days=self.lookback_long,
+                    forward_days=self.forward_days
+                )
+                
+                if short_features is None or long_features is None:
+                    self.logger.warning(f"日期 {date} 板块 {sector_code} 无法构建完整特征")
+                    continue
+                    
+                # 合并特征
+                # 为区分特征来源，添加前缀
+                short_cols = {}
+                long_cols = {}
+                
+                # 排除不需要加前缀的通用列
+                exclude_prefix = ['feature_date', 'label_date', 'future_return', 'sector_code', 'date']
+                
+                for col in short_features.columns:
+                    if col not in exclude_prefix:
+                        short_cols[col] = f'short_{col}'
+                
+                for col in long_features.columns:
+                    if col not in exclude_prefix:
+                        long_cols[col] = f'long_{col}'
+                
+                # 重命名列添加前缀
+                short_features.rename(columns=short_cols, inplace=True)
+                long_features.rename(columns=long_cols, inplace=True)
+                
+                # 确保合并的键存在
+                if 'date' not in short_features.columns:
+                    short_features['date'] = date
+                
+                if 'date' not in long_features.columns:
+                    long_features['date'] = date
+                
+                # 合并特征
+                merged_features = pd.merge(
+                    short_features,
+                    long_features,
+                    on='date',
+                    how='inner',
+                    suffixes=('', '_long')
+                )
+                
+                if merged_features.empty:
+                    self.logger.warning(f"日期 {date} 板块 {sector_code} 合并特征为空")
+                    continue
+                
+                # 添加市场环境特征和动态特征
+                self._add_dynamic_features(merged_features, market_status)
+                
+                # 准备预测用特征
+                req_features = model_info["features"]
+                avail_features = merged_features.columns
+                
+                # 检查特征匹配情况
+                missing_features = set(req_features) - set(avail_features)
+                if missing_features:
+                    self.logger.warning(f"板块 {sector_code} 缺少特征: {missing_features}")
+                    # 为缺失特征填充0值
+                    for feat in missing_features:
+                        merged_features[feat] = 0
+                
+                X_pred = merged_features[req_features].fillna(0)
+                
+                # 标准化特征
+                X_pred_scaled = model_info["scaler"].transform(X_pred)
+                
+                # 预测
+                try:
+                    prediction = model_info["model"].predict(X_pred_scaled)[0]
+                    
+                    # 存储预测结果
+                    sector_predictions[sector_code] = {
+                        "predicted_return": float(prediction),
+                        "features": {k: float(v) if isinstance(v, (int, float, np.number)) else str(v) 
+                                   for k, v in merged_features.iloc[0].items()
+                                   if k in req_features[:10]}  # 只保存部分重要特征
+                    }
+                except Exception as e:
+                    self.logger.error(f"预测板块 {sector_code} 在日期 {date} 的收益时出错: {e}")
+            
+            # 记录预测结果
+            date_results["predictions"] = sector_predictions
+            
+            # 按预测收益排序
+            sorted_sectors = sorted(
+                sector_predictions.items(),
+                key=lambda x: x[1]["predicted_return"],
+                reverse=True
+            )
+            
+            # 记录排名结果
+            date_results["ranked_sectors"] = [s[0] for s in sorted_sectors]
+            date_results["top_sectors"] = date_results["ranked_sectors"][:5]  # 取前5名
+            
+            # 市场环境适应型板块选择
+            market_type = date_results["market_status"]["market_type"]
+            market_adapted_sectors = self._adapt_sectors_to_market(
+                sorted_sectors, market_type, date_results["market_status"]
+            )
+            date_results["market_adapted_sectors"] = market_adapted_sectors
+            
+            # 保存当日回测结果
+            backtest_results[date] = date_results
+        
+        return backtest_results
+
+    def _adapt_sectors_to_market(self, sorted_sectors, market_type, market_status):
+        """根据市场环境适应性选择板块
+        
+        Args:
+            sorted_sectors: 按预测收益排序的板块
+            market_type: 市场类型
+            market_status: 市场状态信息
+            
+        Returns:
+            适应市场环境的板块列表
+        """
+        # 从排序后的板块中提取基本信息
+        sector_list = [s[0] for s in sorted_sectors]
+        if not sector_list:
+            return []
+        
+        # 根据市场类型调整选择策略
+        if market_type in [11, 12, 13]:  # 强势上涨
+            # 选择预测收益最高的板块，偏向进攻性策略
+            return sector_list[:5]
+        elif market_type in [21, 22, 23]:  # 普通上涨
+            # 选择预测收益较高且相对稳定的板块
+            return sector_list[:4]
+        elif market_type in [31, 32, 33]:  # 盘整
+            # 选择预测收益适中、波动较小的板块
+            return sector_list[1:4]
+        elif market_type in [41, 42, 43]:  # 普通下跌
+            # 选择预测收益相对较高的防御型板块
+            return sector_list[:3]
+        elif market_type in [51, 52, 53]:  # 强势下跌
+            # 集中选择预测收益最高的1-2个板块或考虑空仓
+            return sector_list[:2]
+        else:
+            # 默认策略
+            return sector_list[:3]
+
+    def analyze_feature_importance(self, sector_code, X, y, model=None):
+        """分析特征重要性，支持回测期间动态特征选择
+        
+        Args:
+            sector_code: 板块代码
+            X: 特征数据
+            y: 标签数据
+            model: 已训练的模型，如果为None则训练一个新模型
+            
+        Returns:
+            特征重要性字典
+        """
+        if model is None:
+            model = xgb.XGBRegressor(
+                objective='reg:squarederror',
+                n_estimators=100,
+                max_depth=5,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42
+            )
+            model.fit(X, y)
+        
+        # 提取特征重要性
+        importance_dict = {}
+        for i, col in enumerate(X.columns):
+            importance_dict[col] = model.feature_importances_[i]
+        
+        # 按重要性排序
+        sorted_importance = sorted(importance_dict.items(), key=lambda x: x[1], reverse=True)
+        
+        # 分类特征
+        feature_categories = {
+            "trend": [],
+            "momentum": [],
+            "volatility": [],
+            "relative_strength": [],
+            "seasonal": [],
+            "volume": [],
+            "other": []
+        }
+        
+        # 分类特征
+        for feature, importance in sorted_importance:
+            if "trend" in feature or "ma" in feature:
+                feature_categories["trend"].append((feature, importance))
+            elif "momentum" in feature or "acceleration" in feature:
+                feature_categories["momentum"].append((feature, importance))
+            elif "volatility" in feature or "atr" in feature:
+                feature_categories["volatility"].append((feature, importance))
+            elif "relative" in feature or "rel_strength" in feature:
+                feature_categories["relative_strength"].append((feature, importance))
+            elif "month" in feature or "quarter" in feature:
+                feature_categories["seasonal"].append((feature, importance))
+            elif "volume" in feature:
+                feature_categories["volume"].append((feature, importance))
+            else:
+                feature_categories["other"].append((feature, importance))
+        
+        # 获取最近的市场状态
+        try:
+            latest_date = max(self.trading_days)
+            market_status = self._load_market_status(latest_date)
+            if market_status and 'market_type' in market_status:
+                market_type = market_status['market_type']
+                
+                # 根据市场状态推荐特征权重
+                recommended_weights = {}
+                if market_type in [11, 12, 13]:  # 强势上涨
+                    recommended_weights = {
+                        "momentum": 0.3,
+                        "relative_strength": 0.3,
+                        "trend": 0.2,
+                        "volume": 0.1,
+                        "volatility": 0.05,
+                        "seasonal": 0.05
+                    }
+                elif market_type in [31, 32, 33]:  # 盘整
+                    recommended_weights = {
+                        "relative_strength": 0.35,
+                        "volatility": 0.2,
+                        "volume": 0.2,
+                        "trend": 0.1,
+                        "momentum": 0.1,
+                        "seasonal": 0.05
+                    }
+                elif market_type in [51, 52, 53]:  # 下跌
+                    recommended_weights = {
+                        "volatility": 0.3,
+                        "relative_strength": 0.25,
+                        "volume": 0.15,
+                        "trend": 0.15,
+                        "momentum": 0.1,
+                        "seasonal": 0.05
+                    }
+                else:  # 默认
+                    recommended_weights = {
+                        "relative_strength": 0.25,
+                        "momentum": 0.20,
+                        "trend": 0.20,
+                        "volatility": 0.15,
+                        "volume": 0.10,
+                        "seasonal": 0.10
+                    }
+                
+                feature_categories["recommended_weights"] = recommended_weights
+        except Exception as e:
+            self.logger.error(f"分析特征重要性时出错: {e}")
+        
+        return {
+            "sorted_importance": sorted_importance[:30],  # 前30个最重要特征
+            "feature_categories": feature_categories,
+            "sector_code": sector_code
+        }
 
 def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, top_n=5):
     """
