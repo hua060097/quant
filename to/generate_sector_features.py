@@ -88,10 +88,10 @@ except ImportError:
         raise
 
 # 特征生成参数
-DEFAULT_START_DATE = "20180101"
+DEFAULT_START_DATE = "20230101"
 DEFAULT_END_DATE = datetime.now().strftime("%Y%m%d")
-DEFAULT_MAX_WORKERS = 4
-DEFAULT_BATCH_SIZE = 30
+DEFAULT_MAX_WORKERS = 12
+DEFAULT_BATCH_SIZE = 150
 DEFAULT_MIN_RECORDS_PER_FILE = 250  # 单个特征文件的最小记录数
 
 # 数据加载器包装类，提供统一接口
@@ -606,8 +606,11 @@ class SectorFeatureManager:
         
         # 使用多进程处理
         results = {}
+
+        print(f"max_workers: {max_workers}")
         
         if max_workers > 1 and len(sectors) > 1:
+            print(f"多进程处理 {len(sectors)} 个板块")
             # 多进程处理
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
@@ -1194,6 +1197,7 @@ def main():
         
         # 直接使用process_date_range处理
         if not args.no_merge:
+            print("开始合并特征-------------------------------")
             # 使用process_date_range，它会在处理完所有板块后自动合并
             results = manager.process_date_range(
                 start_date=start_date,

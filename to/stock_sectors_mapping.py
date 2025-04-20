@@ -6,6 +6,7 @@ import os
 import pickle
 import sector_analysis as sa
 from functools import lru_cache
+import functools
 
 def get_tng_sectors():
     """获取所有TGN开头的概念板块"""
@@ -178,26 +179,52 @@ def get_stock_sectors(stock_code=None, stock_name=None, data=None):
     print("请提供股票代码或股票名称")
     return []
 
+@functools.lru_cache(maxsize=128)
+def get_sector_stocks_cached(sector_name):
+    """带缓存的获取板块股票列表函数
+    
+    参数:
+        sector_name: 板块名称
+        
+    返回:
+        板块包含的股票列表，如果未找到则返回空列表
+    """
+    data = load_data()
+    if data is None:
+        return []
+    
+    # 查询板块包含的股票
+    stocks = data.get("sector_to_stocks", {}).get(sector_name, [])
+    # 返回列表的副本，避免缓存对原始数据的修改影响
+    return stocks.copy() if stocks else []
+
 def get_sector_stocks(sector_name, data=None):
     """查询TGN概念板块包含的股票
     
     参数:
         sector_name: 板块名称
-        data: 预加载的数据，如果为None则尝试从文件加载
+        data: 预加载的数据，如果为None则使用缓存版本
         
     返回:
         板块包含的股票列表，如果未找到则返回空列表
     """
     if data is None:
-        data = load_data()
-        if data is None:
-            return []
+        # 使用缓存版本
+        stocks = get_sector_stocks_cached(sector_name)
+    else:
+        # 使用传入的数据
+        stocks = data.get("sector_to_stocks", {}).get(sector_name, [])
     
-    # 查询板块包含的股票
-    stocks = data.get("sector_to_stocks", {}).get(sector_name, [])
     if stocks:
         print(f"板块 {sector_name} 包含 {len(stocks)} 只股票:")
-        stock_code_to_name = data.get("stock_code_to_name", {})
+        stock_code_to_name = {}
+        if data is not None:
+            stock_code_to_name = data.get("stock_code_to_name", {})
+        else:
+            cached_data = load_data()
+            if cached_data:
+                stock_code_to_name = cached_data.get("stock_code_to_name", {})
+        
         for i, stock_code in enumerate(stocks[:10], 1):  # 只显示前10只
             stock_name = stock_code_to_name.get(stock_code, "未知")
             print(f"{i}. {stock_code} ({stock_name})")
@@ -209,6 +236,12 @@ def get_sector_stocks(sector_name, data=None):
     else:
         print(f"未找到板块 {sector_name} 或该板块没有成分股")
         return []
+
+# 添加一个清除缓存的函数
+def clear_sector_stocks_cache():
+    """清除板块股票列表的缓存"""
+    get_sector_stocks_cached.cache_clear()
+    print("已清除板块股票缓存")
 
 def update_mapping():
     """更新股票和TGN概念板块的映射关系"""
