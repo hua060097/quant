@@ -221,7 +221,7 @@ class SectorModelTrainer:
                 self.logger.warning(f"市场状态文件不存在: {status_file}")
                 return None
                 
-            with open(status_file, "r") as f:
+            with open(status_file, "r", encoding="utf-8") as f:
                 market_status_data = json.load(f)
                 
             # 获取特定日期的市场状态
@@ -825,9 +825,24 @@ class SectorModelTrainer:
             models: 模型字典
             feature_columns: 特征列名
         """
-        # 创建板块模型目录
-        sector_dir = self.model_dir / sector_code
+        # 创建板块模型目录，确保路径正确
+        model_dir = self.model_dir
+        
+        # 如果是板块轮动模型（通常通过sector_code是否等于"sector_rotation"来判断）
+        if sector_code == "sector_rotation":
+            # 确保目录不重复添加sector_rotation
+            if model_dir.name != "sector_rotation":
+                sector_dir = model_dir / "sector_rotation"
+            else:
+                sector_dir = model_dir
+        else:
+            # 普通板块模型
+            sector_dir = model_dir / sector_code
+            
         ensure_dir(sector_dir)
+        
+        # 记录模型保存位置，方便调试
+        self.logger.info(f"保存板块 {sector_code} 的模型到目录: {sector_dir}")
         
         # 保存特征列名
         feature_file = sector_dir / "feature_columns.json"
@@ -838,13 +853,13 @@ class SectorModelTrainer:
         for model_name, model in models.items():
             if model_name == 'xgboost':
                 model_file = sector_dir / f"{model_name}_model.json"
-                model.save_model(model_file)
+                model.save_model(str(model_file))
             elif model_name == 'lightgbm':
                 model_file = sector_dir / f"{model_name}_model.txt"
-                model.booster_.save_model(model_file)
+                model.booster_.save_model(str(model_file))
             elif model_name == 'lnn':
                 model_file = sector_dir / f"{model_name}_model"
-                model.save(model_file)
+                model.save(str(model_file))
                 
         self.logger.info(f"成功保存板块 {sector_code} 的模型到 {sector_dir}")
 
@@ -2199,9 +2214,45 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
     Returns:
         dict: 预测结果
     """
-    logger.info(f"使用板块轮动模型预测日期 {date} 未来 {forward_days} 天的板块轮动情况")
+    # 导入必要的库
+    import numpy as np
     
-    # 创建模型训练器
+    logger.info(f"使用板块轮动模型进行预测，日期: {date}")
+    
+    # 处理模型路径，确保不会重复添加sector_rotation
+    if model_dir is None:
+        model_dir = get_model_path("sector_rotation")
+        logger.info(f"未提供模型目录，使用默认路径: {model_dir}")
+    else:
+        # 确保model_dir是Path对象
+        model_dir = Path(model_dir)
+        logger.info(f"原始模型目录: {model_dir}")
+        
+        # 检查路径是否已经包含sector_rotation
+        if model_dir.name != "sector_rotation":
+            original_path = str(model_dir)
+            model_dir = model_dir / "sector_rotation"
+            logger.info(f"添加sector_rotation子目录: {original_path} -> {model_dir}")
+    
+    logger.info(f"最终使用的模型目录: {model_dir}")
+    
+    # 确保模型目录存在
+    if not Path(model_dir).exists():
+        logger.error(f"模型目录不存在: {model_dir}")
+        return None
+
+    # 加载特征列名
+    feature_file = model_dir / "feature_columns.json"
+    if not feature_file.exists():
+        logger.error(f"特征列文件 {feature_file} 不存在")
+        return None
+        
+    with open(feature_file, "r") as f:
+        feature_cols = json.load(f)
+    
+    logger.info(f"从模型加载的特征列数量: {len(feature_cols)}")
+    logger.info(f"前10个特征列示例: {feature_cols[:10] if len(feature_cols) > 10 else feature_cols}")
+    
     trainer = SectorModelTrainer(model_dir=model_dir)
     
     # 获取板块列表
@@ -2220,10 +2271,33 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
     
     # 加载当前日期的板块特征
     current_features = trainer._load_multiple_sectors_features(sector_list, date)
-    if current_features is None or current_features.empty:
+    
+    # 调试：打印加载的特征
+    if current_features is None:
         logger.warning(f"日期 {date} 无法加载板块特征")
         return None
+        
+    logger.info(f"加载的特征类型: {type(current_features)}")
+    logger.info(f"加载的板块数量: {len(current_features) if isinstance(current_features, dict) else 'N/A'}")
     
+    # 打印current_features的所有键（为了调试）
+    if isinstance(current_features, dict):
+        logger.info(f"特征字典的键: {list(current_features.keys())}")
+        
+        # 如果只有一个板块，打印该板块的所有特征
+        if len(current_features) == 1:
+            sector_code = list(current_features.keys())[0]
+            sector_features = current_features[sector_code]
+            logger.info(f"板块 {sector_code} 的特征数量: {len(sector_features) if isinstance(sector_features, dict) else 'N/A'}")
+            logger.info(f"板块 {sector_code} 的特征列: {list(sector_features.keys()) if isinstance(sector_features, dict) else 'N/A'}")
+    else:
+        # 如果不是字典，打印其结构
+        logger.info(f"非字典特征的结构: {type(current_features)}")
+        if hasattr(current_features, 'keys'):
+            logger.info(f"特征的键: {list(current_features.keys())}")
+        if hasattr(current_features, 'columns'):
+            logger.info(f"特征的列: {list(current_features.columns)}")
+        
     # 添加市场状态特征
     market_status = trainer._load_market_status(date)
     if market_status:
@@ -2274,6 +2348,10 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
     # 添加当前日期
     current_features['current_date'] = date
     
+    # 再次打印：查看添加市场状态后的特征（为了调试）
+    logger.info(f"添加市场状态后的特征数量: {len(current_features) if isinstance(current_features, dict) else 'N/A'}")
+    logger.info(f"添加市场状态后的特征列: {list(current_features.keys())[:20] if isinstance(current_features, dict) else 'N/A'} {'...' if len(current_features) > 20 else ''}")
+
     # 查找模型文件
     model_path = Path(model_dir)
     if not model_path.exists():
@@ -2283,12 +2361,15 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
     # 尝试查找模型文件
     model_types = ['xgb_return', 'xgb_rank', 'xgb_clf', 'lgb_return', 'lnn_return']
     
+    logger.info(f"开始加载模型文件")
     loaded_models = {}
     for model_type in model_types:
         if model_type.startswith('xgb'):
             model_file = model_path / f"{model_type}_model.json"
+            logger.info(f"检查XGBoost模型文件: {model_file}")
             if model_file.exists():
                 try:
+                    import xgboost as xgb
                     model = xgb.XGBRegressor() if 'return' in model_type or 'rank' in model_type else xgb.XGBClassifier()
                     model.load_model(model_file)
                     loaded_models[model_type] = model
@@ -2297,8 +2378,10 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
                     logger.error(f"加载模型 {model_type} 出错: {e}")
         elif model_type.startswith('lgb'):
             model_file = model_path / f"{model_type}_model.txt"
+            logger.info(f"检查LightGBM模型文件: {model_file}")
             if model_file.exists():
                 try:
+                    import lightgbm as lgb
                     model = lgb.Booster(model_file=str(model_file))
                     loaded_models[model_type] = model
                     logger.info(f"成功加载模型 {model_type}")
@@ -2306,32 +2389,122 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
                     logger.error(f"加载模型 {model_type} 出错: {e}")
         elif model_type.startswith('lnn'):
             model_dir = model_path / f"{model_type}_model"
+            logger.info(f"检查LNN模型目录: {model_dir}")
             if model_dir.exists():
                 try:
                     # 尝试导入液体神经网络
                     sys.path.append(str(get_project_root() / "to"))
                     from Liquid.nn.liquid.liquid_network import LiquidNetModel
-                    model = LiquidNetModel.load(model_dir)
+                    
+                    # 检查是否有模型配置文件
+                    config_file = model_dir / "model_config.json"
+                    if config_file.exists():
+                        # 从配置文件加载参数
+                        with open(config_file, 'r') as f:
+                            config = json.load(f)
+                        input_size = config.get('input_size', len(feature_cols))
+                        output_size = config.get('output_size', 1)
+                        hidden_size = config.get('hidden_size', 64)
+                        num_layers = config.get('num_layers', 2)
+                    else:
+                        # 使用默认参数
+                        logger.warning(f"未找到模型配置文件，使用默认参数创建模型")
+                        input_size = len(feature_cols)  # 使用特征列数量作为输入维度
+                        output_size = 1  # 默认输出维度为1（回归任务）
+                        hidden_size = 64
+                        num_layers = 2
+                    
+                    # 创建模型实例
+                    model = LiquidNetModel(
+                        input_size=input_size,
+                        output_size=output_size,
+                        hidden_size=hidden_size,
+                        num_layers=num_layers
+                    )
+                    
+                    # 加载模型权重
+                    model_weights_file = model_dir / "model_weights.pt"
+                    if model_weights_file.exists():
+                        import torch
+                        model.model.load_state_dict(torch.load(model_weights_file, map_location=model.device))
+                    else:
+                        try:
+                            # 尝试直接通过torch.load加载，使用weights_only=False参数
+                            import torch
+                            filepath = str(model_dir)
+                            logger.info(f"尝试直接使用torch.load加载模型: {filepath}")
+                            
+                            try:
+                                # 直接使用weights_only=False加载模型
+                                checkpoint = torch.load(filepath, map_location="cpu", weights_only=False)
+                            except TypeError:
+                                # 如果weights_only参数不被支持（可能是旧版torch）
+                                checkpoint = torch.load(filepath, map_location="cpu")
+                            
+                            # 如果成功加载，将checkpoint应用到模型
+                            if hasattr(model, 'load_state_dict'):
+                                model.load_state_dict(checkpoint)
+                            else:
+                                logger.info("模型加载成功，但无法直接应用到当前模型实例")
+                                
+                        except Exception as inner_e:
+                            logger.error(f"尝试直接加载失败: {inner_e}")
+                            
+                            # 如果所有方法都失败，尝试跳过LNN模型
+                            logger.warning(f"无法加载LNN模型，将跳过此模型")
+                            continue
+                    
                     loaded_models[model_type] = model
                     logger.info(f"成功加载模型 {model_type}")
                 except Exception as e:
                     logger.error(f"加载模型 {model_type} 出错: {e}")
+                    logger.error(traceback.format_exc())
     
     if not loaded_models:
         logger.error(f"未能加载任何模型")
         return None
-    
-    # 加载特征列名
-    feature_file = model_path / "feature_columns.json"
-    if not feature_file.exists():
-        logger.error(f"特征列文件 {feature_file} 不存在")
-        return None
         
-    with open(feature_file, "r") as f:
-        feature_cols = json.load(f)
+    logger.info(f"成功加载 {len(loaded_models)} 个模型: {list(loaded_models.keys())}")
     
     # 准备特征数据
-    X = current_features[feature_cols].fillna(0)
+    # 将特征字典转换为DataFrame
+    try:
+        # 先检查current_features的结构
+        if isinstance(current_features, dict):
+            # 如果current_features是字典但不是板块特征的集合
+            if not any(isinstance(v, dict) for v in current_features.values()):
+                # 这种情况下current_features已经是一个特征字典，可以直接转换为DataFrame
+                features_df = pd.DataFrame([current_features])
+            else:
+                # 这种情况下current_features是板块特征的集合，需要选择一个板块或合并
+                logger.warning("current_features包含多个板块的特征，将使用第一个板块进行预测")
+                sector_code = next(iter(current_features.keys()))
+                features_df = pd.DataFrame([current_features[sector_code]])
+                # 添加板块代码
+                features_df['sector_code'] = sector_code
+        else:
+            # 如果current_features已经是DataFrame
+            features_df = current_features
+            
+        logger.info(f"特征DataFrame的形状: {features_df.shape}")
+        logger.info(f"特征DataFrame的列: {list(features_df.columns)}...")
+        
+        # 确保所有需要的特征列都存在
+        missing_cols = [col for col in feature_cols if col not in features_df.columns]
+        if missing_cols:
+            logger.warning(f"特征数据中缺少以下列: {missing_cols}")
+            # 为缺失的特征列添加默认值0
+            for col in missing_cols:
+                features_df[col] = 0
+                
+        # 只选择模型所需的特征列
+        X = features_df[feature_cols].fillna(0)
+        
+        logger.info(f"成功准备特征数据，形状: {X.shape}")
+    except Exception as e:
+        logger.error(f"准备特征数据时出错: {e}")
+        logger.error(traceback.format_exc())
+        return None
     
     # 使用模型进行预测
     predictions = {}
@@ -2341,8 +2514,9 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
             features = X.copy()
             
             # 检查NaN和无穷值
+            import numpy as np  # 确保numpy已导入
             if features.isna().any().any() or np.isinf(features.values).any():
-                self.logger.warning(f"特征数据中包含NaN或无穷值，将进行填充")
+                logger.warning(f"特征数据中包含NaN或无穷值，将进行填充")
                 features = features.fillna(0)
                 features = features.replace([np.inf, -np.inf], 0)
             
@@ -2351,12 +2525,13 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
                 predictions[model_type] = preds
             elif model_type.startswith('lgb'):
                 # LightGBM模型需要特殊处理
-                if isinstance(model, lgb.Booster):
-                    # 直接使用Booster预测
+                if hasattr(model, 'predict'):
+                    # 使用predict方法
                     preds = model.predict(features)
                 else:
-                    # 使用LGBMRegressor预测
-                    preds = model.predict(features)
+                    # 兼容其他情况
+                    logger.warning(f"LightGBM模型没有predict方法，尝试其他方式")
+                    continue
                 predictions[model_type] = preds
             elif model_type.startswith('lnn'):
                 # 尝试使用LiquidNetModel预测
@@ -2371,67 +2546,66 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
             logger.error(f"使用模型 {model_type} 预测出错: {e}")
             logger.error(traceback.format_exc())
     
+    # 打印预测结果
+    logger.info(f"预测结果类型: {', '.join([f'{k}: {type(v).__name__}' for k, v in predictions.items()])}")
+    
     # 计算综合预测分数
     if not predictions:
         logger.error("没有任何模型预测成功")
         return None
     
-    # 优先使用排名模型的结果
-    if 'xgb_rank' in predictions:
-        # 排名百分比越低越好
-        current_features['predicted_rank'] = predictions['xgb_rank']
-        rank_based_score = 1 - predictions['xgb_rank']  # 转换为分数，越高越好
-    else:
-        rank_based_score = None
-    
-    # 使用回归模型的结果
-    if 'xgb_return' in predictions:
-        current_features['predicted_return'] = predictions['xgb_return']
-        return_score = predictions['xgb_return']
-    elif 'lgb_return' in predictions:
-        current_features['predicted_return'] = predictions['lgb_return']
-        return_score = predictions['lgb_return']
-    else:
-        return_score = None
-    
-    # 使用分类模型的结果
-    if 'xgb_clf' in predictions:
-        current_features['predicted_probability'] = predictions['xgb_clf']
-        clf_score = predictions['xgb_clf']
-    else:
-        clf_score = None
-    
-    # 计算综合分数
-    # 将各个模型的分数归一化后组合
-    scores = []
-    
-    if rank_based_score is not None:
-        rank_min = rank_based_score.min()
-        rank_max = rank_based_score.max()
-        if rank_max > rank_min:
-            norm_rank_score = (rank_based_score - rank_min) / (rank_max - rank_min)
-            scores.append(norm_rank_score)
-    
-    if return_score is not None:
-        return_min = return_score.min()
-        return_max = return_score.max()
-        if return_max > return_min:
-            norm_return_score = (return_score - return_min) / (return_max - return_min)
-            scores.append(norm_return_score)
-    
-    if clf_score is not None:
-        scores.append(clf_score)  # 分类概率已经是[0,1]区间
-    
-    if scores:
-        # 计算平均分数
-        composite_score = np.mean(np.array(scores), axis=0)
-        current_features['composite_score'] = composite_score
+    try:
+        # 将预测结果添加到特征中
+        for model_type, pred in predictions.items():
+            col_name = f'pred_{model_type}'
+            if isinstance(pred, np.ndarray):
+                if len(pred) == 1:
+                    features_df[col_name] = pred[0]
+                else:
+                    logger.warning(f"预测结果 {model_type} 的长度不为1: {len(pred)}")
+                    features_df[col_name] = pred[0] if len(pred) > 0 else 0.0
+            else:
+                features_df[col_name] = pred
         
-        # 按综合分数排序
-        current_features['rank'] = current_features['composite_score'].rank(ascending=False)
+        # 计算综合得分（简单加权平均）
+        features_df['composite_score'] = 0.0
+        
+        # 根据模型类型赋予权重
+        weights = {}
+        if 'pred_xgb_return' in features_df.columns:
+            weights['pred_xgb_return'] = 0.4
+        if 'pred_lgb_return' in features_df.columns:
+            weights['pred_lgb_return'] = 0.3
+        if 'pred_xgb_clf' in features_df.columns:
+            weights['pred_xgb_clf'] = 0.2
+        if 'pred_xgb_rank' in features_df.columns:
+            weights['pred_xgb_rank'] = 0.1
+            
+        # 如果没有权重，使用平均值
+        if not weights:
+            pred_cols = [col for col in features_df.columns if col.startswith('pred_')]
+            for col in pred_cols:
+                weights[col] = 1.0 / len(pred_cols)
+                
+        # 计算加权得分
+        for col, weight in weights.items():
+            if col in features_df.columns:
+                features_df['composite_score'] += features_df[col] * weight
+                
+        # 排序并获取前N个结果
+        features_df['rank'] = range(1, len(features_df) + 1)  # 简单赋值排名
+        
+        # 确保'sector_code'列存在
+        if 'sector_code' not in features_df.columns:
+            # 如果没有sector_code列，但有板块列表，使用板块列表
+            if sector_list and len(sector_list) == len(features_df):
+                features_df['sector_code'] = sector_list
+            else:
+                # 否则使用默认值
+                features_df['sector_code'] = [f"sector_{i}" for i in range(len(features_df))]
         
         # 获取前N名板块
-        top_sectors = current_features.sort_values('composite_score', ascending=False).head(top_n)
+        top_sectors = features_df.sort_values('composite_score', ascending=False).head(top_n)
         
         result = {
             'date': date,
@@ -2439,6 +2613,7 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
             'top_sectors': []
         }
         
+        # 将结果转换为字典列表
         for _, row in top_sectors.iterrows():
             sector_info = {
                 'sector_code': row['sector_code'],
@@ -2446,21 +2621,27 @@ def predict_sector_rotation(model_dir, date, sector_list=None, forward_days=2, t
                 'rank': int(row['rank'])
             }
             
-            if 'predicted_return' in row:
-                sector_info['predicted_return'] = float(row['predicted_return'])
-            
-            if 'predicted_probability' in row:
-                sector_info['predicted_probability'] = float(row['predicted_probability'])
+            # 添加各模型的预测结果
+            for model_type in loaded_models.keys():
+                pred_col = f'pred_{model_type}'
+                if pred_col in row:
+                    sector_info[model_type.replace('_', '_pred_')] = float(row[pred_col])
                 
             result['top_sectors'].append(sector_info)
         
         logger.info(f"预测结果: 日期 {date} 未来 {forward_days} 天表现最好的前 {top_n} 个板块:")
         for sector in result['top_sectors']:
-            logger.info(f"  {sector['sector_code']}: 综合分数 {sector['composite_score']:.4f}, 排名 {sector['rank']}")
-            
+            sector_info = f"  {sector['sector_code']}: 综合分数 {sector['composite_score']:.4f}, 排名 {sector['rank']}"
+            # 添加各模型预测值
+            model_preds = [f"{k.split('_pred_')[1]}={v:.4f}" for k, v in sector.items() if '_pred_' in k]
+            if model_preds:
+                sector_info += f" ({', '.join(model_preds)})"
+            logger.info(sector_info)
+        
         return result
-    else:
-        logger.error("无法计算综合分数")
+    except Exception as e:
+        logger.error(f"计算综合得分时出错: {e}")
+        logger.error(traceback.format_exc())
         return None
 
 def main():
@@ -2499,9 +2680,34 @@ def main():
     args = parser.parse_args()
     
     # 设置模型目录
-    model_dir = args.model_dir if args.model_dir else get_model_path()
-    if args.train_mode == 'rotation':
-        model_dir = Path(model_dir) / args.model_name
+    try:
+        model_dir = args.model_dir if args.model_dir else get_model_path()
+        logger.info(f"原始模型目录: {model_dir}")
+        
+        # 如果是预测模式，确保路径的一致性处理
+        # predict_sector_rotation内部会处理sector_rotation子路径
+        if args.mode == 'predict':
+            # 预测模式不需要在这里修改model_dir，因为predict_sector_rotation函数会处理
+            pass
+        elif args.train_mode == 'rotation':
+            # 训练轮动模型时，确保模型目录的最后一级不是sector_rotation
+            model_dir_path = Path(model_dir)
+            if model_dir_path.name == 'sector_rotation':
+                # 如果已经是sector_rotation，就不再添加
+                logger.info(f"模型目录已经包含sector_rotation，保持原样: {model_dir}")
+            else:
+                # 原本的模式，添加model_name作为子目录
+                old_path = str(model_dir_path)
+                model_dir = model_dir_path / args.model_name
+                logger.info(f"为轮动模型添加子目录: {old_path} -> {model_dir}")
+                
+        # 确保模型目录存在
+        ensure_dir(Path(model_dir))
+        logger.info(f"最终使用的模型目录: {model_dir}")
+    except Exception as e:
+        logger.error(f"处理模型目录时出错: {e}")
+        logger.error(traceback.format_exc())
+        return
     
     # 根据运行模式选择功能
     if args.mode == 'train':
@@ -2609,10 +2815,11 @@ def main():
         if args.sector:
             sector_list = [args.sector]
         
+        # 修复预测模式下的路径传递
         # 运行预测
         logger.info(f"使用板块轮动模型进行预测，日期: {args.date}")
         result = predict_sector_rotation(
-            model_dir=model_dir,
+            model_dir=model_dir,  # 不再需要额外处理，predict_sector_rotation内部已处理sector_rotation路径
             date=args.date,
             sector_list=sector_list,
             forward_days=args.forward_days,

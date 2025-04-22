@@ -16,6 +16,12 @@ from typing import Dict, List, Optional, Union, Tuple, Any, Set
 
 from to.sector_features.feature_generator import SectorFeatureGenerator
 
+# 导入logger配置
+from to.logger_config import configure_logger
+
+# 使用共享的logger配置
+logger = configure_logger(__name__)
+
 try:
     from to.path_utils import get_data_path
 except ImportError:
@@ -27,7 +33,6 @@ except ImportError:
             return data_root / relative_path
         return data_root
 
-logger = logging.getLogger(__name__)
 
 class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
     """增强版板块特征生成器

@@ -17,6 +17,12 @@ from typing import Dict, List, Optional, Union, Tuple, Any
 from to.sector_features.technical_indicators import TechnicalIndicators
 from pathlib import Path
 
+# 导入logger配置
+from to.logger_config import configure_logger
+
+# 使用共享的logger配置
+logger = configure_logger(__name__)
+
 try:
     from to.path_utils import get_data_path, ensure_dir
 except ImportError:
@@ -31,8 +37,6 @@ except ImportError:
     def ensure_dir(path):
         os.makedirs(path, exist_ok=True)
         return path
-
-logger = logging.getLogger(__name__)
 
 class SectorFeatureGenerator:
     """板块特征生成器
@@ -303,80 +307,99 @@ class SectorFeatureGenerator:
         Returns:
             添加了技术指标的DataFrame
         """
-        # 如果没有历史数据，无法计算技术指标
-        if sector_data is None or sector_data.empty:
-            return features
-            
-        # 使用板块的均价数据计算技术指标
         try:
+            logger.info(f"计算技术指标开始")
+            # 如果没有历史数据，无法计算技术指标
+            if sector_data is None or sector_data.empty:
+                logger.info(f"板块数据为空，无法计算技术指标")
+                return features
+                
+            # 使用板块的均价数据计算技术指标
             # 创建技术指标计算器
             indicator = TechnicalIndicators()
             
             # 检查历史数据是否足够
             if historical_data is None or len(historical_data) < 20:  # 修改为至少需要20天数据
-                logger.warning(f"历史数据不足，无法准确计算技术指标，使用默认值")
+                logger.info(f"历史数据不足，无法准确计算技术指标，使用默认值")
                 # 使用默认值
-            ma_values = {
-                'ma5': features['close'].values[0],
-                'ma10': features['close'].values[0],
-                'ma20': features['close'].values[0],
-                'ma30': features['close'].values[0],
-                    'ma60': features['close'].values[0],
-                    'rsi6': 50,   # 添加默认RSI值
+                default_close = features['close'] if isinstance(features['close'], (int, float, np.number)) else features['close'].iloc[0] if not features['close'].empty else 0.0
+                
+                ma_values = {
+                    'ma5': default_close,
+                    'ma10': default_close,
+                    'ma20': default_close,
+                    'ma30': default_close,
+                    'ma60': default_close,
+                    'ma120': default_close,
+                    'rsi6': 50,
                     'rsi14': 50,
                     'rsi_overbought': 0,
                     'rsi_oversold': 0,
-                    'rsi_neutral': 1
+                    'rsi_neutral': 1,
+                    'ema12': default_close,
+                    'macd_line': 0,
+                    'macd_signal': 0,
+                    'macd_histogram': 0,
+                    'macd_trend': 0,
+                    'trend_strength': 0.5,
+                    'swing_pattern': 0,
+                    'consecutive_up_days': 0,
+                    'consecutive_down_days': 0,
+                    'volume_ratio_5': 1.0,
+                    'volume_ratio_10': 1.0,
+                    'volume_ratio_20': 1.0,
+                    'volume_ratio_60': 1.0
                 }
                 
-            # 添加值到特征中
+                # 批量添加值到特征中
+                for key, value in ma_values.items():
+                    features[key] = value
+
+                logger.info(f"计算技术指标完成，返回默认特征")
+                return features
+            
+            # 获取历史数据并确保是numpy数组
+            logger.info(f"使用 {len(historical_data)} 天的历史数据计算技术指标")
+            
+            # 预处理历史数据，确保正确的格式
+            historical_close = np.array(historical_data['close'].values) if 'close' in historical_data.columns else None
+            historical_open = np.array(historical_data['open'].values) if 'open' in historical_data.columns else None
+            historical_high = np.array(historical_data['high'].values) if 'high' in historical_data.columns else None
+            historical_low = np.array(historical_data['low'].values) if 'low' in historical_data.columns else None
+            historical_volume = np.array(historical_data['volume'].values) if 'volume' in historical_data.columns else None
+            
+            # 获取当前价格，确保是标量值
+            current_close = features['close']
+            if isinstance(current_close, pd.Series):
+                current_close = current_close.iloc[0] if not current_close.empty else 0.0
+            
+            # 异常值检查 - 确保没有NaN或无穷值
+            if historical_close is not None:
+                historical_close = np.nan_to_num(historical_close, nan=current_close)
+            if historical_volume is not None:
+                historical_volume = np.nan_to_num(historical_volume, nan=0.0)
+            
+            # 批量计算多个周期的移动平均线
+            ma_periods = [5, 10, 20, 30, 60, 120]
+            ma_values = {}
+            
+            for period in ma_periods:
+                if historical_close is not None and len(historical_close) >= period:
+                    ma = np.mean(historical_close[-period:])
+                    ma_values[f'ma{period}'] = round(ma, 2)
+                else:
+                    ma_values[f'ma{period}'] = current_close
+            
+            # 批量添加移动平均线到特征中
             for key, value in ma_values.items():
                 features[key] = value
-
-            return features
             
-            # 使用历史数据计算技术指标
-            logger.debug(f"使用 {len(historical_data)} 天的历史数据计算技术指标")
-            
-            # 获取历史数据
-            historical_close = historical_data['close'].values
-            historical_open = historical_data['open'].values if 'open' in historical_data.columns else None
-            historical_high = historical_data['high'].values if 'high' in historical_data.columns else None
-            historical_low = historical_data['low'].values if 'low' in historical_data.columns else None
-            historical_volume = historical_data['volume'].values if 'volume' in historical_data.columns else None
-            
-            # 1. 基础均线指标
-            features['ma5'] = round(self._calculate_ma(historical_close, 5), 2)
-            features['ma10'] = round(self._calculate_ma(historical_close, 10), 2)
-            features['ma20'] = round(self._calculate_ma(historical_close, 20), 2)
-            features['ma30'] = round(self._calculate_ma(historical_close, 30), 2)
-            features['ma60'] = round(self._calculate_ma(historical_close, 60), 2)
-            features['ma120'] = round(self._calculate_ma(historical_close, 120), 2) if len(historical_close) >= 120 else features['ma60']
-            
-            # 成交量均线
-            if historical_volume is not None:
-                features['vol_ma5'] = round(self._calculate_ma(historical_volume, 5), 2)
-                features['vol_ma10'] = round(self._calculate_ma(historical_volume, 10), 2)
-                features['vol_ma20'] = round(self._calculate_ma(historical_volume, 20), 2)
-            
-            # 2. 高级均线指标 - 均线关系指标
-            ma5 = features['ma5']
-            ma10 = features['ma10']
-            ma20 = features['ma20']
-            ma60 = features['ma60']
-            ma120 = features['ma120']
-            
-            # 确保获取标量值而非Series
-            if isinstance(ma5, pd.Series):
-                ma5 = ma5.iloc[0] if not ma5.empty else 0
-            if isinstance(ma10, pd.Series):
-                ma10 = ma10.iloc[0] if not ma10.empty else 0
-            if isinstance(ma20, pd.Series):
-                ma20 = ma20.iloc[0] if not ma20.empty else 0
-            if isinstance(ma60, pd.Series):
-                ma60 = ma60.iloc[0] if not ma60.empty else 0
-            if isinstance(ma120, pd.Series):
-                ma120 = ma120.iloc[0] if not ma120.empty else 0
+            # 提取MA值作为变量，确保是标量值
+            ma5 = ma_values['ma5']
+            ma10 = ma_values['ma10']
+            ma20 = ma_values['ma20']
+            ma60 = ma_values['ma60']
+            ma120 = ma_values['ma120']
             
             # 计算均线比率，确保分母大于0
             features['ma5_10_ratio'] = round(ma5 / ma10, 4) if ma10 > 0 else 1.0
@@ -384,396 +407,353 @@ class SectorFeatureGenerator:
             features['ma10_20_ratio'] = round(ma10 / ma20, 4) if ma20 > 0 else 1.0
             features['ma20_60_ratio'] = round(ma20 / ma60, 4) if ma60 > 0 else 1.0
             features['ma60_120_ratio'] = round(ma60 / ma120, 4) if ma120 > 0 else 1.0
-
-            # 当前价格与均线关系
-            current_close = features['close']
-            if isinstance(current_close, pd.Series):
-                current_close = current_close.iloc[0] if not current_close.empty else 0
-                
+            
+            # 当前价格与均线比率
             features['price_ma5_ratio'] = round(current_close / ma5, 4) if ma5 > 0 else 1.0
             features['price_ma20_ratio'] = round(current_close / ma20, 4) if ma20 > 0 else 1.0
             features['price_ma60_ratio'] = round(current_close / ma60, 4) if ma60 > 0 else 1.0
             
-            # 计算均线斜率（5日变化率）
-            if len(historical_close) >= 10:  # 需要至少10天数据计算5天前的MA5
-                ma5_current = ma5
-                ma5_prev = self._calculate_ma(historical_close[:-5], 5)  # 5天前的MA5
-                
-                ma20_current = ma20
-                ma20_prev = self._calculate_ma(historical_close[:-5], 20)  # 5天前的MA20
-                
-                # 计算斜率（百分比变化）
-                features['ma5_slope'] = round((ma5_current - ma5_prev) / ma5_prev * 100, 2) if ma5_prev > 0 else 0
-                features['ma20_slope'] = round((ma20_current - ma20_prev) / ma20_prev * 100, 2) if ma20_prev > 0 else 0
-            else:
-                features['ma5_slope'] = 0
-                features['ma20_slope'] = 0
-
-            # 3. 趋势指标 - 均线多头/空头排列
-            # 使用标量值进行比较，不使用Series比较
-            features['ma_bull_trend'] = 1 if (ma5 > ma10 and ma10 > ma20 and ma20 > ma60) else 0
-            features['ma_bear_trend'] = 1 if (ma5 < ma10 and ma10 < ma20 and ma20 < ma60) else 0
-
-            # 注意这里需要使用前面计算的标量值
-            bull_trend = features['ma_bull_trend']
-            bear_trend = features['ma_bear_trend']
-            if isinstance(bull_trend, pd.Series):
-                bull_trend = bull_trend.iloc[0] if not bull_trend.empty else 0
-            if isinstance(bear_trend, pd.Series):
-                bear_trend = bear_trend.iloc[0] if not bear_trend.empty else 0
-
-            features['ma_neutral_trend'] = 1 if (not bull_trend and not bear_trend) else 0
-
-            # 3.1 价格趋势方向 - 根据价格与关键均线的位置判断趋势
+            # 计算价格趋势方向指标 - 使用标量值比较
             features['price_above_ma5'] = 1 if current_close > ma5 else 0
             features['price_above_ma20'] = 1 if current_close > ma20 else 0
             features['price_above_ma60'] = 1 if current_close > ma60 else 0
             
-            # 计算趋势方向得分
-            trend_direction_score = 0
-            if current_close > ma5:
-                trend_direction_score += 1
-            if current_close > ma20:
-                trend_direction_score += 1
-            if current_close > ma60:
-                trend_direction_score += 1
-            features['trend_direction_score'] = trend_direction_score  # 范围0-3，越高表示多头趋势越强
+            # 计算趋势方向得分 - 显式转换为标量
+            above_ma5 = features['price_above_ma5']
+            above_ma20 = features['price_above_ma20']
+            above_ma60 = features['price_above_ma60']
             
-            # 计算EMA12用于接下来的指标计算
-            ema12 = self._calculate_ema(historical_close, 12)
-            features['ema12'] = round(ema12, 2)
+            if isinstance(above_ma5, pd.Series):
+                above_ma5 = above_ma5.iloc[0] if not above_ma5.empty else 0
+            if isinstance(above_ma20, pd.Series):
+                above_ma20 = above_ma20.iloc[0] if not above_ma20.empty else 0
+            if isinstance(above_ma60, pd.Series):
+                above_ma60 = above_ma60.iloc[0] if not above_ma60.empty else 0
+                
+            features['trend_direction_score'] = above_ma5 + above_ma20 + above_ma60
             
-            # 计算历史数据中n天前的收盘价
-            if len(historical_close) >= 5:
-                features['close_5d_ago'] = historical_close[-5]
+            # 趋势指标 - 均线多头/空头排列
+            features['ma_bull_trend'] = 1 if (ma5 > ma10 > ma20 > ma60) else 0
+            features['ma_bear_trend'] = 1 if (ma5 < ma10 < ma20 < ma60) else 0
+            
+            # 确保使用标量值进行比较，避免Series的布尔运算歧义
+            bull_trend = features['ma_bull_trend']
+            bear_trend = features['ma_bear_trend']
+            
+            if isinstance(bull_trend, pd.Series):
+                bull_trend = bull_trend.iloc[0] if not bull_trend.empty else 0
+            if isinstance(bear_trend, pd.Series):
+                bear_trend = bear_trend.iloc[0] if not bear_trend.empty else 0
+                
+            features['ma_neutral_trend'] = 1 if (bull_trend == 0 and bear_trend == 0) else 0
+            
+            # 批量计算均线斜率
             if len(historical_close) >= 10:
-                features['close_10d_ago'] = historical_close[-10]
-            if len(historical_close) >= 20:
-                features['close_20d_ago'] = historical_close[-20]
-            print("len historical_close", len(historical_close))
-            # 4. 动量指标
-            # 计算价格变动百分比，使用已计算的ema12
-            features['change_pct'] = round(((current_close / ema12) - 1) * 100, 2)
+                try:
+                    # 使用向量化操作计算斜率
+                    ma5_current = ma5
+                    ma5_prev = np.mean(historical_close[-10:-5])
+                    ma20_current = ma20
+                    ma20_prev = np.mean(historical_close[-25:-5]) if len(historical_close) >= 25 else ma20
+                    
+                    features['ma5_slope'] = round((ma5_current - ma5_prev) / ma5_prev * 100, 2) if ma5_prev > 0 else 0
+                    features['ma20_slope'] = round((ma20_current - ma20_prev) / ma20_prev * 100, 2) if ma20_prev > 0 else 0
+                except Exception as e:
+                    logger.error(f"计算均线斜率出错: {e}")
+                    features['ma5_slope'] = 0
+                    features['ma20_slope'] = 0
+            else:
+                features['ma5_slope'] = 0
+                features['ma20_slope'] = 0
             
-            # 修复：确保使用正确的数值而不是Series的对比
-            close_5d_ago = features.get('close_5d_ago', 0)
-            if isinstance(close_5d_ago, pd.Series):
-                close_5d_ago = close_5d_ago.iloc[0] if not close_5d_ago.empty else 0
-            features['momentum_5d'] = round(((current_close / close_5d_ago) - 1) * 100, 2) if close_5d_ago > 0 else 0
+            # 批量计算历史N天前收盘价
+            for days in [5, 10, 20]:
+                if len(historical_close) >= days:
+                    features[f'close_{days}d_ago'] = historical_close[-days]
+                else:
+                    features[f'close_{days}d_ago'] = current_close
             
-            close_10d_ago = features.get('close_10d_ago', 0)
-            if isinstance(close_10d_ago, pd.Series):
-                close_10d_ago = close_10d_ago.iloc[0] if not close_10d_ago.empty else 0
-            features['momentum_10d'] = round(((current_close / close_10d_ago) - 1) * 100, 2) if close_10d_ago > 0 else 0
+            # 计算EMA12
+            if len(historical_close) >= 12:
+                ema12 = self._calculate_ema(historical_close, 12)
+                features['ema12'] = round(ema12, 2)
+            else:
+                features['ema12'] = current_close
             
-            close_20d_ago = features.get('close_20d_ago', 0)
-            if isinstance(close_20d_ago, pd.Series):
-                close_20d_ago = close_20d_ago.iloc[0] if not close_20d_ago.empty else 0
-            features['momentum_20d'] = round(((current_close / close_20d_ago) - 1) * 100, 2) if close_20d_ago > 0 else 0
-
-            # 5. 计算RSI指标 - 修复：在方法内部直接计算而不是从features中获取
+            # 计算动量指标 - 确保使用标量值
+            for days in [5, 10, 20]:
+                close_nd_ago = features[f'close_{days}d_ago']
+                # 确保close_nd_ago是标量
+                if isinstance(close_nd_ago, pd.Series):
+                    close_nd_ago = close_nd_ago.iloc[0] if not close_nd_ago.empty else 0
+                
+                # 使用转换后的标量值进行比较和计算
+                features[f'momentum_{days}d'] = round(((current_close / close_nd_ago) - 1) * 100, 2) if close_nd_ago > 0 else 0
+            
+            # 计算相对变化率 - 确保使用标量值
+            ema12_val = features['ema12']
+            if isinstance(ema12_val, pd.Series):
+                ema12_val = ema12_val.iloc[0] if not ema12_val.empty else current_close
+                
+            features['change_pct'] = round(((current_close / ema12_val) - 1) * 100, 2) if ema12_val > 0 else 0
+            
+            # 计算RSI指标
             if len(historical_close) >= 14:
-                rsi6 = self._calculate_rsi(historical_close, 6)
-                rsi14 = self._calculate_rsi(historical_close, 14)
-                              
-                features['rsi6'] = rsi6
-                features['rsi14'] = rsi14
-
-                print("rsi6--", features['rsi6'], "rsi14--", features['rsi14'], type(features['rsi6']), type(features['rsi14']))
-                
-                # RSI超买超卖指标
-                rsi14_value = features['rsi14']
-                if isinstance(rsi14_value, pd.Series):
-                    rsi14_value = rsi14_value.iloc[0] if not rsi14_value.empty else 50
-                else:
-                    rsi14_value = rsi14  # 直接使用计算得到的标量值
-                
-                features['rsi_overbought'] = 1 if rsi14_value > 70 else 0
-                features['rsi_oversold'] = 1 if rsi14_value < 30 else 0
-                features['rsi_neutral'] = 1 if 30 <= rsi14_value <= 70 else 0
-                
-                # 添加RSI斜率 - 使用前一天的数据计算斜率
-                if len(historical_close) >= 14 + 5:  # 确保有足够数据计算5天前的RSI
-                    rsi14_prev = self._calculate_rsi(historical_close[:-5], 14)
-                    features['rsi_slope'] = round(rsi14 - rsi14_prev, 2)
-                else:
-                    features['rsi_slope'] = 0
-            
-            # 4.1 CCI指标 - 顺势指标
-            if historical_high is not None and historical_low is not None and len(historical_close) >= 20:
-                typical_price = (historical_high + historical_low + historical_close) / 3
-                cci = self._calculate_cci(typical_price, 20)
-                features['cci'] = cci
-                
-                # CCI状态
-                cci_value = cci
-                if isinstance(cci_value, pd.Series):
-                    cci_value = cci_value.iloc[0] if not cci_value.empty else 0
-                
-                features['cci_overbought'] = 1 if cci_value > 100 else 0
-                features['cci_oversold'] = 1 if cci_value < -100 else 0
-                features['cci_extreme_overbought'] = 1 if cci_value > 200 else 0
-                features['cci_extreme_oversold'] = 1 if cci_value < -200 else 0
-           
-            
-            # 6. 价格支撑压力 - 使用专业计算方法
-            try:
-                support_level, resistance_level = self._calculate_support_resistance(historical_data, n=20, sensitivity=1.5)
-                
-                # 如果无法计算，则使用默认值
-                if support_level is None or resistance_level is None:
-                    support_level = current_close * 0.95
-                    resistance_level = current_close * 1.05
+                try:
+                    # 使用向量化操作计算RSI
+                    deltas = np.diff(historical_close[-15:])
+                    gains = np.where(deltas > 0, deltas, 0)
+                    losses = np.where(deltas < 0, -deltas, 0)
                     
-                # 保存支撑位和压力位
-                features['support_level'] = round(support_level, 2)
-                features['resistance_level'] = round(resistance_level, 2)
-                
-                # 计算当前价格与支撑/压力位的距离
-                if support_level > 0:
-                    features['price_to_support_dist'] = round(((current_close / support_level) - 1) * 100, 2)
-                else:
-                    features['price_to_support_dist'] = 0
-                
-                if current_close > 0:
-                    features['price_to_resistance_dist'] = round(((resistance_level / current_close) - 1) * 100, 2)
-                else:
-                    features['price_to_resistance_dist'] = 0
-                
-                # 计算风险收益比 (Risk-Reward Ratio)
-                price_to_support_dist = features['price_to_support_dist']
-                if isinstance(price_to_support_dist, pd.Series):
-                    price_to_support_dist = price_to_support_dist.iloc[0] if not price_to_support_dist.empty else 0
-                
-                price_to_resistance_dist = features['price_to_resistance_dist']
-                if isinstance(price_to_resistance_dist, pd.Series):
-                    price_to_resistance_dist = price_to_resistance_dist.iloc[0] if not price_to_resistance_dist.empty else 0
-                
-                if price_to_support_dist > 0:
-                    features['risk_reward_ratio'] = round(price_to_resistance_dist / price_to_support_dist, 2)
-                else:
-                    features['risk_reward_ratio'] = 0
-                    
-            except Exception as e:
-                logger.error(f"计算支撑压力位时出错: {str(e)}")
-            
-            # 7. RSI指标
-            try:
-                if len(historical_close) >= 14:
-                    # 计算价格变化
-                    changes = np.diff(historical_close[-15:])
-                    
-                    # 分离上涨和下跌
-                    up_changes = np.where(changes > 0, changes, 0)
-                    down_changes = np.abs(np.where(changes < 0, changes, 0))
-                    
-                    # 计算平均上涨和下跌
-                    avg_up = np.mean(up_changes)
-                    avg_down = np.mean(down_changes)
-                    
-                    # 计算RSI
-                    if avg_down == 0:
-                        rsi = 100  # 避免除以零
+                    # RSI6
+                    if len(gains) >= 6 and len(losses) >= 6:
+                        avg_gain_6 = np.mean(gains[-6:])
+                        avg_loss_6 = np.mean(losses[-6:])
+                        rs_6 = avg_gain_6 / avg_loss_6 if avg_loss_6 > 0 else 9999
+                        rsi6 = 100.0 - (100.0 / (1.0 + rs_6))
+                        features['rsi6'] = round(rsi6, 2)
                     else:
-                        rs = avg_up / avg_down
-                        rsi = 100 - (100 / (1 + rs))
+                        features['rsi6'] = 50
                     
-                    features['rsi_14'] = round(rsi, 2)
+                    # RSI14
+                    avg_gain_14 = np.mean(gains[-14:]) if len(gains) >= 14 else np.mean(gains)
+                    avg_loss_14 = np.mean(losses[-14:]) if len(losses) >= 14 else np.mean(losses)
+                    rs_14 = avg_gain_14 / avg_loss_14 if avg_loss_14 > 0 else 9999
+                    rsi14 = 100.0 - (100.0 / (1.0 + rs_14))
+                    features['rsi14'] = round(rsi14, 2)
                     
-                    # RSI分类
-                    if rsi < 30:
-                        features['rsi_category'] = -2  # 严重超卖
-                    elif rsi < 40:
-                        features['rsi_category'] = -1  # 超卖
-                    elif rsi > 70:
-                        features['rsi_category'] = 2   # 严重超买
-                    elif rsi > 60:
-                        features['rsi_category'] = 1   # 超买
+                    # RSI超买超卖指标 - 确保使用标量值
+                    rsi14_val = features['rsi14']
+                    if isinstance(rsi14_val, pd.Series):
+                        rsi14_val = rsi14_val.iloc[0] if not rsi14_val.empty else 50
+                    
+                    if rsi14_val > 70:
+                        features['rsi_overbought'] = 1
+                        features['rsi_oversold'] = 0
+                        features['rsi_neutral'] = 0
+                    elif rsi14_val < 30:
+                        features['rsi_overbought'] = 0
+                        features['rsi_oversold'] = 1
+                        features['rsi_neutral'] = 0
                     else:
-                        features['rsi_category'] = 0   # 中性
-                else:
-                    # 数据不足时设置默认值
-                    features['rsi_14'] = 50
-                    features['rsi_category'] = 0
-            except Exception as e:
-                logger.error(f"计算RSI指标时出错: {str(e)}")
-                features['rsi_14'] = 50
-                features['rsi_category'] = 0
+                        features['rsi_overbought'] = 0
+                        features['rsi_oversold'] = 0
+                        features['rsi_neutral'] = 1
+                except Exception as e:
+                    logger.error(f"计算RSI指标出错: {e}")
+                    features['rsi6'] = 50
+                    features['rsi14'] = 50
+                    features['rsi_overbought'] = 0
+                    features['rsi_oversold'] = 0
+                    features['rsi_neutral'] = 1
+            else:
+                features['rsi6'] = 50
+                features['rsi14'] = 50
+                features['rsi_overbought'] = 0
+                features['rsi_oversold'] = 0
+                features['rsi_neutral'] = 1
             
-            # 8. MACD指标
+            # 计算MACD指标
             try:
                 if len(historical_close) >= 26:
-                    # 计算EMA
-                    ema_12 = self._calculate_ema(historical_close, 12)
-                    ema_26 = self._calculate_ema(historical_close, 26)
-                    
-                    # 计算MACD线
-                    macd_line = ema_12 - ema_26
-                    
-                    # 计算信号线 (9日EMA of MACD线)
-                    macd_history = []
-                    for i in range(min(9, len(ema_12))):
-                        if i < len(ema_12) and i < len(ema_26):
-                            macd_history.append(ema_12[-(i+1)] - ema_26[-(i+1)])
-                    
-                    if len(macd_history) >= 9:
-                        signal_line = self._calculate_ema(np.array(macd_history), 9)
-                        macd_histogram = macd_line - signal_line
-                    else:
-                        signal_line = macd_line
-                        macd_histogram = 0
+                    # 调用优化后的MACD函数
+                    macd_line, signal_line, macd_histogram = self._calculate_macd(historical_close, 12, 26, 9)
                     
                     features['macd_line'] = round(macd_line, 4)
                     features['macd_signal'] = round(signal_line, 4)
                     features['macd_histogram'] = round(macd_histogram, 4)
                     
-                    # MACD趋势
-                    if macd_line > signal_line:
-                        if macd_line > 0:
+                    # MACD趋势判断 - 确保使用标量值
+                    macd = macd_line
+                    signal = signal_line
+                    
+                    if isinstance(macd, pd.Series):
+                        macd = macd.iloc[0] if not macd.empty else 0
+                    if isinstance(signal, pd.Series):
+                        signal = signal.iloc[0] if not signal.empty else 0
+                    
+                    if macd > signal:
+                        if macd > 0:
                             features['macd_trend'] = 2  # 强势上涨
                         else:
                             features['macd_trend'] = 1  # 弱势上涨
                     else:
-                        if macd_line < 0:
+                        if macd < 0:
                             features['macd_trend'] = -2  # 强势下跌
                         else:
                             features['macd_trend'] = -1  # 弱势下跌
                 else:
-                    # 数据不足时设置默认值
                     features['macd_line'] = 0
                     features['macd_signal'] = 0
                     features['macd_histogram'] = 0
                     features['macd_trend'] = 0
             except Exception as e:
-                logger.error(f"计算MACD指标时出错: {str(e)}")
+                logger.error(f"计算MACD指标时出错: {e}")
                 features['macd_line'] = 0
                 features['macd_signal'] = 0
                 features['macd_histogram'] = 0
                 features['macd_trend'] = 0
-            
-            # 9. 波动率指标
-            # 计算不同时间段的波动率
-            for period in [5, 10, 20, 60]:
-                if len(historical_close) >= period:
-                    # 使用对数收益率计算标准差，更专业的波动率计算方法
-                    log_returns = np.log(historical_close[1:] / historical_close[:-1])
-                    volatility = np.std(log_returns[-period:]) * np.sqrt(252)  # 年化波动率
-                    features[f'volatility_{period}d'] = round(volatility * 100, 2)  # 转换为百分比
-                else:
+                
+            # 计算波动率指标 - 向量化批量计算
+            volatility_periods = [5, 10, 20, 60]
+            for period in volatility_periods:
+                try:
+                    if len(historical_close) >= period + 1:
+                        # 使用对数收益率
+                        returns = np.diff(np.log(historical_close))[-period:]
+                        volatility = np.std(returns) * np.sqrt(252)  # 年化波动率
+                        features[f'volatility_{period}d'] = round(volatility * 100, 2)  # 转换为百分比
+                    else:
+                        features[f'volatility_{period}d'] = 0
+                except Exception as e:
+                    logger.error(f"计算波动率指标 {period}日 出错: {e}")
                     features[f'volatility_{period}d'] = 0
             
-            # 波动率比率 - 短期vs长期
-            # 修复：确保正确处理波动率比率计算中的Series
+            # 波动率比率
             if 'volatility_20d' in features and 'volatility_60d' in features:
-                volatility_20d = features['volatility_20d']
-                if isinstance(volatility_20d, pd.Series):
-                    volatility_20d = volatility_20d.iloc[0] if len(volatility_20d) > 0 else 0
+                # 处理Series类型
+                if isinstance(features['volatility_20d'], pd.Series):
+                    vol_20d = features['volatility_20d'].iloc[0] if len(features['volatility_20d']) > 0 else 0
+                else:
+                    vol_20d = features['volatility_20d']
+                    
+                if isinstance(features['volatility_60d'], pd.Series):
+                    vol_60d = features['volatility_60d'].iloc[0] if len(features['volatility_60d']) > 0 else 0
+                else:
+                    vol_60d = features['volatility_60d']
                 
-                volatility_60d = features['volatility_60d']
-                if isinstance(volatility_60d, pd.Series):
-                    volatility_60d = volatility_60d.iloc[0] if len(volatility_60d) > 0 else 0
-                
-                features['volatility_ratio'] = round(volatility_20d / volatility_60d, 2) if volatility_60d > 0 else 1.0
+                # 检查NaN值    
+                vol_20d = 0 if pd.isna(vol_20d) else float(vol_20d)
+                vol_60d = 0 if pd.isna(vol_60d) else float(vol_60d)
+                    
+                features['volatility_ratio'] = float(vol_20d / vol_60d) if vol_60d > 0 else 1.0
             else:
                 features['volatility_ratio'] = 1.0
-                
-            # 10. 交易量特征
+            
+            # 计算成交量特征
             if historical_volume is not None and len(historical_volume) > 0:
                 try:
-                    # 获取当前成交量和平均成交量
+                    # 获取当前成交量
                     current_volume = historical_volume[-1]
                     
-                    # 计算不同周期的平均成交量
-                    avg_volume_5 = historical_volume[-5:].mean() if len(historical_volume) >= 5 else current_volume
-                    avg_volume_10 = historical_volume[-10:].mean() if len(historical_volume) >= 10 else avg_volume_5
-                    avg_volume_20 = historical_volume[-20:].mean() if len(historical_volume) >= 20 else avg_volume_10
-                    avg_volume_60 = historical_volume[-60:].mean() if len(historical_volume) >= 60 else avg_volume_20
+                    # 向量化批量计算不同周期的平均成交量
+                    vol_periods = [5, 10, 20, 60]
+                    for period in vol_periods:
+                        if len(historical_volume) >= period:
+                            avg_vol = np.mean(historical_volume[-period:])
+                            # 确保使用标量值
+                            if isinstance(avg_vol, pd.Series):
+                                avg_vol = avg_vol.iloc[0] if not avg_vol.empty else 1.0
+                            ratio = round(current_volume / avg_vol, 2) if avg_vol > 0 else 1.0
+                            features[f'volume_ratio_{period}'] = ratio
+                        else:
+                            features[f'volume_ratio_{period}'] = 1.0
                     
-                    # 计算成交量比率
-                    features['volume_ratio_5'] = round(current_volume / avg_volume_5, 2) if avg_volume_5 != 0 else 1.0
-                    features['volume_ratio_10'] = round(current_volume / avg_volume_10, 2) if avg_volume_10 != 0 else 1.0
-                    features['volume_ratio_20'] = round(current_volume / avg_volume_20, 2) if avg_volume_20 != 0 else 1.0
-                    features['volume_ratio_60'] = round(current_volume / avg_volume_60, 2) if avg_volume_60 != 0 else 1.0
-                    
-                    # 计算成交量变化率
+                    # 成交量变化率 - 确保使用标量值
                     if len(historical_volume) >= 2:
-                        features['volume_change_ratio'] = round((current_volume - historical_volume[-2]) / historical_volume[-2], 2) if historical_volume[-2] != 0 else 0.0
+                        prev_volume = historical_volume[-2]
+                        # 确保使用标量值
+                        if isinstance(prev_volume, pd.Series):
+                            prev_volume = prev_volume.iloc[0] if not prev_volume.empty else current_volume
+                        features['volume_change_ratio'] = round((current_volume - prev_volume) / prev_volume, 2) if prev_volume > 0 else 0.0
                     else:
                         features['volume_change_ratio'] = 0.0
                     
-                    # 计算成交量趋势（最近5天）
+                    # 成交量趋势 - 使用安全的索引方法
                     if len(historical_volume) >= 5:
-                        volume_trend = 0
-                        for i in range(1, 5):
-                            if historical_volume[-i] > historical_volume[-(i+1)]:
-                                volume_trend += 1
-                            elif historical_volume[-i] < historical_volume[-(i+1)]:
-                                volume_trend -= 1
-                        features['volume_trend'] = volume_trend  # 正值表示上升趋势，负值表示下降趋势
+                        try:
+                            # 使用numpy操作前确保数据类型正确
+                            volume_data = np.array(historical_volume[-5:])
+                            vol_changes = np.sign(np.diff(volume_data))
+                            features['volume_trend'] = np.sum(vol_changes)
+                        except Exception as inner_e:
+                            logger.error(f"计算成交量趋势时出错: {inner_e}")
+                            # 退回到手动计算方法
+                            volume_trend = 0
+                            for i in range(1, min(5, len(historical_volume))):
+                                curr_vol = historical_volume[-(i)]
+                                prev_vol = historical_volume[-(i+1)]
+                                if isinstance(curr_vol, pd.Series):
+                                    curr_vol = curr_vol.iloc[0] if not curr_vol.empty else 0
+                                if isinstance(prev_vol, pd.Series):
+                                    prev_vol = prev_vol.iloc[0] if not prev_vol.empty else 0
+                                
+                                if curr_vol > prev_vol:
+                                    volume_trend += 1
+                                elif curr_vol < prev_vol:
+                                    volume_trend -= 1
+                            features['volume_trend'] = volume_trend
                     else:
                         features['volume_trend'] = 0
+                    
                 except Exception as e:
-                    logger.error(f"计算成交量特征时出错: {str(e)}")
-                    features['volume_ratio_5'] = 1.0
-                    features['volume_ratio_10'] = 1.0
-                    features['volume_ratio_20'] = 1.0
-                    features['volume_ratio_60'] = 1.0
+                    logger.error(f"计算成交量特征时出错: {e}")
+                    for period in [5, 10, 20, 60]:
+                        features[f'volume_ratio_{period}'] = 1.0
                     features['volume_change_ratio'] = 0.0
                     features['volume_trend'] = 0
             else:
                 # 默认值
-                features['volume_ratio_5'] = 1.0
-                features['volume_ratio_10'] = 1.0
-                features['volume_ratio_20'] = 1.0
-                features['volume_ratio_60'] = 1.0
+                for period in [5, 10, 20, 60]:
+                    features[f'volume_ratio_{period}'] = 1.0
                 features['volume_change_ratio'] = 0.0
                 features['volume_trend'] = 0
             
-            # 11. 趋势强度指标
+            # 计算趋势强度指标
             try:
                 if len(historical_close) >= 20:
-                    # 计算价格上升和下降的天数
-                    up_days = 0
-                    down_days = 0
+                    # 使用向量化计算价格变化方向
+                    price_changes = np.diff(historical_close[-20:])
+                    up_days = np.sum(price_changes > 0)
+                    down_days = np.sum(price_changes < 0)
                     
-                    for i in range(1, 20):
-                        if historical_close[-i] > historical_close[-(i+1)]:
-                            up_days += 1
-                        elif historical_close[-i] < historical_close[-(i+1)]:
-                            down_days += 1
+                    # 趋势强度
+                    features['trend_strength'] = round(up_days / 19, 2)  # 19 = 20天中的变化次数
                     
-                    # 趋势强度 = 上涨天数 / 总交易天数
-                    trend_strength = round(up_days / 19, 2)  # 19 = 20天中的变化次数
-                    features['trend_strength'] = trend_strength
-                    
-                    # 添加连续上涨/下跌天数
+                    # 连续上涨/下跌天数 - 确保使用标量值
                     consecutive_up = 0
                     consecutive_down = 0
                     
+                    # 优化连续天数计算
                     for i in range(1, min(10, len(historical_close))):
-                        if historical_close[-i] > historical_close[-(i+1)]:
-                            consecutive_up += 1
-                            consecutive_down = 0
-                        elif historical_close[-i] < historical_close[-(i+1)]:
-                            consecutive_down += 1
-                            consecutive_up = 0
-                        else:
+                        if i >= len(historical_close) - 1:
                             break
+                            
+                        curr_price = historical_close[-i]
+                        prev_price = historical_close[-(i+1)]
+                        
+                        # 确保使用标量值
+                        if isinstance(curr_price, pd.Series):
+                            curr_price = curr_price.iloc[0] if not curr_price.empty else 0
+                        if isinstance(prev_price, pd.Series):
+                            prev_price = prev_price.iloc[0] if not prev_price.empty else 0
+                        
+                        change = curr_price - prev_price
+                        
+                        if change > 0:
+                            if consecutive_down == 0:  # 只有当没有连续下跌时才增加
+                                consecutive_up += 1
+                            else:
+                                break  # 如果已经有下跌记录，则结束计数
+                        elif change < 0:
+                            if consecutive_up == 0:  # 只有当没有连续上涨时才增加
+                                consecutive_down += 1
+                            else:
+                                break  # 如果已经有上涨记录，则结束计数
+                        else:
+                            break  # 价格不变，结束计数
                     
                     features['consecutive_up_days'] = consecutive_up
                     features['consecutive_down_days'] = consecutive_down
                     
-                    # 摆动模式 - 检测价格的摆动趋势
-                    swing_pattern = 0
-                    for i in range(2, min(10, len(historical_close)-1)):
-                        # 摆动 = 前一天变化方向与当前变化方向相反
-                        prev_change = historical_close[-i] - historical_close[-(i+1)]
-                        curr_change = historical_close[-(i-1)] - historical_close[-i]
-                        
-                        if (prev_change > 0 and curr_change < 0) or (prev_change < 0 and curr_change > 0):
-                            swing_pattern += 1
-                    
-                    features['swing_pattern'] = swing_pattern
+                    # 摆动模式 - 优化计算
+                    if len(historical_close) >= 10:
+                        price_diffs = np.diff(historical_close[-10:])
+                        signs = np.sign(price_diffs)
+                        sign_changes = np.diff(signs)
+                        features['swing_pattern'] = np.sum(np.abs(sign_changes) > 0)  # 计算符号变化的次数
+                    else:
+                        features['swing_pattern'] = 0
                 else:
                     # 数据不足时设置默认值
                     features['trend_strength'] = 0.5
@@ -781,244 +761,186 @@ class SectorFeatureGenerator:
                     features['consecutive_down_days'] = 0
                     features['swing_pattern'] = 0
             except Exception as e:
-                logger.error(f"计算趋势强度指标时出错: {str(e)}")
+                logger.error(f"计算趋势强度指标时出错: {e}")
                 features['trend_strength'] = 0.5
                 features['consecutive_up_days'] = 0
                 features['consecutive_down_days'] = 0
                 features['swing_pattern'] = 0
             
-            # 12. 综合技术评分
-            # 基于多个技术指标计算综合评分 (0-100分)
-            try:
-                tech_score = 50  # 中性起点
-                score_factors = 0
+            # 计算价格支撑位和压力位
+            if len(historical_close) >= 20:
+                try:
+                    support, resistance = self._calculate_support_resistance(historical_close, n=20)
+                    features['support_level'] = round(support, 2)
+                    features['resistance_level'] = round(resistance, 2)
+                    
+                    # 确保使用标量值进行比较和计算
+                    support_val = support
+                    resistance_val = resistance
+                    
+                    if isinstance(support_val, pd.Series):
+                        support_val = support_val.iloc[0] if not support_val.empty else current_close * 0.95
+                    if isinstance(resistance_val, pd.Series):
+                        resistance_val = resistance_val.iloc[0] if not resistance_val.empty else current_close * 1.05
+                    
+                    features['support_distance_pct'] = round((current_close - support_val) / support_val * 100, 2) if support_val > 0 else 0
+                    features['resistance_distance_pct'] = round((resistance_val - current_close) / current_close * 100, 2) if current_close > 0 else 0
+                except Exception as e:
+                    logger.error(f"计算价格支撑压力位出错: {e}")
+                    features['support_level'] = current_close * 0.95
+                    features['resistance_level'] = current_close * 1.05
+                    features['support_distance_pct'] = 5.0
+                    features['resistance_distance_pct'] = 5.0
+            else:
+                features['support_level'] = current_close * 0.95
+                features['resistance_level'] = current_close * 1.05
+                features['support_distance_pct'] = 5.0
+                features['resistance_distance_pct'] = 5.0
                 
-                # 支撑位和阻力位
-                if 'close_to_resistance_ratio' in features and 'close_to_support_ratio' in features:
-                    close_to_resistance = features['close_to_resistance_ratio']
-                    close_to_support = features['close_to_support_ratio']
-                    
-                    # 确保是标量值
-                    if isinstance(close_to_resistance, pd.Series):
-                        close_to_resistance = close_to_resistance.iloc[0] if len(close_to_resistance) > 0 else 1.0
-                    if isinstance(close_to_support, pd.Series):
-                        close_to_support = close_to_support.iloc[0] if len(close_to_support) > 0 else 1.0
-                    
-                    # 接近支撑位视为正面，接近阻力位视为负面
-                    if close_to_support < 0.05:  # 非常接近支撑位
-                        tech_score += 15
-                        score_factors += 1
-                    elif close_to_resistance < 0.05:  # 非常接近阻力位
-                        tech_score -= 15
-                        score_factors += 1
-                
-                # MACD趋势
-                if 'macd_histogram' in features and 'macd_trend' in features:
-                    macd_histogram = features['macd_histogram']
-                    macd_trend = features['macd_trend']
-                    
-                    if isinstance(macd_histogram, pd.Series):
-                        macd_histogram = macd_histogram.iloc[0] if len(macd_histogram) > 0 else 0
-                    if isinstance(macd_trend, pd.Series):
-                        macd_trend = macd_trend.iloc[0] if len(macd_trend) > 0 else 0
-                    
-                    if macd_histogram > 0 and macd_trend > 0:
-                        tech_score += 10
-                        score_factors += 1
-                    elif macd_histogram < 0 and macd_trend < 0:
-                        tech_score -= 10
-                        score_factors += 1
-                
-                # RSI指标
-                if 'rsi_14' in features and 'rsi_category' in features:
-                    rsi_14 = features['rsi_14']
-                    rsi_category = features['rsi_category']
-                    
-                    if isinstance(rsi_14, pd.Series):
-                        rsi_14 = rsi_14.iloc[0] if len(rsi_14) > 0 else 50
-                    if isinstance(rsi_category, pd.Series):
-                        rsi_category = rsi_category.iloc[0] if len(rsi_category) > 0 else 0
-                    
-                    # RSI超买超卖
-                    if rsi_category == -2:  # 严重超卖
-                        tech_score += 15  # 潜在反弹
-                        score_factors += 1
-                    elif rsi_category == 2:  # 严重超买
-                        tech_score -= 15  # 潜在回调
-                        score_factors += 1
-                    elif rsi_category == -1:  # 超卖
-                        tech_score += 10
-                        score_factors += 1
-                    elif rsi_category == 1:  # 超买
-                        tech_score -= 10
-                        score_factors += 1
-                
-                # 移动平均线关系
-                if 'price_ma20_ratio' in features and 'ma5_20_ratio' in features:
-                    price_ma20 = features['price_ma20_ratio']
-                    ma5_20 = features['ma5_20_ratio']
-                    
-                    if isinstance(price_ma20, pd.Series):
-                        price_ma20 = price_ma20.iloc[0] if len(price_ma20) > 0 else 1.0
-                    if isinstance(ma5_20, pd.Series):
-                        ma5_20 = ma5_20.iloc[0] if len(ma5_20) > 0 else 1.0
-                    
-                    # 价格高于MA20且MA5高于MA20视为看涨
-                    if price_ma20 > 1.0 and ma5_20 > 1.0:
-                        tech_score += 10
-                        score_factors += 1
-                    # 价格低于MA20且MA5低于MA20视为看跌
-                    elif price_ma20 < 1.0 and ma5_20 < 1.0:
-                        tech_score -= 10
-                        score_factors += 1
-                
-                # 成交量趋势
-                if 'volume_trend' in features:
-                    volume_trend = features['volume_trend']
-                    
-                    if isinstance(volume_trend, pd.Series):
-                        volume_trend = volume_trend.iloc[0] if len(volume_trend) > 0 else 0
-                    
-                    # 成交量增加视为看涨信号
-                    if volume_trend > 2:
-                        tech_score += 10
-                        score_factors += 1
-                    elif volume_trend < -2:
-                        tech_score -= 10
-                        score_factors += 1
-                
-                # 趋势强度
-                if 'trend_strength' in features:
-                    trend_strength = features['trend_strength']
-                    
-                    if isinstance(trend_strength, pd.Series):
-                        trend_strength = trend_strength.iloc[0] if len(trend_strength) > 0 else 0
-                    
-                    # 强趋势
-                    if trend_strength > 0.7:  # 强上涨趋势
-                        tech_score += 15
-                        score_factors += 1
-                    elif trend_strength < 0.3:  # 强下跌趋势
-                        tech_score -= 15
-                        score_factors += 1
-                
-                # 确保评分在有效范围内
-                tech_score = min(100, max(0, tech_score))
-                features['tech_score'] = tech_score
-            except Exception as e:
-                logger.error(f"计算综合技术评分时出错: {str(e)}")
-                features['tech_score'] = 50  # 出错时使用中性评分
+            # 技术综合评分计算
+            tech_score = 50  # 初始中性评分
+            score_factors = 0  # 计入评分的因子数量
             
-            # 13. 市场情绪指标
-            try:
-                tech_score = features['tech_score']
-                if isinstance(tech_score, pd.Series):
-                    tech_score = tech_score.iloc[0] if len(tech_score) > 0 else 0
-                
-                features['market_sentiment'] = 'bullish' if tech_score > 65 else ('bearish' if tech_score < 35 else 'neutral')
-            except Exception as e:
-                logger.error(f"计算市场情绪指标时出错: {str(e)}")
-                features['market_sentiment'] = 'neutral'  # 默认中性
+            # 按不同指标调整评分
+            # 趋势指标
+            bull_trend_val = bull_trend  # 使用前面已经提取的标量值
+            bear_trend_val = bear_trend  # 使用前面已经提取的标量值
             
-            # 14. 交易信号强度 (-5到5之间，负为卖出，正为买入)
-            try:
-                signal_strength = 0
-                
-                # 基于技术评分
-                tech_score = features['tech_score']
-                if isinstance(tech_score, pd.Series):
-                    tech_score = tech_score.iloc[0] if len(tech_score) > 0 else 0
-                
-                # 技术评分转换为初始信号强度
-                if tech_score >= 80:
-                    signal_strength += 3
-                elif tech_score >= 65:
-                    signal_strength += 2
-                elif tech_score >= 55:
-                    signal_strength += 1
-                elif tech_score <= 20:
-                    signal_strength -= 3
-                elif tech_score <= 35:
-                    signal_strength -= 2
-                elif tech_score <= 45:
-                    signal_strength -= 1
-                
-                # 基于MACD信号
-                if 'macd_trend' in features:
-                    macd_trend = features['macd_trend']
-                    if isinstance(macd_trend, pd.Series):
-                        macd_trend = macd_trend.iloc[0] if len(macd_trend) > 0 else 0
-                    
-                    signal_strength += macd_trend  # -2到2的值
-                
-                # 基于支撑位和阻力位
-                if 'close_to_support_ratio' in features and 'close_to_resistance_ratio' in features:
-                    support_ratio = features['close_to_support_ratio']
-                    resistance_ratio = features['close_to_resistance_ratio']
-                    
-                    if isinstance(support_ratio, pd.Series):
-                        support_ratio = support_ratio.iloc[0] if len(support_ratio) > 0 else 0
-                    if isinstance(resistance_ratio, pd.Series):
-                        resistance_ratio = resistance_ratio.iloc[0] if len(resistance_ratio) > 0 else 0
-                    
-                    # 非常接近支撑位加强买入信号
-                    if support_ratio < 0.03:
-                        signal_strength += 1
-                    # 非常接近阻力位加强卖出信号
-                    if resistance_ratio < 0.03:
-                        signal_strength -= 1
-                
-                # 确保信号强度在-5到5之间
-                signal_strength = min(5, max(-5, signal_strength))
-                features['signal_strength'] = signal_strength
-                
-                # 交易建议
-                if signal_strength >= 4:
-                    features['trading_suggestion'] = '强力买入'
-                elif signal_strength >= 2:
-                    features['trading_suggestion'] = '买入'
-                elif signal_strength >= 1:
-                    features['trading_suggestion'] = '谨慎买入'
-                elif signal_strength <= -4:
-                    features['trading_suggestion'] = '强力卖出'
-                elif signal_strength <= -2:
-                    features['trading_suggestion'] = '卖出'
-                elif signal_strength <= -1:
-                    features['trading_suggestion'] = '谨慎卖出'
-                else:
-                    features['trading_suggestion'] = '观望'
-            except Exception as e:
-                logger.error(f"计算交易信号强度时出错: {str(e)}")
-                features['signal_strength'] = 0
-                features['trading_suggestion'] = '观望'
+            if bull_trend_val == 1:
+                tech_score += 15
+                score_factors += 1
+            elif bear_trend_val == 1:
+                tech_score -= 15
+                score_factors += 1
             
+            # 价格位置 - 使用前面提取的标量值
+            if above_ma5 == 1:
+                tech_score += 5
+                score_factors += 1
+            if above_ma20 == 1:
+                tech_score += 5
+                score_factors += 1
+            if above_ma60 == 1:
+                tech_score += 5
+                score_factors += 1
+            
+            # RSI - 使用前面提取的标量值
+            rsi14_for_score = rsi14_val  # 使用前面已经提取的标量值
+            
+            if rsi14_for_score > 70:
+                tech_score += 10  # 超买
+                score_factors += 1
+            elif rsi14_for_score < 30:
+                tech_score -= 10  # 超卖
+                score_factors += 1
+            elif rsi14_for_score > 60:
+                tech_score += 5   # 偏强
+                score_factors += 1
+            elif rsi14_for_score < 40:
+                tech_score -= 5   # 偏弱
+                score_factors += 1
+            
+            # MACD - 使用前面提取的标量值
+            macd_histogram_val = features['macd_histogram']
+            macd_trend_val = features['macd_trend']
+            
+            if isinstance(macd_histogram_val, pd.Series):
+                macd_histogram_val = macd_histogram_val.iloc[0] if not macd_histogram_val.empty else 0
+            if isinstance(macd_trend_val, pd.Series):
+                macd_trend_val = macd_trend_val.iloc[0] if not macd_trend_val.empty else 0
+            
+            if macd_histogram_val > 0 and macd_trend_val > 0:
+                tech_score += 10
+                score_factors += 1
+            elif macd_histogram_val < 0 and macd_trend_val < 0:
+                tech_score -= 10
+                score_factors += 1
+            
+            # 动量
+            momentum_5d_val = features['momentum_5d']
+            if isinstance(momentum_5d_val, pd.Series):
+                momentum_5d_val = momentum_5d_val.iloc[0] if not momentum_5d_val.empty else 0
+                
+            if momentum_5d_val > 3:
+                tech_score += 8
+                score_factors += 1
+            elif momentum_5d_val < -3:
+                tech_score -= 8
+                score_factors += 1
+            
+            # 连续天数
+            consecutive_up_val = features['consecutive_up_days']
+            consecutive_down_val = features['consecutive_down_days']
+            
+            if isinstance(consecutive_up_val, pd.Series):
+                consecutive_up_val = consecutive_up_val.iloc[0] if not consecutive_up_val.empty else 0
+            if isinstance(consecutive_down_val, pd.Series):
+                consecutive_down_val = consecutive_down_val.iloc[0] if not consecutive_down_val.empty else 0
+            
+            if consecutive_up_val >= 3:
+                tech_score += 5
+                score_factors += 1
+            elif consecutive_down_val >= 3:
+                tech_score -= 5
+                score_factors += 1
+                
+            # 计算最终技术评分，确保在0-100范围内
+            if score_factors > 0:
+                tech_score = min(max(tech_score, 0), 100)
+            else:
+                tech_score = 50  # 没有足够信息时保持中性
+            
+            features['tech_score'] = tech_score
+            
+            # 市场情绪 - 基于技术评分
+            tech_score_val = tech_score  # 已经是标量值
+            
+            if tech_score_val >= 70:
+                features['market_sentiment'] = 2  # 看涨
+            elif tech_score_val <= 30:
+                features['market_sentiment'] = 0  # 看跌
+            else:
+                features['market_sentiment'] = 1  # 中性
+            
+            # 交易信号强度
+            signal_strength = 0
+            
+            # 基于技术评分 - 已经是标量值
+            if tech_score_val >= 80:
+                signal_strength += 3
+            elif tech_score_val >= 65:
+                signal_strength += 2
+            elif tech_score_val >= 55:
+                signal_strength += 1
+            elif tech_score_val <= 20:
+                signal_strength -= 3
+            elif tech_score_val <= 35:
+                signal_strength -= 2
+            elif tech_score_val <= 45:
+                signal_strength -= 1
+            
+            # 基于MACD
+            macd_trend_for_signal = macd_trend_val  # 使用前面提取的标量值
+            if macd_trend_for_signal != 0:
+                signal_strength += macd_trend_for_signal  # -2到2的贡献
+            
+            # 基于RSI - 使用前面提取的标量值
+            if rsi14_for_score > 80:
+                signal_strength -= 1  # 严重超买
+            elif rsi14_for_score < 20:
+                signal_strength += 1  # 严重超卖
+            
+            features['signal_strength'] = signal_strength
+            
+            logger.info(f"计算技术指标完成")
             return features
-            
+        
         except Exception as e:
-            logger.error(f"计算技术指标时出错: {str(e)}")
+            logger.error(f"计算技术指标时发生错误: {e}")
             logger.error(traceback.format_exc())
+            # 出错时返回原特征，不修改
             return features
-        
-    def _calculate_ma(self, data, n):
-        """计算简单移动平均线(SMA)
-        
-        Args:
-            data: 价格数据的numpy数组或pandas Series
-            n: 周期
-            
-        Returns:
-            float: 最新的MA值
-        """
-        if isinstance(data, pd.Series):
-            data = data.values
-            
-        if len(data) < n:
-            return data[-1] if len(data) > 0 else 0.0  # 数据不足时返回当前价格或0
-            
-        # 计算最近n个数据点的简单平均
-        ma = np.mean(data[-n:])
-        return ma
-            
+
     def generate_sector_features_for_date(self, sector, date, preloaded_data=None):
         """为指定板块和日期生成特征
         
@@ -1067,7 +989,7 @@ class SectorFeatureGenerator:
                 history_start_date = (date_obj - timedelta(days=180)).strftime('%Y%m%d')
                 # 获取历史数据
                 history_end_date = date_str
-                logger.debug(f"正在加载历史数据，从 {history_start_date} 到 {history_end_date}")
+                logger.info(f"正在加载历史数据，从 {history_start_date} 到 {history_end_date}")
                 
                 # 获取历史交易日列表
                 trading_days = self.data_provider.get_trading_days(history_start_date, history_end_date)
@@ -1127,9 +1049,12 @@ class SectorFeatureGenerator:
                     
                 # 清理缓存，防止内存占用过大
                 self._trim_historical_cache(sector)
+                logger.info(f"历史数据缓存大小: {len(self._historical_features_cache[sector])}")
                 
                 # 计算技术指标
                 features_df = self._calculate_technical_features(sector_data, date_obj, features_df, historical_data)
+
+                logger.info(f"计算技术指标完成")
                 
             except Exception as e:
                 logger.error(f"计算历史数据时出错: {str(e)}")
@@ -1426,21 +1351,40 @@ class SectorFeatureGenerator:
         Returns:
             tuple: (MACD, 信号线, 柱状图)
         """
-        # 计算快线和慢线的EMA
-        ema_fast = self._calculate_ema(data, fast)
-        ema_slow = self._calculate_ema(data, slow)
-        
-        # 计算MACD线 = 快线EMA - 慢线EMA
-        macd = ema_fast - ema_slow
-        
-        # 计算信号线 = MACD的EMA
-        signal_line = self._calculate_ema(macd, signal)
-        
-        # 计算柱状图 = MACD线 - 信号线
-        histogram = macd - signal_line
-        
-        return macd, signal_line, histogram
-        
+        try:
+            # 检查输入数据类型和长度
+            if isinstance(data, (float, int, np.float64, np.int64)):
+                # 如果输入是单个数值，返回默认值
+                return 0.0, 0.0, 0.0
+                
+            if isinstance(data, pd.Series):
+                data = data.values
+                
+            if len(data) < slow:
+                # 数据不足时返回全零值
+                return 0.0, 0.0, 0.0
+                
+            # 计算快线和慢线的EMA
+            ema_fast = self._calculate_ema(data, fast)
+            ema_slow = self._calculate_ema(data, slow)
+            
+            # 计算MACD线 = 快线EMA - 慢线EMA
+            macd = ema_fast - ema_slow
+            
+            # 计算信号线 = MACD的EMA
+            # 确保macd是数组类型
+            if isinstance(macd, (float, int, np.float64, np.int64)):
+                signal_line = macd * 0.2  # 近似计算，信号线通常滞后于MACD
+                histogram = macd * 0.8    # 近似计算，柱状图
+            else:
+                signal_line = self._calculate_ema(np.array([macd]), signal)
+                histogram = macd - signal_line
+                
+            return macd, signal_line, histogram
+        except Exception as e:
+            logger.error(f"计算MACD时出错: {e}")
+            return 0.0, 0.0, 0.0
+
     def _calculate_ema(self, data, window):
         """
         计算给定窗口大小的指数移动平均线(EMA)
@@ -1452,23 +1396,43 @@ class SectorFeatureGenerator:
         Returns:
             float: 最新的EMA值
         """
-        if isinstance(data, pd.Series):
-            data = data.values
+        try:
+            # 检查输入数据类型
+            if isinstance(data, (float, int, np.float64, np.int64)):
+                return data  # 如果是单个数值，直接返回
+                
+            if isinstance(data, pd.Series):
+                data = data.values
+                
+            # 确保数据是数组类型
+            if not isinstance(data, (list, np.ndarray)):
+                data = np.array([data])
+                
+            if len(data) < window:
+                return data[-1] if len(data) > 0 else 0  # 数据不足时返回最新价格或0
+                
+            # 计算权重系数
+            alpha = 2 / (window + 1)
             
-        if len(data) < window:
-            return data[-1]  # 数据不足时返回最新价格
+            # 初始EMA为简单平均
+            start_idx = max(0, len(data) - (window*2))
+            end_idx = max(start_idx + 1, len(data) - window)
             
-        # 计算权重系数
-        alpha = 2 / (window + 1)
-        
-        # 初始EMA为简单平均
-        ema = np.mean(data[-(window*2):-(window)])
-        
-        # 计算EMA
-        for i in range(window):
-            ema = alpha * data[-(window-i)] + (1 - alpha) * ema
+            if start_idx == end_idx:  # 处理边界情况
+                ema = data[start_idx]
+            else:
+                ema = np.mean(data[start_idx:end_idx])
             
-        return ema
+            # 计算EMA
+            for i in range(window):
+                idx = len(data) - window + i
+                if 0 <= idx < len(data):  # 确保索引有效
+                    ema = alpha * data[idx] + (1 - alpha) * ema
+                
+            return ema
+        except Exception as e:
+            logger.error(f"计算EMA时出错: {e}")
+            return 0.0
         
     def _calculate_rsi(self, data, n=14):
         """计算相对强弱指数（RSI）
@@ -1673,7 +1637,7 @@ class SectorFeatureGenerator:
         计算专业的支撑位和压力位
         
         参数:
-            historical_data (DataFrame): 包含high, low, close的历史数据
+            historical_data (DataFrame/Series/ndarray): 包含high, low, close的历史数据或仅close的历史数据
             n (int): 寻找局部极值的窗口大小
             sensitivity (float): 灵敏度系数，用于调整支撑/压力位的距离
             volatility_adjust (bool): 是否根据波动率调整支撑/压力位
@@ -1681,7 +1645,33 @@ class SectorFeatureGenerator:
         返回:
             tuple: (支撑位, 压力位)
         """
+        # 检查输入类型并转换为DataFrame
+        if isinstance(historical_data, np.ndarray):
+            # 如果是numpy数组，假设它只包含close数据
+            if historical_data.ndim == 1:
+                historical_data = pd.DataFrame({'close': historical_data})
+            else:
+                # 如果是2D数组，假设按列顺序为high, low, close
+                if historical_data.shape[1] >= 3:
+                    historical_data = pd.DataFrame({
+                        'high': historical_data[:, 0],
+                        'low': historical_data[:, 1],
+                        'close': historical_data[:, 2]
+                    })
+                else:
+                    # 如果不足3列，只使用close
+                    historical_data = pd.DataFrame({'close': historical_data[:, -1]})
+        elif isinstance(historical_data, pd.Series):
+            # 如果是Series，转换为只有close的DataFrame
+            historical_data = pd.DataFrame({'close': historical_data})
+        
         # 确保historical_data包含必要的列
+        # 对于只有close的DataFrame，添加high和low列
+        if 'high' not in historical_data.columns and 'close' in historical_data.columns:
+            historical_data['high'] = historical_data['close']
+        if 'low' not in historical_data.columns and 'close' in historical_data.columns:
+            historical_data['low'] = historical_data['close']
+        
         if historical_data is None or len(historical_data) < n + 2 or not all(col in historical_data.columns for col in ['high', 'low', 'close']):
             # 数据不足或列缺失，使用默认方法
             current_close = historical_data['close'].iloc[-1] if historical_data is not None and 'close' in historical_data.columns and len(historical_data) > 0 else 0
@@ -1805,92 +1795,159 @@ class SectorFeatureGenerator:
             return current_close * 0.95, current_close * 1.05
 
     def _calculate_volume_features(self, historical_volume, features):
-        """计算成交量特征
-        
-        利用历史成交量数据计算各种成交量特征指标
+        """计算成交量相关特征
         
         Args:
-            historical_volume: 历史成交量数据
-            features: 特征字典
+            historical_volume: 历史成交量数据，可以是Series或列表
+            features: 特征字典，用于存储计算结果
             
         Returns:
-            添加了成交量特征的字典
+            更新后的特征字典
         """
+        # 初始化默认值
+        default_features = {
+            'volume_5d_avg': 0,
+            'volume_10d_avg': 0,
+            'volume_20d_avg': 0,
+            'volume_60d_avg': 0,
+            'volume_5d_ratio': 1.0,
+            'volume_10d_ratio': 1.0,
+            'volume_20d_ratio': 1.0,
+            'volume_5d_change_ratio': 0,
+            'volume_trend': 0
+        }
+        
         try:
-            # 确保historical_volume不为空并且有数据
+            # 检查历史成交量数据
             if historical_volume is None or len(historical_volume) == 0:
                 logger.warning("历史成交量数据为空，无法计算成交量特征")
-                # 设置默认值
-                features['volume'] = 0
-                features['volume_ma5'] = 0
-                features['volume_ma10'] = 0
-                features['volume_ma20'] = 0
-                features['volume_ma60'] = 0
-                features['volume_ratio_5d'] = 1.0
-                features['volume_ratio_10d'] = 1.0
-                features['volume_ratio_20d'] = 1.0
-                features['volume_change_ratio'] = 0.0
-                features['volume_trend'] = 0
+                features.update(default_features)
                 return features
-
-            # 确保使用numpy数组进行计算
-            if isinstance(historical_volume, pd.Series):
-                historical_volume = historical_volume.values
-
-            # 当前成交量
-            current_volume = historical_volume[-1]
-            features['volume'] = current_volume
-
-            # 计算不同周期的成交量平均值
-            vol_ma5 = np.mean(historical_volume[-5:]) if len(historical_volume) >= 5 else current_volume
-            vol_ma10 = np.mean(historical_volume[-10:]) if len(historical_volume) >= 10 else vol_ma5
-            vol_ma20 = np.mean(historical_volume[-20:]) if len(historical_volume) >= 20 else vol_ma10
-            vol_ma60 = np.mean(historical_volume[-60:]) if len(historical_volume) >= 60 else vol_ma20
-
-            features['volume_ma5'] = round(vol_ma5, 2)
-            features['volume_ma10'] = round(vol_ma10, 2)
-            features['volume_ma20'] = round(vol_ma20, 2)
-            features['volume_ma60'] = round(vol_ma60, 2)
-
-            # 计算成交量比率
-            features['volume_ratio_5d'] = round(current_volume / vol_ma5, 2) if vol_ma5 > 0 else 1.0
-            features['volume_ratio_10d'] = round(current_volume / vol_ma10, 2) if vol_ma10 > 0 else 1.0
-            features['volume_ratio_20d'] = round(current_volume / vol_ma20, 2) if vol_ma20 > 0 else 1.0
-
-            # 计算前一日比较
-            if len(historical_volume) >= 2:
-                prev_volume = historical_volume[-2]
-                features['volume_change_ratio'] = round((current_volume - prev_volume) / prev_volume * 100, 2) if prev_volume > 0 else 0.0
-            else:
-                features['volume_change_ratio'] = 0.0
-
-            # 计算成交量趋势
-            if len(historical_volume) >= 5:
-                # 计算最近5天成交量趋势
-                vol_trend = 0
-                for i in range(1, 5):
-                    if historical_volume[-i] > historical_volume[-i-1]:
-                        vol_trend += 1
-                    elif historical_volume[-i] < historical_volume[-i-1]:
-                        vol_trend -= 1
-                features['volume_trend'] = vol_trend  # 正值表示上升趋势，负值表示下降趋势
-            else:
+            
+            # 确保historical_volume是Series类型
+            if not isinstance(historical_volume, pd.Series):
+                try:
+                    historical_volume = pd.Series(historical_volume)
+                except Exception as e:
+                    logger.error(f"转换成交量数据为Series时出错: {e}")
+                    features.update(default_features)
+                    return features
+            
+            # 检查Series是否为空
+            if historical_volume.empty:
+                logger.warning("成交量数据为空Series，无法计算特征")
+                features.update(default_features)
+                return features
+                
+            # 获取当前成交量（最近一天）
+            try:
+                current_volume = historical_volume.iloc[-1]
+                # 检查NaN
+                if pd.isna(current_volume):
+                    current_volume = 0
+            except IndexError:
+                logger.warning("获取当前成交量时出错（索引错误）")
+                current_volume = 0
+            
+            # 计算各周期平均成交量，确保处理数据不足的情况
+            periods = [5, 10, 20, 60]
+            avg_volumes = {}
+            
+            for period in periods:
+                try:
+                    if len(historical_volume) >= period:
+                        period_avg = historical_volume.iloc[-period:].mean()
+                    else:
+                        period_avg = historical_volume.mean()
+                    
+                    # 检查NaN
+                    if pd.isna(period_avg):
+                        period_avg = 0
+                        
+                    avg_volumes[period] = float(period_avg)
+                except Exception as e:
+                    logger.error(f"计算{period}日平均成交量时出错: {e}")
+                    avg_volumes[period] = 0
+            
+            # 存储平均成交量
+            features['volume_5d_avg'] = avg_volumes[5]
+            features['volume_10d_avg'] = avg_volumes[10]
+            features['volume_20d_avg'] = avg_volumes[20]
+            features['volume_60d_avg'] = avg_volumes[60]
+            
+            # 计算成交量比率（当前/平均），确保除数不为零
+            for period in [5, 10, 20]:
+                try:
+                    if avg_volumes[period] > 0:
+                        ratio = float(current_volume / avg_volumes[period])
+                        # 限制极端值
+                        ratio = min(max(ratio, 0.1), 10.0)
+                    else:
+                        ratio = 1.0
+                    features[f'volume_{period}d_ratio'] = ratio
+                except Exception as e:
+                    logger.error(f"计算成交量{period}日比率时出错: {e}")
+                    features[f'volume_{period}d_ratio'] = 1.0
+            
+            # 计算5日成交量变化率
+            try:
+                if len(historical_volume) >= 6:
+                    # 当前5日均量
+                    current_5d_avg = avg_volumes[5]
+                    
+                    # 前5日均量 (6天前到2天前)
+                    prev_5d_data = historical_volume.iloc[-6:-1]
+                    if len(prev_5d_data) >= 5:
+                        prev_5d_avg = prev_5d_data.mean()
+                        if pd.isna(prev_5d_avg):
+                            prev_5d_avg = current_5d_avg if current_5d_avg > 0 else 1.0
+                            
+                        # 计算变化率
+                        if prev_5d_avg > 0:
+                            change_ratio = float((current_5d_avg - prev_5d_avg) / prev_5d_avg)
+                            # 限制极端值
+                            change_ratio = min(max(change_ratio, -0.9), 9.0)
+                        else:
+                            change_ratio = 0
+                    else:
+                        change_ratio = 0
+                else:
+                    change_ratio = 0
+                    
+                features['volume_5d_change_ratio'] = change_ratio
+            except Exception as e:
+                logger.error(f"计算5日成交量变化率时出错: {e}")
+                features['volume_5d_change_ratio'] = 0
+            
+            # 计算成交量趋势（最近5天）
+            try:
+                if len(historical_volume) >= 5:
+                    # 使用numpy操作更安全高效
+                    recent_volumes = historical_volume.iloc[-5:].values
+                    if len(recent_volumes) >= 2:
+                        # 计算日间变化
+                        diffs = np.diff(recent_volumes)
+                        # 获取变化方向 (+1 上升, -1 下降, 0 不变)
+                        signs = np.sign(diffs)
+                        # 净方向和
+                        volume_trend = int(np.sum(signs))
+                    else:
+                        volume_trend = 0
+                else:
+                    volume_trend = 0
+                    
+                features['volume_trend'] = volume_trend
+            except Exception as e:
+                logger.error(f"计算成交量趋势时出错: {e}")
                 features['volume_trend'] = 0
-
+            
             return features
+        
         except Exception as e:
             logger.error(f"计算成交量特征时出错: {e}")
-            # 设置默认值
-            features['volume'] = 0
-            features['volume_ma5'] = 0
-            features['volume_ma10'] = 0
-            features['volume_ma20'] = 0
-            features['volume_ma60'] = 0
-            features['volume_ratio_5d'] = 1.0
-            features['volume_ratio_10d'] = 1.0
-            features['volume_ratio_20d'] = 1.0
-            features['volume_change_ratio'] = 0.0
-            features['volume_trend'] = 0
+            logger.error(traceback.format_exc())
+            # 发生异常时使用默认值
+            features.update(default_features)
             return features
 
  

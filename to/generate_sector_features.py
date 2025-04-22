@@ -21,7 +21,7 @@ import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import List, Dict, Tuple, Set, Optional, Union, Any, Callable
@@ -30,12 +30,11 @@ import traceback
 # 设置导入路径，确保能够找到模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,  # 改回INFO以减少日志输出
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# 导入logger配置
+from to.logger_config import configure_logger
+
+# 将原来的logger配置替换为新的配置
+logger = configure_logger(__name__)
 
 # 导入自定义优化模块
 try:
@@ -457,10 +456,8 @@ class SectorFeatureManager:
                 all_df = pd.concat(all_features, ignore_index=True)
                 
                 # 排序并去重
-                all_df = all_df.sort_values('date').drop_duplicates(subset=['date'])
+                all_df = all_df.sort_values('date').drop_duplicates(subset=['date'],keep='last')
                 
-                # 计算技术指标
-                all_df = self.add_technical_indicators(all_df)
                 
                 # 保存完整特征文件为Parquet
                 sector_dir = Path(self.output_dir) / sector
@@ -712,8 +709,8 @@ class SectorFeatureManager:
             if success:
                 logger.info(f"成功保存特征到文件: {file_path}")
                 
-                # 使用特征更新管理器更新元数据
-                self.feature_update_manager.update_sector_metadata(sector)
+                # 使用新的方法添加已处理日期
+                self.feature_update_manager.add_processed_date(sector, date)
                 
                 # 保存最新特征为CSV格式，方便查看
                 latest_file_path = sector_dir / f"{sector}_latest.csv"
@@ -777,6 +774,30 @@ class SectorFeatureManager:
                                 latest_path = sector_dir / f"{sector}_latest.csv"
                                 latest_df.to_csv(latest_path, index=False)
                                 logger.info(f"已为板块 {sector} 创建最新特征CSV文件，日期: {latest_date}")
+                                
+                                # 更新元数据 - 提取已处理日期
+                                if 'date' in main_df.columns:
+                                    # 获取所有日期
+                                    dates = main_df['date'].astype(str).tolist()
+                                    # 标准化日期格式
+                                    processed_dates = []
+                                    for d in dates:
+                                        try:
+                                            # 尝试转换为YYYYMMDD格式
+                                            if '-' in d:  # 如果是YYYY-MM-DD格式
+                                                processed_dates.append(d.replace('-', ''))
+                                            elif len(d) == 8 and d.isdigit():  # 如果已经是YYYYMMDD格式
+                                                processed_dates.append(d)
+                                            else:  # 尝试其他格式转换
+                                                dt = pd.to_datetime(d)
+                                                processed_dates.append(dt.strftime('%Y%m%d'))
+                                        except:
+                                            # 如果转换失败，跳过
+                                            logger.warning(f"无法转换日期格式: {d}")
+                                    
+                                    # 批量添加已处理日期
+                                    self.feature_update_manager.add_processed_dates(sector, processed_dates)
+                                    
                         except Exception as e:
                             logger.warning(f"读取主Parquet文件失败: {e}")
                     
@@ -858,6 +879,30 @@ class SectorFeatureManager:
                         except Exception as e:
                             logger.warning(f"删除文件 {file_path} 失败: {e}")
                     
+                    # 更新元数据 - 提取并添加已处理日期
+                    if 'date' in merged_df.columns:
+                        # 获取所有日期
+                        dates = merged_df['date'].astype(str).tolist()
+                        # 标准化日期格式
+                        processed_dates = []
+                        for d in dates:
+                            try:
+                                # 尝试转换为YYYYMMDD格式
+                                if '-' in d:  # 如果是YYYY-MM-DD格式
+                                    processed_dates.append(d.replace('-', ''))
+                                elif len(d) == 8 and d.isdigit():  # 如果已经是YYYYMMDD格式
+                                    processed_dates.append(d)
+                                else:  # 尝试其他格式转换
+                                    dt = pd.to_datetime(d)
+                                    processed_dates.append(dt.strftime('%Y%m%d'))
+                            except:
+                                # 如果转换失败，跳过
+                                logger.warning(f"无法转换日期格式: {d}")
+                        
+                        # 批量添加已处理日期
+                        self.feature_update_manager.add_processed_dates(sector, processed_dates)
+                        logger.info(f"已更新板块 {sector} 的元数据，处理了 {len(processed_dates)} 个日期")
+                    
                     return True
                 except Exception as e:
                     logger.error(f"保存合并后的主Parquet文件失败: {e}")
@@ -914,6 +959,30 @@ class SectorFeatureManager:
                             file_path.unlink()
                         except Exception as e:
                             logger.warning(f"删除文件 {file_path} 失败: {e}")
+                    
+                    # 更新元数据 - 提取并添加已处理日期
+                    if 'date' in merged_df.columns:
+                        # 获取所有日期
+                        dates = merged_df['date'].astype(str).tolist()
+                        # 标准化日期格式
+                        processed_dates = []
+                        for d in dates:
+                            try:
+                                # 尝试转换为YYYYMMDD格式
+                                if '-' in d:  # 如果是YYYY-MM-DD格式
+                                    processed_dates.append(d.replace('-', ''))
+                                elif len(d) == 8 and d.isdigit():  # 如果已经是YYYYMMDD格式
+                                    processed_dates.append(d)
+                                else:  # 尝试其他格式转换
+                                    dt = pd.to_datetime(d)
+                                    processed_dates.append(dt.strftime('%Y%m%d'))
+                            except:
+                                # 如果转换失败，跳过
+                                logger.warning(f"无法转换日期格式: {d}")
+                        
+                        # 批量添加已处理日期
+                        self.feature_update_manager.add_processed_dates(sector, processed_dates)
+                        logger.info(f"已更新板块 {sector} 的元数据，处理了 {len(processed_dates)} 个日期 (CSV格式)")
                     
                     return True
                 except Exception as e:
@@ -1071,44 +1140,6 @@ class SectorFeatureManager:
             logger.error(f"错误详情: {traceback.format_exc()}")
             return pd.DataFrame()
 
-    def add_technical_indicators(self, features_df: pd.DataFrame) -> pd.DataFrame:
-        """添加技术指标
-        
-        计算技术指标，如MA、MACD、RSI等，并添加到特征DataFrame中。
-        
-        Args:
-            features_df: 包含基本特征的DataFrame
-            
-        Returns:
-            添加了技术指标的DataFrame
-        """
-        if features_df.empty:
-            return features_df
-            
-        try:
-            # 创建技术指标计算器
-            from to.sector_features.technical_indicators import TechnicalIndicators
-            indicator = TechnicalIndicators()
-            
-            # 确保按日期排序
-            features_df = features_df.sort_values('date')
-            
-            # 计算移动平均线
-            for ma_window in [5, 10, 20, 30, 60]:
-                ma_col = f'ma{ma_window}'
-                if 'close' in features_df.columns and len(features_df) > 0:
-                    features_df[ma_col] = features_df['close'].rolling(window=ma_window, min_periods=1).mean()
-                else:
-                    # 如果没有close列或数据不足，设置为NaN
-                    features_df[ma_col] = float('nan')
-            
-            # 这里可以添加其他技术指标的计算
-            # 例如MACD, RSI, Bollinger Bands等
-            
-            return features_df
-        except Exception as e:
-            logger.error(f"计算技术指标时出错: {e}")
-            return features_df
 
 def parse_args():
     """解析命令行参数"""

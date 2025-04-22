@@ -25,12 +25,18 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from typing import List, Dict, Tuple, Set, Optional, Union, Any, Callable
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# 导入统一的日志配置
+try:
+    from to.logger_config import configure_logger
+    logger = configure_logger(__name__)
+except ImportError:
+    # 配置日志备选方案
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    logger.warning("无法导入统一日志配置，使用基础配置")
 
 # 导入基础特征生成器和增强特征生成器
 try:
