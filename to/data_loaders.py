@@ -36,6 +36,12 @@ def get_data_path(relative_path=None):
 
 market_status_dir = get_data_path("market_status/daily")
 
+def get_bj_stock_list():
+    """获取北交所股票代码列表"""
+    bj_stock_list_path = get_data_path("bjstock.json")
+    with open(bj_stock_list_path, "r") as f:
+        return json.load(f)
+
 def get_data_loader():
     """获取全局数据加载器实例
     

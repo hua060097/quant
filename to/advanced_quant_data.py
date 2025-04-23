@@ -348,9 +348,11 @@ class ParquetDataStorage:
             # 确保API连接
             if not xtdata.get_client().is_connected():
                 xtdata.get_client().connect()
-            
+            from data_loaders import get_bj_stock_list
+            bj_stock_list = get_bj_stock_list()
             # 获取沪深A股股票列表
             all_stocks = xtdata.get_stock_list_in_sector('沪深A股')
+            all_stocks = all_stocks + bj_stock_list
             
             logger.info(f"成功获取股票列表，共 {len(all_stocks)} 只股票")
             self.metadata['stock_list'] = all_stocks
@@ -486,7 +488,7 @@ class ParquetDataStorage:
             stock_list = self.metadata['stock_list']
             if not stock_list:
                 stock_list = self.download_stock_list()
-        
+        # stock_list = self.download_stock_list()
         if start_date is None:
             start_date = '20230101'
         
@@ -494,7 +496,7 @@ class ParquetDataStorage:
             end_date = datetime.now().strftime('%Y%m%d')
         
         # 字段列表
-        fields = ['open', 'high', 'low', 'close', 'volume', 'amount', 'turnover_rate']
+        fields = ['open', 'high', 'low', 'close', 'volume', 'amount', 'preClose']
         
         # 获取交易日历
         calendar_file = CALENDAR_DIR / "trading_calendar.parquet"
@@ -507,7 +509,7 @@ class ParquetDataStorage:
         try:
             calendar_df = pd.read_parquet(calendar_file)
             trading_dates = calendar_df[(calendar_df['date_str'] >= start_date) & 
-                                       (calendar_df['date_str'] <= end_date)]['date_str'].tolist()
+                                    (calendar_df['date_str'] <= end_date)]['date_str'].tolist()
             
             if not trading_dates:
                 logger.warning(f"指定日期范围内没有交易日: {start_date} 至 {end_date}")
@@ -517,6 +519,19 @@ class ParquetDataStorage:
             
         except Exception as e:
             logger.error(f"读取交易日历失败: {e}")
+            return False
+        
+        # 读取股本数据
+        try:
+            capital_file = 'to/local_data/stock_capital_data.parquet'
+            logger.info(f"读取股本数据: {capital_file}")
+            capital_df = pd.read_parquet(capital_file)
+            
+            # 将股票代码设为索引以加快查询
+            capital_df.set_index('stock', inplace=True)
+            logger.info(f"成功读取股本数据: {len(capital_df)}条记录")
+        except Exception as e:
+            logger.error(f"读取股本数据失败: {e}")
             return False
         
         start_time = time.time()
@@ -535,7 +550,8 @@ class ParquetDataStorage:
                 stock_list=stock_list, 
                 period='1d',
                 start_time=start_date, 
-                end_time=end_date
+                end_time=end_date,
+                dividend_type='front',
             )
             
             if not data or not any(field in data for field in fields):
@@ -586,13 +602,59 @@ class ParquetDataStorage:
                     }
                     
                     # 添加每个字段的值
+                    close_value = None
+                    preclose_value = None
+                    volume_value = None
+                    
                     for field in fields:
                         if field in data:
                             field_df = data[field]
                             if stock in field_df.index and date in field_df.columns:
-                                row[field] = field_df.loc[stock, date]
+                                value = field_df.loc[stock, date]
+                                row[field] = value
+                                
+                                # 保存关键值用于后续计算
+                                if field == 'close':
+                                    close_value = value
+                                elif field == 'preClose':
+                                    preclose_value = value
+                                elif field == 'volume':
+                                    volume_value = value
                             else:
                                 row[field] = None
+                    
+                    # 计算涨跌幅
+                    if close_value is not None and preclose_value is not None and preclose_value != 0:
+                        row['pct_chg'] = (close_value - preclose_value) / preclose_value * 100
+                    else:
+                        row['pct_chg'] = None
+                    
+                    # 获取股本数据并计算市值和换手率
+                    if close_value is not None and stock in capital_df.index:
+                        total_capital = capital_df.loc[stock, 'total_capital']
+                        circulating_capital = capital_df.loc[stock, 'circulating_capital']
+                        
+                        # 计算总市值（亿元）
+                        if total_capital is not None:
+                            row['total_mv'] = close_value * total_capital
+                        else:
+                            row['total_mv'] = None
+                        
+                        # 计算流通市值（亿元）
+                        if circulating_capital is not None:
+                            row['circ_mv'] = close_value * circulating_capital
+                        else:
+                            row['circ_mv'] = None
+                        
+                        # 计算换手率（%）
+                        if volume_value is not None and circulating_capital is not None and circulating_capital > 0:
+                            row['turnover_rate'] = volume_value / circulating_capital * 100
+                        else:
+                            row['turnover_rate'] = None
+                    else:
+                        row['total_mv'] = None
+                        row['circ_mv'] = None
+                        row['turnover_rate'] = None
                     
                     result_data.append(row)
                     
@@ -3379,9 +3441,9 @@ def main():
     storage = ParquetDataStorage()
     
     # 设置时间区间参数
-    start_date = '20240201'  # 开始日期，使用YYYYMMDD格式字符串
+    start_date = '20220601'  # 开始日期，使用YYYYMMDD格式字符串
     # end_date = datetime.now().strftime('%Y%m%d')  # 结束日期，默认为当前日期
-    end_date = '20240229'
+    end_date = '20250422'
     batch_size = 500  # 批处理大小
     workers = 5  # 线程数
     
@@ -3400,10 +3462,10 @@ def main():
     # download_calendar(storage, start_date, end_date)
     
     # 下载日线数据
-    # download_daily_data(storage, start_date, end_date, batch_size, workers)
+    download_daily_data(storage, start_date, end_date, batch_size, workers)
     
     # 下载5分钟数据
-    download_minute_data(storage, start_date, end_date, batch_size//2, workers)
+    # download_minute_data(storage, start_date, end_date, batch_size//2, workers)
     
     # 下载所有数据（包括股票列表、交易日历、日线和5分钟数据）
     # download_all_data(storage, start_date, end_date, batch_size, workers)

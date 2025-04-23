@@ -175,7 +175,7 @@ class SectorFeatureManager:
             output_dir=self.output_dir
         )
     
-    def calculate_sector_features_for_date(self, date: str, sector: str) -> pd.DataFrame:
+    def calculate_sector_features_for_date(self, date: str, sector: str, preloaded_data: Optional[pd.DataFrame] = None) -> Tuple[bool, pd.DataFrame]:
         """计算特定日期的板块特征
         
         使用EnhancedSectorFeatureGenerator生成综合特征
@@ -183,6 +183,7 @@ class SectorFeatureManager:
         Args:
             date: 目标日期，字符串格式，如"20230101"
             sector: 板块名称
+            preloaded_data: 预加载的历史数据
             
         Returns:
             板块特征DataFrame或空DataFrame
@@ -191,11 +192,11 @@ class SectorFeatureManager:
             logger.info(f"使用增强特征生成器计算板块 {sector} 在日期 {date} 的特征")
             
             # 使用EnhancedSectorFeatureGenerator生成特征
-            success, features_df = self.feature_generator.generate_sector_features_for_date(sector, date)
+            success, features_df = self.feature_generator.generate_sector_features_for_date(sector, date, preloaded_data)
             
             if not success or features_df is None or features_df.empty:
                 logger.warning(f"日期 {date} 板块 {sector} 没有特征数据")
-                return pd.DataFrame()
+                return False, pd.DataFrame()
             
             # 确保有date列
             if 'date' not in features_df.columns:
@@ -210,65 +211,56 @@ class SectorFeatureManager:
             # 使用数据类型优化
             features_df = optimize_dtypes(features_df)
             
-            return features_df
+            return True, features_df
         except Exception as e:
             logger.error(f"处理日期 {date} 板块 {sector} 时出错: {e}")
             logger.error(f"错误详情: {traceback.format_exc()}")
-            return pd.DataFrame()
+            return False, pd.DataFrame()
 
-    def process_date(self, date: Union[str, pd.Timestamp], sector: str) -> Tuple[bool, Optional[pd.DataFrame]]:
+    def process_date(self, date: Union[str, pd.Timestamp], sector: str, preloaded_data: Optional[pd.DataFrame] = None) -> Tuple[bool, Optional[pd.DataFrame]]:
         """处理单个日期的板块特征
         
         Args:
-            date: 目标日期，格式为YYYYMMDD或pandas.Timestamp
+            date: 日期
             sector: 板块名称
+            preloaded_data: 预加载的历史数据
             
         Returns:
-            (是否成功, 特征DataFrame)
+            (成功标识, 特征DataFrame)
         """
         try:
-            # 检查是否为特殊值'date_str'，是则直接跳过
-            if date == 'date_str':
-                logger.warning(f"跳过特殊值'date_str'，板块: {sector}")
-                return False, None
-                
-            # 将Timestamp转换为字符串格式
+            # 日期标准化
             if isinstance(date, pd.Timestamp):
                 date_str = date.strftime('%Y%m%d')
-                logger.debug(f"将Timestamp {date} 转换为字符串格式 {date_str}")
             else:
-                date_str = str(date)
+                date_str = str(date).replace('-', '').replace('/', '')
+                
+            logger.debug(f"开始处理板块 {sector} 在日期 {date_str} 的特征")
             
-            # 生成板块特征
-            logger.debug(f"为日期 {date_str} 板块 {sector} 生成特征")
-            df = self.calculate_sector_features_for_date(date_str, sector)
+            # 计算特征
+            success, features_df = self.calculate_sector_features_for_date(date_str, sector, preloaded_data)
             
-            if df.empty:
-                logger.warning(f"日期 {date_str} 板块 {sector} 没有特征数据")
+            if not success or features_df is None or features_df.empty:
+                logger.warning(f"计算板块 {sector} 在日期 {date_str} 的特征失败")
                 return False, None
+                
+            # 保存特征文件
+            save_success, _ = self.save_features(features_df, sector, date_str)
             
-            # 添加日期和板块名称（如果不存在）
-            if 'date' not in df.columns:
-                df['date'] = date_str
-            if 'sector_name' not in df.columns:
-                df['sector_name'] = sector
-            
-            # 尝试保存特征到文件
+            # 更新特征元数据
             try:
-                success, file_path = self.save_features(df, sector, date_str)
-                logger.debug(f"保存特征文件结果: success={success}, path={file_path}")
+                from feature_update import get_feature_update_manager
+                manager = get_feature_update_manager(self.output_dir)
+                manager.add_processed_date(sector, date_str)
+            except (ImportError, AttributeError) as e:
+                logger.debug(f"更新特征元数据失败: {e}")
                 
-                # 即使保存失败，仍然返回计算好的DataFrame
-                return success, df
-            except Exception as e:
-                logger.error(f"保存日期 {date_str} 板块 {sector} 特征文件时出错: {e}")
-                logger.error(f"错误详情: {traceback.format_exc()}")
-                # 失败时也返回计算好的DataFrame
-                return False, df
-                
+            logger.debug(f"完成处理板块 {sector} 在日期 {date_str} 的特征")
+            return save_success, features_df
+            
         except Exception as e:
-            logger.error(f"处理日期 {date} 板块 {sector} 特征时出错: {e}")
-            logger.error(f"错误详情: {traceback.format_exc()}")
+            logger.error(f"处理板块 {sector} 在日期 {date} 时出错: {e}")
+            logger.error(traceback.format_exc())
             return False, None
 
     def process_sector(
@@ -402,6 +394,65 @@ class SectorFeatureManager:
                 logger.error(f"检查dates_to_process长度失败: {e}, 类型: {type(dates_to_process)}")
                 return sector, []
             
+            # 预加载历史数据 - 优化部分
+            # 计算历史数据的开始日期(比最早处理日期提前180天，足够计算所有技术指标)
+            try:
+                # 将dates_to_process中的日期格式标准化
+                normalized_dates = []
+                for d in dates_to_process:
+                    if isinstance(d, pd.Timestamp):
+                        normalized_dates.append(d.strftime('%Y%m%d'))
+                    else:
+                        normalized_dates.append(str(d).replace('-', ''))
+                
+                # 找到最早需要处理的日期
+                earliest_date_to_process = min(normalized_dates)
+                earliest_date_obj = pd.to_datetime(earliest_date_to_process, format='%Y%m%d')
+                history_start_date = (earliest_date_obj - pd.Timedelta(days=180)).strftime('%Y%m%d')
+                
+                logger.info(f"预加载历史数据，从 {history_start_date} 到 {end_date}")
+                
+                # 获取板块股票列表
+                from to.sector_features.feature_generator import SectorFeatureGenerator
+                feature_generator = SectorFeatureGenerator(self.data_provider, self.sector_mapping, self.output_dir)
+                stocks = feature_generator._get_sector_stocks(sector)
+                
+                if not stocks:
+                    logger.warning(f"板块 {sector} 没有成分股")
+                    return sector, []
+                
+                # 一次性获取所有历史数据
+                historical_data = self.data_provider.get_daily_data(stocks, history_start_date, end_date)
+                
+                if historical_data.empty:
+                    logger.warning(f"无法获取板块 {sector} 的历史数据")
+                    return sector, []
+                
+                logger.info(f"成功加载板块 {sector} 的历史数据，行数: {len(historical_data)}")
+                
+                # 按日期分组历史数据
+                historical_data_by_date = {}
+                for date_str in normalized_dates:
+                    # 将日期转换为与历史数据中相同的格式进行匹配
+                    date_obj = pd.to_datetime(date_str, format='%Y%m%d')
+                    
+                    # 获取当前日期之前的所有数据(包括当日)
+                    mask = historical_data['date'] <= date_obj
+                    date_historical_data = historical_data[mask].copy()
+                    
+                    if not date_historical_data.empty:
+                        historical_data_by_date[date_str] = date_historical_data
+                        logger.debug(f"为日期 {date_str} 准备了 {len(date_historical_data)} 行历史数据")
+                    else:
+                        logger.warning(f"日期 {date_str} 没有找到历史数据")
+                
+                logger.info(f"完成历史数据预处理，共 {len(historical_data_by_date)} 个日期有有效数据")
+            
+            except Exception as e:
+                logger.error(f"预加载历史数据时出错: {e}")
+                logger.error(traceback.format_exc())
+                historical_data_by_date = {}
+            
             # 分批处理日期
             all_features = []
             last_day_features = None
@@ -424,7 +475,14 @@ class SectorFeatureManager:
                 batch_results = []
                 
                 for date in filtered_batch_dates:
-                    success, df = self.process_date(date, sector)
+                    # 标准化日期格式
+                    date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date).replace('-', '')
+                    
+                    # 获取该日期的预加载数据
+                    preloaded_data = historical_data_by_date.get(date_str)
+                    
+                    # 使用预加载数据处理日期
+                    success, df = self.process_date(date, sector, preloaded_data)
                     if success and df is not None:
                         batch_results.append(df)
                         processed_dates.append(date)

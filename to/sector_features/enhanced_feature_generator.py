@@ -69,8 +69,10 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
         # 特殊股票类型的涨跌停幅度
         self.special_limit_configs = {
             'ST': {'up': 0.05, 'down': -0.05},  # ST股票涨跌停5%
+            'NEW': {'up': 0.2, 'down': -0.2},   # 新股涨跌停20%
             'STAR': {'up': 0.2, 'down': -0.2},  # 科创板涨跌停20%
-            'NEW': {'up': 0.2, 'down': -0.2}    # 新股涨跌停20%
+            'GEM': {'up': 0.2, 'down': -0.2},   # 创业板涨跌停20%
+            'BSE': {'up': 0.3, 'down': -0.3}    # 北交所涨跌停30%
         }
         
         logger.info(f"初始化增强板块特征生成器，权重方法: {weighting_method}，排名前N: {top_n}")
@@ -111,63 +113,85 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
             logger.error(f"加载日期 {date} 的排名数据失败: {str(e)}")
             return None
             
-    def _is_limit_up(self, current_price, prev_price, stock_code):
+    def _is_limit_up(self, pct_chg, stock_code, close=None, pre_close=None):
         """判断是否涨停
         
+        基于前收盘价计算精确的涨停价，进行四舍五入后与当前收盘价比较
+        
         Args:
-            current_price: 当前价格
-            prev_price: 前一日收盘价
+            pct_chg: 涨跌幅百分比（如果没有提供close和pre_close，则使用此值判断）
             stock_code: 股票代码
+            close: 当前收盘价
+            pre_close: 前收盘价
             
         Returns:
             是否涨停
         """
-        if prev_price <= 0:
-            return False
-            
-        # 计算涨幅
-        change_pct = (current_price - prev_price) / prev_price
-        
-        # 确定涨停幅度
-        limit_up_pct = self.limit_up_pct
+        # 确定涨停幅度比率
+        limit_ratio = self.limit_up_pct  # 默认10%
         
         # 根据股票类型调整涨停幅度
         if 'ST' in stock_code:
-            limit_up_pct = self.special_limit_configs['ST']['up']
+            limit_ratio = self.special_limit_configs['ST']['up']
         elif stock_code.startswith('688'):  # 科创板股票
-            limit_up_pct = self.special_limit_configs['STAR']['up']
+            limit_ratio = self.special_limit_configs['STAR']['up']
+        elif stock_code.startswith('300'):  # 创业板股票
+            limit_ratio = self.special_limit_configs['GEM']['up']
+        elif '.BJ' in stock_code:  # 北交所股票
+            limit_ratio = self.special_limit_configs['BSE']['up']
             
-        # 考虑精度误差，允许0.1%的误差
-        return abs(change_pct - limit_up_pct) < 0.001
+        # 如果提供了收盘价和前收盘价，使用精确计算
+        if close is not None and pre_close is not None and pre_close > 0:
+            # 计算理论涨停价
+            theoretical_limit = pre_close * (1 + limit_ratio)
+            # 四舍五入到0.01元
+            rounded_limit = round(theoretical_limit, 2)
+            # 判断当前价格是否等于四舍五入后的涨停价
+            return abs(close - rounded_limit) < 0.005
+        else:
+            # 如果未提供价格数据，则使用涨跌幅判断，允许一定误差
+            limit_pct = limit_ratio * 100
+            return abs(pct_chg - limit_pct) <= 0.15
         
-    def _is_limit_down(self, current_price, prev_price, stock_code):
+    def _is_limit_down(self, pct_chg, stock_code, close=None, pre_close=None):
         """判断是否跌停
         
+        基于前收盘价计算精确的跌停价，进行四舍五入后与当前收盘价比较
+        
         Args:
-            current_price: 当前价格
-            prev_price: 前一日收盘价
+            pct_chg: 涨跌幅百分比（如果没有提供close和pre_close，则使用此值判断）
             stock_code: 股票代码
+            close: 当前收盘价
+            pre_close: 前收盘价
             
         Returns:
             是否跌停
         """
-        if prev_price <= 0:
-            return False
-            
-        # 计算跌幅
-        change_pct = (current_price - prev_price) / prev_price
-        
-        # 确定跌停幅度
-        limit_down_pct = self.limit_down_pct
+        # 确定跌停幅度比率（负值）
+        limit_ratio = self.limit_down_pct  # 默认-10%
         
         # 根据股票类型调整跌停幅度
         if 'ST' in stock_code:
-            limit_down_pct = self.special_limit_configs['ST']['down']
+            limit_ratio = self.special_limit_configs['ST']['down']
         elif stock_code.startswith('688'):  # 科创板股票
-            limit_down_pct = self.special_limit_configs['STAR']['down']
+            limit_ratio = self.special_limit_configs['STAR']['down']
+        elif stock_code.startswith('300'):  # 创业板股票
+            limit_ratio = self.special_limit_configs['GEM']['down']
+        elif '.BJ' in stock_code:  # 北交所股票
+            limit_ratio = self.special_limit_configs['BSE']['down']
             
-        # 考虑精度误差，允许0.1%的误差
-        return abs(change_pct - limit_down_pct) < 0.001
+        # 如果提供了收盘价和前收盘价，使用精确计算
+        if close is not None and pre_close is not None and pre_close > 0:
+            # 计算理论跌停价
+            theoretical_limit = pre_close * (1 + limit_ratio)
+            # 四舍五入到0.01元
+            rounded_limit = round(theoretical_limit, 2)
+            # 判断当前价格是否等于四舍五入后的跌停价
+            return abs(close - rounded_limit) < 0.005
+        else:
+            # 如果未提供价格数据，则使用涨跌幅判断，允许一定误差
+            limit_pct = limit_ratio * 100
+            return abs(pct_chg - limit_pct) <= 0.15
         
     def _get_previous_trading_date(self, date):
         """获取前一个交易日
@@ -318,69 +342,66 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
             'limit_down_ratio': 0.0,
             'near_limit_up_ratio': 0.0,
             'limit_open_ratio': 0.0,
+            'avg_turnover_rate': 0.0,  # 添加平均换手率特征
         }
         
         try:
-            # 获取前一个交易日
-            prev_date = self._get_previous_trading_date(date)
-            if not prev_date:
-                logger.warning(f"无法获取日期 {date} 的前一个交易日，无法计算涨跌停特征")
-                return features
-                
-            # 获取当前日期和前一日的数据
+            # 直接获取当前日期的数据（不需要获取前一日数据，因为已有pct_chg）
             try:
                 current_data = self.data_provider.get_daily_data(stocks, date, date)
-                prev_data = self.data_provider.get_daily_data(stocks, prev_date, prev_date)
                 
-                if current_data.empty or prev_data.empty:
-                    logger.warning(f"日期 {date} 或前一日 {prev_date} 的数据为空，无法计算涨跌停特征")
+                if current_data.empty:
+                    logger.warning(f"日期 {date} 的数据为空，无法计算涨跌停特征")
                     return features
                     
             except Exception as e:
-                logger.error(f"获取日期 {date} 和前一日 {prev_date} 的数据失败: {str(e)}")
+                logger.error(f"获取日期 {date} 的数据失败: {str(e)}")
                 return features
-                
-            # 创建前一日收盘价字典
-            prev_close_dict = {}
-            for _, row in prev_data.iterrows():
-                prev_close_dict[row['stock_code']] = row['close']
                 
             # 计算涨跌停统计
             limit_up_count = 0
             limit_down_count = 0
             near_limit_up_count = 0  # 接近涨停（涨幅>7%）
             limit_open_count = 0  # 一字板开盘涨停
+            total_turnover_rate = 0.0
             
             valid_stock_count = 0
             
             for _, row in current_data.iterrows():
                 stock_code = row['stock_code']
-                
-                if stock_code not in prev_close_dict:
-                    continue
-                    
                 valid_stock_count += 1
-                prev_close = prev_close_dict[stock_code]
                 
-                # 计算涨跌幅
-                change_pct = (row['close'] - prev_close) / prev_close if prev_close > 0 else 0
+                # 获取涨跌幅和价格数据
+                pct_chg = row['pct_chg'] if 'pct_chg' in row else 0
+                close = row['close']
+                pre_close = row['preClose'] if 'preClose' in row else None
                 
-                # 检查是否涨停
-                if self._is_limit_up(row['close'], prev_close, stock_code):
+                # 检查是否涨停（使用精确计算）
+                if self._is_limit_up(pct_chg, stock_code, close, pre_close):
                     limit_up_count += 1
                     
-                # 检查是否跌停
-                elif self._is_limit_down(row['close'], prev_close, stock_code):
+                # 检查是否跌停（使用精确计算）
+                elif self._is_limit_down(pct_chg, stock_code, close, pre_close):
                     limit_down_count += 1
                     
                 # 检查是否接近涨停
-                elif change_pct > 0.07:  # 涨幅超过7%
+                elif pct_chg > 7.0:  # 涨幅超过7%
                     near_limit_up_count += 1
                     
-                # 检查是否一字板开盘涨停（开盘价等于最高价等于最低价等于收盘价）
-                if (row['open'] == row['high'] == row['low'] == row['close'] and
-                    self._is_limit_up(row['open'], prev_close, stock_code)):
+                # 检查是否一字板开盘涨停
+                # 允许极小误差，以处理数据精度问题
+                is_one_price_board = (
+                    abs(row['open'] - row['high']) < 0.005 and
+                    abs(row['high'] - row['low']) < 0.005 and
+                    abs(row['low'] - row['close']) < 0.005
+                )
+                
+                if is_one_price_board and self._is_limit_up(pct_chg, stock_code, close, pre_close):
                     limit_open_count += 1
+                
+                # 统计换手率
+                turnover_rate = row.get('turnover_rate', 0)
+                total_turnover_rate += turnover_rate
             
             # 计算比例
             if valid_stock_count > 0:
@@ -388,9 +409,11 @@ class EnhancedSectorFeatureGenerator(SectorFeatureGenerator):
                 features['limit_down_ratio'] = limit_down_count / valid_stock_count
                 features['near_limit_up_ratio'] = near_limit_up_count / valid_stock_count
                 features['limit_open_ratio'] = limit_open_count / valid_stock_count
+                features['avg_turnover_rate'] = total_turnover_rate / valid_stock_count
                 
             logger.debug(f"板块 {sector} 在日期 {date} 的涨停比例: {features['limit_up_ratio']:.2f}, "
-                        f"跌停比例: {features['limit_down_ratio']:.2f}")
+                        f"跌停比例: {features['limit_down_ratio']:.2f}, "
+                        f"平均换手率: {features['avg_turnover_rate']:.2f}%")
                         
         except Exception as e:
             logger.error(f"计算板块 {sector} 在日期 {date} 的涨跌停特征时出错: {str(e)}")

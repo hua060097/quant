@@ -201,10 +201,14 @@ class SectorFeatureGenerator:
         if valid_data.empty:
             logger.warning(f"日期 {date} 没有有效数据（收盘价>0）")
             return None
-            
-        # 如果没有change_percent列，尝试计算
-        if 'change_percent' not in valid_data.columns:
-            logger.info(f"数据源中没有change_percent列，将计算该值")
+
+        # 优先使用pct_chg计算平均涨跌幅
+        if 'pct_chg' in valid_data.columns:
+            logger.info(f"使用数据源中的pct_chg列计算平均涨跌幅")
+            valid_data['change_percent'] = valid_data['pct_chg']
+        # 如果没有pct_chg列，尝试计算change_percent
+        elif 'change_percent' not in valid_data.columns:
+            logger.info(f"数据源中没有pct_chg和change_percent列，将计算涨跌幅")
             try:
                 # 获取前一个交易日的数据来计算涨跌幅
                 prev_date = self._get_previous_trading_date(date)
@@ -263,12 +267,9 @@ class SectorFeatureGenerator:
         features['amount'] = round(valid_data['amount'].mean(), 2)
         features['change_percent'] = round(valid_data['change_percent'].mean(), 2)
         
-        print("change_percent", features['change_percent'])
-        
-        # if 'turnover_rate' in valid_data.columns:
-        #     features['turnover_rate'] = round(valid_data['turnover_rate'].mean(), 2)
-        # else:
-        #     features['turnover_rate'] = 0
+        # 添加平均换手率
+        if 'turnover_rate' in valid_data.columns:
+            features['turnover_rate'] = round(valid_data['turnover_rate'].mean(), 2)
             
         if 'amplitude' in valid_data.columns:
             features['amplitude'] = round(valid_data['amplitude'].mean(), 2)
@@ -689,13 +690,13 @@ class SectorFeatureGenerator:
                 except Exception as e:
                     logger.error(f"计算成交量特征时出错: {e}")
                     for period in [5, 10, 20, 60]:
-                        features[f'volume_ratio_{period}'] = 1.0
+                        features[f'volume_{period}d_ratio'] = 1.0
                     features['volume_change_ratio'] = 0.0
                     features['volume_trend'] = 0
             else:
                 # 默认值
                 for period in [5, 10, 20, 60]:
-                    features[f'volume_ratio_{period}'] = 1.0
+                    features[f'volume_{period}d_ratio'] = 1.0
                 features['volume_change_ratio'] = 0.0
                 features['volume_trend'] = 0
             
@@ -947,7 +948,7 @@ class SectorFeatureGenerator:
         Args:
             sector: 板块名称
             date: 日期，可以是字符串或日期对象
-            preloaded_data: 预加载的数据
+            preloaded_data: 预加载的数据，包含历史数据
             
         Returns:
             (success, features_df): 成功标志和特征DataFrame
@@ -957,117 +958,179 @@ class SectorFeatureGenerator:
             date_str = date if isinstance(date, str) else date.strftime('%Y%m%d')
             date_obj = pd.to_datetime(date)
             
+            # 获取股票列表 - 无论是否使用预加载数据都需要获取
+            stocks = self._get_sector_stocks(sector)
+            if not stocks:
+                logger.warning(f"板块 {sector} 没有成分股")
+                return False, None
+            
             if preloaded_data is not None:
                 logger.debug("使用预加载的数据")
                 sector_data = preloaded_data
-            else:
-                # 获取股票列表
-                stocks = self._get_sector_stocks(sector)
-                if not stocks:
-                    logger.warning(f"板块 {sector} 没有成分股")
-                    return None, None
+                
+                # 筛选当前日期的数据
+                if 'date' in sector_data.columns:
+                    # 将日期列统一为datetime格式，便于比较
+                    if not pd.api.types.is_datetime64_dtype(sector_data['date']):
+                        sector_data['date'] = pd.to_datetime(sector_data['date'])
                     
+                    # 获取当前日期的数据
+                    current_date_data = sector_data[sector_data['date'] == date_obj].copy()
+                    
+                    if current_date_data.empty:
+                        logger.warning(f"预加载数据中找不到日期 {date_str} 的数据")
+                        # 尝试按照字符串匹配
+                        if 'date_str' in sector_data.columns:
+                            current_date_data = sector_data[sector_data['date_str'] == date_str].copy()
+                    
+                    # 准备历史数据（过滤出日期小于等于当前日期的所有数据）
+                    historical_data = sector_data[sector_data['date'] <= date_obj].copy()
+                    
+                    # 使用当前日期数据作为sector_data
+                    if not current_date_data.empty:
+                        sector_data = current_date_data
+                    else:
+                        logger.warning(f"无法从预加载数据中提取日期 {date_str} 的数据")
+                        # 尝试加载股票数据
+                        sector_data = self._load_sector_stocks(stocks, date_str)
+            else:
                 # 加载股票数据
                 sector_data = self._load_sector_stocks(stocks, date_str) 
-                
+                # 没有预加载数据时，historical_data设为None
+                historical_data = None
+            
             if sector_data is None or sector_data.empty:
                 logger.warning(f"板块 {sector} 在 {date_str} 没有数据")
-                return None, None
-                
-        
+                return False, None
             
             # 计算基本特征
             features_df = self._calculate_basic_features(sector_data, date_obj, stocks)
             
             if features_df is None or features_df.empty:
                 logger.warning(f"板块 {sector} 在 {date_str} 无法计算基本特征")
-                return None, None
+                return False, None
                 
-            # 计算历史数据
-            try:
-                # 获取前180天的日期范围
-                history_start_date = (date_obj - timedelta(days=180)).strftime('%Y%m%d')
-                # 获取历史数据
-                history_end_date = date_str
-                logger.info(f"正在加载历史数据，从 {history_start_date} 到 {history_end_date}")
-                
-                # 获取历史交易日列表
-                trading_days = self.data_provider.get_trading_days(history_start_date, history_end_date)
-                if isinstance(trading_days, pd.DataFrame):
-                    if 'date' in trading_days.columns:
-                        trading_days = trading_days['date'].tolist()
-                    else:
-                        trading_days = trading_days.index.tolist()
-                
-                # 确保交易日按时间排序
-                trading_days = sorted(trading_days)
-                
-                # 初始化板块缓存（如果不存在）
-                if sector not in self._historical_features_cache:
-                    self._historical_features_cache[sector] = {}
-                
-                # 收集历史日期的基本特征数据，使用缓存
-                historical_data_list = []
-                days_to_calculate = []
-                
-                for day in trading_days:
-                    # 转换日期格式
-                    if isinstance(day, pd.Timestamp):
-                        day_str = day.strftime('%Y%m%d')
-                    else:
-                        day_str = str(day)
+            # 如果没有预加载的历史数据，按照原来的方式获取历史数据
+            if preloaded_data is None or 'historical_data' not in locals() or historical_data is None or historical_data.empty:
+                try:
+                    # 获取前180天的日期范围
+                    history_start_date = (date_obj - timedelta(days=180)).strftime('%Y%m%d')
+                    # 获取历史数据
+                    history_end_date = date_str
+                    logger.info(f"正在加载历史数据，从 {history_start_date} 到 {history_end_date}")
                     
-                    # 检查缓存中是否有该日期的数据
-                    if day_str in self._historical_features_cache[sector]:
-                        historical_data_list.append(self._historical_features_cache[sector][day_str])
-                    else:
-                        days_to_calculate.append((day, day_str))
-                
-                # 计算缺失的日期数据
-                for day, day_str in days_to_calculate:
-                    # 加载数据
-                    day_data = self._load_sector_stocks(stocks, day_str)
+                    # 获取历史交易日列表
+                    trading_days = self.data_provider.get_trading_days(history_start_date, history_end_date)
+                    if isinstance(trading_days, pd.DataFrame):
+                        if 'date' in trading_days.columns:
+                            trading_days = trading_days['date'].tolist()
+                        else:
+                            trading_days = trading_days.index.tolist()
                     
-                    if day_data is not None and not day_data.empty:
-                        # 计算基本特征
-                        day_features = self._calculate_basic_features(day_data, day, stocks)
+                    # 确保交易日按时间排序
+                    trading_days = sorted(trading_days)
+                    
+                    # 初始化板块缓存（如果不存在）
+                    if sector not in self._historical_features_cache:
+                        self._historical_features_cache[sector] = {}
+                    
+                    # 收集历史日期的基本特征数据，使用缓存
+                    historical_data_list = []
+                    days_to_calculate = []
+                    
+                    for day in trading_days:
+                        # 转换日期格式
+                        if isinstance(day, pd.Timestamp):
+                            day_str = day.strftime('%Y%m%d')
+                        else:
+                            day_str = str(day)
                         
-                        if day_features is not None and not day_features.empty:
-                            # 只保留需要的列
-                            keep_cols = ['date', 'close', 'open', 'high', 'low', 'volume']
-                            keep_features = {col: day_features[col].values[0] for col in keep_cols if col in day_features.columns}
-                            
-                            # 添加到缓存
-                            self._historical_features_cache[sector][day_str] = keep_features
-                            historical_data_list.append(keep_features)
-                
-                # 转换为DataFrame
-                if historical_data_list:
-                    historical_data = pd.DataFrame(historical_data_list)
-                else:
-                    historical_data = pd.DataFrame()
+                        # 检查缓存中是否有该日期的数据
+                        if day_str in self._historical_features_cache[sector]:
+                            historical_data_list.append(self._historical_features_cache[sector][day_str])
+                        else:
+                            days_to_calculate.append((day, day_str))
                     
-                # 清理缓存，防止内存占用过大
-                self._trim_historical_cache(sector)
-                logger.info(f"历史数据缓存大小: {len(self._historical_features_cache[sector])}")
+                    # 计算缺失的日期数据
+                    for day, day_str in days_to_calculate:
+                        # 加载数据
+                        day_data = self._load_sector_stocks(stocks, day_str)
+                        
+                        if day_data is not None and not day_data.empty:
+                            # 计算基本特征
+                            day_features = self._calculate_basic_features(day_data, day, stocks)
+                            
+                            if day_features is not None and not day_features.empty:
+                                # 只保留需要的列
+                                keep_cols = ['date', 'close', 'open', 'high', 'low', 'volume']
+                                keep_features = {col: day_features[col].values[0] for col in keep_cols if col in day_features.columns}
+                                
+                                # 添加到缓存
+                                self._historical_features_cache[sector][day_str] = keep_features
+                                historical_data_list.append(keep_features)
+                    
+                    # 转换为DataFrame
+                    if historical_data_list:
+                        historical_data = pd.DataFrame(historical_data_list)
+                    else:
+                        historical_data = pd.DataFrame()
+                        
+                    # 清理缓存，防止内存占用过大
+                    self._trim_historical_cache(sector)
+                    logger.info(f"历史数据缓存大小: {len(self._historical_features_cache[sector])}")
+                    
+                except Exception as e:
+                    logger.error(f"计算历史数据时出错: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    # 如果获取历史数据失败，仍然返回基本特征
+                    return True, features_df
+            
+            # 如果有历史数据，则处理为适合技术指标计算的格式
+            if historical_data is not None and not historical_data.empty:
+                # 提取计算技术指标所需的历史数据
+                # 确保历史数据包含必要的列
+                required_cols = ['date', 'close', 'open', 'high', 'low', 'volume']
+                missing_cols = [col for col in required_cols if col not in historical_data.columns]
                 
-                # 计算技术指标
-                features_df = self._calculate_technical_features(sector_data, date_obj, features_df, historical_data)
-
-                logger.info(f"计算技术指标完成")
+                if missing_cols:
+                    logger.warning(f"历史数据缺少必要的列: {missing_cols}")
+                    # 为缺失的列添加默认值
+                    for col in missing_cols:
+                        historical_data[col] = 0.0
                 
-            except Exception as e:
-                logger.error(f"计算历史数据时出错: {str(e)}")
-                logger.error(traceback.format_exc())
-                # 如果获取历史数据失败，仍然返回基本特征
-                return True, features_df
+                # 聚合数据，为每个日期计算板块的平均价格和成交量
+                agg_functions = {
+                    'close': 'mean',
+                    'open': 'mean',
+                    'high': 'mean',
+                    'low': 'mean',
+                    'volume': 'sum'
+                }
+                
+                # 在聚合前确保date列的格式统一
+                if not pd.api.types.is_datetime64_dtype(historical_data['date']):
+                    historical_data['date'] = pd.to_datetime(historical_data['date'])
+                
+                # 按日期聚合
+                try:
+                    aggregated_data = historical_data.groupby('date').agg(agg_functions).reset_index()
+                    logger.debug(f"聚合后的历史数据有 {len(aggregated_data)} 行")
+                    
+                    # 计算技术指标
+                    features_df = self._calculate_technical_features(sector_data, date_obj, features_df, aggregated_data)
+                except Exception as e:
+                    logger.error(f"聚合历史数据或计算技术指标时出错: {e}")
+                    logger.error(traceback.format_exc())
+            else:
+                # 无历史数据，仍然尝试计算技术指标（将使用默认值）
+                features_df = self._calculate_technical_features(sector_data, date_obj, features_df)
             
             return True, features_df
                 
         except Exception as e:
             logger.error(f"为板块 {sector} 在日期 {date} 生成特征时出错: {str(e)}")
             logger.error(traceback.format_exc())
-            return None, None
+            return False, None
     
     def _trim_historical_cache(self, sector):
         """控制历史数据缓存的大小，避免内存占用过大"""

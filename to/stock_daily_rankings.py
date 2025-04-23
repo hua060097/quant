@@ -48,7 +48,10 @@ def get_trading_dates(start_date, end_date=None):
 def get_stock_list():
     """获取所有A股股票"""
     try:
+        from data_loaders import get_bj_stock_list
+        bj_stock_list = get_bj_stock_list()
         stocks = xtdata.get_stock_list_in_sector('沪深A股')
+        stocks = stocks + bj_stock_list
         print(f"获取到 {len(stocks)} 只A股股票")
         return stocks
     except Exception as e:
@@ -742,7 +745,7 @@ if __name__ == "__main__":
     # 通过注释/取消注释下面的行来选择要执行的功能
     
     # 1. 更新所有排名数据（从START_DATE到当前日期）
-    # update_all_rankings()
+    update_all_rankings()
     
     # 2. 只更新当天的排名数据
     # update_today_rankings()

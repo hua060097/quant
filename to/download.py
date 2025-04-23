@@ -51,80 +51,86 @@ def download_a_shares_tick_data():
             logger.info("Connecting to xtdata API...")
             xtdata.get_client().connect()
             time.sleep(1) # Allow time for connection
-
-        stock_list = xtdata.get_stock_list_in_sector('沪深A股')
-        print(f"获取到的股票代码数量: {len(stock_list)}")
-        if not stock_list:
-            print("未能获取到股票列表，请检查API连接或权限。")
-            return
-        # Print first few stocks for confirmation
-        print(f"股票列表前几个: {stock_list[:5]}")
+        # xtdata.download_sector_data()
+        # sector_list = xtdata.get_sector_list()
+        # print(f"板块列表: {sector_list}")
+        # stock_list = xtdata.get_stock_list_in_sector('沪深A股')
+    #     from data_loaders import get_bj_stock_list
+    #     stock_list = get_bj_stock_list()
+    #     # stock_list = xtdata.get_stock_list_in_sector('GN北交所')
+    #     # stock_list.extend(bj_stock_list)
+    #     print(f"获取到的股票代码数量: {len(stock_list)} , 股票列表: {stock_list}")
+    #     if not stock_list:
+    #         print("未能获取到股票列表，请检查API连接或权限。")
+    #         return
+    #     # Print first few stocks for confirmation
+    #     print(f"股票列表前几个: {stock_list[:5]}")
     except Exception as e:
         print(f"获取股票列表时出错: {e}")
         return
 
 
-    INDEX_LIST = [
-        '399006.SZ',  # 创业板指数（主要关注）
-        '000001.SH',  # 上证指数
-        '000688.SH',  # 科创50
-        '899050.BJ',  # 北证50
-    ]
+    # INDEX_LIST = [
+    #     '399006.SZ',  # 创业板指数（主要关注）
+    #     '000001.SH',  # 上证指数
+    #     '000688.SH',  # 科创50
+    #     '899050.BJ',  # 北证50
+    # ]
 
-    # 设置时间范围：2023年6月至今
-    start_date = '20220316'
-    end_date = '20250317'
+    # # 设置时间范围：2023年6月至今
+    # start_date = '20220601'
+    # end_date = '20250423'
 
-    print(f"下载时间范围: {start_date} - {end_date}")
+    # print(f"下载时间范围: {start_date} - {end_date}")
 
-    #初始化下载进度跟踪器
-    progress = DownloadProgress()
+    # #初始化下载进度跟踪器
+    # progress = DownloadProgress()
 
-    stock_list = ['399006.SZ','899050.BJ']
-    # 下载tick数据
-    print("开始下载沪深A股 5分钟 数据...")
-    # Use 5m period as originally intended
-    result = xtdata.download_history_data2(
-        stock_list=stock_list,
-        period='1d',
-        start_time=start_date,
-        end_time=end_date,
-        callback=progress.on_progress,
-        incrementally = True
-    )
-    print(f"下载请求已发出 ({result})，等待下载完成...")
+    # # stock_list = ['399006.SZ','899050.BJ']
+    # # 下载tick数据
+    # print("开始下载沪深A股 5分钟 数据...")
+    # # Use 5m period as originally intended
+    # result = xtdata.download_history_data2(
+    #     stock_list=stock_list,
+    #     period='1d',
+    #     start_time=start_date,
+    #     end_time=end_date,
+    #     callback=progress.on_progress,
+    #     incrementally = True
+    # )
+    # print(f"下载请求已发出 ({result})，等待下载完成...")
 
-    # 新增：等待下载完成的循环
-    start_wait_time = time.time()
-    timeout_seconds = 3600 * 2 # Example: 2 hour timeout
-    while not progress.check_finished():
-        current_has, current_total = progress.get_progress()
-        elapsed_time = time.time() - start_wait_time
-        print(f"等待中... 进度: {current_has}/{current_total}. 已耗时: {elapsed_time:.1f} 秒", flush=True)
-        if elapsed_time > timeout_seconds:
-             print(f"下载超时 ({timeout_seconds}秒).")
-             break
-        time.sleep(5) # Check every 5 seconds
+    # # 新增：等待下载完成的循环
+    # start_wait_time = time.time()
+    # timeout_seconds = 3600 * 2 # Example: 2 hour timeout
+    # while not progress.check_finished():
+    #     current_has, current_total = progress.get_progress()
+    #     elapsed_time = time.time() - start_wait_time
+    #     print(f"等待中... 进度: {current_has}/{current_total}. 已耗时: {elapsed_time:.1f} 秒", flush=True)
+    #     if elapsed_time > timeout_seconds:
+    #          print(f"下载超时 ({timeout_seconds}秒).")
+    #          break
+    #     time.sleep(5) # Check every 5 seconds
 
-    if progress.check_finished():
-        print("主程序检测到下载已完成。")
-    else:
-         print("主程序退出等待，下载可能未完成或超时。")
+    # if progress.check_finished():
+    #     print("主程序检测到下载已完成。")
+    # else:
+    #      print("主程序退出等待，下载可能未完成或超时。")
 
 
     # 测试获取某只股票的tick数据
-    test_code = '399006.SZ'  # 贵州茅台
+    test_code = '838163.BJ'  # 贵州茅台
     print(f"验证股票 {test_code} 的5分钟数据...")
 
     try:
-        test_data = xtdata.get_local_data(
+        test_data = xtdata.get_market_data(
             field_list=[], # Empty list to get all available fields
-            stock_list=['399006.SZ'],
+            stock_list=['838163.BJ'],
             period='1d',
             # start_time='20230316093500',
             # end_time='20230317094500'
-            start_time='20220316',
-            end_time='20230325'
+            start_time='20231216',
+            end_time='20231225'
         )
 
         print(f"验证数据获取成功 : {test_data}.")
@@ -473,6 +479,98 @@ def analyze_minute_data(data, stock_list, field='open'):
         return None
 
 
+def download_and_check_financial_data():
+    """
+    下载所有股票（沪深A股和北交所）的财务数据，并验证其中一只股票的财务数据
+    包括total_capital和circulating_capital
+    """
+    import json
+    import os
+    
+    # 确保连接
+    if not xtdata.get_client().is_connected():
+        print("连接xtdata API...")
+        xtdata.connect()
+        time.sleep(1)
+    
+    # 获取沪深A股股票列表
+    try:
+        xtdata.download_sector_data()
+        a_share_list = xtdata.get_stock_list_in_sector('沪深A股')
+        print(f"获取到沪深A股数量: {len(a_share_list)}")
+    except Exception as e:
+        print(f"获取沪深A股列表时出错: {e}")
+        a_share_list = []
+    
+    # 获取北交所股票列表
+    bj_stock_list = []
+    try:
+        # 尝试从bjstock.json读取
+        json_path = 'to/local_data/bjstock.json'
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                bj_stock_list = json.load(f)
+            print(f"从json文件读取到北交所股票数量: {len(bj_stock_list)}")
+        else:
+            # 如果文件不存在，尝试使用API获取
+            try:
+                from data_loaders import get_bj_stock_list
+                bj_stock_list = get_bj_stock_list()
+                print(f"通过API获取到北交所股票数量: {len(bj_stock_list)}")
+            except Exception as e:
+                print(f"获取北交所股票列表时出错: {e}")
+    except Exception as e:
+        print(f"获取北交所股票列表时出错: {e}")
+    
+    # 合并股票列表
+    stock_list = a_share_list + bj_stock_list
+    print(f"合计股票数量: {len(stock_list)}")
+    
+    if not stock_list:
+        print("未能获取到股票列表，请检查API连接或权限。")
+        return
+    
+    
+    # 创建用于保存结果的列表
+    stock_data_list = []
+    
+    try:
+        for stock in stock_list:
+            # 获取财务数据
+            financial_data = xtdata.get_instrument_detail(stock)
+            print(f"股票代码 {stock}， 总股本 {financial_data.get('TotalVolume')}, 流通股本 {financial_data.get('FloatVolume')}")
+            
+            # 将数据添加到列表中
+            stock_data_list.append({
+                'stock': stock,
+                'total_capital': financial_data.get('TotalVolume'),
+                'circulating_capital': financial_data.get('FloatVolume')
+            })
+        
+        # 确保目录存在
+        os.makedirs('to/local_data', exist_ok=True)
+        
+        # 将数据转换为DataFrame并保存为parquet文件
+        df = pd.DataFrame(stock_data_list)
+        parquet_path = 'to/local_data/stock_capital_data.parquet'
+        df.to_parquet(parquet_path, compression='snappy', index=False)
+        
+        print(f"已成功将{len(stock_data_list)}只股票的总股本和流通股本数据保存至{parquet_path}")
+        
+        # 验证数据已正确保存
+        try:
+            verification_df = pd.read_parquet(parquet_path)
+            print(f"验证数据：已成功读取{len(verification_df)}条记录")
+            print(verification_df.head())
+        except Exception as e:
+            print(f"验证数据时出错: {e}")
+    
+    except Exception as e:
+        print(f"验证财务数据时出错: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     # Add basic logging setup if needed elsewhere
     import logging
@@ -484,5 +582,7 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    download_a_shares_tick_data()
+    # download_a_shares_tick_data()
     # download_and_verify_stock_data()
+    # 调用新函数下载和验证财务数据
+    download_and_check_financial_data()
