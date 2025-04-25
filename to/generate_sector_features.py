@@ -394,119 +394,148 @@ class SectorFeatureManager:
                 logger.error(f"检查dates_to_process长度失败: {e}, 类型: {type(dates_to_process)}")
                 return sector, []
             
-            # 预加载历史数据 - 优化部分
-            # 计算历史数据的开始日期(比最早处理日期提前180天，足够计算所有技术指标)
-            try:
-                # 将dates_to_process中的日期格式标准化
-                normalized_dates = []
-                for d in dates_to_process:
-                    if isinstance(d, pd.Timestamp):
-                        normalized_dates.append(d.strftime('%Y%m%d'))
-                    else:
-                        normalized_dates.append(str(d).replace('-', ''))
-                
-                # 找到最早需要处理的日期
-                earliest_date_to_process = min(normalized_dates)
-                earliest_date_obj = pd.to_datetime(earliest_date_to_process, format='%Y%m%d')
-                history_start_date = (earliest_date_obj - pd.Timedelta(days=180)).strftime('%Y%m%d')
-                
-                logger.info(f"预加载历史数据，从 {history_start_date} 到 {end_date}")
-                
-                # 获取板块股票列表
-                from to.sector_features.feature_generator import SectorFeatureGenerator
-                feature_generator = SectorFeatureGenerator(self.data_provider, self.sector_mapping, self.output_dir)
-                stocks = feature_generator._get_sector_stocks(sector)
-                
-                if not stocks:
-                    logger.warning(f"板块 {sector} 没有成分股")
-                    return sector, []
-                
-                # 一次性获取所有历史数据
-                historical_data = self.data_provider.get_daily_data(stocks, history_start_date, end_date)
-                
-                if historical_data.empty:
-                    logger.warning(f"无法获取板块 {sector} 的历史数据")
-                    return sector, []
-                
-                logger.info(f"成功加载板块 {sector} 的历史数据，行数: {len(historical_data)}")
-                
-                # 按日期分组历史数据
-                historical_data_by_date = {}
-                for date_str in normalized_dates:
-                    # 将日期转换为与历史数据中相同的格式进行匹配
-                    date_obj = pd.to_datetime(date_str, format='%Y%m%d')
-                    
-                    # 获取当前日期之前的所有数据(包括当日)
-                    mask = historical_data['date'] <= date_obj
-                    date_historical_data = historical_data[mask].copy()
-                    
-                    if not date_historical_data.empty:
-                        historical_data_by_date[date_str] = date_historical_data
-                        logger.debug(f"为日期 {date_str} 准备了 {len(date_historical_data)} 行历史数据")
-                    else:
-                        logger.warning(f"日期 {date_str} 没有找到历史数据")
-                
-                logger.info(f"完成历史数据预处理，共 {len(historical_data_by_date)} 个日期有有效数据")
+            # 获取板块股票列表
+            from to.sector_features.feature_generator import SectorFeatureGenerator
+            feature_generator = SectorFeatureGenerator(self.data_provider, self.sector_mapping, self.output_dir)
+            stocks = feature_generator._get_sector_stocks(sector)
             
-            except Exception as e:
-                logger.error(f"预加载历史数据时出错: {e}")
-                logger.error(traceback.format_exc())
-                historical_data_by_date = {}
-            
+            if not stocks:
+                logger.warning(f"板块 {sector} 没有成分股")
+                return sector, []
+                
+            # 对需要处理的日期按批次进行分组
+            date_batches = [dates_to_process[i:i+batch_size] for i in range(0, len(dates_to_process), batch_size)]
+            logger.info(f"将 {len(dates_to_process)} 个日期分为 {len(date_batches)} 个批次处理")
+                
             # 分批处理日期
             all_features = []
             last_day_features = None
             start_time = time.time()
             
-            for i in range(0, len(dates_to_process), batch_size):
-                batch_dates = dates_to_process[i:i+batch_size]
+            # 创建临时文件目录用于存储处理过程中的数据
+            import tempfile
+            import os
+            from pathlib import Path
+            
+            # 创建临时目录
+            temp_dir = tempfile.mkdtemp(prefix=f"sector_{sector}_")
+            logger.info(f"创建临时目录用于存储中间数据: {temp_dir}")
+            
+            for batch_idx, current_batch_dates in enumerate(date_batches):
+                logger.info(f"处理第 {batch_idx+1}/{len(date_batches)} 批次，包含 {len(current_batch_dates)} 个日期")
                 
-                # 过滤无效日期值
-                filtered_batch_dates = []
-                for date_item in batch_dates:
-                    if date_item == 'date_str':
-                        logger.warning(f"从批处理中移除特殊值'date_str'，板块: {sector}")
+                # 标准化当前批次日期格式
+                normalized_batch_dates = []
+                for d in current_batch_dates:
+                    if isinstance(d, pd.Timestamp):
+                        normalized_batch_dates.append(d.strftime('%Y%m%d'))
+                    else:
+                        normalized_batch_dates.append(str(d).replace('-', ''))
+                
+                # 找到当前批次最早的日期，用于计算历史开始日期
+                earliest_batch_date = min(normalized_batch_dates)
+                earliest_date_obj = pd.to_datetime(earliest_batch_date, format='%Y%m%d')
+                
+                # 设置历史数据的开始日期（前180天）
+                history_start_date = (earliest_date_obj - pd.Timedelta(days=180)).strftime('%Y%m%d')
+                
+                # 找到当前批次最晚的日期，作为历史数据的结束日期
+                latest_batch_date = max(normalized_batch_dates)
+                
+                logger.info(f"为当前批次加载历史数据，从 {history_start_date} 到 {latest_batch_date}")
+                
+                try:
+                    # 加载当前批次的历史数据
+                    historical_data = self.data_provider.get_daily_data(stocks, history_start_date, latest_batch_date)
+                    
+                    if historical_data.empty:
+                        logger.warning(f"批次 {batch_idx+1} 无法获取历史数据")
                         continue
-                    if not isinstance(date_item, (str, pd.Timestamp)):
-                        logger.warning(f"从批处理中移除非字符串/Timestamp类型: {date_item}, 类型: {type(date_item)}, 板块: {sector}")
-                        continue
-                    filtered_batch_dates.append(date_item)
-                
-                batch_results = []
-                
-                for date in filtered_batch_dates:
-                    # 标准化日期格式
-                    date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date).replace('-', '')
                     
-                    # 获取该日期的预加载数据
-                    preloaded_data = historical_data_by_date.get(date_str)
+                    logger.info(f"批次 {batch_idx+1} 成功加载历史数据，行数: {len(historical_data)}")
                     
-                    # 使用预加载数据处理日期
-                    success, df = self.process_date(date, sector, preloaded_data)
-                    if success and df is not None:
-                        batch_results.append(df)
-                        processed_dates.append(date)
+                    # 优化：降低数据精度以减少内存使用
+                    for col in historical_data.select_dtypes(include=['float64']).columns:
+                        historical_data[col] = historical_data[col].astype('float32')
+                    
+                    # 优化2：使用内存映射文件存储批次数据
+                    batch_file = os.path.join(temp_dir, f"batch_{batch_idx}.h5")
+                    historical_data.to_hdf(batch_file, 'data', mode='w', format='table', data_columns=['date'])
+                    del historical_data
+                    
+                    # 处理当前批次的每个日期
+                    batch_results = []
+                    
+                    # 重新加载数据，但使用where筛选以减少内存使用
+                    historical_data_store = pd.HDFStore(batch_file, mode='r')
+                    
+                    for date in current_batch_dates:
+                        # 标准化日期格式
+                        date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date).replace('-', '')
+                        date_obj = pd.to_datetime(date_str, format='%Y%m%d')
                         
-                        # 如果是最后一个交易日，保存它的特征用于生成CSV
-                        # 将date转换为相同类型，以确保比较有效
-                        date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date)
-                        last_day_str = last_trading_day.strftime('%Y%m%d') if isinstance(last_trading_day, pd.Timestamp) else str(last_trading_day)
+                        try:
+                            # 为当前日期按需查询历史数据
+                            date_condition = f"date <= '{date_obj}'"
+                            preloaded_data = pd.read_hdf(batch_file, 'data', where=date_condition)
+                            
+                            # 使用预加载数据处理日期
+                            success, df = self.process_date(date, sector, preloaded_data)
+                            if success and df is not None:
+                                batch_results.append(df)
+                                processed_dates.append(date)
+                                
+                                # 如果是最后一个交易日，保存它的特征用于生成CSV
+                                date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date)
+                                last_day_str = last_trading_day.strftime('%Y%m%d') if isinstance(last_trading_day, pd.Timestamp) else str(last_trading_day)
+                                
+                                if date_str == last_day_str:
+                                    logger.info(f"找到最后交易日 {date_str}，保存其特征")
+                                    last_day_features = df
+                        except Exception as e:
+                            logger.error(f"处理日期 {date_str} 时出错: {e}")
                         
-                        # 记录详细日志
-                        logger.debug(f"比较日期: '{date_str}'({type(date_str)}) 和最后交易日: '{last_day_str}'({type(last_day_str)})")
+                        # 清理每个日期的临时数据
+                        if 'preloaded_data' in locals():
+                            del preloaded_data
+                    
+                    # 关闭并删除HDF文件
+                    historical_data_store.close()
+                    
+                    # 保存批次结果
+                    if len(batch_results) > 0:
+                        # 合并批次特征
+                        batch_df = pd.concat(batch_results, ignore_index=True)
+                        all_features.append(batch_df)
                         
-                        if date_str == last_day_str:
-                            logger.info(f"找到最后交易日 {date_str}，保存其特征")
-                            last_day_features = df
+                        # 释放内存
+                        del batch_results
+                    
+                except Exception as e:
+                    logger.error(f"处理批次 {batch_idx+1} 时出错: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                 
-                # 保存批次结果
-                if len(batch_results) > 0:  # 使用len()检查是否为空
-                    # 合并批次特征
-                    batch_df = pd.concat(batch_results, ignore_index=True)
-                    all_features.append(batch_df)
-                    
-                    # 输出进度
-                    logger.debug(f"板块 {sector} 已处理 {len(processed_dates)}/{len(dates_to_process)} 个日期")
+                # 删除临时文件
+                try:
+                    os.remove(batch_file)
+                except:
+                    pass
+                
+                # 强制垃圾回收
+                import gc
+                gc.collect()
+                
+                # 输出进度
+                logger.debug(f"板块 {sector} 已处理 {len(processed_dates)}/{len(dates_to_process)} 个日期")
+            
+            # 清理临时目录
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+                logger.info(f"已清理临时目录: {temp_dir}")
+            except Exception as e:
+                logger.error(f"清理临时目录 {temp_dir} 时出错: {e}")
             
             # 合并所有特征
             if len(all_features) > 0:  # 使用len()检查是否为空
