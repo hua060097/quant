@@ -1219,7 +1219,7 @@ class EnsembleModel:
                     hidden_size=config['hidden_size'],
                     output_size=config['output_size']
                 )
-                model.models['lnn'].load_state_dict(torch.load(lnn_path))
+                model.models['lnn'].load_state_dict(torch.load(lnn_path, weights_only=False))
                 model.models['lnn'].eval()
             
             # 加载HMM模型

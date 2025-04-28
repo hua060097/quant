@@ -72,10 +72,12 @@ class LiquidCell(nn.Module):
         
         # 组合投影
         z = i_h + h_h
+        logger.debug(f"液体细胞内组合投影z: min={z.min().item():.6f}, max={z.max().item():.6f}, mean={z.mean().item():.6f}")
         
         # 使用可学习的激活函数
         a = torch.tanh(z)
         f = self.alpha * a + self.beta
+        logger.debug(f"液体细胞激活后f: min={f.min().item():.6f}, max={f.max().item():.6f}, mean={f.mean().item():.6f}")
         
         # 使用可学习的时间常数更新隐藏状态
         # Formula: h_next = (1 - dt/tau) * h_prev + (dt/tau) * f
@@ -121,6 +123,7 @@ class LiquidNetwork(nn.Module):
             h_next: 下一时刻的隐藏状态列表
         """
         batch_size = x.size(0)
+        logger.info(f"输入层数据统计: min={x.min().item():.6f}, max={x.max().item():.6f}, mean={x.mean().item():.6f}")
         
         # 初始化隐藏状态
         if h_prev is None:
@@ -133,11 +136,16 @@ class LiquidNetwork(nn.Module):
         
         for i, cell in enumerate(self.cells):
             h_i = cell(current_input, h_prev[i])
+            logger.info(f"液体细胞{i}输出统计: min={h_i.min().item():.6f}, max={h_i.max().item():.6f}, mean={h_i.mean().item():.6f}")
             h_next.append(h_i)
             current_input = h_i
         
+        # 输出层前记录最终隐藏层状态
+        logger.info(f"输出层输入统计: min={h_next[-1].min().item():.6f}, max={h_next[-1].max().item():.6f}, mean={h_next[-1].mean().item():.6f}")
+        
         # 输出层
         output = self.output_layer(h_next[-1])
+        logger.info(f"输出层输出统计: min={output.min().item():.6f}, max={output.max().item():.6f}, mean={output.mean().item():.6f}")
         
         return output, h_next
 
@@ -393,8 +401,12 @@ class LiquidNetModel:
         Returns:
             预测结果，numpy数组
         """
+        # 添加日志记录原始数据
+        logger.info(f"预测输入原始数据统计: 形状={X.shape}, min={np.min(X):.6f}, max={np.max(X):.6f}, mean={np.mean(X):.6f}, 非零值比例={np.count_nonzero(X)/X.size:.4f}")
+        
         # 标准化特征
         X_scaled = self.scaler.transform(X)
+        logger.info(f"标准化后特征统计: min={np.min(X_scaled):.6f}, max={np.max(X_scaled):.6f}, mean={np.mean(X_scaled):.6f}, std={np.std(X_scaled):.6f}")
         
         # 转换为张量
         X_tensor = torch.FloatTensor(X_scaled).to(self.device)
@@ -402,13 +414,21 @@ class LiquidNetModel:
         # 预测
         self.model.eval()
         with torch.no_grad():
-            outputs, _ = self.model(X_tensor)
+            outputs, hidden_states = self.model(X_tensor)
+            # 记录原始输出和隐藏状态统计信息
+            logger.info(f"模型原始输出统计: min={outputs.min().item():.6f}, max={outputs.max().item():.6f}, mean={outputs.mean().item():.6f}, 非零值比例={torch.count_nonzero(outputs)/outputs.numel():.4f}")
+            
+            for i, h in enumerate(hidden_states):
+                logger.info(f"隐藏层{i}统计: min={h.min().item():.6f}, max={h.max().item():.6f}, mean={h.mean().item():.6f}, 非零值比例={torch.count_nonzero(h)/h.numel():.4f}")
             
             if self.output_size == 1:  # 二分类或回归
                 predictions = torch.sigmoid(outputs).cpu().numpy().flatten()
             else:  # 多分类
                 _, predictions = torch.max(outputs.data, 1)
                 predictions = predictions.cpu().numpy()
+        
+        # 记录最终预测结果统计
+        logger.info(f"最终预测结果统计: min={np.min(predictions):.6f}, max={np.max(predictions):.6f}, mean={np.mean(predictions):.6f}, 非零值数量={np.count_nonzero(predictions)}/{len(predictions)}")
         
         return predictions
     
@@ -467,7 +487,7 @@ class LiquidNetModel:
         Args:
             filepath: 模型文件路径
         """
-        checkpoint = torch.load(filepath, map_location=self.device)
+        checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
         
         # 恢复模型架构
         input_size = checkpoint['input_size']
