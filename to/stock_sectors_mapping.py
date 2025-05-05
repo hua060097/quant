@@ -1,19 +1,102 @@
-import xtquant.xtdata as xtdata
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import os
 import pickle
-import sector_analysis as sa
 from functools import lru_cache
 import functools
+import os
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))  # 添加项目根目录
+
+try:
+    import xtquant.xtdata as xtdata
+except ImportError:
+    print("无法导入xtdata模块，请检查xtquant是否正确安装")
+    pass
 
 def get_tng_sectors():
     """获取所有TGN开头的概念板块"""
     # all_sectors = xtdata.get_sector_list()
     # tng_sectors = [sector for sector in all_sectors if sector.startswith('TGN')]
-    tng_sectors = sa.get_tng_sectors()
-    return tng_sectors
+    # tng_sectors = sa.get_tng_sectors()
+    # return tng_sectors
+    try:
+        import os
+        import json
+        import logging
+        import glob
+        from pathlib import Path
+        
+        # 可能的文件位置列表
+        possible_paths = []
+        
+        # 当前工作目录
+        possible_paths.append("tng_sectors_stats.json")
+        
+        # 当前文件所在目录
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        possible_paths.append(os.path.join(current_file_dir, "tng_sectors_stats.json"))
+        
+        # sector_analysis目录
+        sector_analysis_dir = "sector_analysis"
+        if os.path.exists(sector_analysis_dir):
+            # 检查该目录下的tng_sectors_stats开头的文件
+            json_pattern = os.path.join(sector_analysis_dir, "tng_sectors_stats*.json")
+            json_files = glob.glob(json_pattern)
+            if json_files:
+                json_files.sort(reverse=True)  # 按名称逆序排序，假设较新的文件名较大
+                possible_paths.extend(json_files)
+        
+        # 绝对路径检查 - 在项目根目录搜索
+        project_root = Path(current_file_dir).parent  # to目录的父目录
+        for pattern in ["tng_sectors_stats*.json", "**/tng_sectors_stats*.json"]:
+            paths = list(project_root.glob(pattern))
+            possible_paths.extend([str(p) for p in paths])
+        
+        # 尝试在sector_analysis目录下搜索 (相对于项目根目录)
+        sector_analysis_relpath = os.path.join(project_root, "sector_analysis")
+        if os.path.exists(sector_analysis_relpath):
+            json_pattern = os.path.join(sector_analysis_relpath, "tng_sectors_stats*.json")
+            json_files = glob.glob(json_pattern)
+            possible_paths.extend(json_files)
+        
+        # 打印所有可能路径用于调试
+        print(f"搜索TNG板块数据的可能路径: {possible_paths}")
+                
+        # 尝试打开文件
+        json_file = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                json_file = path
+                print(f"找到TNG板块数据文件: {json_file}")
+                break
+        
+        if json_file is None:
+            # 如果未找到文件，回退到原始方法
+            print(f"未找到任何TNG板块数据文件，使用xtdata.get_sector_list()获取")
+            import xtquant.xtdata as xtdata
+            all_sectors = xtdata.get_sector_list()
+            tng_sectors = [sector for sector in all_sectors if sector.startswith('TGN')]
+            return tng_sectors
+                
+        # 读取JSON文件
+        with open(json_file, 'r', encoding='utf-8') as f:
+            sector_stats = json.load(f)
+            
+        # 提取板块名称
+        sectors = [item['sector_name'] for item in sector_stats if 'sector_name' in item]
+        
+        print(f"从JSON文件 {json_file} 加载了 {len(sectors)} 个概念板块")
+        return sectors
+    except Exception as e:
+        # 出现异常时回退到原始方法
+        print(f"从JSON文件读取概念板块失败: {e}，使用xtdata.get_sector_list()获取")
+        import xtquant.xtdata as xtdata
+        all_sectors = xtdata.get_sector_list()
+        tng_sectors = [sector for sector in all_sectors if sector.startswith('TGN')]
+        return tng_sectors
+    
 
 def get_stock_info():
     """获取所有股票的基本信息"""

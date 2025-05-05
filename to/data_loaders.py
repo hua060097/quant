@@ -12,6 +12,11 @@ import pandas as pd
 from typing import List, Dict, Optional, Union, Any
 from pathlib import Path
 import json
+import sys
+
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))  # 添加项目根目录
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -61,12 +66,88 @@ def get_data_loader():
             _DATA_LOADER = ParquetDataStorage()
             logger.info("使用真实数据源: ParquetDataStorage")
         except ImportError as e:
-            # 无法加载真实数据源，抛出异常直接中断程序
-            logger.error(f"无法加载真实数据源: {e}")
-            raise ImportError(f"无法加载真实数据源，请确保安装了xtquant并配置了正确的环境: {e}")
+            try:
+                sys.path.append(str(get_project_root() / "to"))
+                from advanced_quant_data import ParquetDataStorage
+                _DATA_LOADER = ParquetDataStorage()
+                logger.info("使用真实数据源: ParquetDataStorage")
+            except ImportError as e:
+                # 无法加载真实数据源，抛出异常直接中断程序
+                logger.error(f"无法加载真实数据源: {e}")
+                raise ImportError(f"无法加载真实数据源，请确保安装了xtquant并配置了正确的环境:")
     
     return _DATA_LOADER
 
+def get_stock_list():
+    """获取股票代码列表"""
+    return get_data_loader().get_stock_list()
+
+def get_stock_list_in_sector(sector: str):
+    """获取板块成分股
+        
+        Args:
+            sector: 板块名称
+            
+        Returns:
+            股票列表
+    """
+    # 获取项目根目录路径
+    project_root = get_project_root()
+    
+    # 添加绝对路径到系统路径
+    to_path = os.path.join(project_root, "to")
+    if to_path not in sys.path:
+        sys.path.append(str(to_path))
+    
+    try:
+        # 直接使用绝对路径导入
+        from stock_sectors_mapping import get_sector_stocks
+        
+        # 使用导入的函数获取股票列表
+        stocks = get_sector_stocks(sector_name=sector)
+        return stocks
+    except Exception as e:
+        logger.error(f"获取板块 {sector} 成分股时出错: {e}")
+        return []
+
+def get_sector_list():
+    """获取板块列表"""
+     # 读取JSON文件
+    project_root = get_project_root()
+    json_file = os.path.join(project_root, "to", "sector_analysis", "tng_sectors_stats.json")
+    with open(json_file, 'r', encoding='utf-8') as f:
+        sector_stats = json.load(f)
+            
+    # 提取板块名称
+    sectors = [item['sector_name'] for item in sector_stats if 'sector_name' in item]
+        
+    print(f"从JSON文件 {json_file} 加载了 {len(sectors)} 个概念板块")
+    return sectors
+
+
+def get_trading_days(start_date: str, end_date: str) -> List[str]:
+    """获取交易日列表
+    
+    Args:
+        start_date: 开始日期，格式为YYYYMMDD
+        end_date: 结束日期，格式为YYYYMMDD
+    """
+    try:
+        calendar_df = get_data_loader().get_trading_calendar(start_date, end_date)
+        if calendar_df is not None and not calendar_df.empty:
+            if 'date' in calendar_df.columns:
+                dates = calendar_df['date'].dt.strftime('%Y%m%d').tolist()
+            else:
+                # 尝试使用第一列作为日期
+                dates = calendar_df.iloc[:, 0].dt.strftime('%Y%m%d').tolist()
+            return dates
+        else:
+            logger.warning("获取交易日历失败")
+            return []
+    except Exception as e:
+        logger.error(f"获取交易日历时出错: {e}")
+        return []
+        
 
 def _load_market_status(self, date):
     """
@@ -136,6 +217,7 @@ def get_daily_data(stock_list: List[str], start_date: str, end_date: str, fields
     
     try:
         if hasattr(loader, 'get_daily_data'):
+            print(f"stock_list: {stock_list}, start_date: {start_date}, end_date: {end_date}, fields: {fields}")
             data = loader.get_daily_data(stock_list, start_date, end_date, fields)
             # 标准化返回格式
             if isinstance(data, dict):
@@ -202,3 +284,10 @@ def _convert_dict_to_dataframe(data_dict: Dict[str, pd.DataFrame]) -> pd.DataFra
         all_dfs.append(df)
     
     return pd.concat(all_dfs, ignore_index=True) 
+
+
+def main():
+    print(get_stock_list_in_sector('TGN5G'))
+
+if __name__ == "__main__":
+    main()

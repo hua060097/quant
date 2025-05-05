@@ -34,6 +34,10 @@ import traceback
 
 from tqdm import tqdm
 
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))  # 添加项目根目录
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -362,6 +366,20 @@ class ParquetDataStorage:
         except Exception as e:
             logger.error(f"获取股票列表失败: {e}")
             return []
+    
+    def get_stock_list(self):
+        """
+        获取股票列表，从元数据中读取
+        
+        Returns:
+            list: 股票代码列表，如果元数据中没有则尝试下载
+        """
+        if not self.metadata['stock_list']:
+            logger.info("元数据中没有股票列表，尝试下载...")
+            return self.download_stock_list()
+        
+        logger.info(f"从元数据获取股票列表，共 {len(self.metadata['stock_list'])} 只股票")
+        return self.metadata['stock_list']
     
     def download_trading_calendar(self, start_date=None, end_date=None):
         """下载交易日历数据

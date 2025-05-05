@@ -243,9 +243,10 @@ class StockFeatureGenerator:
         
         # 获取股票列表
         try:
-            df = storage.get_stock_list()
-            if df is not None and not df.empty and 'code' in df.columns:
-                return df['code'].tolist()
+            stock_list = storage.get_stock_list()
+            if stock_list is not None:
+                print(f"获取股票列表成功，共 {len(stock_list)} 只股票")
+                return stock_list
             else:
                 logger.warning("获取股票列表失败")
                 return []

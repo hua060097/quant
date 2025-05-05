@@ -18,6 +18,7 @@ try:
         ensure_dir,
         normalize_path
     )
+    from .data_loaders import get_daily_data, get_stock_list_in_sector, get_sector_list
 except ImportError:
     # 如果path_utils.py不存在，则提供兼容性处理
     import os

@@ -13,6 +13,7 @@ import numpy as np
 import logging
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,13 @@ class LiquidNetwork(nn.Module):
         # 输出层
         self.output_layer = nn.Linear(hidden_size, output_size)
         
+        # 使用较小的初始权重初始化输出层，避免输出过大
+        nn.init.xavier_normal_(self.output_layer.weight, gain=0.01)
+        nn.init.zeros_(self.output_layer.bias)
+        
+        logger.info(f"LiquidNetwork初始化: input_size={input_size}, hidden_size={hidden_size}, output_size={output_size}, num_layers={num_layers}")
+        logger.info(f"输出层权重范围: min={self.output_layer.weight.min().item():.6f}, max={self.output_layer.weight.max().item():.6f}")
+        
     def forward(self, x, h_prev=None):
         """
         前向传播
@@ -143,8 +151,18 @@ class LiquidNetwork(nn.Module):
         # 输出层前记录最终隐藏层状态
         logger.info(f"输出层输入统计: min={h_next[-1].min().item():.6f}, max={h_next[-1].max().item():.6f}, mean={h_next[-1].mean().item():.6f}")
         
+        # 对输出层的输入进行归一化处理，防止激活值过大导致极端输出
+        # 应用简单的min-max归一化，保持原始分布形状但缩小范围
+        normalized_input = h_next[-1]
+        if normalized_input.numel() > 0 and (normalized_input.max() - normalized_input.min()) > 1e-6:
+            normalized_range = 4.0  # 将值控制在[-2, 2]范围内
+            input_min = normalized_input.min(dim=1, keepdim=True)[0]
+            input_max = normalized_input.max(dim=1, keepdim=True)[0]
+            normalized_input = (normalized_input - input_min) / (input_max - input_min) * normalized_range - normalized_range/2
+            logger.info(f"归一化后输出层输入统计: min={normalized_input.min().item():.6f}, max={normalized_input.max().item():.6f}, mean={normalized_input.mean().item():.6f}")
+        
         # 输出层
-        output = self.output_layer(h_next[-1])
+        output = self.output_layer(normalized_input)
         logger.info(f"输出层输出统计: min={output.min().item():.6f}, max={output.max().item():.6f}, mean={output.mean().item():.6f}")
         
         return output, h_next
@@ -421,10 +439,29 @@ class LiquidNetModel:
             for i, h in enumerate(hidden_states):
                 logger.info(f"隐藏层{i}统计: min={h.min().item():.6f}, max={h.max().item():.6f}, mean={h.mean().item():.6f}, 非零值比例={torch.count_nonzero(h)/h.numel():.4f}")
             
+            # 1. 对输出进行裁剪，避免极端值
+            clipped_outputs = torch.clamp(outputs, min=-10.0, max=10.0)
+            logger.info(f"裁剪后输出统计: min={clipped_outputs.min().item():.6f}, max={clipped_outputs.max().item():.6f}, mean={clipped_outputs.mean().item():.6f}")
+            
             if self.output_size == 1:  # 二分类或回归
-                predictions = torch.sigmoid(outputs).cpu().numpy().flatten()
+                # 2. 实现分段Sigmoid函数，提高数值稳定性
+                def stable_sigmoid(x):
+                    # 拆分正负值分别处理，避免指数溢出
+                    pos_mask = x >= 0
+                    neg_mask = x < 0
+                    
+                    result = torch.zeros_like(x)
+                    # 正值: 1/(1+exp(-x))
+                    result[pos_mask] = 1.0 / (1.0 + torch.exp(-x[pos_mask]))
+                    # 负值: exp(x)/(1+exp(x))
+                    result[neg_mask] = torch.exp(x[neg_mask]) / (1.0 + torch.exp(x[neg_mask]))
+                    return result
+                
+                # 使用稳定版Sigmoid
+                predictions = stable_sigmoid(clipped_outputs).cpu().numpy().flatten()
+                logger.info(f"使用稳定Sigmoid后的预测统计: min={np.min(predictions):.6f}, max={np.max(predictions):.6f}, mean={np.mean(predictions):.6f}")
             else:  # 多分类
-                _, predictions = torch.max(outputs.data, 1)
+                _, predictions = torch.max(clipped_outputs.data, 1)
                 predictions = predictions.cpu().numpy()
         
         # 记录最终预测结果统计
@@ -482,36 +519,110 @@ class LiquidNetModel:
     
     def load(self, filepath):
         """
-        加载模型
-        
-        Args:
-            filepath: 模型文件路径
+        Load model state from file.
         """
-        checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
-        
-        # 恢复模型架构
-        input_size = checkpoint['input_size']
-        hidden_size = checkpoint['hidden_size']
-        output_size = checkpoint['output_size']
-        num_layers = checkpoint['num_layers']
-        
-        # 重新创建模型
-        self.model = LiquidNetwork(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            output_size=output_size,
-            num_layers=num_layers
-        ).to(self.device)
-        
-        # 恢复权重
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scaler = checkpoint['scaler']
-        
-        # 更新属性
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-        self.num_layers = num_layers
-        
-        logger.info(f"模型已从 {filepath} 加载") 
+        try:
+            logger.info(f"从 {filepath} 加载模型")
+            checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
+            
+            # 记录加载前的输出层权重统计
+            if hasattr(self.model, 'output_layer'):
+                logger.info(f"加载前输出层权重统计: min={self.model.output_layer.weight.min().item():.6f}, "
+                           f"max={self.model.output_layer.weight.max().item():.6f}, "
+                           f"mean={self.model.output_layer.weight.mean().item():.6f}")
+            
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                # 暂存原始输出层权重（如果存在）
+                if hasattr(self.model, 'output_layer') and 'model_state_dict' in checkpoint:
+                    original_output_weights = None
+                    output_layer_key = 'output_layer.weight'
+                    if output_layer_key in checkpoint['model_state_dict']:
+                        original_output_weights = checkpoint['model_state_dict'][output_layer_key].clone()
+                        original_output_bias = checkpoint['model_state_dict']['output_layer.bias'].clone()
+                        logger.info(f"保存原始模型输出层权重: shape={original_output_weights.shape}, "
+                                  f"min={original_output_weights.min().item():.6f}, "
+                                  f"max={original_output_weights.max().item():.6f}, "
+                                  f"mean={original_output_weights.mean().item():.6f}, "
+                                  f"std={original_output_weights.std().item():.6f}")
+                
+                # 加载模型状态
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                
+                if 'scaler_state' in checkpoint and self.scaler:
+                    self.scaler.__dict__.update(checkpoint['scaler_state'])
+                
+                if 'optimizer_state_dict' in checkpoint and self.optimizer:
+                    self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                
+                if 'scheduler_state_dict' in checkpoint and self.scheduler:
+                    self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                    
+                if 'scaler' in checkpoint and self.fp16_scaler:
+                    self.fp16_scaler.load_state_dict(checkpoint['scaler'])
+                
+                # 特殊处理输出层权重
+                if hasattr(self.model, 'output_layer') and original_output_weights is not None:
+                    # 保持原始权重的分布特性，但缩小幅度
+                    with torch.no_grad():
+                        # 计算原始权重的均值和标准差
+                        orig_mean = original_output_weights.mean().item()
+                        orig_std = original_output_weights.std().item()
+                        
+                        # 计算权重间的相对差异
+                        if orig_std > 0:
+                            # 使用原始权重的分布，但将标准差缩小到0.01左右
+                            target_std = 0.01
+                            scale_factor = target_std / orig_std
+                            
+                            # 计算归一化后的权重
+                            normalized_weights = (original_output_weights - orig_mean) * scale_factor
+                            
+                            # 为避免所有权重接近于0，增加一些随机扰动
+                            noise = torch.randn_like(normalized_weights) * target_std * 0.1
+                            final_weights = normalized_weights + noise
+                            
+                            # 更新输出层权重
+                            self.model.output_layer.weight.copy_(final_weights)
+                            
+                            # 偏置也设置为小值但保持原有分布
+                            bias_scale = 0.01 / (original_output_bias.std().item() + 1e-8)
+                            final_bias = original_output_bias * bias_scale
+                            self.model.output_layer.bias.copy_(final_bias)
+                            
+                            logger.info(f"保持分布的输出层权重设置完成: min={self.model.output_layer.weight.min().item():.6f}, "
+                                      f"max={self.model.output_layer.weight.max().item():.6f}, "
+                                      f"mean={self.model.output_layer.weight.mean().item():.6f}, "
+                                      f"std={self.model.output_layer.weight.std().item():.6f}")
+                        else:
+                            # 如果原始权重标准差接近0，则使用随机初始化
+                            logger.warning("原始权重标准差接近0，使用随机初始化输出层")
+                            nn.init.normal_(self.model.output_layer.weight, mean=0.0, std=0.01)
+                            nn.init.zeros_(self.model.output_layer.bias)
+            else:
+                self.model.load_state_dict(checkpoint)
+                
+                # 如果是直接加载的状态字典，也应处理输出层
+                if hasattr(self.model, 'output_layer'):
+                    # 记录加载后的权重统计
+                    original_std = self.model.output_layer.weight.std().item()
+                    
+                    if original_std > 1.0:  # 如果标准差过大
+                        # 缩小权重但保持分布
+                        with torch.no_grad():
+                            target_std = 0.01
+                            scale_factor = target_std / original_std
+                            normalized_weights = self.model.output_layer.weight * scale_factor
+                            self.model.output_layer.weight.copy_(normalized_weights)
+                            
+                            # 缩小偏置
+                            bias_scale = target_std / (self.model.output_layer.bias.std().item() + 1e-8)
+                            self.model.output_layer.bias.mul_(bias_scale)
+                            
+                            logger.info(f"直接加载后调整输出层权重: std从{original_std:.6f}调整到{self.model.output_layer.weight.std().item():.6f}")
+            
+            logger.info(f"模型加载完成")
+            return True
+        except Exception as e:
+            logger.error(f"加载模型时出错: {str(e)}")
+            traceback.print_exc()
+            return False 
