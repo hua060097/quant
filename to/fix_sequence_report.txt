@@ -1,0 +1,30 @@
+# 序列数据结构问题修复报告
+
+## 问题描述
+在训练模型过程中出现错误：
+"序列数据结构不包含'features'和'labels'，无法生成LNN特征"
+
+## 问题分析
+1. `_create_sequence_features`函数返回的是一个字典，键为板块代码，值为包含'features'、'labels'、'dates'等的嵌套字典
+2. 但在生成LNN特征时，代码假设'features'和'labels'直接位于sequence_train_data的顶层
+3. 这是数据结构的组织方式与代码期望访问方式之间的不匹配
+
+## 解决方案
+修改train_sector_models.py文件中的LNN特征生成部分（约4178行），添加对嵌套字典结构的处理逻辑：
+
+1. 检查sequence_train_data是否为嵌套字典结构
+2. 如果是，将所有板块的特征合并到一起进行预测
+3. 合并步骤:
+   - 收集所有板块的特征、标签和日期
+   - 使用np.vstack合并特征
+   - 使用np.concatenate合并标签和日期
+   - 记录每个样本对应的板块代码
+   - 用合并后的数据进行预测
+   - 创建结果DataFrame，包含日期、板块代码和预测值
+   - 与原始数据合并
+
+## 具体修改位置
+在`if 'features' in sequence_train_data and 'labels' in sequence_train_data:`条件后添加一个新的`elif`分支，处理嵌套字典结构的情况。
+
+## 修改方式
+建议备份原文件后，手动修改train_sector_models.py文件，或者使用专业的代码编辑工具进行替换。

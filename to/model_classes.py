@@ -633,7 +633,7 @@ class EnsembleModel:
                 self.models['lnn'].to(device)
                 
                 # 定义损失函数和优化器
-                criterion = nn.BCEWithLogitsLoss()
+                criterion = nn.MSELoss()
                 optimizer = optim.Adam(self.models['lnn'].parameters(), lr=0.001)
                 
                 # 如果有加速器，检查是否启用混合精度训练
@@ -656,11 +656,6 @@ class EnsembleModel:
                             # 将数据移动到设备
                             inputs, targets = inputs.to(device), targets.to(device)
                             
-                            # 将targets转换为one-hot编码
-                            targets_one_hot = torch.zeros(targets.size(0), 2, device=device)
-                            targets_one_hot[:, 0] = 1 - targets
-                            targets_one_hot[:, 1] = targets
-                            
                             # 清零梯度
                             optimizer.zero_grad()
                             
@@ -669,7 +664,7 @@ class EnsembleModel:
                                 # 使用自动混合精度
                                 with torch.cuda.amp.autocast():
                                     outputs, _ = self.models['lnn'](inputs)
-                                    loss = criterion(outputs, targets_one_hot)
+                                    loss = criterion(outputs, targets)
                                 
                                 # 反向传播和优化
                                 scaler.scale(loss).backward()
@@ -678,7 +673,7 @@ class EnsembleModel:
                             else:
                                 # 标准训练
                                 outputs, _ = self.models['lnn'](inputs)
-                                loss = criterion(outputs, targets_one_hot)
+                                loss = criterion(outputs, targets)
                                 loss.backward()
                                 optimizer.step()
                             
@@ -687,30 +682,27 @@ class EnsembleModel:
                         
                     # 每个epoch结束计算验证集上的损失
                     val_loss = 0.0
-                    val_correct = 0
                     self.models['lnn'].eval()
                     
                     with torch.no_grad():
                         for inputs, targets in val_loader:
                             inputs, targets = inputs.to(device), targets.to(device)
-                            
-                            # 将targets转换为one-hot编码
-                            targets_one_hot = torch.zeros(targets.size(0), 2, device=device)
-                            targets_one_hot[:, 0] = 1 - targets
-                            targets_one_hot[:, 1] = targets
-                            
                             outputs, _ = self.models['lnn'](inputs)
-                            loss = criterion(outputs, targets_one_hot)
+                            loss = criterion(outputs, targets)
                             val_loss += loss.item()
-                            
-                            # 计算准确率
-                            _, predicted = torch.max(outputs, 1)
-                            val_correct += (predicted == targets).sum().item()
                     
                     val_loss /= len(val_loader)
-                    val_accuracy = val_correct / len(val_dataset)
                     
-                    logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader):.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
+                    # 计算平均绝对误差
+                    mae = 0.0
+                    with torch.no_grad():
+                        for inputs, targets in val_loader:
+                            inputs, targets = inputs.to(device), targets.to(device)
+                            outputs, _ = self.models['lnn'](inputs)
+                            mae += torch.abs(outputs - targets).mean().item()
+                    mae /= len(val_loader)
+                    
+                    logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader):.6f}, Val Loss: {val_loss:.6f}, Val MAE: {mae:.6f}")
                     
                     # 恢复训练模式
                     self.models['lnn'].train()
@@ -755,10 +747,11 @@ class EnsembleModel:
             X_val_np = X_val.values if hasattr(X_val, 'values') else X_val
             y_val_np = y_val.values if hasattr(y_val, 'values') else y_val
             
+            # 对于回归任务，将目标转换为FloatTensor而不是LongTensor
             X_train_tensor = torch.FloatTensor(X_train_np)
-            y_train_tensor = torch.LongTensor(y_train_np)
+            y_train_tensor = torch.FloatTensor(y_train_np).view(-1, 1)  # 确保形状为 [batch_size, 1]
             X_val_tensor = torch.FloatTensor(X_val_np)
-            y_val_tensor = torch.LongTensor(y_val_np)
+            y_val_tensor = torch.FloatTensor(y_val_np).view(-1, 1)  # 确保形状为 [batch_size, 1]
             
             # 检查是否可以使用CUDA
             device = 'cpu'
@@ -793,10 +786,11 @@ class EnsembleModel:
                     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
             
             # 创建模型
+            # 注意：对于回归任务，output_size=1，而不是分类任务的2
             self.models['lnn'] = LiquidNeuralNetwork(
                 input_size=self.input_size,
                 hidden_size=self.hidden_size,
-                output_size=self.output_size
+                output_size=1  # 回归任务只输出一个值
             )
             
             # 将模型移动到适当的设备
@@ -811,8 +805,8 @@ class EnsembleModel:
                 except Exception as e:
                     logger.warning(f"编译LNN模型失败: {e}")
             
-            # 定义损失函数和优化器
-            criterion = nn.BCEWithLogitsLoss()
+            # 定义损失函数和优化器 - 对于回归任务使用MSELoss
+            criterion = nn.MSELoss()
             optimizer = optim.Adam(self.models['lnn'].parameters(), lr=0.001)
             
             # 如果有加速器，检查是否启用混合精度训练
@@ -835,11 +829,6 @@ class EnsembleModel:
                         # 将数据移动到设备
                         inputs, targets = inputs.to(device), targets.to(device)
                         
-                        # 将targets转换为one-hot编码
-                        targets_one_hot = torch.zeros(targets.size(0), 2, device=device)
-                        targets_one_hot[:, 0] = 1 - targets
-                        targets_one_hot[:, 1] = targets
-                        
                         # 清零梯度
                         optimizer.zero_grad()
                         
@@ -848,7 +837,7 @@ class EnsembleModel:
                             # 使用自动混合精度
                             with torch.cuda.amp.autocast():
                                 outputs, _ = self.models['lnn'](inputs)
-                                loss = criterion(outputs, targets_one_hot)
+                                loss = criterion(outputs, targets)
                             
                             # 反向传播和优化
                             scaler.scale(loss).backward()
@@ -857,7 +846,7 @@ class EnsembleModel:
                         else:
                             # 标准训练
                             outputs, _ = self.models['lnn'](inputs)
-                            loss = criterion(outputs, targets_one_hot)
+                            loss = criterion(outputs, targets)
                             loss.backward()
                             optimizer.step()
                         
@@ -866,30 +855,27 @@ class EnsembleModel:
                     
                 # 每个epoch结束计算验证集上的损失
                 val_loss = 0.0
-                val_correct = 0
                 self.models['lnn'].eval()
                 
                 with torch.no_grad():
                     for inputs, targets in val_loader:
                         inputs, targets = inputs.to(device), targets.to(device)
-                        
-                        # 将targets转换为one-hot编码
-                        targets_one_hot = torch.zeros(targets.size(0), 2, device=device)
-                        targets_one_hot[:, 0] = 1 - targets
-                        targets_one_hot[:, 1] = targets
-                        
                         outputs, _ = self.models['lnn'](inputs)
-                        loss = criterion(outputs, targets_one_hot)
+                        loss = criterion(outputs, targets)
                         val_loss += loss.item()
-                        
-                        # 计算准确率
-                        _, predicted = torch.max(outputs, 1)
-                        val_correct += (predicted == targets).sum().item()
                 
                 val_loss /= len(val_loader)
-                val_accuracy = val_correct / len(val_dataset)
                 
-                logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader):.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
+                # 计算平均绝对误差
+                mae = 0.0
+                with torch.no_grad():
+                    for inputs, targets in val_loader:
+                        inputs, targets = inputs.to(device), targets.to(device)
+                        outputs, _ = self.models['lnn'](inputs)
+                        mae += torch.abs(outputs - targets).mean().item()
+                mae /= len(val_loader)
+                
+                logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {running_loss/len(train_loader):.6f}, Val Loss: {val_loss:.6f}, Val MAE: {mae:.6f}")
                 
                 # 恢复训练模式
                 self.models['lnn'].train()
@@ -949,14 +935,14 @@ class EnsembleModel:
     
     def predict(self, X, market_features=None):
         """
-        预测样本的类别概率
+        预测样本的回归值
         
         Args:
             X: 特征矩阵，可以是DataFrame或numpy数组
             market_features: 用于预测市场状态的特征(如果有)
             
         Returns:
-            正类的概率(浮点数)
+            预测的回归值（未来收益率）
         """
         try:
             # 转换输入数据为正确格式
@@ -1010,14 +996,25 @@ class EnsembleModel:
             
             # 组合预测结果
             if not predictions:
-                logger.warning("所有模型预测失败，返回默认值0.5")
-                return np.array([0.5] * (X.shape[0] if hasattr(X, 'shape') else len(X)))
+                logger.warning("所有模型预测失败，返回默认值0.0")
+                return np.array([0.0] * (X.shape[0] if hasattr(X, 'shape') else len(X)))
             
             # 计算加权平均
             result = np.zeros(X.shape[0] if hasattr(X, 'shape') else len(X))
+            total_weight = 0.0
             for model_name, pred in predictions.items():
                 if pred is not None and len(pred) > 0:
-                    result += self.weights.get(model_name, 0.25) * pred
+                    weight = self.weights.get(model_name, 0.25)
+                    result += weight * pred
+                    total_weight += weight
+            
+            # 如果总权重为0，返回默认值
+            if total_weight == 0:
+                logger.warning("总权重为0，返回默认值0.0")
+                return np.array([0.0] * (X.shape[0] if hasattr(X, 'shape') else len(X)))
+            
+            # 标准化结果
+            result /= total_weight
             
             # 返回最终预测结果（确保是numpy数组，不是字典）
             return result
@@ -1026,7 +1023,7 @@ class EnsembleModel:
             logger.error(f"预测过程发生错误: {e}")
             logger.exception("预测错误详情:")
             # 返回默认预测值
-            return np.array([0.5] * (X.shape[0] if hasattr(X, 'shape') else len(X)))
+            return np.array([0.0] * (X.shape[0] if hasattr(X, 'shape') else len(X)))
     
     def _try_all_models_predict(self, X, models, predictions):
         """尝试使用所有模型进行预测
@@ -1036,36 +1033,34 @@ class EnsembleModel:
             models: 模型字典
             predictions: 存储预测结果的字典
         """
-        # XGBoost预测
+        # XGBoost预测（回归模式）
         if 'xgboost' in models and models['xgboost'] is not None:
             try:
-                xgb_pred = models['xgboost'].predict_proba(X)[:, 1]
+                # 对于回归任务，直接使用predict而非predict_proba
+                xgb_pred = models['xgboost'].predict(X)
                 predictions['xgboost'] = xgb_pred
             except Exception as e:
                 logger.warning(f"XGBoost模型预测失败: {e}")
                 
-        # LightGBM预测
+        # LightGBM预测（回归模式）
         if 'lightgbm' in models and models['lightgbm'] is not None:
             try:
-                lgb_pred = models['lightgbm'].predict_proba(X)[:, 1]
+                # 对于回归任务，直接使用predict而非predict_proba
+                lgb_pred = models['lightgbm'].predict(X)
                 predictions['lightgbm'] = lgb_pred
             except Exception as e:
                 logger.warning(f"LightGBM模型预测失败: {e}")
                 
-        # CatBoost预测
+        # CatBoost预测（回归模式）
         if 'catboost' in models and models['catboost'] is not None:
             try:
-                cat_pred = models['catboost'].predict_proba(X)
-                # 处理可能只有一列的情况
-                if cat_pred.shape[1] > 1:
-                    cat_pred = cat_pred[:, 1]
-                else:
-                    cat_pred = cat_pred.flatten()
+                # 对于回归任务，直接使用predict而非predict_proba
+                cat_pred = models['catboost'].predict(X)
                 predictions['catboost'] = cat_pred
             except Exception as e:
                 logger.warning(f"CatBoost模型预测失败: {e}")
                 
-        # LNN预测
+        # LNN预测（回归模式）
         if 'lnn' in models and models['lnn'] is not None:
             try:
                 device = getattr(self, 'device', torch.device('cpu'))
@@ -1073,35 +1068,43 @@ class EnsembleModel:
                 with torch.no_grad():
                     models['lnn'].eval()
                     outputs, _ = models['lnn'](X_tensor)
-                    if len(outputs.shape) > 1 and outputs.shape[1] > 1:
-                        lnn_pred = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
-                    else:
-                        lnn_pred = torch.sigmoid(outputs).cpu().numpy().flatten()
+                    # 回归任务直接使用输出值，不需要softmax或sigmoid
+                    lnn_pred = outputs.cpu().numpy().flatten()
                 predictions['lnn'] = lnn_pred
             except Exception as e:
                 logger.warning(f"LNN模型预测失败: {e}")
     
     def predict_proba(self, X, market_features=None):
         """
-        返回预测的概率
-
+        为保持兼容性提供的方法，但对于回归任务不适用
+        
         Args:
             X: 特征矩阵
             market_features: 用于预测市场状态的特征(如果有)
             
         Returns:
-            预测概率，形状为 [样本数, 类别数]
+            预测值，包装成类似分类概率的格式 [样本数, 2]
+            其中第二列为预测值，第一列为1-预测值（仅为保持API兼容）
         """
         try:
             # 获取预测结果（一维数组）
             pred_scores = self.predict(X, market_features)
             
-            # 转换成二维概率数组
+            # 为保持API兼容性，将回归值转换成二维概率数组的格式
+            # 但此转换对回归任务没有实际意义
+            logger.warning("在回归模型上调用predict_proba，结果仅为保持API兼容")
+            
             if isinstance(pred_scores, np.ndarray):
                 n_samples = len(pred_scores)
                 proba = np.zeros((n_samples, 2))
-                proba[:, 1] = pred_scores  # 第二列表示正类概率
-                proba[:, 0] = 1 - pred_scores  # 第一列表示负类概率
+                
+                # 归一化预测值到[0,1]区间，仅用于兼容性
+                # 这只是一个近似转换，不应该用于实际决策
+                normalized_scores = np.clip(pred_scores, -1, 1)
+                normalized_scores = (normalized_scores + 1) / 2
+                
+                proba[:, 1] = normalized_scores  # 第二列为归一化后的预测值
+                proba[:, 0] = 1 - normalized_scores  # 第一列为补值
                 return proba
             else:
                 raise ValueError(f"预测返回值类型错误: {type(pred_scores)}")
@@ -1109,14 +1112,14 @@ class EnsembleModel:
         except Exception as e:
             logger.error(f"predict_proba方法出错: {e}")
             logger.error(traceback.format_exc())
-            # 如果出错，返回默认概率（所有样本都预测为第一类）
+            # 如果出错，返回默认值（所有样本都预测为0）
             if isinstance(X, pd.DataFrame):
                 n_samples = X.shape[0]
             else:
                 n_samples = len(X)
-            # 创建默认概率数组 [n_samples, n_classes]
-            default_proba = np.zeros((n_samples, self.output_size))
-            default_proba[:, 0] = 1.0  # 所有样本默认预测为第一类
+            # 创建默认值数组
+            default_proba = np.zeros((n_samples, 2))
+            default_proba[:, 0] = 1.0  # 所有样本默认预测为0
             return default_proba
     
     def save(self, model_dir):

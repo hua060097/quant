@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from to.logger_config import configure_logger
 
 # 将原来的logger配置替换为新的配置
-logger = configure_logger(__name__)
+logger = configure_logger(__name__, 'generate_sector_features.log')
 
 # 导入自定义优化模块
 try:

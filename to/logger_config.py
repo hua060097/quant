@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-def configure_logger(name):
+def configure_logger(name, log_file_name):
     """配置logger，统一输出到to/generate_sector_features.log
     
     Args:
@@ -16,7 +16,7 @@ def configure_logger(name):
     log_dir.mkdir(parents=True, exist_ok=True)
     
     # 日志文件路径
-    log_file = log_dir / 'generate_sector_features.log'
+    log_file = log_dir / log_file_name
     
     # 获取logger实例
     logger = logging.getLogger(name)
@@ -49,5 +49,7 @@ def configure_logger(name):
     # 添加处理器
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    
+    logger.propagate = False 
     
     return logger 
