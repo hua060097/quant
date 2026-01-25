@@ -343,8 +343,8 @@ class MarketAnalyzer:
                 profit_loss_ratio_14 = indicators['profit_loss_ratio_14'][i]
                 profit_loss_ratio_30 = indicators['profit_loss_ratio_30'][i]
 
-                print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
-                print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
+                # print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
+                # print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
                
                 # 检查关键值是否为 NaN (可能影响评分)
                 nan_indicators = []
@@ -633,6 +633,7 @@ class MarketAnalyzer:
 
         # 将得分限制在合理范围，例如 -10 到 10
         return max(-10.0, min(10.0, trend_score))
+
 
     def _calculate_macd(self, data, fast=12, slow=26, signal=9):
         """

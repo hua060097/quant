@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Union, Any
 from pathlib import Path
 import json
 import sys
+from xtquant import xtdata
 
 import sys
 from pathlib import Path
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 # 全局数据加载器实例
 _DATA_LOADER = None
+
+# 股票名称缓存
+_STOCK_NAMES_CACHE = None
 
 # 获取项目根目录
 def get_project_root():
@@ -80,7 +84,11 @@ def get_data_loader():
 
 def get_stock_list():
     """获取股票代码列表"""
-    return get_data_loader().get_stock_list()
+    # bj_stock_list = get_bj_stock_list()
+    # 获取沪深A股股票列表
+    all_stocks = xtdata.get_stock_list_in_sector('沪深A股')
+    # all_stocks = all_stocks + bj_stock_list
+    return all_stocks
 
 def get_stock_list_in_sector(sector: str):
     """获取板块成分股
@@ -110,6 +118,28 @@ def get_stock_list_in_sector(sector: str):
         logger.error(f"获取板块 {sector} 成分股时出错: {e}")
         return []
 
+def get_stock_sectors(stock_code: str):
+    """获取股票所属的板块"""
+      # 获取项目根目录路径
+    project_root = get_project_root()
+    
+    # 添加绝对路径到系统路径
+    to_path = os.path.join(project_root, "to")
+    if to_path not in sys.path:
+        sys.path.append(str(to_path))
+    
+    try:
+        # 直接使用绝对路径导入
+        from stock_sectors_mapping import get_stock_sectors
+        
+        # 使用导入的函数获取股票列表
+        stocks = get_stock_sectors(stock_code=stock_code)
+        return stocks
+    except Exception as e:
+        logger.error(f"获取股票 {stock_code} 所属板块时出错: {e}")
+        return []
+
+
 def get_sector_list():
     """获取板块列表"""
      # 读取JSON文件
@@ -117,12 +147,30 @@ def get_sector_list():
     json_file = os.path.join(project_root, "to", "sector_analysis", "tng_sectors_stats.json")
     with open(json_file, 'r', encoding='utf-8') as f:
         sector_stats = json.load(f)
-            
+
     # 提取板块名称
     sectors = [item['sector_name'] for item in sector_stats if 'sector_name' in item]
-        
+
     print(f"从JSON文件 {json_file} 加载了 {len(sectors)} 个概念板块")
     return sectors
+
+
+def get_sector_list_with_stats():
+    """获取板块列表及其统计信息"""
+    # 读取JSON文件
+    project_root = get_project_root()
+    json_file = os.path.join(project_root, "to", "sector_analysis", "tng_sectors_stats.json")
+    with open(json_file, 'r', encoding='utf-8') as f:
+        sector_stats = json.load(f)
+
+    # 创建板块名称到股票数量的映射
+    sector_stock_count = {}
+    for item in sector_stats:
+        if 'sector_name' in item and 'stock_count' in item:
+            sector_stock_count[item['sector_name']] = item['stock_count']
+
+    print(f"从JSON文件 {json_file} 加载了 {len(sector_stock_count)} 个概念板块及其股票数量信息")
+    return sector_stock_count
 
 
 def get_trading_days(start_date: str, end_date: str) -> List[str]:
@@ -194,7 +242,21 @@ def get_trading_days(start_date: str, end_date: str) -> List[str]:
     """
     loader = get_data_loader()
     if hasattr(loader, 'get_trading_calendar'):
-        return loader.get_trading_calendar(start_date, end_date)
+        calendar_df = loader.get_trading_calendar(start_date, end_date)
+        if calendar_df is not None and not calendar_df.empty:
+            if 'date_str' in calendar_df.columns:
+                return calendar_df['date_str'].tolist()
+            elif 'date' in calendar_df.columns:
+                # 如果date列是datetime类型，转换为字符串
+                if pd.api.types.is_datetime64_any_dtype(calendar_df['date']):
+                    return calendar_df['date'].dt.strftime('%Y%m%d').tolist()
+                else:
+                    return calendar_df['date'].astype(str).tolist()
+            else:
+                # 使用第一列
+                return calendar_df.iloc[:, 0].astype(str).tolist()
+        else:
+            return []
     elif hasattr(loader, 'get_trading_dates'):
         return loader.get_trading_dates(start_date, end_date)
     else:
@@ -260,6 +322,62 @@ def get_market_data(field_list: Optional[List[str]] = None, stock_list: Optional
     except Exception as e:
         logger.error(f"获取市场数据失败: {e}")
         raise
+
+
+def get_stock_name(stock_code: str) -> str:
+    """获取股票名称
+    
+    Args:
+        stock_code: 股票代码
+        
+    Returns:
+        股票名称，如果找不到则返回"未知"
+    """
+    global _STOCK_NAMES_CACHE
+    
+    # 如果缓存为空，加载股票名称数据
+    if _STOCK_NAMES_CACHE is None:
+        try:
+            stock_names_file = get_data_path("stock_names.json")
+            if os.path.exists(stock_names_file):
+                with open(stock_names_file, "r", encoding="utf-8") as f:
+                    _STOCK_NAMES_CACHE = json.load(f)
+                logger.info(f"成功加载股票名称数据，共 {len(_STOCK_NAMES_CACHE)} 条")
+            else:
+                logger.warning(f"股票名称文件不存在: {stock_names_file}")
+                _STOCK_NAMES_CACHE = {}
+        except Exception as e:
+            logger.error(f"加载股票名称数据时出错: {e}")
+            _STOCK_NAMES_CACHE = {}
+    
+    # 从缓存中获取股票名称
+    return _STOCK_NAMES_CACHE.get(stock_code, "未知")
+
+
+def get_stock_names_dict() -> Dict[str, str]:
+    """获取所有股票代码和名称的映射字典
+    
+    Returns:
+        股票代码和名称的映射字典
+    """
+    global _STOCK_NAMES_CACHE
+    
+    # 如果缓存为空，加载股票名称数据
+    if _STOCK_NAMES_CACHE is None:
+        try:
+            stock_names_file = get_data_path("stock_names.json")
+            if os.path.exists(stock_names_file):
+                with open(stock_names_file, "r", encoding="utf-8") as f:
+                    _STOCK_NAMES_CACHE = json.load(f)
+                logger.info(f"成功加载股票名称数据，共 {len(_STOCK_NAMES_CACHE)} 条")
+            else:
+                logger.warning(f"股票名称文件不存在: {stock_names_file}")
+                _STOCK_NAMES_CACHE = {}
+        except Exception as e:
+            logger.error(f"加载股票名称数据时出错: {e}")
+            _STOCK_NAMES_CACHE = {}
+    
+    return _STOCK_NAMES_CACHE
 
 
 def _convert_dict_to_dataframe(data_dict: Dict[str, pd.DataFrame]) -> pd.DataFrame:

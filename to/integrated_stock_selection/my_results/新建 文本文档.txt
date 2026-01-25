@@ -1,0 +1,162 @@
+def _calculate_atr_based_return(stock_row, backtest_data, selection_date, debug=False):
+    """
+    计算基于ATR止盈止损策略的实际收益率
+
+    与ATR三分类标签生成逻辑完全一致：
+    - T日选股，T+1日开盘买入
+    - 止盈位：入场价 + 2倍ATR14
+    - 止损位：入场价 - 1倍ATR14
+    - 最大持仓：5天
+    - 边界处理：同时触发时止损优先
+
+    Args:
+        stock_row: 选中的股票行数据
+        backtest_data: 完整的回测数据
+        selection_date: 选股日期
+        debug: 是否输出调试信息
+
+    Returns:
+        float: ATR策略的实际收益率
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        stock_code = stock_row['stock_code']
+
+        if debug:
+            logger.info(f"🔍 ATR收益计算调试 - 股票: {stock_code}, 日期: {selection_date}")
+
+        # 获取该股票的历史数据
+        stock_data = backtest_data[backtest_data['stock_code'] == stock_code].copy()
+        stock_data = stock_data.sort_values('date')
+
+        if debug:
+            logger.info(f"  股票历史数据: {len(stock_data)}条记录")
+
+        # 找到选股日期的位置
+        selection_idx = None
+        for idx, row in stock_data.iterrows():
+            if row['date'] == selection_date:
+                selection_idx = idx
+                break
+
+        if selection_idx is None:
+            if debug:
+                logger.warning(f"  ⚠️ 未找到选股日期 {selection_date}")
+            # 如果找不到选股日期，回退到原始收益
+            fallback_return = stock_row.get('future_return_2d', 0.0)
+            if pd.isna(fallback_return):
+                fallback_return = 0.0
+            return fallback_return
+
+        # 获取选股日的数据
+        selection_row = stock_data.loc[selection_idx]
+
+        # 🔧 增强数据完整性检查和调试
+        atr14_val = selection_row.get('atr14')
+        close_val = selection_row.get('close')
+        is_can_buy_val = selection_row.get('is_can_buy', 0)
+
+        if debug:
+            logger.info(f"  选股日数据: atr14={atr14_val}, close={close_val}, is_can_buy={is_can_buy_val}")
+
+        # 检查必要数据的完整性
+        if (pd.isna(atr14_val) or pd.isna(close_val) or is_can_buy_val != 1):
+            if debug:
+                logger.warning(f"  ⚠️ 数据不完整，回退到原始收益")
+            # 数据不完整，回退到原始收益
+            fallback_return = stock_row.get('future_return_2d', 0.0)
+            if pd.isna(fallback_return):
+                fallback_return = 0.0
+            return fallback_return
+
+        # T+1日买入价格（使用T日收盘价近似T+1开盘价）
+        entry_price = close_val
+        atr_value = atr14_val
+
+        # 计算止盈止损位
+        profit_target = entry_price + 2 * atr_value  # 止盈位：入场价 + 2倍ATR
+        stop_loss = entry_price - 1 * atr_value      # 止损位：入场价 - 1倍ATR
+
+        if debug:
+            logger.info(f"  入场价: {entry_price:.4f}, ATR: {atr_value:.4f}")
+            logger.info(f"  止盈位: {profit_target:.4f}, 止损位: {stop_loss:.4f}")
+
+        # 获取未来5天的数据
+        future_data = stock_data[stock_data['date'] > selection_date].head(5)
+
+        if len(future_data) == 0:
+            if debug:
+                logger.warning(f"  ⚠️ 没有未来数据")
+            # 没有未来数据，回退到原始收益
+            fallback_return = stock_row.get('future_return_2d', 0.0)
+            if pd.isna(fallback_return):
+                fallback_return = 0.0
+            return fallback_return
+
+        if debug:
+            logger.info(f"  未来数据: {len(future_data)}天")
+
+        # 检查未来5天内的止盈止损触发情况
+        for day_idx, (_, future_row) in enumerate(future_data.iterrows()):
+            future_high = future_row.get('high')
+            future_low = future_row.get('low')
+
+            if pd.isna(future_high) or pd.isna(future_low):
+                if debug:
+                    logger.warning(f"  ⚠️ 第{day_idx+1}天数据不完整: high={future_high}, low={future_low}")
+                continue
+
+            # 边界情况处理：同时触发止盈止损时，止损优先
+            hit_profit = future_high >= profit_target
+            hit_loss = future_low <= stop_loss
+
+            if debug:
+                logger.info(f"  第{day_idx+1}天: high={future_high:.4f}, low={future_low:.4f}, 止盈={hit_profit}, 止损={hit_loss}")
+
+            if hit_profit and hit_loss:
+                # 同时触发：止损优先（风险控制原则）
+                atr_return = (stop_loss - entry_price) / entry_price
+                if debug:
+                    logger.info(f"  ✅ 同时触发，止损优先: {atr_return:.4f}")
+                return atr_return
+            elif hit_profit:
+                # 只触发止盈
+                atr_return = (profit_target - entry_price) / entry_price
+                if debug:
+                    logger.info(f"  ✅ 触发止盈: {atr_return:.4f}")
+                return atr_return
+            elif hit_loss:
+                # 只触发止损
+                atr_return = (stop_loss - entry_price) / entry_price
+                if debug:
+                    logger.info(f"  ✅ 触发止损: {atr_return:.4f}")
+                return atr_return
+
+        # 5天内未触发止盈止损，使用T+2日收盘价计算收益（模拟强制平仓）
+        if len(future_data) >= 2:
+            t2_close = future_data.iloc[1].get('close')
+            if pd.notna(t2_close):
+                atr_return = (t2_close - entry_price) / entry_price
+                if debug:
+                    logger.info(f"  ✅ T+2强制平仓: {atr_return:.4f}")
+                return atr_return
+
+        # 回退到原始收益
+        if debug:
+            logger.warning(f"  ⚠️ 回退到原始收益")
+        fallback_return = stock_row.get('future_return_2d', 0.0)
+        if pd.isna(fallback_return):
+            fallback_return = 0.0
+        return fallback_return
+
+    except Exception as e:
+        if debug:
+            logger.error(f"  ❌ ATR收益计算异常: {e}")
+        # 发生异常时回退到原始收益
+        fallback_return = stock_row.get('future_return_2d', 0.0)
+        if pd.isna(fallback_return):
+            fallback_return = 0.0
+        return fallback_return
+

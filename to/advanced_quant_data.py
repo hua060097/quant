@@ -31,6 +31,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from xtquant import xtdata
 import traceback
+from typing import List
 
 from tqdm import tqdm
 
@@ -39,26 +40,44 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))  # 添加项目根目录
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('to/log/local_data.log', encoding='utf-8')
-    ]
-)
-logger = logging.getLogger('local_data')
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     datefmt='%Y-%m-%d %H:%M:%S',
+#     handlers=[
+#         logging.StreamHandler(),
+#         logging.FileHandler('log/local_data.log', encoding='utf-8')
+#     ]
+# )
+logger = logging.getLogger(__name__)
 
 # 忽略pandas的SettingWithCopyWarning
 warnings.simplefilter(action='ignore', category=pd.errors.SettingWithCopyWarning)
 
-# 定义数据目录
-DATA_ROOT = Path("to/local_data")
-DAILY_DIR = DATA_ROOT / "daily" 
+# 定义数据目录 - 使用绝对路径，避免因调用目录不同导致的路径问题
+_SCRIPT_DIR = Path(__file__).resolve().parent  # 获取脚本所在目录 (advanced_quant_data.py所在目录)
+# PROJECT_ROOT = _SCRIPT_DIR.parent  # 获取项目根目录 (to/目录)
+PROJECT_ROOT = _SCRIPT_DIR
+
+DATA_ROOT = PROJECT_ROOT / "local_data"  # ✅ 绝对路径，不依赖CWD
+DAILY_DIR = DATA_ROOT / "daily"
 MINUTE_DIR = DATA_ROOT / "minute"
 CALENDAR_DIR = DATA_ROOT / "calendar"
 METADATA_DIR = DATA_ROOT / "metadata"
+
+# 获取路径工具函数
+def get_project_root():
+    """获取项目根目录"""
+    current_file = Path(__file__).resolve()
+    return current_file.parent.parent
+
+def get_data_path(relative_path=None):
+    """获取数据目录路径"""
+    # 使用全局的DATA_ROOT，确保路径一致性
+    print(f"DATA_ROOT (绝对路径): {DATA_ROOT.absolute()}")
+    if relative_path:
+        return DATA_ROOT / relative_path
+    return DATA_ROOT
 
 # 确保目录存在
 for dir_path in [DAILY_DIR, MINUTE_DIR, CALENDAR_DIR, METADATA_DIR]:
@@ -197,7 +216,7 @@ def download_minute_data_process_worker(batch_stocks, start_date, end_date, fiel
                     start_date=bs_start_date,
                     end_date=bs_end_date,
                     frequency="5",  # 5分钟线
-                    adjustflag="3"  # 不复权
+                    adjustflag="2"  # 不复权
                 )
                 
                 # if rs.error_code != '0':
@@ -420,29 +439,31 @@ class ParquetDataStorage:
             return False
         
         try:
-            # 确保API连接
-            if not xtdata.get_client().is_connected():
-                xtdata.get_client().connect()
-                time.sleep(0.5)  # 添加短暂延迟确保连接稳定
-            
+            # 使用Tushare下载交易日历
+            import tushare as ts
+
+            # 初始化tushare
+            token = '697175c83be329ca8b9c2fd96a58d5fd9bc9377acfe5f70f9c006d49'
+            pro = ts.pro_api(token)
+
             # 下载交易日历
-            calendar = xtdata.get_trading_dates('SH', start_date, end_date)
-            
-            if not calendar:
-                logger.warning("下载交易日历返回空数据")
+            cal_data = pro.trade_cal(
+                exchange='SSE',
+                start_date=start_date,
+                end_date=end_date,
+                is_open='1'  # 只获取交易日
+            )
+
+            if cal_data is None or cal_data.empty:
+                logger.warning("Tushare下载交易日历返回空数据")
                 return False
-            
-            logger.info(f"成功获取交易日历，共 {len(calendar)} 个交易日")
-            
-            # 转换时间戳为日期字符串
-            try:
-                # 检查是否为毫秒级时间戳
-                if isinstance(calendar[0], (int, float)):
-                    calendar = [datetime.fromtimestamp(ts/1000).strftime('%Y%m%d') for ts in calendar]
-                logger.info(f"转换后的日期范围: {calendar[0]} 至 {calendar[-1]}")
-            except Exception as e:
-                logger.error(f"转换时间戳失败: {e}")
-                return False
+
+            logger.info(f"成功获取Tushare交易日历，共 {len(cal_data)} 个交易日")
+
+            # 提取日期字符串
+            calendar = cal_data['cal_date'].tolist()[::-1]
+            logger.info(f"日期范围: {calendar[0]} 至 {calendar[-1]}")
+            print(f"日期范围: {calendar[0]} 至 {calendar[-1]}")
             
             # 创建DataFrame并保存为Parquet文件
             calendar_df = pd.DataFrame(calendar, columns=['date_str'])
@@ -453,7 +474,7 @@ class ParquetDataStorage:
                 calendar_df['date'] = pd.to_datetime(calendar_df['date_str'], format='%Y%m%d')
                 calendar_df['market'] = 'SH'  # 默认为上证市场
             except Exception as e:
-                logger.error(f"日期格式转换错误: {e}")
+                print(f"日期格式转换错误: {e}")
                 return False
             
             # 合并现有日历（如果存在）
@@ -464,9 +485,9 @@ class ParquetDataStorage:
                     if not existing_calendar.empty:
                         # 合并并去重
                         calendar_df = pd.concat([existing_calendar, calendar_df]).drop_duplicates('date_str').sort_values('date')
-                        logger.info(f"合并现有交易日历，更新后共 {len(calendar_df)} 个交易日")
+                        print(f"合并现有交易日历，更新后共 {len(calendar_df)} 个交易日")
                 except Exception as e:
-                    logger.error(f"读取现有交易日历失败: {e}")
+                    print(f"读取现有交易日历失败: {e}")
             
             # 保存为Parquet文件
             calendar_df.to_parquet(calendar_file, index=False)
@@ -477,7 +498,7 @@ class ParquetDataStorage:
             self.metadata['last_update']['calendar'] = datetime.now().strftime('%Y%m%d')
             self._save_metadata()
             
-            logger.info(f"交易日历保存成功，共 {len(calendar_df)} 个交易日")
+            print(f"交易日历保存成功，共 {len(calendar_df)} 个交易日")
             return True
         except Exception as e:
             logger.error(f"下载交易日历失败: {e}")
@@ -488,16 +509,910 @@ class ParquetDataStorage:
     def _get_partition_key(self, date_str):
         """生成分区键（按月分区）"""
         return date_str[:6]  # 取YYYYMM部分
+
+    def _download_with_tushare(self, start_date: str, end_date: str, stock_list: List[str], trading_dates: List[str]) -> bool:
+        """使用Tushare下载数据"""
+        try:
+            import tushare as ts
+
+            # 初始化tushare
+            token = 'e75c6baca18c97b4337dd2f1946da4aa1a6a875804948000017a7525'
+            pro = ts.pro_api(token)
+
+            logger.info("开始使用Tushare下载数据...")
+
+            # 转换股票代码格式（从xtdata格式转为tushare格式）
+            tushare_stocks = []
+            for stock in stock_list:
+                if '.SZ' in stock:
+                    tushare_stocks.append(stock.replace('.SZ', '.SZ'))
+                elif '.SH' in stock:
+                    tushare_stocks.append(stock.replace('.SH', '.SH'))
+                else:
+                    tushare_stocks.append(stock)
+
+            # 分批下载数据（避免超过调用限制）
+            batch_size = 100  # 每批100只股票
+            all_data = []
+
+            for i in range(0, len(tushare_stocks), batch_size):
+                batch_stocks = tushare_stocks[i:i+batch_size]
+                logger.info(f"下载批次 {i//batch_size + 1}/{(len(tushare_stocks)-1)//batch_size + 1}: {len(batch_stocks)} 只股票")
+
+                # 下载基础行情数据
+                try:
+                    daily_data = pro.daily(
+                        start_date=start_date,
+                        end_date=end_date,
+                        fields='ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount'
+                    )
+
+                    if daily_data is not None and not daily_data.empty:
+                        # 筛选当前批次的股票
+                        batch_data = daily_data[daily_data['ts_code'].isin(batch_stocks)]
+                        if not batch_data.empty:
+                            all_data.append(batch_data)
+                            logger.info(f"批次 {i//batch_size + 1} 下载成功: {len(batch_data)} 条记录")
+                        else:
+                            logger.warning(f"批次 {i//batch_size + 1} 无数据")
+                    else:
+                        logger.warning(f"批次 {i//batch_size + 1} 下载失败")
+
+                except Exception as e:
+                    logger.error(f"批次 {i//batch_size + 1} 下载失败: {e}")
+                    continue
+
+                # 添加延迟避免超过调用限制
+                time.sleep(0.2)
+
+            if not all_data:
+                logger.error("所有批次下载都失败")
+                return False
+
+            # 合并所有数据
+            combined_data = pd.concat(all_data, ignore_index=True)
+            logger.info(f"合并数据完成: {len(combined_data)} 条记录")
+
+            # 下载市值数据
+            logger.info("下载市值数据...")
+            mv_data = self._download_market_value_data(pro, start_date, end_date)
+
+            # 处理和保存数据
+            success = self._process_and_save_tushare_data(combined_data, mv_data, trading_dates)
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Tushare下载失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def download_daily_data_tushare(self, start_date: str, end_date: str, stock_list: List[str] = None) -> bool:
+        """
+        使用Tushare下载日线数据的主入口方法
+
+        Args:
+            start_date: 开始日期 YYYYMMDD
+            end_date: 结束日期 YYYYMMDD
+            stock_list: 股票列表，如果为None则下载所有股票
+
+        Returns:
+            bool: 下载是否成功
+        """
+        try:
+            logger.info(f"开始使用Tushare智能下载日线数据: {start_date} - {end_date}")
+
+            # 1. 获取交易日历
+            trading_dates = self._get_trading_dates_for_tushare(start_date, end_date)
+            if not trading_dates:
+                logger.error("无法获取交易日历")
+                return False
+
+            logger.info(f"交易日数量: {len(trading_dates)}")
+
+            # 2. 获取股票列表
+            if stock_list is None:
+                stock_list = self.download_stock_list()
+
+            if not stock_list:
+                logger.error("无法获取股票列表")
+                return False
+
+            logger.info(f"股票数量: {len(stock_list)}")
+
+            # 3. 精确检测缺失数据
+            missing_data_map = self._detect_missing_data_precise(trading_dates, stock_list)
+
+            if not missing_data_map:
+                logger.info("所有数据都已存在，无需下载")
+                return True
+
+            # 4. 智能下载缺失数据
+            success = self._download_missing_data_smart(missing_data_map, stock_list)
+
+            if success:
+                logger.info("Tushare数据下载完成")
+
+                # 5. 验证下载结果，用xtdata补充仍然缺失的数据
+                remaining_missing = self._detect_missing_data_precise(trading_dates, stock_list)
+                if remaining_missing:
+                    logger.info(f"Tushare下载后仍有缺失数据，使用xtdata补充: {len(remaining_missing)} 个分区")
+                    xtdata_success = self._supplement_with_xtdata(remaining_missing, stock_list)
+                    if xtdata_success:
+                        logger.info("xtdata补充完成")
+                    else:
+                        logger.warning("xtdata补充失败，但Tushare主要数据已下载")
+
+                return True
+            else:
+                logger.error("Tushare数据下载失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"Tushare下载失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _get_trading_dates_for_tushare(self, start_date: str, end_date: str) -> List[str]:
+        """获取Tushare交易日历"""
+        try:
+            import tushare as ts
+
+            # 初始化tushare
+            token = '2876ea85cb005fb5fa17c809a98174f2d5aae8b1f830110a5ead6211'
+            pro = ts.pro_api(token)
+
+            # 获取交易日历
+            cal_data = pro.trade_cal(
+                exchange='SSE',
+                start_date=start_date,
+                end_date=end_date,
+                is_open='1'  # 只获取交易日
+            )
+
+            if cal_data is None or cal_data.empty:
+                logger.error("获取Tushare交易日历失败")
+                return []
+
+            trading_dates = cal_data['cal_date'].tolist()[::-1]
+            logger.info(f"获取到 {len(trading_dates)} 个交易日")
+            return trading_dates
+
+        except Exception as e:
+            logger.error(f"获取Tushare交易日历失败: {e}")
+            return []
+
+    def _detect_missing_data_precise(self, trading_dates: List[str], stock_list: List[str]) -> dict:
+        """精确检测缺失数据（智能分析现有分区）"""
+        try:
+            logger.info("开始精确检测缺失数据...")
+
+            # 1. 首先检查现有分区
+            daily_data_dir = get_data_path("daily")
+            existing_partitions = []
+            if daily_data_dir.exists():
+                existing_partitions = [p.name for p in daily_data_dir.iterdir() if p.is_dir()]
+                existing_partitions.sort()
+
+            logger.info(f"现有分区: {existing_partitions}")
+
+            # 2. 按月份分组交易日
+            date_partitions = {}
+            for date in trading_dates:
+                partition_key = self._get_partition_key(date)
+                if partition_key not in date_partitions:
+                    date_partitions[partition_key] = []
+                date_partitions[partition_key].append(date)
+
+            all_partitions = sorted(date_partitions.keys())
+            logger.info(f"需要的分区: {all_partitions}")
+
+            missing_data_map = {}  # {partition_key: [missing_dates]}
+
+            # 3. 分别处理现有分区和新分区
+            for partition_key, partition_dates in date_partitions.items():
+                logger.info(f"检查分区 {partition_key}...")
+
+                partition_dir = get_data_path("daily") / partition_key
+                partition_file = partition_dir / "daily_data.parquet"
+
+                if partition_key in existing_partitions and partition_file.exists():
+                    # 现有分区：检查具体缺失日期
+                    try:
+                        existing_data = pd.read_parquet(partition_file)
+                        if 'date_str' in existing_data.columns:
+                            existing_dates = set(existing_data['date_str'].unique())
+                            expected_dates = set(partition_dates)
+                            missing_dates = expected_dates - existing_dates
+
+                            if missing_dates:
+                                missing_data_map[partition_key] = sorted(list(missing_dates))
+                                logger.info(f"现有分区 {partition_key} 部分缺失，需要下载 {len(missing_dates)} 个交易日: {sorted(missing_dates)}")
+                            else:
+                                logger.info(f"现有分区 {partition_key} 数据完整，包含 {len(existing_dates)} 个交易日")
+                        else:
+                            # 数据格式异常，重新下载整个分区
+                            missing_data_map[partition_key] = partition_dates
+                            logger.warning(f"现有分区 {partition_key} 数据格式异常，需要重新下载")
+                    except Exception as e:
+                        # 文件损坏，重新下载整个分区
+                        missing_data_map[partition_key] = partition_dates
+                        logger.warning(f"现有分区 {partition_key} 文件损坏，需要重新下载: {e}")
+                else:
+                    # 新分区：完全缺失
+                    missing_data_map[partition_key] = partition_dates
+                    logger.info(f"新分区 {partition_key} 完全缺失，需要下载 {len(partition_dates)} 个交易日")
+
+            # 4. 汇总统计
+            total_missing_dates = sum(len(dates) for dates in missing_data_map.values())
+            existing_complete_partitions = len([p for p in all_partitions if p not in missing_data_map])
+
+            logger.info(f"检测完成:")
+            logger.info(f"  - 完整分区: {existing_complete_partitions} 个")
+            logger.info(f"  - 需要更新的分区: {len(missing_data_map)} 个")
+            logger.info(f"  - 需要下载的交易日: {total_missing_dates} 个")
+
+            if missing_data_map:
+                logger.info(f"详细缺失情况:")
+                for partition_key, missing_dates in missing_data_map.items():
+                    logger.info(f"  - {partition_key}: {len(missing_dates)} 个交易日")
+
+            return missing_data_map
+
+        except Exception as e:
+            logger.error(f"检测缺失数据失败: {e}")
+            return {}
+
+    def _download_missing_data_smart(self, missing_data_map: dict, stock_list: List[str]) -> bool:
+        """智能下载缺失数据"""
+        try:
+            logger.info("开始智能下载缺失数据...")
+
+            import tushare as ts
+
+            # 初始化tushare
+            # token = '2876ea85cb005fb5fa17c809a98174f2d5aae8b1f830110a5ead6211'
+            token = 'e75c6baca18c97b4337dd2f1946da4aa1a6a875804948000017a7525'
+            pro = ts.pro_api(token)
+
+            # 转换股票代码格式
+            tushare_stocks = [self._convert_stock_code_to_tushare(stock) for stock in stock_list]
+
+            total_success = True
+
+            for partition_key, missing_dates in missing_data_map.items():
+                logger.info(f"处理分区 {partition_key}，缺失日期: {len(missing_dates)} 个")
+
+                # 按日期分批下载（优化API调用）
+                success = self._download_partition_data_by_dates(
+                    pro, partition_key, missing_dates, tushare_stocks, stock_list
+                )
+
+                if not success:
+                    logger.error(f"分区 {partition_key} 下载失败")
+                    total_success = False
+                else:
+                    logger.info(f"分区 {partition_key} 下载成功")
+
+            return total_success
+
+        except Exception as e:
+            logger.error(f"智能下载失败: {e}")
+            return False
+
+    def _convert_stock_code_to_tushare(self, stock_code: str) -> str:
+        """将xtdata股票代码转换为tushare格式"""
+        if '.SZ' in stock_code:
+            return stock_code.replace('.SZ', '.SZ')
+        elif '.SH' in stock_code:
+            return stock_code.replace('.SH', '.SH')
+        else:
+            # 根据代码判断交易所
+            code = stock_code.split('.')[0]
+            if code.startswith('0') or code.startswith('3'):
+                return f"{code}.SZ"
+            elif code.startswith('6'):
+                return f"{code}.SH"
+            else:
+                return stock_code
+
+    def _download_partition_data_by_dates(self, pro, partition_key: str, missing_dates: List[str],
+                                        tushare_stocks: List[str], original_stocks: List[str]) -> bool:
+        """按日期分批下载分区数据"""
+        try:
+            logger.info(f"开始下载分区 {partition_key} 的 {len(missing_dates)} 个日期")
+
+            # 按日期分批（优化：每批3个交易日，充分利用6000条数据限制）
+            batch_size = 3
+            all_downloaded_data = []
+
+            for i in range(0, len(missing_dates), batch_size):
+                batch_dates = missing_dates[i:i+batch_size]
+                # 确保日期范围正确：start_date <= end_date
+                batch_start = min(batch_dates)
+                batch_end = max(batch_dates)
+
+                logger.info(f"下载日期批次: {batch_start} - {batch_end} ({len(batch_dates)} 个日期)")
+                logger.info(f"批次日期列表: {batch_dates}")
+
+                # 下载基础行情数据
+                daily_data = self._download_daily_basic_with_retry(
+                    pro, batch_start, batch_end, batch_dates
+                )
+
+                if daily_data is not None and not daily_data.empty:
+                    # 下载市值数据
+                    mv_data = self._download_market_value_with_retry(
+                        pro, batch_start, batch_end, batch_dates
+                    )
+
+                    # 处理数据格式
+                    processed_data = self._process_tushare_batch_data(
+                        daily_data, mv_data, batch_dates, original_stocks
+                    )
+
+                    if processed_data is not None and not processed_data.empty:
+                        all_downloaded_data.append(processed_data)
+                        logger.info(f"批次 {batch_start}-{batch_end} 处理成功: {len(processed_data)} 条记录")
+                    else:
+                        logger.warning(f"批次 {batch_start}-{batch_end} 处理后数据为空")
+                else:
+                    logger.warning(f"批次 {batch_start}-{batch_end} 下载失败")
+
+                # API调用间隔（保守策略：每分钟最多200次调用，约0.3秒间隔）
+                time.sleep(0.35)
+
+            if not all_downloaded_data:
+                logger.error(f"分区 {partition_key} 所有批次都下载失败")
+                return False
+
+            # 合并所有下载的数据
+            new_data = pd.concat(all_downloaded_data, ignore_index=True)
+            logger.info(f"分区 {partition_key} 新下载数据: {len(new_data)} 条记录")
+
+            # 与现有数据合并
+            success = self._merge_and_save_partition_data(partition_key, new_data)
+
+            return success
+
+        except Exception as e:
+            logger.error(f"下载分区 {partition_key} 数据失败: {e}")
+            return False
+
+    def _download_daily_basic_with_retry(self, pro, start_date: str, end_date: str, target_dates: List[str]) -> pd.DataFrame:
+        """带重试的基础行情数据下载（无限重试版）"""
+        import time  # 确保time模块在方法开始时就可用
+        retry_delay = 180  # 增加到3分钟，确保API限制重置
+
+        attempt = 0
+        while True:  # 无限重试
+            attempt += 1
+            try:
+                logger.info(f"下载基础行情数据 {start_date}-{end_date} (尝试 {attempt})")
+                logger.info(f"目标日期: {target_dates}")
+
+                # 改为单日查询，避免6000条限制导致的数据截断
+                if len(target_dates) == 1:
+                    # 单日查询
+                    data = pro.daily(
+                        trade_date=target_dates[0],
+                        fields='ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount'
+                    )
+                else:
+                    # 多日期时，逐个查询并合并
+                    all_data = []
+                    for date in target_dates:
+                        single_data = pro.daily(
+                            trade_date=date,
+                            fields='ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount'
+                        )
+                        if single_data is not None and not single_data.empty:
+                            all_data.append(single_data)
+                        # API调用间隔（保守策略）
+                        import time
+                        time.sleep(0.15)
+
+                    # 合并所有数据
+                    if all_data:
+                        data = pd.concat(all_data, ignore_index=True)
+                    else:
+                        data = pd.DataFrame()
+
+                if data is not None and not data.empty:
+                    # 筛选目标日期的数据
+                    filtered_data = data[data['trade_date'].isin(target_dates)]
+                    logger.info(f"基础行情数据下载成功: 原始{len(data)}条 -> 筛选后{len(filtered_data)}条")
+
+                    if not filtered_data.empty:
+                        actual_dates = sorted(filtered_data['trade_date'].unique())
+                        logger.info(f"实际获取日期: {actual_dates}")
+                        return filtered_data
+                    else:
+                        logger.warning(f"筛选后数据为空，原始数据日期: {sorted(data['trade_date'].unique())}")
+                else:
+                    logger.warning(f"基础行情数据为空 (尝试 {attempt + 1})")
+
+            except Exception as e:
+                logger.warning(f"基础行情数据下载失败 (尝试 {attempt}): {e}")
+
+                if "每分钟最多访问" in str(e) or "频率限制" in str(e) or "抱歉" in str(e):
+                    # 频率限制错误，使用指数退避策略
+                    wait_time = min(retry_delay * (1.2 ** (attempt - 1)), 600)  # 最大等待10分钟
+                    logger.info(f"遇到频率限制，等待 {wait_time:.1f} 秒后重试... (尝试 {attempt})")
+                    time.sleep(wait_time)
+                    continue
+                elif "网络" in str(e) or "连接" in str(e) or "timeout" in str(e).lower():
+                    # 网络错误，短时间重试
+                    logger.info(f"遇到网络错误，等待30秒后重试... (尝试 {attempt})")
+                    time.sleep(30)
+                    continue
+                else:
+                    # 其他错误，等待较短时间后重试
+                    logger.info(f"遇到其他错误，等待60秒后重试... (尝试 {attempt}): {e}")
+                    time.sleep(60)
+                    continue
+
+    def _download_market_value_with_retry(self, pro, start_date: str, end_date: str, target_dates: List[str]) -> pd.DataFrame:
+        """带重试的市值数据下载（无限重试版）"""
+        import time  # 确保time模块在方法开始时就可用
+        retry_delay = 180  # 增加到3分钟
+
+        attempt = 0
+        while True:  # 无限重试
+            attempt += 1
+            try:
+                logger.info(f"下载市值数据 {start_date}-{end_date} (尝试 {attempt})")
+                logger.info(f"目标日期: {target_dates}")
+
+                # 如果只有一个日期，直接使用该日期
+                if len(target_dates) == 1:
+                    actual_start = actual_end = target_dates[0]
+                else:
+                    actual_start = start_date
+                    actual_end = end_date
+
+                data = pro.daily_basic(
+                    start_date=actual_start,
+                    end_date=actual_end,
+                    fields='ts_code,trade_date,total_mv,circ_mv,turnover_rate'
+                )
+
+                if data is not None and not data.empty:
+                    # 筛选目标日期的数据
+                    filtered_data = data[data['trade_date'].isin(target_dates)]
+                    logger.info(f"市值数据下载成功: 原始{len(data)}条 -> 筛选后{len(filtered_data)}条")
+
+                    if not filtered_data.empty:
+                        actual_dates = sorted(filtered_data['trade_date'].unique())
+                        logger.info(f"实际获取日期: {actual_dates}")
+                        return filtered_data
+                    else:
+                        logger.warning(f"筛选后数据为空，原始数据日期: {sorted(data['trade_date'].unique())}")
+                else:
+                    logger.warning(f"市值数据为空 (尝试 {attempt + 1})")
+
+            except Exception as e:
+                logger.warning(f"市值数据下载失败 (尝试 {attempt}): {e}")
+
+                if "每分钟最多访问" in str(e) or "频率限制" in str(e) or "抱歉" in str(e):
+                    # 频率限制错误，使用指数退避策略
+                    wait_time = min(retry_delay * (1.2 ** (attempt - 1)), 600)  # 最大等待10分钟
+                    logger.info(f"遇到频率限制，等待 {wait_time:.1f} 秒后重试... (尝试 {attempt})")
+                    time.sleep(wait_time)
+                    continue
+                elif "网络" in str(e) or "连接" in str(e) or "timeout" in str(e).lower():
+                    # 网络错误，短时间重试
+                    logger.info(f"遇到网络错误，等待30秒后重试... (尝试 {attempt})")
+                    time.sleep(30)
+                    continue
+                else:
+                    # 其他错误，等待较短时间后重试
+                    logger.info(f"遇到其他错误，等待60秒后重试... (尝试 {attempt}): {e}")
+                    time.sleep(60)
+                    continue
+
+    def _process_tushare_batch_data(self, daily_data: pd.DataFrame, mv_data: pd.DataFrame,
+                                  target_dates: List[str], original_stocks: List[str]) -> pd.DataFrame:
+        """处理Tushare批次数据"""
+        try:
+            if daily_data.empty:
+                return pd.DataFrame()
+
+            # 字段名映射
+            field_mapping = {
+                'ts_code': 'stock_code',
+                'trade_date': 'date_str',
+                'pre_close': 'preClose',
+                'vol': 'volume',
+            }
+
+            # 重命名字段
+            processed_data = daily_data.rename(columns=field_mapping)
+
+            # 转换股票代码格式
+            processed_data['stock_code'] = processed_data['stock_code'].apply(self._convert_stock_code_to_xtdata)
+
+            # 转换数据类型和单位
+            processed_data['volume'] = processed_data['volume'] * 100  # 手转股
+            processed_data['amount'] = processed_data['amount'] * 1000  # 千元转元
+
+            # 处理市值数据
+            if not mv_data.empty:
+                mv_data = mv_data.rename(columns={'ts_code': 'stock_code', 'trade_date': 'date_str'})
+                mv_data['stock_code'] = mv_data['stock_code'].apply(self._convert_stock_code_to_xtdata)
+
+                # 合并市值数据
+                processed_data = pd.merge(processed_data, mv_data, on=['stock_code', 'date_str'], how='left')
+
+            # 筛选目标日期和股票
+            processed_data = processed_data[
+                (processed_data['date_str'].isin(target_dates)) &
+                (processed_data['stock_code'].isin(original_stocks))
+            ]
+
+            logger.info(f"数据处理完成: {len(processed_data)} 条记录")
+            return processed_data
+
+        except Exception as e:
+            logger.error(f"处理Tushare数据失败: {e}")
+            return pd.DataFrame()
+
+    def _merge_and_save_partition_data(self, partition_key: str, new_data: pd.DataFrame) -> bool:
+        """合并并保存分区数据"""
+        try:
+            partition_dir = get_data_path("daily") / partition_key
+            partition_dir.mkdir(exist_ok=True, parents=True)
+            partition_file = partition_dir / "daily_data.parquet"
+
+            if partition_file.exists():
+                # 读取现有数据
+                existing_data = pd.read_parquet(partition_file)
+                logger.info(f"读取现有数据: {len(existing_data)} 条记录")
+
+                # 合并数据（新数据覆盖旧数据）
+                # 先删除新数据中已存在的日期和股票组合
+                if not existing_data.empty and 'date_str' in existing_data.columns and 'stock_code' in existing_data.columns:
+                    new_keys = set(zip(new_data['date_str'], new_data['stock_code']))
+                    existing_mask = ~existing_data.apply(
+                        lambda row: (row['date_str'], row['stock_code']) in new_keys, axis=1
+                    )
+                    filtered_existing = existing_data[existing_mask]
+
+                    # 合并数据
+                    combined_data = pd.concat([filtered_existing, new_data], ignore_index=True)
+                else:
+                    combined_data = pd.concat([existing_data, new_data], ignore_index=True)
+
+                logger.info(f"合并后数据: {len(combined_data)} 条记录")
+            else:
+                # 新分区，直接保存
+                combined_data = new_data
+                logger.info(f"新分区数据: {len(combined_data)} 条记录")
+
+            # 排序并保存
+            if not combined_data.empty:
+                combined_data = combined_data.sort_values(['date_str', 'stock_code'])
+                combined_data.to_parquet(partition_file, index=False)
+                logger.info(f"分区 {partition_key} 保存成功")
+
+                # 更新元数据
+                if partition_key not in self.metadata['partitions']['daily']:
+                    self.metadata['partitions']['daily'].append(partition_key)
+                    self.metadata['partitions']['daily'].sort()
+                    self._save_metadata()
+
+                return True
+            else:
+                logger.warning(f"分区 {partition_key} 合并后数据为空")
+                return False
+
+        except Exception as e:
+            logger.error(f"合并保存分区 {partition_key} 失败: {e}")
+            return False
+
+    def _download_market_value_data(self, pro, start_date: str, end_date: str) -> pd.DataFrame:
+        """下载市值数据"""
+        try:
+            logger.info("开始下载市值数据...")
+
+            # 分批下载市值数据（daily_basic接口）
+            mv_data_list = []
+
+            # 按日期分批下载（避免数据量过大）
+            from datetime import datetime, timedelta
+            start_dt = datetime.strptime(start_date, '%Y%m%d')
+            end_dt = datetime.strptime(end_date, '%Y%m%d')
+
+            current_dt = start_dt
+            while current_dt <= end_dt:
+                # 每次下载30天的数据
+                batch_end_dt = min(current_dt + timedelta(days=30), end_dt)
+                batch_start = current_dt.strftime('%Y%m%d')
+                batch_end = batch_end_dt.strftime('%Y%m%d')
+
+                try:
+                    batch_mv_data = pro.daily_basic(
+                        start_date=batch_start,
+                        end_date=batch_end,
+                        fields='ts_code,trade_date,total_mv,circ_mv,turnover_rate'
+                    )
+
+                    if batch_mv_data is not None and not batch_mv_data.empty:
+                        mv_data_list.append(batch_mv_data)
+                        logger.info(f"市值数据批次 {batch_start}-{batch_end}: {len(batch_mv_data)} 条记录")
+
+                except Exception as e:
+                    logger.warning(f"市值数据批次 {batch_start}-{batch_end} 下载失败: {e}")
+
+                current_dt = batch_end_dt + timedelta(days=1)
+                time.sleep(0.2)  # 避免调用限制
+
+            if mv_data_list:
+                mv_data = pd.concat(mv_data_list, ignore_index=True)
+                logger.info(f"市值数据下载完成: {len(mv_data)} 条记录")
+                return mv_data
+            else:
+                logger.warning("市值数据下载失败，返回空DataFrame")
+                return pd.DataFrame()
+
+        except Exception as e:
+            logger.error(f"下载市值数据失败: {e}")
+            return pd.DataFrame()
+
+    def _process_and_save_tushare_data(self, daily_data: pd.DataFrame, mv_data: pd.DataFrame, trading_dates: List[str]) -> bool:
+        """处理和保存Tushare数据"""
+        try:
+            logger.info("开始处理Tushare数据...")
+
+            # 字段名映射
+            field_mapping = {
+                'ts_code': 'stock_code',
+                'trade_date': 'date_str',
+                'pre_close': 'preClose',
+                'vol': 'volume',  # tushare的vol是手，需要转换
+                # amount保持不变，但tushare是千元
+            }
+
+            # 重命名字段
+            daily_data = daily_data.rename(columns=field_mapping)
+
+            # 转换股票代码格式（从tushare格式转为xtdata格式）
+            daily_data['stock_code'] = daily_data['stock_code'].apply(self._convert_stock_code_to_xtdata)
+
+            # 转换数据类型
+            daily_data['volume'] = daily_data['volume'] * 100  # 手转为股
+            daily_data['amount'] = daily_data['amount'] * 1000  # 千元转为元
+            daily_data['date'] = daily_data['date_str']
+
+            # 处理市值数据
+            if not mv_data.empty:
+                mv_data = mv_data.rename(columns={'ts_code': 'stock_code', 'trade_date': 'date_str'})
+                mv_data['stock_code'] = mv_data['stock_code'].apply(self._convert_stock_code_to_xtdata)
+
+                # 合并市值数据
+                daily_data = pd.merge(daily_data, mv_data, on=['stock_code', 'date_str'], how='left')
+
+            # 按月份分区保存
+            date_partitions = {}
+            for date in trading_dates:
+                partition_key = self._get_partition_key(date)
+                if partition_key not in date_partitions:
+                    date_partitions[partition_key] = []
+                date_partitions[partition_key].append(date)
+
+            logger.info(f"数据将分为 {len(date_partitions)} 个月份分区")
+
+            # 按分区保存数据
+            for partition_key, partition_dates in date_partitions.items():
+                # 使用统一的路径获取方法
+                partition_dir = get_data_path("daily") / partition_key
+                partition_dir.mkdir(exist_ok=True, parents=True)
+
+                # 筛选当前分区的数据
+                partition_data = daily_data[daily_data['date_str'].isin(partition_dates)]
+
+                if not partition_data.empty:
+                    # 保存数据
+                    partition_file = partition_dir / "daily_data.parquet"
+                    partition_data.to_parquet(partition_file, index=False)
+                    logger.info(f"分区 {partition_key} 保存成功，共 {len(partition_data):,} 行数据")
+                else:
+                    logger.warning(f"分区 {partition_key} 无数据")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"处理Tushare数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _supplement_with_xtdata(self, missing_data_map: dict, stock_list: List[str]) -> bool:
+        """使用xtdata补充Tushare缺失的数据"""
+        try:
+            logger.info("开始使用xtdata补充缺失数据...")
+
+            from xtquant import xtdata
+
+            # 确保xtdata连接
+            if not xtdata.get_client().is_connected():
+                xtdata.get_client().connect()
+                time.sleep(1)
+
+            total_success = True
+
+            for partition_key, missing_dates in missing_data_map.items():
+                logger.info(f"使用xtdata补充分区 {partition_key}，缺失日期: {missing_dates}")
+
+                # 为每个缺失日期单独下载
+                for date in missing_dates:
+                    success = self._download_single_date_with_xtdata(date, stock_list, partition_key)
+                    if not success:
+                        logger.warning(f"xtdata补充日期 {date} 失败")
+                        total_success = False
+                    else:
+                        logger.info(f"xtdata补充日期 {date} 成功")
+
+            return total_success
+
+        except Exception as e:
+            logger.error(f"xtdata补充失败: {e}")
+            return False
+
+    def _download_single_date_with_xtdata(self, date: str, stock_list: List[str], partition_key: str) -> bool:
+        """使用xtdata下载单个日期的数据"""
+        try:
+            from xtquant import xtdata
+
+            logger.info(f"使用xtdata下载 {date} 的数据...")
+
+            # 字段列表
+            fields = ['open', 'high', 'low', 'close', 'volume', 'amount', 'preClose']
+
+            # 下载数据
+            data = xtdata.get_market_data(
+                stock_list=stock_list,
+                period='1d',
+                start_time=date,
+                end_time=date,
+                field_list=fields,
+                dividend_type='front',
+                fill_data=True
+            )
+
+            if not data or not any(field in data for field in fields):
+                logger.warning(f"xtdata下载 {date} 失败: 无数据")
+                return False
+
+            # 转换数据格式
+            converted_data = self._convert_xtdata_to_dataframe_single_date(data, stock_list, date)
+
+            if converted_data.empty:
+                logger.warning(f"xtdata数据转换失败: {date}")
+                return False
+
+            # 合并到现有分区
+            success = self._merge_and_save_partition_data(partition_key, converted_data)
+
+            if success:
+                logger.info(f"xtdata补充 {date} 成功: {len(converted_data)} 条记录")
+                return True
+            else:
+                logger.error(f"xtdata补充 {date} 保存失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"xtdata下载单日数据失败 {date}: {e}")
+            return False
+
+    def _convert_xtdata_to_dataframe_single_date(self, data: dict, stock_list: List[str], date: str) -> pd.DataFrame:
+        """转换xtdata单日数据为DataFrame格式"""
+        try:
+            result_data = []
+
+            # 获取股本数据用于计算市值
+            capital_file = get_data_path("stock_capital_data.parquet")
+            if capital_file.exists():
+                capital_df = pd.read_parquet(capital_file)
+                capital_df = capital_df.set_index('stock_code')
+            else:
+                capital_df = pd.DataFrame()
+
+            for stock in stock_list:
+                row = {
+                    'stock_code': stock,
+                    'date_str': date
+                }
+
+                # 添加基础字段
+                for field in ['open', 'high', 'low', 'close', 'volume', 'amount', 'preClose']:
+                    if field in data:
+                        field_df = data[field]
+                        if isinstance(field_df, pd.DataFrame) and stock in field_df.index:
+                            # 查找对应日期的数据
+                            date_cols = [col for col in field_df.columns if str(col)[:10].replace('-', '') == date]
+                            if date_cols:
+                                row[field] = field_df.loc[stock, date_cols[0]]
+                            else:
+                                row[field] = None
+                        else:
+                            row[field] = None
+                    else:
+                        row[field] = None
+
+                # 计算涨跌幅
+                if row.get('close') is not None and row.get('preClose') is not None and row['preClose'] != 0:
+                    row['pct_chg'] = (row['close'] - row['preClose']) / row['preClose'] * 100
+                    row['change'] = row['close'] - row['preClose']
+                else:
+                    row['pct_chg'] = None
+                    row['change'] = None
+
+                # 计算市值
+                if row.get('close') is not None and not capital_df.empty and stock in capital_df.index:
+                    total_capital = capital_df.loc[stock, 'total_capital']
+                    circulating_capital = capital_df.loc[stock, 'circulating_capital']
+
+                    if total_capital is not None:
+                        row['total_mv'] = row['close'] * total_capital
+                    else:
+                        row['total_mv'] = None
+
+                    if circulating_capital is not None:
+                        row['circ_mv'] = row['close'] * circulating_capital
+                        # 计算换手率
+                        if row.get('volume') is not None and circulating_capital > 0:
+                            row['turnover_rate'] = row['volume'] / circulating_capital * 100
+                        else:
+                            row['turnover_rate'] = None
+                    else:
+                        row['circ_mv'] = None
+                        row['turnover_rate'] = None
+                else:
+                    row['total_mv'] = None
+                    row['circ_mv'] = None
+                    row['turnover_rate'] = None
+
+                result_data.append(row)
+
+            df = pd.DataFrame(result_data)
+
+            # 过滤掉没有有效数据的记录
+            df = df.dropna(subset=['close'])
+
+            logger.info(f"xtdata单日数据转换完成: {len(df)} 条有效记录")
+            return df
+
+        except Exception as e:
+            logger.error(f"xtdata单日数据转换失败: {e}")
+            return pd.DataFrame()
+
+    def _convert_stock_code_to_xtdata(self, ts_code: str) -> str:
+        """将tushare股票代码转换为xtdata格式"""
+        if '.SZ' in ts_code or '.SH' in ts_code:
+            return ts_code
+        else:
+            # 如果没有后缀，根据代码判断
+            code = ts_code.split('.')[0]
+            if code.startswith('0') or code.startswith('3'):
+                return f"{code}.SZ"
+            elif code.startswith('6'):
+                return f"{code}.SH"
+            else:
+                return ts_code
     
-    def download_daily_data(self, stock_list=None, start_date=None, end_date=None, batch_size=None, max_workers=None):
+    def download_daily_data(self, stock_list=None, start_date=None, end_date=None, batch_size=None, max_workers=None, use_tushare=False):
         """下载日线数据并以Parquet格式保存
-        
+
         参数:
             stock_list: 股票列表，默认为元数据中的股票列表
             start_date: 开始日期，格式 'YYYYMMDD'，默认为 '20230101'
             end_date: 结束日期，格式 'YYYYMMDD'，默认为当前日期
             batch_size: 已废弃参数，保留用于兼容性
             max_workers: 已废弃参数，保留用于兼容性
+            use_tushare: 是否使用tushare下载，默认False使用xtdata
         """
         logger.info("开始下载日线数据...")
         
@@ -541,7 +1456,8 @@ class ParquetDataStorage:
         
         # 读取股本数据
         try:
-            capital_file = 'to/local_data/stock_capital_data.parquet'
+            capital_file = get_data_path("stock_capital_data.parquet")
+            # capital_file = 'to/local_data/stock_capital_data.parquet'
             logger.info(f"读取股本数据: {capital_file}")
             capital_df = pd.read_parquet(capital_file)
             
@@ -555,180 +1471,30 @@ class ParquetDataStorage:
         start_time = time.time()
         
         try:
-            # 确保API连接
-            if not xtdata.get_client().is_connected():
-                xtdata.get_client().connect()
-                time.sleep(0.5)  # 添加短暂延迟确保连接稳定
-            
-            logger.info(f"开始一次性下载所有股票的日线数据: {len(stock_list)} 只股票，日期范围 {start_date} 至 {end_date}")
-            
-            # 一次性下载所有股票数据
-            data = xtdata.get_market_data(
-                field_list=fields, 
-                stock_list=stock_list, 
-                period='1d',
-                start_time=start_date, 
-                end_time=end_date,
-                dividend_type='front',
-            )
-            
-            if not data or not any(field in data for field in fields):
-                logger.error("下载日线数据失败: API返回空数据")
-                return False
-            
-            logger.info(f"数据下载完成，耗时: {time.time() - start_time:.2f}秒，开始处理数据...")
-            
-            # 按月份分区处理数据
-            # 获取所有月份
-            date_partitions = {}
-            for date in trading_dates:
-                partition_key = self._get_partition_key(date)
-                if partition_key not in date_partitions:
-                    date_partitions[partition_key] = []
-                date_partitions[partition_key].append(date)
-                
-            logger.info(f"数据将分为 {len(date_partitions)} 个月份分区")
-            
-            # 转换数据为DataFrame格式
-            all_data = []
-            
-            # 构建结果DataFrame
-            logger.info("转换数据格式...")
-            
-            # 获取所有日期
-            all_dates = set()
-            for field in fields:
-                if field in data:
-                    field_df = data[field]
-                    all_dates.update(field_df.columns)
-            
-            # 预分配足够大的列表
-            total_rows = len(stock_list) * len(all_dates)
-            logger.info(f"预计处理 {total_rows} 行数据")
-            result_data = []
-            
-            # 使用更高效的列表操作而非逐个append
-            processed_count = 0
-            start_process_time = time.time()
-            
-            # 批量构建数据记录
-            for stock in stock_list:
-                for date in sorted(all_dates):
-                    row = {
-                        'stock_code': stock,
-                        'date': date
-                    }
-                    
-                    # 添加每个字段的值
-                    close_value = None
-                    preclose_value = None
-                    volume_value = None
-                    
-                    for field in fields:
-                        if field in data:
-                            field_df = data[field]
-                            if stock in field_df.index and date in field_df.columns:
-                                value = field_df.loc[stock, date]
-                                row[field] = value
-                                
-                                # 保存关键值用于后续计算
-                                if field == 'close':
-                                    close_value = value
-                                elif field == 'preClose':
-                                    preclose_value = value
-                                elif field == 'volume':
-                                    volume_value = value
-                            else:
-                                row[field] = None
-                    
-                    # 计算涨跌幅
-                    if close_value is not None and preclose_value is not None and preclose_value != 0:
-                        row['pct_chg'] = (close_value - preclose_value) / preclose_value * 100
-                    else:
-                        row['pct_chg'] = None
-                    
-                    # 获取股本数据并计算市值和换手率
-                    if close_value is not None and stock in capital_df.index:
-                        total_capital = capital_df.loc[stock, 'total_capital']
-                        circulating_capital = capital_df.loc[stock, 'circulating_capital']
-                        
-                        # 计算总市值（亿元）
-                        if total_capital is not None:
-                            row['total_mv'] = close_value * total_capital
-                        else:
-                            row['total_mv'] = None
-                        
-                        # 计算流通市值（亿元）
-                        if circulating_capital is not None:
-                            row['circ_mv'] = close_value * circulating_capital
-                        else:
-                            row['circ_mv'] = None
-                        
-                        # 计算换手率（%）
-                        if volume_value is not None and circulating_capital is not None and circulating_capital > 0:
-                            row['turnover_rate'] = volume_value / circulating_capital * 100
-                        else:
-                            row['turnover_rate'] = None
-                    else:
-                        row['total_mv'] = None
-                        row['circ_mv'] = None
-                        row['turnover_rate'] = None
-                    
-                    result_data.append(row)
-                    
-                    processed_count += 1
-                    if processed_count % 100000 == 0:
-                        elapsed = time.time() - start_process_time
-                        progress = processed_count / total_rows * 100
-                        logger.info(f"已处理 {processed_count:,}/{total_rows:,} 行 ({progress:.1f}%)，耗时: {elapsed:.2f}秒")
-            
-            logger.info(f"数据格式转换完成，耗时: {time.time() - start_process_time:.2f}秒，开始按分区存储...")
-            
-            # 创建DataFrame
-            df = pd.DataFrame(result_data)
-            
-            # 确保日期格式统一
-            df['date'] = pd.to_datetime(df['date'])
-            df['date_str'] = df['date'].dt.strftime('%Y%m%d')
-            
-            # 按分区存储数据
-            for partition_key, partition_dates in date_partitions.items():
-                partition_dir = DAILY_DIR / partition_key
-                partition_dir.mkdir(exist_ok=True, parents=True)
-                
-                # 按日期筛选当前分区的数据
-                partition_data = df[df['date_str'].isin(partition_dates)]
-                
-                if not partition_data.empty:
-                    partition_file = partition_dir / "daily_data.parquet"
-                    
-                    # 高效存储 - 使用snappy压缩
-                    partition_data.to_parquet(
-                        partition_file, 
-                        index=False,
-                        compression='snappy',
-                        engine='pyarrow'
-                    )
-                    
-                    logger.info(f"分区 {partition_key} 保存成功，共 {len(partition_data):,} 行数据")
-                    
-                    # 更新元数据中的分区列表
-                    if partition_key not in self.metadata['partitions']['daily']:
-                        self.metadata['partitions']['daily'].append(partition_key)
-                
-                # 清理以节省内存
-                del partition_data
-            
-            # 确保分区排序
-            self.metadata['partitions']['daily'].sort()
-            
-            # 更新元数据
-            self.metadata['last_update']['daily'] = datetime.now().strftime('%Y%m%d')
-            self._save_metadata()
-            
-            total_time = time.time() - start_time
-            logger.info(f"日线数据下载和处理完成，总耗时: {total_time:.2f}秒")
-            return True
+            if use_tushare:
+                # 使用Tushare下载数据
+                logger.info(f"开始使用Tushare下载日线数据: {len(stock_list)} 只股票，日期范围 {start_date} 至 {end_date}")
+
+                success = self._download_with_tushare(start_date, end_date, stock_list, trading_dates)
+
+                if not success:
+                    logger.error("Tushare下载失败")
+                    return False
+
+                logger.info(f"Tushare数据下载完成，耗时: {time.time() - start_time:.2f}秒")
+                return True
+            else:
+                # 使用xtdata下载数据（默认方式）
+                logger.info(f"开始使用xtdata下载日线数据: {len(stock_list)} 只股票，日期范围 {start_date} 至 {end_date}")
+
+                success = self._download_with_xtdata(start_date, end_date, stock_list, trading_dates, fields)
+
+                if not success:
+                    logger.error("xtdata下载失败")
+                    return False
+
+                print(f"xtdata数据下载完成，耗时: {time.time() - start_time:.2f}秒")
+                return True
             
         except KeyboardInterrupt:
             logger.warning("用户中断下载过程")
@@ -738,7 +1504,421 @@ class ParquetDataStorage:
             import traceback
             logger.error(traceback.format_exc())
             return False
-    
+
+
+
+
+    def _download_with_xtdata(self, start_date: str, end_date: str, stock_list: List[str], trading_dates: List[str], fields: List[str]) -> bool:
+        """使用xtdata下载日线数据（默认方式）
+
+        参数:
+            start_date: 开始日期
+            end_date: 结束日期
+            stock_list: 股票列表
+            trading_dates: 交易日列表
+            fields: 字段列表
+        """
+        try:
+            from xtquant import xtdata
+
+            # 确保xtdata连接
+            if not xtdata.get_client().is_connected():
+                logger.info("连接xtdata API...")
+                xtdata.get_client().connect()
+                time.sleep(1)
+
+            if not xtdata.get_client().is_connected():
+                logger.error("无法连接到xtdata API")
+                return False
+
+            logger.info("xtdata API连接成功")
+
+            # 按月份分组下载
+            monthly_groups = {}
+            for date in trading_dates:
+                month_key = date[:6]  # YYYYMM
+                if month_key not in monthly_groups:
+                    monthly_groups[month_key] = []
+                monthly_groups[month_key].append(date)
+
+            logger.info(f"按月份分组下载: {list(monthly_groups.keys())}")
+
+            total_success = True
+
+            for month_key, month_dates in monthly_groups.items():
+                logger.info(f"下载月份 {month_key}，包含 {len(month_dates)} 个交易日")
+
+                # 下载整个月份的数据
+                month_start = month_dates[0]
+                month_end = month_dates[-1]
+
+                success = self._download_month_with_xtdata(month_key, month_start, month_end, stock_list, fields)
+
+                if not success:
+                    logger.error(f"月份 {month_key} 下载失败")
+                    total_success = False
+                else:
+                    logger.info(f"月份 {month_key} 下载成功")
+
+            return total_success
+
+        except Exception as e:
+            logger.error(f"xtdata下载失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def _download_month_with_xtdata(self, month_key: str, start_date: str, end_date: str, stock_list: List[str], fields: List[str]) -> bool:
+        """使用xtdata下载单个月份的数据
+
+        参数:
+            month_key: 月份键，格式YYYYMM
+            start_date: 开始日期
+            end_date: 结束日期
+            stock_list: 股票列表
+            fields: 字段列表
+        """
+        try:
+            from xtquant import xtdata
+
+            logger.info(f"使用xtdata下载月份 {month_key} 的数据: {start_date} - {end_date}")
+
+            # 下载基础行情数据
+            data = xtdata.get_market_data(
+                stock_list=stock_list,
+                period='1d',
+                start_time=start_date,
+                end_time=end_date,
+                field_list=fields,
+                dividend_type='front',
+                fill_data=True
+            )
+
+            if not data or not any(field in data for field in fields):
+                logger.warning(f"xtdata下载月份 {month_key} 失败: 无数据")
+                return False
+
+            # 转换数据格式，确保与202503格式完全一致
+            converted_data = self._convert_xtdata_to_dataframe_monthly(data, stock_list, start_date, end_date)
+
+            if converted_data.empty:
+                logger.warning(f"xtdata数据转换失败: 月份 {month_key}")
+                return False
+
+            # 保存到对应的月份分区
+            partition_key = month_key
+            success = self._save_monthly_partition_data(partition_key, converted_data)
+
+            if success:
+                logger.info(f"xtdata月份 {month_key} 下载成功: {len(converted_data)} 条记录")
+                return True
+            else:
+                logger.error(f"xtdata月份 {month_key} 保存失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"xtdata下载月份数据失败 {month_key}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def _convert_xtdata_to_dataframe_monthly(self, data: dict, stock_list: List[str], start_date: str, end_date: str) -> pd.DataFrame:
+        """转换xtdata月度数据为DataFrame格式，确保与202503格式完全一致
+
+        202503格式标准:
+        - 字段: ['stock_code', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'preClose', 'pct_chg', 'total_mv', 'circ_mv', 'turnover_rate', 'date_str']
+        - volume单位: 股 (不是手)
+        - amount单位: 元
+        - 市值单位: 万元
+
+        xtdata数据结构:
+        - 每个字段是一个DataFrame，行是股票代码，列是日期
+        """
+        try:
+            logger.info(f"转换xtdata月度数据为DataFrame格式: {start_date} - {end_date}")
+
+            result_data = []
+
+            # 🔧 获取股本数据用于计算市值（修复市值数据缺失问题）
+            capital_file = get_data_path("stock_capital_data.parquet")
+            if capital_file.exists():
+                capital_df = pd.read_parquet(capital_file)
+                logger.info(f"原始股本数据: {len(capital_df)} 条记录")
+
+                # 🔧 修复set_index用法：inplace=True会返回None，应该分开操作
+                capital_df.set_index('stock', inplace=True)
+                logger.info(f"成功加载股本数据: {len(capital_df)} 只股票")
+            else:
+                capital_df = pd.DataFrame()
+                logger.warning(f"股本数据文件不存在: {capital_file}")
+
+            # 获取所有可用的日期（从任一字段中获取）
+            available_dates = set()
+            for field_name, field_data in data.items():
+                if isinstance(field_data, pd.DataFrame):
+                    available_dates.update(field_data.columns)
+
+            if not available_dates:
+                logger.warning("xtdata数据中没有找到日期")
+                return pd.DataFrame()
+
+            logger.info(f"找到 {len(available_dates)} 个日期: {sorted(available_dates)}")
+
+            # 遍历每只股票和每个日期
+            for stock_code in stock_list:
+                for date_str in sorted(available_dates):
+                    # 转换日期格式
+                    try:
+                        date_dt = pd.to_datetime(date_str, format='%Y%m%d')
+                    except:
+                        continue
+
+                    # 构建记录
+                    record = {
+                        'stock_code': stock_code,
+                        'date': date_dt,
+                        'date_str': date_str
+                    }
+
+                    # 提取基础行情数据
+                    has_data = False
+                    for field in ['open', 'high', 'low', 'close', 'volume', 'amount', 'preClose']:
+                        if field in data:
+                            field_data = data[field]
+                            if isinstance(field_data, pd.DataFrame) and stock_code in field_data.index and date_str in field_data.columns:
+                                value = field_data.loc[stock_code, date_str]
+                                if pd.notna(value):
+                                    record[field] = float(value)
+                                    has_data = True
+                                else:
+                                    record[field] = None
+                            else:
+                                record[field] = None
+                        else:
+                            record[field] = None
+
+                    # 只有当至少有一个字段有数据时才添加记录
+                    if not has_data:
+                        continue
+
+                    # 计算衍生字段
+                    if record.get('close') and record.get('preClose'):
+                        # 计算涨跌幅 (%)
+                        record['pct_chg'] = ((record['close'] - record['preClose']) / record['preClose']) * 100
+                    else:
+                        record['pct_chg'] = None
+
+                    # 🔧 修复市值计算逻辑（参考_convert_xtdata_to_dataframe_single_date实现）
+                    if record.get('close') is not None and not capital_df.empty and stock_code in capital_df.index:
+                        try:
+                            total_capital = capital_df.loc[stock_code, 'total_capital']
+                            circulating_capital = capital_df.loc[stock_code, 'circulating_capital']
+
+                            # 计算总市值（与单日处理方法保持一致的单位）
+                            if pd.notna(total_capital) and total_capital > 0:
+                                record['total_mv'] = record['close'] * total_capital
+                            else:
+                                record['total_mv'] = None
+
+                            # 计算流通市值和换手率
+                            if pd.notna(circulating_capital) and circulating_capital > 0:
+                                record['circ_mv'] = record['close'] * circulating_capital
+
+                                # 计算换手率 (%)
+                                if record.get('volume') is not None and record['volume'] > 0:
+                                    record['turnover_rate'] = (record['volume'] / circulating_capital) * 100
+                                else:
+                                    record['turnover_rate'] = None
+                            else:
+                                record['circ_mv'] = None
+                                record['turnover_rate'] = None
+
+                        except Exception as e:
+                            logger.debug(f"计算股票 {stock_code} 市值时出错: {e}")
+                            record['total_mv'] = None
+                            record['circ_mv'] = None
+                            record['turnover_rate'] = None
+                    else:
+                        # 没有收盘价或股本数据时设置为None
+                        record['total_mv'] = None
+                        record['circ_mv'] = None
+                        record['turnover_rate'] = None
+
+                    result_data.append(record)
+
+            if not result_data:
+                logger.warning("没有有效的xtdata数据")
+                return pd.DataFrame()
+
+            # 创建DataFrame
+            df = pd.DataFrame(result_data)
+
+            # 确保数据类型与202503一致
+            df['stock_code'] = df['stock_code'].astype('object')
+            df['date'] = pd.to_datetime(df['date'])
+            df['date_str'] = df['date_str'].astype('object')
+
+            # 数值字段
+            numeric_fields = ['open', 'high', 'low', 'close', 'preClose', 'pct_chg', 'total_mv', 'circ_mv', 'turnover_rate']
+            for field in numeric_fields:
+                if field in df.columns:
+                    df[field] = pd.to_numeric(df[field], errors='coerce')
+
+            # volume字段特殊处理：确保是整数类型，单位为股
+            if 'volume' in df.columns:
+                df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0).astype('int64')
+
+            # amount字段：确保是浮点类型，单位为元
+            if 'amount' in df.columns:
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+
+            # 过滤掉没有有效数据的记录
+            df = df.dropna(subset=['close'])
+
+            # 确保字段顺序与202503一致
+            expected_columns = ['stock_code', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'preClose', 'pct_chg', 'total_mv', 'circ_mv', 'turnover_rate', 'date_str']
+
+            # 重新排列列顺序
+            df = df.reindex(columns=expected_columns)
+
+            logger.info(f"xtdata月度数据转换完成: {len(df)} 条有效记录")
+            return df
+
+        except Exception as e:
+            logger.error(f"xtdata月度数据转换失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return pd.DataFrame()
+
+    def _save_monthly_partition_data(self, partition_key: str, data: pd.DataFrame) -> bool:
+        """保存月度分区数据
+
+        参数:
+            partition_key: 分区键，格式YYYYMM
+            data: 要保存的数据
+        """
+        try:
+            if data.empty:
+                logger.warning(f"分区 {partition_key} 数据为空，跳过保存")
+                return True
+
+            # 创建分区目录
+            daily_data_dir = get_data_path("daily")
+            partition_dir = daily_data_dir / partition_key
+            partition_dir.mkdir(parents=True, exist_ok=True)
+
+            # 保存为parquet文件
+            output_file = partition_dir / "daily_data.parquet"
+
+            logger.info(f"保存分区 {partition_key} 数据到: {output_file}")
+            logger.info(f"数据规模: {len(data)} 行, {len(data.columns)} 列")
+
+            # 确保数据格式正确
+            if 'date' in data.columns:
+                data['date'] = pd.to_datetime(data['date'])
+
+            # 保存数据
+            data.to_parquet(output_file, index=False, engine='pyarrow')
+
+            logger.info(f"分区 {partition_key} 保存成功")
+            return True
+
+        except Exception as e:
+            logger.error(f"保存分区 {partition_key} 失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def _verify_download_completeness(self, start_date: str, end_date: str, expected_dates: list) -> bool:
+        """验证下载数据的完整性"""
+        try:
+            logger.info(f"验证下载数据完整性: {start_date} - {end_date}")
+
+            # 按月份分组期望的日期
+            expected_partitions = {}
+            for date in expected_dates:
+                partition_key = self._get_partition_key(date)
+                if partition_key not in expected_partitions:
+                    expected_partitions[partition_key] = []
+                expected_partitions[partition_key].append(date)
+
+            logger.info(f"期望的分区: {list(expected_partitions.keys())}")
+
+            # 检查每个分区的文件是否存在且数据完整
+            missing_partitions = []
+            incomplete_partitions = []
+
+            for partition_key, partition_dates in expected_partitions.items():
+                partition_dir = get_data_path("daily") / partition_key
+                partition_file = partition_dir / "daily_data.parquet"
+
+                if not partition_file.exists():
+                    missing_partitions.append(partition_key)
+                    logger.warning(f"分区文件不存在: {partition_file}")
+                    continue
+
+                try:
+                    # 读取分区数据验证
+                    partition_data = pd.read_parquet(partition_file)
+                    if partition_data.empty:
+                        incomplete_partitions.append(partition_key)
+                        logger.warning(f"分区数据为空: {partition_key}")
+                        continue
+
+                    # 检查日期覆盖（允许部分缺失，特别是未来日期）
+                    if 'date_str' in partition_data.columns:
+                        actual_dates = set(partition_data['date_str'].unique())
+                        expected_dates_set = set(partition_dates)
+                        missing_dates = expected_dates_set - actual_dates
+
+                        if missing_dates:
+                            # 计算缺失比例
+                            missing_ratio = len(missing_dates) / len(expected_dates_set)
+                            logger.info(f"分区 {partition_key} 缺少 {len(missing_dates)}/{len(expected_dates_set)} 个日期 ({missing_ratio:.1%})")
+                            logger.info(f"缺失日期: {sorted(missing_dates)}")
+
+                            # 如果缺失超过50%，认为不完整
+                            if missing_ratio > 0.5:
+                                incomplete_partitions.append(partition_key)
+                                logger.warning(f"分区 {partition_key} 缺失日期过多: {missing_ratio:.1%}")
+                                continue
+                            else:
+                                logger.info(f"分区 {partition_key} 缺失日期在可接受范围内: {missing_ratio:.1%}")
+                        else:
+                            logger.info(f"分区 {partition_key} 日期完整")
+
+                    # 检查股票数量
+                    stock_count = partition_data['stock_code'].nunique() if 'stock_code' in partition_data.columns else 0
+                    if stock_count < 1000:  # 假设至少应该有1000只股票
+                        incomplete_partitions.append(partition_key)
+                        logger.warning(f"分区 {partition_key} 股票数量不足: {stock_count}")
+                        continue
+
+                    logger.info(f"分区 {partition_key} 验证通过: {len(partition_data)} 条记录, {stock_count} 只股票")
+
+                except Exception as e:
+                    incomplete_partitions.append(partition_key)
+                    logger.error(f"读取分区 {partition_key} 失败: {e}")
+
+            # 汇总验证结果
+            if missing_partitions:
+                logger.error(f"缺失的分区: {missing_partitions}")
+
+            if incomplete_partitions:
+                logger.error(f"不完整的分区: {incomplete_partitions}")
+
+            total_issues = len(missing_partitions) + len(incomplete_partitions)
+            if total_issues > 0:
+                logger.error(f"数据验证失败: {total_issues} 个分区有问题")
+                return False
+
+            logger.info("所有分区验证通过")
+            return True
+
+        except Exception as e:
+            logger.error(f"验证下载完整性失败: {e}")
+            return False
+
     def _download_minute_batch(self, batch_stocks, start_date, end_date, fields):
         """下载一批股票的5分钟数据
         
@@ -1391,9 +2571,10 @@ class ParquetDataStorage:
         if not calendar_file.exists():
             logger.warning("交易日历文件不存在，尝试下载")
             self.download_trading_calendar()
-        
+        print(f"address:{calendar_file}")
         try:
             calendar_df = pd.read_parquet(calendar_file)
+            print(f"范围：{calendar_df}")
             
             # 过滤掉特殊值'date_str'
             if 'date_str' in calendar_df.columns:
@@ -1414,7 +2595,7 @@ class ParquetDataStorage:
             return pd.DataFrame()
     
     def get_daily_data(self, stock_list=None, start_date=None, end_date=None, fields=None):
-        """获取日线数据 (使用 pyarrow dataset 读取)
+        """获取日线数据 (使用 pandas 直接读取 parquet 文件)
         
         参数:
             stock_list: 股票列表，None表示所有股票
@@ -1437,186 +2618,316 @@ class ParquetDataStorage:
             logger.error(f"开始或结束日期格式无效: {start_date}, {end_date}。请使用 YYYYMMDD 格式。")
             return pd.DataFrame()
 
-        # !! 重要: 假设 DAILY_DIR 是在类初始化或其他地方定义的 Path 对象 !!
-        # !! 如果不是，需要在这里显式定义或从 self 获取 !!
-        # daily_dir_path = self.daily_dir # 例如，如果存储在实例属性中
-        # 或者直接定义:
-        daily_dir_path = Path("to/local_data/daily")
+        # 定义数据目录路径
+        daily_dir_path = get_data_path("daily")
         if not daily_dir_path.exists():
             logger.error(f"日线数据基础目录不存在: {daily_dir_path}")
-            return pd.DataFrame()
+            # 尝试下载数据
+            logger.info("尝试下载日线数据...")
+            success = self.download_daily_data(stock_list, start_date, end_date)
+            if not success:
+                logger.error("下载日线数据失败")
+                return pd.DataFrame()
+            # 如果下载成功，继续执行
         
-        logger.info(f"尝试使用 pyarrow.dataset 从 {daily_dir_path} 读取数据，日期范围: {start_date} 到 {end_date}")
+        logger.info(f"尝试从 {daily_dir_path} 读取数据，日期范围: {start_date} 到 {end_date}")
 
         try:
-            # --- 构建过滤条件 ---
-            # 假设 Parquet 文件中存储了 'date_str' 列 (YYYYMMDD) 用于精确过滤
-            filter_list = []
-            # 检查 date_str 列是否存在于 schema 中 (如果可能的话，更健壮)
-            # dataset_schema = ds.dataset(daily_dir_path, format="parquet", partitioning="hive").schema
-            # if 'date_str' not in dataset_schema.names:
-            #     logger.error(f"Parquet 文件缺少 'date_str' 列，无法按日期过滤。 Path: {daily_dir_path}")
-            #     return pd.DataFrame()
-            # 注意：提前获取 schema 会有额外开销，暂时直接假设列存在
+            # 生成日期范围内需要的月份分区
+            start_dt = datetime.strptime(start_date, '%Y%m%d')
+            end_dt = datetime.strptime(end_date, '%Y%m%d')
 
-            filter_list.append(pc.field('date_str') >= start_date)
-            filter_list.append(pc.field('date_str') <= end_date)
-
-            # 添加股票代码过滤条件
-            if stock_list:
-                # 确保 stock_list 中的元素是字符串类型
-                stock_list = [str(s) for s in stock_list]
-                # 检查 stock_code 列是否存在于 schema 中
-                # if 'stock_code' not in dataset_schema.names:
-                #      logger.error(f"Parquet 文件缺少 'stock_code' 列，无法按股票过滤。 Path: {daily_dir_path}")
-                #      return pd.DataFrame()
-                filter_list.append(pc.field('stock_code').isin(stock_list))
-    
-            # 合并所有过滤条件
-            combined_filter = filter_list[0]
-            for f in filter_list[1:]:
-                combined_filter = combined_filter & f
-
-            # --- 确定读取的列 ---
-            read_columns = None # 默认读取所有列
-            if fields:
-                # 保证基础列总是被读取，以用于后续处理或排序
-                base_cols = ['stock_code', 'date_str']
-                # 确保 fields 中的列也是字符串
-                fields_str = [str(f) for f in fields]
-                read_columns = list(set(base_cols + fields_str))
-                # 可以在这里添加对 schema 的检查，确保请求的列都存在
-                # valid_read_columns = [col for col in read_columns if col in dataset_schema.names]
-                # if len(valid_read_columns) < len(read_columns):
-                #     missing_cols = set(read_columns) - set(valid_read_columns)
-                #     logger.warning(f"请求的字段在 Parquet 文件中不存在，将忽略: {missing_cols}")
-                # read_columns = valid_read_columns
-                logger.debug(f"指定读取列: {read_columns}")        
-
-
-            # --- 创建并读取 Dataset ---
-            # 指定分区方案为 Hive 风格 (会自动识别 year=.../month=...)
-            dataset = ds.dataset(daily_dir_path, format="parquet", partitioning="hive")
-
-            # 读取数据，应用过滤条件和列选择
-            logger.info(f"开始读取 Parquet 数据，应用过滤器: {combined_filter}")
-            try:
-                # 使用 Dataset API 读取
-                table = dataset.to_table(filter=combined_filter, columns=read_columns)
-                
-                # 转换为 pandas DataFrame
-                df = table.to_pandas()
-                
-            except pa.lib.ArrowInvalid as e:
-                # 处理列不存在的情况
-                error_message = str(e)
-                if "No match for FieldRef.Name" in error_message:
-                    # 提取错误中提到的字段名
-                    import re
-                    field_match = re.search(r"FieldRef\.Name\((\w+)\)", error_message)
-                    
-                    if field_match:
-                        missing_field = field_match.group(1)
-                        logging.warning(f"字段 '{missing_field}' 在数据中不存在，尝试移除该字段后重新读取")
-                        
-                        # 从 read_columns 和 filter_expressions 中移除缺失的字段
-                        if missing_field in read_columns:
-                            read_columns.remove(missing_field)
-                        
-                        # 如果 missing_field 在 filter_expressions 中，需要重新构建 filter
-                        # 这部分较复杂，暂时只处理 fields 参数
-                        
-                        # 重试不包含缺失字段的请求
-                        try:
-                            # 移除对缺失字段的引用
-                            filtered_fields = [f for f in fields if f != missing_field]
-                            
-                            # 递归调用，但不再尝试获取缺失的字段
-                            return self.get_daily_data(
-                                stock_list=stock_list,
-                                start_date=start_date,
-                                end_date=end_date,
-                                fields=filtered_fields
-                            )
-                        except Exception as retry_error:
-                            logging.error(f"重试时出错: {retry_error}")
-                            return {}
-                    else:
-                        logging.error(f"无法识别缺失的字段: {error_message}")
-                        return {}
+            # 生成需要读取的月份列表
+            months_to_read = set()
+            current_dt = start_dt.replace(day=1)  # 从月初开始
+            while current_dt <= end_dt:
+                month_str = current_dt.strftime('%Y%m')
+                months_to_read.add(month_str)
+                # 移动到下个月
+                if current_dt.month == 12:
+                    current_dt = current_dt.replace(year=current_dt.year + 1, month=1)
                 else:
-                    # 其他 Arrow 错误
-                    logging.error(f"读取数据时出现 Arrow 错误: {e}")
-                    return {}
-                    
-            except Exception as e:
-                # 处理其他异常
-                logging.error(f"读取数据时出现未知错误: {e}")
-                import traceback
-                logging.error(f"错误详情: {traceback.format_exc()}")
-                return {}
+                    current_dt = current_dt.replace(month=current_dt.month + 1)
 
-            # --- 转换为 Pandas DataFrame ---
-            if table.num_rows == 0:
-                logger.warning(f"在 {daily_dir_path} 中未找到符合条件的数据: 日期 {start_date}-{end_date}, 股票: {stock_list if stock_list else '所有'}")
+            logger.info(f"需要读取的月份分区: {sorted(months_to_read)}")
+
+            all_data = []
+            date_field = None
+            stock_field = None
+
+            # 遍历每个月份分区
+            for month_str in sorted(months_to_read):
+                partition_dir = daily_dir_path / month_str
+                partition_file = partition_dir / "daily_data.parquet"
+
+                if partition_file.exists():
+                    try:
+                        logger.info(f"读取月份分区文件: {partition_file}")
+
+                        # 直接使用pandas读取parquet文件，避免PyArrow过滤器问题
+                        partition_df = pd.read_parquet(partition_file)
+
+                        if partition_df.empty:
+                            logger.warning(f"月份分区 {month_str} 数据为空")
+                            continue
+
+                        # 每个分区都重新检测字段名（修复列名不一致问题）
+                        available_fields = partition_df.columns.tolist()
+                        logger.info(f"分区 {month_str} 可用字段: {available_fields}")
+
+                        # 检测当前分区的日期字段名
+                        current_date_field = None
+                        for field_name in ['date_str', 'date', 'trade_date', 'trading_date']:
+                            if field_name in available_fields:
+                                current_date_field = field_name
+                                break
+
+                        # 检测当前分区的股票代码字段名
+                        current_stock_field = None
+                        for field_name in ['stock_code', 'code', 'symbol', 'ts_code']:
+                            if field_name in available_fields:
+                                current_stock_field = field_name
+                                break
+
+                        if current_date_field is None:
+                            logger.error(f"分区 {month_str} 未找到日期字段，可用字段: {available_fields}")
+                            continue  # 跳过这个分区而不是返回空DataFrame
+
+                        if current_stock_field is None:
+                            logger.error(f"分区 {month_str} 未找到股票代码字段，可用字段: {available_fields}")
+                            continue  # 跳过这个分区而不是返回空DataFrame
+
+                        logger.info(f"分区 {month_str} 使用字段映射: 日期字段='{current_date_field}', 股票字段='{current_stock_field}'")
+
+                        # 设置全局字段名（用于第一次检测）
+                        if date_field is None:
+                            date_field = current_date_field
+                        if stock_field is None:
+                            stock_field = current_stock_field
+
+                        # 确保日期字段格式一致（使用当前分区检测到的字段名）
+                        if current_date_field in partition_df.columns:
+                            # 如果日期字段是datetime类型，转换为字符串
+                            if pd.api.types.is_datetime64_any_dtype(partition_df[current_date_field]):
+                                partition_df['date_str'] = partition_df[current_date_field].dt.strftime('%Y%m%d')
+                            else:
+                                # 否则直接使用原始字段
+                                partition_df['date_str'] = partition_df[current_date_field].astype(str)
+
+                            # 如果当前字段不是date_str，确保date_str列存在
+                            if current_date_field != 'date_str' and 'date_str' not in partition_df.columns:
+                                if pd.api.types.is_datetime64_any_dtype(partition_df[current_date_field]):
+                                    partition_df['date_str'] = partition_df[current_date_field].dt.strftime('%Y%m%d')
+                                else:
+                                    partition_df['date_str'] = partition_df[current_date_field].astype(str)
+                                logger.info(f"分区 {month_str} 从 '{current_date_field}' 创建了 'date_str' 列")
+                        else:
+                            # 如果没有找到日期字段，尝试从其他列创建
+                            logger.warning(f"分区 {month_str} 中缺少日期字段 '{current_date_field}'，尝试从其他列创建")
+                            for alt_field in ['date', 'trade_date', 'trading_date', 'time']:
+                                if alt_field in partition_df.columns:
+                                    if pd.api.types.is_datetime64_any_dtype(partition_df[alt_field]):
+                                        partition_df['date_str'] = partition_df[alt_field].dt.strftime('%Y%m%d')
+                                    else:
+                                        partition_df['date_str'] = partition_df[alt_field].astype(str)
+                                    logger.info(f"使用 '{alt_field}' 创建了 'date_str' 列")
+                                    break
+                            else:
+                                # 如果所有尝试都失败，使用分区月份作为日期的一部分
+                                logger.warning(f"无法从现有列创建日期字段，使用分区月份 {month_str} 作为日期前缀")
+                                partition_df['date_str'] = month_str + '01'  # 默认使用月份的第一天
+
+                        # 按日期范围过滤
+                        if 'date_str' in partition_df.columns:
+                            logger.info(f"分区 {month_str} 日期过滤前: {len(partition_df)} 行")
+                            logger.info(f"分区 {month_str} 日期范围: {partition_df['date_str'].min()} - {partition_df['date_str'].max()}")
+                            logger.info(f"请求日期范围: {start_date} - {end_date}")
+
+                            date_mask = (partition_df['date_str'] >= start_date) & (partition_df['date_str'] <= end_date)
+                            partition_df = partition_df[date_mask]
+
+                            logger.info(f"分区 {month_str} 日期过滤后: {len(partition_df)} 行")
+                            if len(partition_df) == 0:
+                                logger.warning(f"分区 {month_str} 日期过滤后无数据，可能请求的日期不在数据范围内")
+                                available_dates = sorted(pd.read_parquet(partition_file)['date_str'].unique())
+                                logger.info(f"分区 {month_str} 可用日期: {available_dates[:10]}...（显示前10个）")
+                        else:
+                            logger.warning(f"分区 {month_str} 中缺少 'date_str' 列，无法按日期过滤")
+
+                        # 按股票代码过滤（使用当前分区检测到的字段名）
+                        if stock_list and current_stock_field in partition_df.columns:
+                            logger.info(f"分区 {month_str} 股票过滤前: {len(partition_df)} 行")
+                            logger.info(f"请求的股票数量: {len(stock_list)}")
+                            logger.info(f"请求的股票样本: {stock_list[:5]}")
+
+                            stock_list_str = [str(s) for s in stock_list]
+                            available_stocks = set(partition_df[current_stock_field].unique())
+                            requested_stocks = set(stock_list_str)
+                            matched_stocks = requested_stocks & available_stocks
+
+                            logger.info(f"分区 {month_str} 可用股票数量: {len(available_stocks)}")
+                            logger.info(f"分区 {month_str} 匹配的股票数量: {len(matched_stocks)}")
+
+                            partition_df = partition_df[partition_df[current_stock_field].isin(stock_list_str)]
+                            logger.info(f"分区 {month_str} 股票过滤后: {len(partition_df)} 行")
+
+                            if len(partition_df) == 0:
+                                logger.warning(f"分区 {month_str} 股票过滤后无数据")
+                                missing_stocks = requested_stocks - available_stocks
+                                if missing_stocks:
+                                    logger.warning(f"分区 {month_str} 缺失的股票: {list(missing_stocks)[:10]}")
+                        elif stock_list:
+                            logger.warning(f"分区 {month_str} 缺少股票字段 '{current_stock_field}'，跳过股票过滤")
+
+                        # 按字段过滤（使用当前分区检测到的字段名）
+                        if fields and not partition_df.empty:
+                            # 保证基础列总是被读取
+                            base_cols = [current_stock_field, current_date_field, 'date_str']
+                            if 'date_str' not in base_cols:
+                                base_cols.append('date_str')
+                            fields_str = [str(f) for f in fields]
+                            read_columns = list(set(base_cols + fields_str))
+
+                            # 检查请求的列是否存在
+                            valid_read_columns = [col for col in read_columns if col in partition_df.columns]
+                            if len(valid_read_columns) < len(read_columns):
+                                missing_cols = set(read_columns) - set(valid_read_columns)
+                                logger.debug(f"月份分区 {month_str} 中缺少字段: {missing_cols}")
+
+                            partition_df = partition_df[valid_read_columns]
+
+                        if not partition_df.empty:
+                            all_data.append(partition_df)
+                            logger.info(f"月份分区 {month_str} 读取成功，{len(partition_df)} 行数据")
+
+                    except Exception as e:
+                        logger.warning(f"读取月份分区 {month_str} 失败: {e}")
+                        logger.warning(traceback.format_exc())
+                else:
+                    logger.warning(f"月份分区文件不存在: {partition_file}")
+            
+            # 如果没有找到数据，不自动下载（临时禁用以防止数据被覆盖）
+            if not all_data:
+                logger.warning(f"在日期范围 {start_date}-{end_date} 内未找到任何数据")
+                logger.error("数据缺失，已禁用自动下载。请检查:")
+                logger.error("1. 请求的日期是否为交易日")
+                logger.error("2. 请求的股票代码是否正确")
+                logger.error("3. 数据文件是否完整")
                 return pd.DataFrame()
 
-            df = table.to_pandas()
-            logger.info(f"转换为 Pandas DataFrame 完成，形状: {df.shape}")
+                # 原自动下载代码（已禁用）
+                # logger.info("尝试下载日线数据...")
+                # success = self.download_daily_data(stock_list, start_date, end_date)
+                # if success:
+                #     # 重新尝试读取数据
+                #     logger.info("下载成功，重新尝试读取数据...")
+                #     return self.get_daily_data(stock_list, start_date, end_date, fields)
+                # else:
+                #     logger.error("下载日线数据失败")
+                #     return pd.DataFrame()
+
+            if not all_data:
+                logger.warning("没有找到符合条件的数据")
+                return pd.DataFrame()
+
+            # --- 在合并前确保所有分区都有一致的date字段 ---
+            logger.info("正在标准化分区的date字段...")
+
+            standardized_data = []
+            for i, partition_df in enumerate(all_data):
+                # 为每个分区创建副本以避免修改原始数据
+                df_copy = partition_df.copy()
+
+                # 优先使用date_str字段重建date字段，确保数据质量
+                if 'date_str' in df_copy.columns:
+                    logger.debug(f"分区 {i} 从date_str重建date字段")
+                    df_copy['date'] = pd.to_datetime(df_copy['date_str'], format='%Y%m%d', errors='coerce')
+
+                    # 检查转换失败的情况
+                    failed_count = df_copy['date'].isna().sum()
+                    if failed_count > 0:
+                        logger.warning(f"分区 {i} 有 {failed_count} 行date转换失败，将被移除")
+                        df_copy = df_copy.dropna(subset=['date'])
+                elif 'date' in df_copy.columns:
+                    # 如果只有date字段，确保其为datetime类型
+                    if not pd.api.types.is_datetime64_any_dtype(df_copy['date']):
+                        logger.debug(f"分区 {i} 转换date字段为datetime类型")
+                        df_copy['date'] = pd.to_datetime(df_copy['date'], errors='coerce')
+                        df_copy = df_copy.dropna(subset=['date'])
+                    else:
+                        # 即使是datetime类型，也要检查NaT值
+                        nat_count = df_copy['date'].isna().sum()
+                        if nat_count > 0:
+                            logger.warning(f"分区 {i} 的date字段有 {nat_count} 个NaT值，将被移除")
+                            df_copy = df_copy.dropna(subset=['date'])
+                else:
+                    logger.warning(f"分区 {i} 既没有date字段也没有date_str字段，跳过")
+                    continue
+
+                standardized_data.append(df_copy)
+
+            if not standardized_data:
+                logger.error("所有分区的date字段标准化都失败了")
+                return pd.DataFrame()
+
+            # 现在合并标准化后的数据
+            df = pd.concat(standardized_data, ignore_index=True)
+            logger.info(f"成功合并 {len(standardized_data)} 个标准化分区的数据，总计 {len(df)} 行")
 
             # --- 后续处理 ---
-            # 确保 'date' 列存在且为 datetime 类型
-            if 'date_str' in df.columns:
-                 if 'date' not in df.columns:
-                      df['date'] = pd.to_datetime(df['date_str'], format='%Y%m%d', errors='coerce')
-                      # 检查并移除转换失败的行
-                      original_len = len(df)
-                      df = df.dropna(subset=['date'])
-                      if len(df) < original_len:
-                           logger.warning(f"移除了 {original_len - len(df)} 行，因为 date_str 无法转换为日期。")
-                 # 可选：如果 'date' 列已经存在，验证其类型
-                 elif not pd.api.types.is_datetime64_any_dtype(df['date']):
-                      logger.warning("读取的数据中 'date' 列不是 datetime 类型，尝试转换...")
-                      df['date'] = pd.to_datetime(df['date'], errors='coerce')
-                      df = df.dropna(subset=['date'])
+            # 标准化字段名：确保有统一的date_str和stock_code字段
+            if stock_field != 'stock_code' and stock_field in df.columns:
+                df['stock_code'] = df[stock_field]
 
-            else:
-                logger.warning("读取的数据中缺少 'date_str' 列，无法创建 'date' 列。")
+            # 确保 'date_str' 列存在
+            if 'date_str' not in df.columns:
+                logger.warning("合并后的数据中缺少 'date_str' 列，尝试创建")
+                if date_field in df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(df[date_field]):
+                        df['date_str'] = df[date_field].dt.strftime('%Y%m%d')
+                    else:
+                        df['date_str'] = df[date_field].astype(str)
+                else:
+                    logger.error("无法创建 'date_str' 列，因为缺少日期字段")
+                    # 创建一个默认的日期字符串列，使用开始日期
+                    df['date_str'] = start_date
+                    logger.warning(f"创建了默认的 'date_str' 列，值为 {start_date}")
 
+            # 最终验证date字段（应该已经在合并前处理过了）
+            if 'date' not in df.columns:
+                logger.error("合并后仍然没有date字段，这不应该发生")
+                return pd.DataFrame()
+
+            # 检查是否有NaT值
+            nat_count = df['date'].isna().sum()
+            if nat_count > 0:
+                logger.warning(f"合并后发现 {nat_count} 个NaT值，将被移除")
+                df = df.dropna(subset=['date'])
+
+            # 确保date字段是datetime类型
+            if not pd.api.types.is_datetime64_any_dtype(df['date']):
+                logger.warning("date字段不是datetime类型，尝试转换...")
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                df = df.dropna(subset=['date'])
 
             # 按日期和股票代码排序
             sort_cols = []
             if 'date' in df.columns: sort_cols.append('date')
             if 'stock_code' in df.columns: sort_cols.append('stock_code')
             if sort_cols:
-                 try:
-                      df = df.sort_values(by=sort_cols).reset_index(drop=True)
-                      logger.debug("数据已按日期和股票代码排序")
-                 except Exception as sort_err:
-                      logger.warning(f"排序数据时出错: {sort_err}")
+                try:
+                    df = df.sort_values(by=sort_cols).reset_index(drop=True)
+                    logger.debug("数据已按日期和股票代码排序")
+                except Exception as sort_err:
+                    logger.warning(f"排序数据时出错: {sort_err}")
             else:
-                 logger.warning("缺少 'date' 或 'stock_code' 列，无法排序")
+                logger.warning("缺少 'date' 或 'stock_code' 列，无法排序")
 
-
-            logger.info(f"成功从 pyarrow.dataset 获取并处理数据，最终返回 {len(df)} 行")
+            logger.info(f"成功读取并处理日线数据，最终返回 {len(df)} 行")
             return df
 
-        except pa.lib.ArrowObjectNotFound:
-            # 这通常意味着基础目录不存在，或者 pyarrow 无法识别任何 parquet 文件
-            logger.error(f"Parquet 数据目录未找到或无法识别: {daily_dir_path}")
-            return pd.DataFrame()
-        except pa.lib.ArrowInvalid as e:
-             # 可能文件损坏、Schema 不一致或分区问题
-             logger.error(f"读取 Parquet 文件时出错 (文件损坏/Schema不匹配/分区问题?): {e}")
-             logger.debug(traceback.format_exc())
-             return pd.DataFrame()
-        except KeyError as e:
-             # 尝试过滤或读取的列名在 Parquet 文件中不存在
-             logger.error(f"尝试访问的列不存在于 Parquet 文件中: {e}")
-             logger.debug(traceback.format_exc())
-             return pd.DataFrame()
         except Exception as e:
-            logger.error(f"使用 pyarrow.dataset 读取数据时发生未知错误: {e}")
+            logger.error(f"读取日线数据时发生错误: {e}")
             logger.error(traceback.format_exc())
             return pd.DataFrame()
     
@@ -1826,15 +3137,15 @@ class ParquetDataStorage:
         if not all_data:
             logger.warning("未找到任何符合条件的数据")
             return pd.DataFrame()
-        
-            try:
-                result = pd.concat(all_data, ignore_index=True)
-                logger.info(f"合并后的数据大小: {len(result)} 行")
-                return result
-            except Exception as e:
-                logger.error(f"合并分区数据失败: {e}")
-                logger.error(traceback.format_exc())
-                return pd.DataFrame()
+
+        try:
+            result = pd.concat(all_data, ignore_index=True)
+            logger.info(f"合并后的数据大小: {len(result)} 行")
+            return result
+        except Exception as e:
+            logger.error(f"合并分区数据失败: {e}")
+            logger.error(traceback.format_exc())
+            return pd.DataFrame()
 
     def _parse_datetime_str(self, datetime_str):
         """解析日期时间字符串，支持YYYYMMDD或YYYYMMDDHHMMSS格式
@@ -1878,6 +3189,7 @@ class ParquetDataStorage:
             last_date = datetime.strptime(last_update, '%Y%m%d')
             start_date = (last_date + timedelta(days=1)).strftime('%Y%m%d')
             end_date = datetime.now().strftime('%Y%m%d')
+            print(f"last_date:{start_date} and end_date:{end_date}")
             
             if start_date <= end_date:
                 return self.download_trading_calendar(start_date, end_date)
@@ -1901,7 +3213,7 @@ class ParquetDataStorage:
             last_date = datetime.strptime(last_update, '%Y%m%d')
             start_date = (last_date + timedelta(days=1)).strftime('%Y%m%d')
             end_date = datetime.now().strftime('%Y%m%d')
-            
+            logger.info(f"update start:{start_date}, end_date:{end_date}")
             if start_date <= end_date:
                 return self.download_daily_data(stock_list, start_date, end_date)
             else:
@@ -2792,7 +4104,7 @@ def download_all_data(storage, start_date='20230101', end_date=None, batch_size=
     
     # 下载股票列表
     logger.info("1. 下载股票列表")
-    download_stock_list(storage)
+    # download_stock_list(storage)
     
     # 下载交易日历
     logger.info("2. 下载交易日历")
@@ -2802,9 +4114,9 @@ def download_all_data(storage, start_date='20230101', end_date=None, batch_size=
     logger.info("3. 下载日线数据")
     download_daily_data(storage, start_date, end_date)
     
-    # 下载5分钟数据
-    logger.info("4. 下载5分钟数据")
-    download_minute_data(storage, start_date, end_date)
+    # # 下载5分钟数据
+    # logger.info("4. 下载5分钟数据")
+    # download_minute_data(storage, start_date, end_date)
     
     logger.info("所有数据下载完成")
     return True
@@ -2832,6 +4144,7 @@ def download_calendar(storage, start_date='20230101', end_date=None):
         end_date = datetime.now().strftime('%Y%m%d')
         
     logger.info(f"下载交易日历: {start_date} 至 {end_date}...")
+    print(f"下载交易日历: {start_date} 至 {end_date}...")
     success = storage.download_trading_calendar(start_date, end_date)
     if success:
         logger.info("交易日历下载完成")
@@ -3459,15 +4772,15 @@ def main():
     storage = ParquetDataStorage()
     
     # 设置时间区间参数
-    start_date = '20220601'  # 开始日期，使用YYYYMMDD格式字符串
+    start_date = '20240701'  # 开始日期，使用YYYYMMDD格式字符串
     # end_date = datetime.now().strftime('%Y%m%d')  # 结束日期，默认为当前日期
-    end_date = '20250422'
+    end_date = '20251022'
     batch_size = 500  # 批处理大小
     workers = 5  # 线程数
     
     # 设置测试参数
-    test_date = '20230101'  # 测试日期
-    end_test_date = '20230430'  # 测试结束日期
+    test_date = '20230301'  # 测试日期
+    end_test_date = '20230405'  # 测试结束日期
     test_stock = '000001.SZ'  # 测试股票代码，设为None则使用默认股票
     
     # =================== 请选择要执行的功能，取消注释即可 ===================
@@ -3475,12 +4788,16 @@ def main():
     # === 1. 数据下载功能 ===
     # 下载股票列表 (如果未下载，这个通常应该首先执行)
     # download_stock_list(storage)
-    
+    # print(f"下载交易日历: {test_date} 至 {end_test_date}")
     # 下载交易日历
-    # download_calendar(storage, start_date, end_date)
+    download_calendar(storage, test_date, end_test_date)
+
+    # 更新交易日历
+    # storage.update_trading_calendar()
+
     
     # 下载日线数据
-    download_daily_data(storage, start_date, end_date, batch_size, workers)
+    # download_daily_data(storage, start_date, end_date, batch_size, workers)
     
     # 下载5分钟数据
     # download_minute_data(storage, start_date, end_date, batch_size//2, workers)
@@ -3492,8 +4809,7 @@ def main():
     # 更新股票列表
     # storage.update_stock_list()
     
-    # 更新交易日历
-    # storage.update_trading_calendar()
+
     
     # 更新日线数据
     # storage.update_daily_data()
@@ -3547,54 +4863,54 @@ def main():
     
     # === 4. 数据诊断功能 ===
     # 检查不同分区的数据可用性
-    logger.info("运行数据诊断，检查必要的目录和文件是否存在...")
+    # logger.info("运行数据诊断，检查必要的目录和文件是否存在...")
     
-    # 检查是否已有股票列表
-    if not storage.metadata['stock_list']:
-        logger.info("股票列表为空，需要先下载股票列表")
-        # 取消下面的注释以自动下载股票列表
-        # download_stock_list(storage)
-    else:
-        logger.info(f"已有股票列表，共 {len(storage.metadata['stock_list'])} 只股票")
+    # # 检查是否已有股票列表
+    # if not storage.metadata['stock_list']:
+    #     logger.info("股票列表为空，需要先下载股票列表")
+    #     # 取消下面的注释以自动下载股票列表
+    #     # download_stock_list(storage)
+    # else:
+    #     logger.info(f"已有股票列表，共 {len(storage.metadata['stock_list'])} 只股票")
     
-    # 检查交易日历
-    calendar_file_exists = (CALENDAR_DIR / "trading_calendar.parquet").exists()
-    if not calendar_file_exists:
-        logger.warning("交易日历文件不存在，需要先下载交易日历")
-        # 取消下面的注释以自动下载交易日历
-        # download_calendar(storage, start_date, end_date)
-    else:
-        # 验证交易日历数据
-        calendar_df = storage.get_trading_calendar()
-        if calendar_df.empty:
-            logger.error("交易日历文件存在但数据为空，需要重新下载")
-            # 取消下面的注释以自动重新下载交易日历
-            # download_calendar(storage, start_date, end_date)
-        else:
-            logger.info(f"交易日历数据范围: {calendar_df['date_str'].min()} 至 {calendar_df['date_str'].max()}")
+    # # 检查交易日历
+    # calendar_file_exists = (CALENDAR_DIR / "trading_calendar.parquet").exists()
+    # if not calendar_file_exists:
+    #     logger.warning("交易日历文件不存在，需要先下载交易日历")
+    #     # 取消下面的注释以自动下载交易日历
+    #     # download_calendar(storage, start_date, end_date)
+    # else:
+    #     # 验证交易日历数据
+    #     calendar_df = storage.get_trading_calendar()
+    #     if calendar_df.empty:
+    #         logger.error("交易日历文件存在但数据为空，需要重新下载")
+    #         # 取消下面的注释以自动重新下载交易日历
+    #         # download_calendar(storage, start_date, end_date)
+    #     else:
+    #         logger.info(f"交易日历数据范围: {calendar_df['date_str'].min()} 至 {calendar_df['date_str'].max()}")
     
-    # 检查当前数据分区
-    daily_partitions = storage.metadata['partitions']['daily']
-    minute_partitions = storage.metadata['partitions']['minute']
-    logger.info(f"当前日线数据分区: {daily_partitions}")
-    logger.info(f"当前分钟数据分区: {minute_partitions}")
+    # # 检查当前数据分区
+    # daily_partitions = storage.metadata['partitions']['daily']
+    # minute_partitions = storage.metadata['partitions']['minute']
+    # logger.info(f"当前日线数据分区: {daily_partitions}")
+    # logger.info(f"当前分钟数据分区: {minute_partitions}")
     
-    # 检查测试日期所在分区是否已下载
-    test_partition = storage._get_partition_key(test_date)
-    if test_partition not in storage.metadata['partitions']['daily']:
-        logger.warning(f"测试日期 {test_date} 所在分区 {test_partition} 的日线数据尚未下载")
-        # 取消下面的注释以自动下载测试所需的日线数据
-        # download_daily_data(storage, test_date, end_test_date, batch_size, workers)
-    else:
-        logger.info(f"测试日期 {test_date} 所在分区 {test_partition} 的日线数据已存在")
+    # # 检查测试日期所在分区是否已下载
+    # test_partition = storage._get_partition_key(test_date)
+    # if test_partition not in storage.metadata['partitions']['daily']:
+    #     logger.warning(f"测试日期 {test_date} 所在分区 {test_partition} 的日线数据尚未下载")
+    #     # 取消下面的注释以自动下载测试所需的日线数据
+    #     # download_daily_data(storage, test_date, end_test_date, batch_size, workers)
+    # else:
+    #     logger.info(f"测试日期 {test_date} 所在分区 {test_partition} 的日线数据已存在")
     
-    # 检查测试日期所在分区的5分钟数据
-    if test_partition not in storage.metadata['partitions']['minute']:
-        logger.warning(f"测试日期 {test_date} 所在分区 {test_partition} 的5分钟数据尚未下载")
-        # 取消下面的注释以自动下载测试所需的5分钟数据
-        # download_minute_data(storage, test_date, end_test_date, batch_size//2, workers)
-    else:
-        logger.info(f"测试日期 {test_date} 所在分区 {test_partition} 的5分钟数据已存在")
+    # # 检查测试日期所在分区的5分钟数据
+    # if test_partition not in storage.metadata['partitions']['minute']:
+    #     logger.warning(f"测试日期 {test_date} 所在分区 {test_partition} 的5分钟数据尚未下载")
+    #     # 取消下面的注释以自动下载测试所需的5分钟数据
+    #     # download_minute_data(storage, test_date, end_test_date, batch_size//2, workers)
+    # else:
+    #     logger.info(f"测试日期 {test_date} 所在分区 {test_partition} 的5分钟数据已存在")
     
     logger.info("数据诊断完成，请根据上述信息选择适当的功能执行")
     

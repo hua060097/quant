@@ -1,0 +1,45 @@
+Training until validation scores don't improve for 200 rounds
+[10]    train's ndcg@5: 0.176658        train's ndcg@10: 0.149965       train's ndcg@20: 0.152189       valid's ndcg@5: 0.108084        valid's ndcg@10: 0.0972366      valid's ndcg@20: 0.116827
+[20]    train's ndcg@5: 0.195844        train's ndcg@10: 0.162757       train's ndcg@20: 0.16303        valid's ndcg@5: 0.102386        valid's ndcg@10: 0.099815       valid's ndcg@20: 0.114781
+[30]    train's ndcg@5: 0.214258        train's ndcg@10: 0.173736       train's ndcg@20: 0.171904       valid's ndcg@5: 0.107256        valid's ndcg@10: 0.10255        valid's ndcg@20: 0.122209
+[40]    train's ndcg@5: 0.224355        train's ndcg@10: 0.179684       train's ndcg@20: 0.176427       valid's ndcg@5: 0.1022  valid's ndcg@10: 0.0995332      valid's ndcg@20: 0.122736
+[50]    train's ndcg@5: 0.239737        train's ndcg@10: 0.188475       train's ndcg@20: 0.183759       valid's ndcg@5: 0.107024        valid's ndcg@10: 0.0971889      valid's ndcg@20: 0.120418
+[60]    train's ndcg@5: 0.250533        train's ndcg@10: 0.195945       train's ndcg@20: 0.189502       valid's ndcg@5: 0.0973487       valid's ndcg@10: 0.0966345      valid's ndcg@20: 0.121086
+[70]    train's ndcg@5: 0.262475        train's ndcg@10: 0.20403        train's ndcg@20: 0.195443       valid's ndcg@5: 0.0938488       valid's ndcg@10: 0.0955627      valid's ndcg@20: 0.118926
+[80]    train's ndcg@5: 0.272459        train's ndcg@10: 0.209788       train's ndcg@20: 0.200405       valid's ndcg@5: 0.0871778       valid's ndcg@10: 0.0937058      valid's ndcg@20: 0.116252
+[90]    train's ndcg@5: 0.282132        train's ndcg@10: 0.216602       train's ndcg@20: 0.204675       valid's ndcg@5: 0.0953305       valid's ndcg@10: 0.0961392      valid's ndcg@20: 0.118589
+[100]   train's ndcg@5: 0.286308        train's ndcg@10: 0.219322       train's ndcg@20: 0.206307       valid's ndcg@5: 0.099274        valid's ndcg@10: 0.0991119      valid's ndcg@20: 0.118874
+[110]   train's ndcg@5: 0.29168 train's ndcg@10: 0.223098       train's ndcg@20: 0.20976        valid's ndcg@5: 0.0946386       valid's ndcg@10: 0.0972254      valid's ndcg@20: 0.118836
+[120]   train's ndcg@5: 0.303116        train's ndcg@10: 0.229819       train's ndcg@20: 0.214232       valid's ndcg@5: 0.0931647       valid's ndcg@10: 0.0955365      valid's ndcg@20: 0.118097
+[130]   train's ndcg@5: 0.311826        train's ndcg@10: 0.237072       train's ndcg@20: 0.219676       valid's ndcg@5: 0.101627        valid's ndcg@10: 0.100753       valid's ndcg@20: 0.11867
+[140]   train's ndcg@5: 0.320837        train's ndcg@10: 0.241805       train's ndcg@20: 0.222829       valid's ndcg@5: 0.0961167       valid's ndcg@10: 0.0949365      valid's ndcg@20: 0.114469
+[150]   train's ndcg@5: 0.329168        train's ndcg@10: 0.246436       train's ndcg@20: 0.22724        valid's ndcg@5: 0.0976779       valid's ndcg@10: 0.0950971      valid's ndcg@20: 0.115941
+[160]   train's ndcg@5: 0.332914        train's ndcg@10: 0.249685       train's ndcg@20: 0.230463       valid's ndcg@5: 0.0998505       valid's ndcg@10: 0.0979921      valid's ndcg@20: 0.114386
+[170]   train's ndcg@5: 0.337374        train's ndcg@10: 0.253747       train's ndcg@20: 0.233763       valid's ndcg@5: 0.10158 valid's ndcg@10: 0.10013        valid's ndcg@20: 0.116318
+[180]   train's ndcg@5: 0.34417 train's ndcg@10: 0.258871       train's ndcg@20: 0.237202       valid's ndcg@5: 0.103853        valid's ndcg@10: 0.0991436      valid's ndcg@20: 0.116684
+[190]   train's ndcg@5: 0.351756        train's ndcg@10: 0.263363       train's ndcg@20: 0.240118       valid's ndcg@5: 0.100647        valid's ndcg@10: 0.101891       valid's ndcg@20: 0.116119
+[200]   train's ndcg@5: 0.357429        train's ndcg@10: 0.267726       train's ndcg@20: 0.243992       valid's ndcg@5: 0.105384        valid's ndcg@10: 0.0994028      valid's ndcg@20: 0.115989
+[210]   train's ndcg@5: 0.36281 train's ndcg@10: 0.272111       train's ndcg@20: 0.246883       valid's ndcg@5: 0.11023 valid's ndcg@10: 0.101316       valid's ndcg@20: 0.119185
+[220]   train's ndcg@5: 0.367956        train's ndcg@10: 0.275522       train's ndcg@20: 0.249768       valid's ndcg@5: 0.114154        valid's ndcg@10: 0.101041       valid's ndcg@20: 0.119738
+[230]   train's ndcg@5: 0.375434        train's ndcg@10: 0.279396       train's ndcg@20: 0.252233       valid's ndcg@5: 0.114062        valid's ndcg@10: 0.100758       valid's ndcg@20: 0.118909
+Early stopping, best iteration is:
+[32]    train's ndcg@5: 0.215712        train's ndcg@10: 0.176493       train's ndcg@20: 0.17351        valid's ndcg@5: 0.112889        valid's ndcg@10: 0.106773       valid's ndcg@20: 0.126161   
+2025-11-11 22:54:33,875 - __main__ - INFO - ✅ LightGBM训练完成
+2025-11-11 22:54:33,875 - __main__ - INFO -   最佳迭代: 32
+2025-11-11 22:54:33,876 - __main__ - INFO -   训练轮数: 32
+2025-11-11 22:54:33,876 - __main__ - INFO - 📊 训练过程详细指标:
+2025-11-11 22:54:33,877 - __main__ - INFO - 验证集 ndcg@5: 前5轮 = [0.01607751235455148, 0.0821137387319962, 0.1114794455063764, 0.10190571666807817, 0.09536543958093745]
+2025-11-11 22:54:33,877 - __main__ - INFO - 验证集 ndcg@10: 前5轮 = [0.018077678447826196, 0.08094760882927851, 0.1041887180316115, 0.09802355806795668, 0.10186601797241619]
+2025-11-11 22:54:33,878 - __main__ - INFO - 验证集 ndcg@20: 前5轮 = [0.032774983188915176, 0.100837241365517, 0.11545883876331516, 0.11624126002635433, 0.1137997798072364]
+2025-11-11 22:54:33,878 - __main__ - INFO - train ndcg@5: 起始值=0.0194, 结束值=0.3761
+2025-11-11 22:54:33,879 - __main__ - INFO - train ndcg@10: 起始值=0.0210, 结束值=0.2800
+2025-11-11 22:54:33,879 - __main__ - INFO - train ndcg@20: 起始值=0.0323, 结束值=0.2529
+2025-11-11 22:54:33,879 - __main__ - INFO - valid ndcg@5: 起始值=0.0161, 结束值=0.1128
+2025-11-11 22:54:33,880 - __main__ - INFO - valid ndcg@10: 起始值=0.0181, 结束值=0.1010
+2025-11-11 22:54:33,880 - __main__ - INFO - valid ndcg@20: 起始值=0.0328, 结束值=0.1196
+2025-11-11 22:54:33,881 - __main__ - INFO - 📊 评估LightGBM排序模型...
+2025-11-11 22:54:35,826 - __main__ - INFO - 📊 排序模型核心指标:
+2025-11-11 22:54:35,826 - __main__ - INFO -   Rank IC: 0.0043
+2025-11-11 22:54:35,826 - __main__ - INFO -   IC: 0.0047
+2025-11-11 22:54:35,827 - __main__ - INFO -   NDCG@5: 0.1957
+2025-11-11 22:54:35,827 - __main__ - INFO -   NDCG@10: 0.1848

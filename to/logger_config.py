@@ -1,55 +1,84 @@
-import logging
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+日志配置模块
+为整个项目提供统一的日志配置
+"""
+
 import os
+import sys
+import logging
+from datetime import datetime
 from pathlib import Path
 
-def configure_logger(name, log_file_name):
-    """配置logger，统一输出到to/generate_sector_features.log
+def configure_logger(name, log_file=None, level=logging.INFO, console_output=True):
+    """
+    配置日志记录器
     
     Args:
-        name: logger名称，通常使用__name__
+        name: 日志记录器名称
+        log_file: 日志文件名
+        level: 日志级别
+        console_output: 是否输出到控制台
         
     Returns:
-        配置好的logger实例
+        配置好的日志记录器
     """
-    # 确保日志目录存在
-    log_dir = Path('to/log')
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 日志文件路径
-    log_file = log_dir / log_file_name
-    
-    # 获取logger实例
+    # 获取日志记录器
     logger = logging.getLogger(name)
+    logger.setLevel(level)
     
-    # 如果logger已经配置过，直接返回
+    # 如果已经有处理器，不重复添加
     if logger.handlers:
         return logger
     
-    # 设置日志级别
-    logger.setLevel(logging.INFO)
-    
-    # 创建文件处理器
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
-    
-    # 创建控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # 创建formatter
+    logger.propagate = False  # 新增此行
+    # 创建格式化器
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # 设置formatter
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    # 如果指定了日志文件
+    if log_file:
+        # 获取项目根目录
+        project_root = Path(__file__).resolve().parent
+        
+        # 构建日志目录
+        log_dir = os.path.join(project_root, "log")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # # 构建日志文件路径
+        log_path = os.path.join(log_dir, log_file)
+        print(log_path)
+        # 创建文件处理器
+        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        
+        # 添加到日志记录器
+        logger.addHandler(file_handler)
     
-    # 添加处理器
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    # 如果需要控制台输出
+    if console_output:
+        # 创建控制台处理器
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        
+        # 添加到日志记录器
+        logger.addHandler(console_handler)
     
-    logger.propagate = False 
+    return logger
+
+def get_logger(name):
+    """
+    获取已配置的日志记录器
     
-    return logger 
+    Args:
+        name: 日志记录器名称
+        
+    Returns:
+        日志记录器
+    """
+    return logging.getLogger(name) 

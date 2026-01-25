@@ -14,6 +14,7 @@ import pickle
 import copy
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -207,10 +208,7 @@ class ImprovedLiquidNeuralNetwork(nn.Module):
         return output, h
 
 
-class ImprovedLiquidNetModel:
-    """增强版液体神经网络模型包装类，提供简易API"""
-    def __init__(self, input_size, output_size=1, hidden_size=64, num_layers=2, 
-                 learning_rate=0.001, device="auto", dropout_rate=0.2):
+class ImprovedLiquidNetModel:    """增强版液体神经网络模型包装类，提供简易API"""    def __init__(self, input_size, output_size=1, hidden_size=64, num_layers=2,                  learning_rate=0.001, device="auto", dropout_rate=0.2,                 use_layer_norm=False, use_residual=False,                 lr_scheduler=None, lr_scheduler_params=None,                 clip_grad_norm=None, weight_decay=0.0):
         """
         初始化增强版液体神经网络模型
         
@@ -256,7 +254,7 @@ class ImprovedLiquidNetModel:
         
         # 学习率调度器
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=5, verbose=False
         )
         
         # 早期停止
@@ -265,7 +263,7 @@ class ImprovedLiquidNetModel:
         # 是否已训练标记
         self.is_fitted = False
     
-    def _prepare_data(self, X_tensor, y_tensor=None, batch_size=32, shuffle=True):
+    def _prepare_data(self, X_tensor, y_tensor=None, batch_size=32, shuffle=True, num_workers=0):
         """准备数据加载器"""
         if y_tensor is not None:
             dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
@@ -273,12 +271,17 @@ class ImprovedLiquidNetModel:
             dataset = torch.utils.data.TensorDataset(X_tensor)
             
         loader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, shuffle=shuffle
+            dataset, 
+            batch_size=batch_size, 
+            shuffle=shuffle,
+            num_workers=num_workers,  # 使用多线程加载数据
+            pin_memory=self.device.type == 'cuda'  # 仅在GPU上使用pin_memory
         )
         return loader
     
     def fit(self, X, y, batch_size=32, epochs=100, validation_data=None, 
-            callbacks=None, early_stopping=True, patience=10, verbose=1):
+            callbacks=None, early_stopping=True, patience=10, verbose=1,
+            use_jit=False, num_workers=0):
         """
         训练模型
         
@@ -292,6 +295,8 @@ class ImprovedLiquidNetModel:
             early_stopping: 是否启用早停
             patience: 早停耐心值
             verbose: 日志详细程度
+            use_jit: 是否使用JIT编译加速(CPU训练优化)
+            num_workers: 数据加载线程数
             
         Returns:
             训练历史记录字典
@@ -306,17 +311,40 @@ class ImprovedLiquidNetModel:
         if y.ndim == 1:
             y = y.reshape(-1, 1)
             
-        # 特征缩放
-        X_scaled = self.scaler.fit_transform(X)
-        
-        # 转换为Torch张量
+        # 处理3D数据的特征缩放 - 适用于序列数据
+        if X.ndim == 3:
+            # 获取原始形状
+            orig_shape = X.shape
+            n_samples, seq_len, n_features = orig_shape
+            logger.info(f"处理3D序列数据: 原始形状={orig_shape}")
+            
+            # 重塑为2D以便StandardScaler处理 (样本*序列长度, 特征数)
+            X_reshaped = X.reshape(-1, n_features)
+            
+            # 应用标准化
+            X_scaled_2d = self.scaler.fit_transform(X_reshaped)
+            
+            # 重塑回3D
+            X_scaled = X_scaled_2d.reshape(orig_shape)
+            logger.info(f"标准化后形状={X_scaled.shape}")
+        else:
+            # 标准2D数据处理
+            X_scaled = self.scaler.fit_transform(X)
+            
+        # 将日期列转换为时间戳
         X_tensor = torch.FloatTensor(X_scaled).to(self.device)
         y_tensor = torch.FloatTensor(y).to(self.device)
         
+        # Windows环境下JIT编译可能导致兼容性问题，因此禁用此功能
+        if use_jit and self.device.type == 'cpu':
+            logger.info("JIT优化已禁用，使用标准模式以确保兼容性")
+            # 这里不执行JIT编译，避免与其他优化方式冲突
+        
         # 准备数据加载器
-        train_loader = self._prepare_data(X_tensor, y_tensor, batch_size, shuffle=True)
+        train_loader = self._prepare_data(X_tensor, y_tensor, batch_size, shuffle=True, num_workers=num_workers)
         
         # 准备验证数据
+        val_loader = None
         if validation_data is not None:
             X_val, y_val = validation_data
             if hasattr(X_val, 'values'):
@@ -328,17 +356,32 @@ class ImprovedLiquidNetModel:
             if y_val.ndim == 1:
                 y_val = y_val.reshape(-1, 1)
                 
-            # 特征缩放 - 使用训练集的缩放器
-            X_val_scaled = self.scaler.transform(X_val)
-            
+            # 特征缩放 - 使用训练集的缩放器 (处理3D数据)
+            if X_val.ndim == 3:
+                # 获取原始形状
+                val_orig_shape = X_val.shape
+                val_samples, val_seq_len, val_features = val_orig_shape
+                logger.info(f"处理验证集3D序列数据: 原始形状={val_orig_shape}")
+                
+                # 重塑为2D
+                X_val_reshaped = X_val.reshape(-1, val_features)
+                
+                # 应用标准化
+                X_val_scaled_2d = self.scaler.transform(X_val_reshaped)
+                
+                # 重塑回3D
+                X_val_scaled = X_val_scaled_2d.reshape(val_orig_shape)
+                logger.info(f"验证集标准化后形状={X_val_scaled.shape}")
+            else:
+                # 标准2D数据处理
+                X_val_scaled = self.scaler.transform(X_val)
+                
             # 转换为Torch张量
             X_val_tensor = torch.FloatTensor(X_val_scaled).to(self.device)
             y_val_tensor = torch.FloatTensor(y_val).to(self.device)
             
             # 准备验证数据加载器
-            val_loader = self._prepare_data(X_val_tensor, y_val_tensor, batch_size, shuffle=False)
-        else:
-            val_loader = None
+            val_loader = self._prepare_data(X_val_tensor, y_val_tensor, batch_size, shuffle=False, num_workers=num_workers)
         
         # 记录训练历史
         history = {
@@ -348,9 +391,12 @@ class ImprovedLiquidNetModel:
             'val_mae': []
         }
         
-        # 创建早期停止器
+        # 创建早期停止器，根据传入参数设置
         if early_stopping:
-            early_stopping = EarlyStopping(patience=patience)
+            # 使用传入的min_delta参数或默认值
+            min_delta_value = getattr(locals().get('min_delta', 0.0001), 'real', 0.0001)
+            early_stopping = EarlyStopping(patience=patience, min_delta=min_delta_value, restore_best_weights=True)
+            logger.info(f"启用早停，耐心值={patience}, 最小改进阈值={min_delta_value}")
         
         # 训练循环
         for epoch in range(epochs):
@@ -359,8 +405,12 @@ class ImprovedLiquidNetModel:
             train_loss = 0.0
             train_mae = 0.0
             
+            # 添加时间统计
+            batch_start_time = time.time()
+            total_batches = len(train_loader)
+            
             # 训练批次循环
-            for X_batch, y_batch in train_loader:
+            for batch_idx, (X_batch, y_batch) in enumerate(train_loader):
                 # 正向传播
                 self.optimizer.zero_grad()
                 outputs, _ = self.model(X_batch)
@@ -373,6 +423,13 @@ class ImprovedLiquidNetModel:
                 # 记录损失和MAE
                 train_loss += loss.item()
                 train_mae += torch.mean(torch.abs(outputs - y_batch)).item()
+                
+                # 每处理10%的批次输出一次进度
+                if verbose and (batch_idx + 1) % max(1, total_batches // 10) == 0:
+                    elapsed = time.time() - batch_start_time
+                    progress = (batch_idx + 1) / total_batches * 100
+                    logger.info(f"轮次 {epoch+1} 批次进度: {batch_idx+1}/{total_batches} ({progress:.1f}%), "
+                               f"用时: {elapsed:.2f}秒, 预计剩余: {elapsed/(batch_idx+1)*(total_batches-batch_idx-1):.2f}秒")
             
             # 计算平均损失和MAE
             train_loss /= len(train_loader)
@@ -401,13 +458,20 @@ class ImprovedLiquidNetModel:
                 self.scheduler.step(val_loss)
                 
                 # 早期停止
-                if early_stopping and early_stopping(val_loss):
+                if early_stopping:
+                    # 传入模型以便在需要时保存最佳权重
+                    should_stop = early_stopping(val_loss, self.model)
+                    # 输出当前早停状态
                     if verbose:
+                        logger.info(f"早停状态: 当前计数={early_stopping.counter}/{early_stopping.patience}, "
+                                  f"最佳损失={early_stopping.best_loss:.6f}, 当前损失={val_loss:.6f}")
+                    if should_stop:
                         logger.info(f"早期停止于第 {epoch+1} 轮")
-                    break
+                        break
             
             # 日志
-            if verbose and epoch % max(1, epochs // 10) == 0:
+            if verbose:
+                # 更改为每一轮都输出日志，而不是只在1/10的轮次输出
                 log_msg = f"轮次 {epoch+1}/{epochs}"
                 log_msg += f" - loss: {train_loss:.4f}"
                 log_msg += f" - mae: {train_mae:.4f}"
@@ -415,6 +479,10 @@ class ImprovedLiquidNetModel:
                     log_msg += f" - val_loss: {val_loss:.4f}"
                     log_msg += f" - val_mae: {val_mae:.4f}"
                 logger.info(log_msg)
+                
+                # 每5个batch输出一次进度日志
+                if (epoch + 1) % 5 == 0:
+                    logger.info(f"训练进度: {epoch+1}/{epochs} ({(epoch+1)/epochs*100:.1f}%)")
         
         self.is_fitted = True
         return history
@@ -433,9 +501,25 @@ class ImprovedLiquidNetModel:
         if hasattr(X, 'values'):
             X = X.values
             
-        # 特征缩放
-        X_scaled = self.scaler.transform(X)
-        
+        # 特征缩放 (处理3D数据)
+        if X.ndim == 3:
+            # 获取原始形状
+            orig_shape = X.shape
+            n_samples, seq_len, n_features = orig_shape
+            
+            # 重塑为2D
+            X_reshaped = X.reshape(-1, n_features)
+            
+            # 应用标准化
+            X_scaled_2d = self.scaler.transform(X_reshaped)
+            
+            # 重塑回3D
+            X_scaled = X_scaled_2d.reshape(orig_shape)
+            logger.info(f"预测时处理3D序列数据: 原始形状={orig_shape}")
+        else:
+            # 标准2D数据处理
+            X_scaled = self.scaler.transform(X)
+            
         # 转换为Torch张量
         X_tensor = torch.FloatTensor(X_scaled).to(self.device)
         
@@ -564,18 +648,21 @@ class EarlyStopping:
             self.best_loss = val_loss
             if self.restore_best_weights and model is not None:
                 self.best_model = copy.deepcopy(model.state_dict())
-        elif val_loss > self.best_loss - self.min_delta:
+        # 判断是否有显著改善：当前损失必须比最佳损失小，且差值大于min_delta才算显著改善
+        elif self.best_loss - val_loss > self.min_delta:
+            # 有显著改善
+            self.best_loss = val_loss
+            # 更新最佳模型
+            if self.restore_best_weights and model is not None:
+                self.best_model = copy.deepcopy(model.state_dict())
+            self.counter = 0
+        else:
+            # 没有显著改善
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
                 # 如果需要恢复最佳权重
                 if self.restore_best_weights and self.best_model is not None and model is not None:
                     model.load_state_dict(self.best_model)
-        else:
-            self.best_loss = val_loss
-            # 更新最佳模型
-            if self.restore_best_weights and model is not None:
-                self.best_model = copy.deepcopy(model.state_dict())
-            self.counter = 0
         
         return self.early_stop 

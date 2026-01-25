@@ -18,6 +18,7 @@ import os
 import time
 import json
 import logging
+import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -56,7 +57,7 @@ logger.setLevel(logging.INFO)  # 确保logger级别正确设置
 xtdata.enable_hello = False
 
 # 定义存储路径
-BASE_DIR = Path("to/local_data")
+BASE_DIR = Path("local_data")
 DAILY_DIR = BASE_DIR / "daily"
 MINUTE_DIR = BASE_DIR / "minute"
 CALENDAR_DIR = BASE_DIR / "calendar"
@@ -65,6 +66,15 @@ METADATA_DIR = BASE_DIR / "metadata"
 # 创建必要的目录
 for directory in [DAILY_DIR, MINUTE_DIR, CALENDAR_DIR, METADATA_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
+
+# 辅助函数：获取数据路径
+def get_data_path(relative_path=None):
+    """获取数据目录路径"""
+    project_root = Path(__file__).resolve().parent
+    data_path = project_root / "local_data"
+    if relative_path:
+        return data_path / relative_path
+    return data_path
 
 # 定义MultiProcess worker函数，在ParquetDataStorage类之前
 def download_minute_data_process_worker(batch_stocks, start_date, end_date, fields, process_id, result_queue):
@@ -179,7 +189,7 @@ def download_minute_data_process_worker(batch_stocks, start_date, end_date, fiel
                     start_date=bs_start_date,
                     end_date=bs_end_date,
                     frequency="5",  # 5分钟线
-                    adjustflag="3"  # 不复权
+                    adjustflag="2"  # 不复权
                 )
                 
                 # if rs.error_code != '0':
@@ -293,8 +303,10 @@ class ParquetDataStorage:
             except Exception as e:
                 logger.error(f"加载元数据失败: {e}")
         
-        # 创建新的元数据
+        # 创建新的元数据 - 支持增量更新
         return {
+            'version': '2.1.0',
+            'created_at': datetime.now().isoformat(),
             'last_update': {
                 'daily': None,
                 'minute': None,
@@ -308,6 +320,14 @@ class ParquetDataStorage:
             'calendar_range': {
                 'start': None,
                 'end': None
+            },
+            # 新增：增量更新支持
+            'incremental_update': {
+                'enabled': True,
+                'minute_download_progress': {},  # 每只股票的下载进度 {stock: {latest_date: '20251120', status: 'completed'}}
+                'completed_batches': [],  # 已完成的批次信息 [{'batch_index': 0, 'stocks': [...], 'completed_time': '...'}]
+                'last_download_date': None,  # 最后下载日期
+                'session_id': None  # 本次会话ID
             }
         }
         
@@ -402,7 +422,7 @@ class ParquetDataStorage:
             except Exception as e:
                 logger.error(f"转换时间戳失败: {e}")
                 return False
-            
+            print(calendar)
             # 创建DataFrame并保存为Parquet文件
             calendar_df = pd.DataFrame(calendar, columns=['date_str'])
             
@@ -472,9 +492,11 @@ class ParquetDataStorage:
         if end_date is None:
             end_date = datetime.now().strftime('%Y%m%d')
         
-        # 字段列表
-        fields = ['open', 'high', 'low', 'close', 'volume', 'amount', 'turnover_rate']
-        
+        # 字段列表 - 价格相关字段需要同时下载前复权和后复权
+        price_fields = ['open', 'high', 'low', 'close', 'preClose']  # 价格字段（包括前收盘价）
+        other_fields = ['volume', 'amount']  # 非价格字段（移除turnover_rate，将在后续计算）
+        fields = price_fields + other_fields
+
         # 获取交易日历
         calendar_file = CALENDAR_DIR / "trading_calendar.parquet"
         if not calendar_file.exists():
@@ -482,46 +504,67 @@ class ParquetDataStorage:
             if not success:
                 logger.error("无法获取交易日历，日线数据下载失败")
                 return False
-        
+
         try:
             calendar_df = pd.read_parquet(calendar_file)
-            trading_dates = calendar_df[(calendar_df['date_str'] >= start_date) & 
+            trading_dates = calendar_df[(calendar_df['date_str'] >= start_date) &
                                        (calendar_df['date_str'] <= end_date)]['date_str'].tolist()
-            
+
             if not trading_dates:
                 logger.warning(f"指定日期范围内没有交易日: {start_date} 至 {end_date}")
                 return False
-                
+
             logger.info(f"找到 {len(trading_dates)} 个交易日")
-            
+
         except Exception as e:
             logger.error(f"读取交易日历失败: {e}")
             return False
-        
+
         start_time = time.time()
-        
+
         try:
             # 确保API连接
             if not xtdata.get_client().is_connected():
                 xtdata.get_client().connect()
                 time.sleep(0.5)  # 添加短暂延迟确保连接稳定
-            
-            logger.info(f"开始一次性下载所有股票的日线数据: {len(stock_list)} 只股票，日期范围 {start_date} 至 {end_date}")
-            
-            # 一次性下载所有股票数据
-            data = xtdata.get_market_data(
-                field_list=fields, 
-                stock_list=stock_list, 
+
+            logger.info(f"开始下载所有股票的日线数据: {len(stock_list)} 只股票，日期范围 {start_date} 至 {end_date}")
+
+            # 第一次下载：后复权数据
+            logger.info("正在下载后复权数据...")
+            data_back = xtdata.get_market_data(
+                field_list=fields,
+                stock_list=stock_list,
                 period='1d',
-                start_time=start_date, 
-                end_time=end_date
+                start_time=start_date,
+                end_time=end_date,
+                dividend_type="front"
             )
-            
-            if not data or not any(field in data for field in fields):
-                logger.error("下载日线数据失败: API返回空数据")
+
+            if not data_back or not any(field in data_back for field in fields):
+                logger.error("下载后复权数据失败: API返回空数据")
                 return False
-            
-            logger.info(f"数据下载完成，耗时: {time.time() - start_time:.2f}秒，开始处理数据...")
+
+            logger.info(f"后复权数据下载完成，耗时: {time.time() - start_time:.2f}秒")
+
+            # 第二次下载：前复权数据（只下载价格字段）
+            # logger.info("正在下载前复权数据...")
+            # front_start_time = time.time()
+            # data_front = xtdata.get_market_data(
+            #     field_list=price_fields,  # 只下载价格字段
+            #     stock_list=stock_list,
+            #     period='1d',
+            #     start_time=start_date,
+            #     end_time=end_date,
+            #     dividend_type='front',
+            # )
+
+            # if not data_front or not any(field in data_front for field in price_fields):
+            #     logger.error("下载前复权数据失败: API返回空数据")
+            #     return False
+
+            # logger.info(f"前复权数据下载完成，耗时: {time.time() - front_start_time:.2f}秒")
+            logger.info(f"所有数据下载完成，总耗时: {time.time() - start_time:.2f}秒，开始处理数据...")
             
             # 按月份分区处理数据
             # 获取所有月份
@@ -531,31 +574,31 @@ class ParquetDataStorage:
                 if partition_key not in date_partitions:
                     date_partitions[partition_key] = []
                 date_partitions[partition_key].append(date)
-                
+
             logger.info(f"数据将分为 {len(date_partitions)} 个月份分区")
-            
+
             # 转换数据为DataFrame格式
             all_data = []
-            
+
             # 构建结果DataFrame
             logger.info("转换数据格式...")
-            
-            # 获取所有日期
+
+            # 获取所有日期（从后复权数据中获取）
             all_dates = set()
             for field in fields:
-                if field in data:
-                    field_df = data[field]
+                if field in data_back:
+                    field_df = data_back[field]
                     all_dates.update(field_df.columns)
-            
+
             # 预分配足够大的列表
             total_rows = len(stock_list) * len(all_dates)
             logger.info(f"预计处理 {total_rows} 行数据")
             result_data = []
-            
+
             # 使用更高效的列表操作而非逐个append
             processed_count = 0
             start_process_time = time.time()
-            
+
             # 批量构建数据记录
             for stock in stock_list:
                 for date in sorted(all_dates):
@@ -563,32 +606,93 @@ class ParquetDataStorage:
                         'stock_code': stock,
                         'date': date
                     }
-                    
-                    # 添加每个字段的值
+
+                    # 添加后复权字段的值
                     for field in fields:
-                        if field in data:
-                            field_df = data[field]
+                        if field in data_back:
+                            field_df = data_back[field]
                             if stock in field_df.index and date in field_df.columns:
                                 row[field] = field_df.loc[stock, date]
                             else:
                                 row[field] = None
-                    
+
+                    # # 添加前复权价格字段的值（添加_front后缀）
+                    # for field in price_fields:
+                    #     field_front = f"{field}_front"
+                    #     if field in data_front:
+                    #         field_df = data_front[field]
+                    #         if stock in field_df.index and date in field_df.columns:
+                    #             row[field_front] = field_df.loc[stock, date]
+                    #         else:
+                    #             row[field_front] = None
+
                     result_data.append(row)
-                    
+
                     processed_count += 1
                     if processed_count % 100000 == 0:
                         elapsed = time.time() - start_process_time
                         progress = processed_count / total_rows * 100
                         logger.info(f"已处理 {processed_count:,}/{total_rows:,} 行 ({progress:.1f}%)，耗时: {elapsed:.2f}秒")
-            
-            logger.info(f"数据格式转换完成，耗时: {time.time() - start_process_time:.2f}秒，开始按分区存储...")
-            
+
+            logger.info(f"数据格式转换完成，耗时: {time.time() - start_process_time:.2f}秒，开始计算衍生字段...")
+
             # 创建DataFrame
             df = pd.DataFrame(result_data)
-            
+
             # 确保日期格式统一
             df['date'] = pd.to_datetime(df['date'])
             df['date_str'] = df['date'].dt.strftime('%Y%m%d')
+
+            # 计算衍生字段
+            logger.info("开始计算pct_chg, total_mv, circ_mv, turnover_rate...")
+
+            # 1. 计算涨跌幅 pct_chg（使用后复权的close和preClose）
+            df['pct_chg'] = None
+            mask_valid = (df['close'].notna()) & (df['preClose'].notna()) & (df['preClose'] != 0)
+            df.loc[mask_valid, 'pct_chg'] = ((df.loc[mask_valid, 'close'] - df.loc[mask_valid, 'preClose']) / df.loc[mask_valid, 'preClose']) * 100
+
+            # 2. 加载股本数据用于计算市值和换手率
+            capital_file = get_data_path("stock_capital_data.parquet")
+            if capital_file.exists():
+                logger.info(f"加载股本数据: {capital_file}")
+                capital_df = pd.read_parquet(capital_file)
+
+                # 确保stock_code列存在并设置为索引
+                if 'stock' in capital_df.columns:
+                    capital_df = capital_df.rename(columns={'stock': 'stock_code'})
+
+                if 'stock_code' in capital_df.columns:
+                    capital_df = capital_df.set_index('stock_code')
+                    logger.info(f"成功加载股本数据: {len(capital_df)} 只股票")
+
+                    # 3. 计算市值（使用前复权的close_front）和换手率 - 向量化优化
+                    # 合并股本数据到主DataFrame
+                    df = df.merge(
+                        capital_df[['total_capital', 'circulating_capital']],
+                        left_on='stock_code',
+                        right_index=True,
+                        how='left'
+                    )
+
+                    # 向量化计算总市值（使用前复权价格）
+                    df['total_mv'] = df['close'] * df['total_capital']
+
+                    # 向量化计算流通市值（使用前复权价格）
+                    df['circ_mv'] = df['close'] * df['circulating_capital']
+
+                    # 向量化计算换手率
+                    df['turnover_rate'] = (df['volume'] / df['circulating_capital']) * 100
+
+                    # 删除临时列
+                    df = df.drop(columns=['total_capital', 'circulating_capital'])
+
+                    logger.info("市值和换手率计算完成")
+                else:
+                    logger.warning("股本数据格式异常，缺少stock_code列")
+            else:
+                logger.warning(f"股本数据文件不存在: {capital_file}，将无法计算市值和换手率")
+
+            logger.info("衍生字段计算完成，开始按分区存储...")
             
             # 按分区存储数据
             for partition_key, partition_dates in date_partitions.items():
@@ -1056,360 +1160,748 @@ class ParquetDataStorage:
             if 'table' in locals(): del table
             gc.collect()
 
-    def download_minute_data(self, stock_list=None, start_date=None, end_date=None, batch_size=50, max_workers=5, use_multithreading=False, use_multiprocessing=True):
-        """下载5分钟数据
+    def download_minute_data(self, stock_list=None, start_date=None, end_date=None, batch_size=None, max_workers=None, incremental=True, session_id=None):
+        """分批下载5分钟数据（使用xtdata，前复权），降低内存占用
 
         参数:
             stock_list: 股票列表，None表示所有股票
-            start_date: 开始日期，格式YYYYMMDD
-            end_date: 结束日期，格式YYYYMMDD
-            batch_size: 每批处理的股票数
-            max_workers: 并行下载的线程/进程数
-            use_multithreading: 是否使用多线程，默认为False(单线程模式更稳定)
-            use_multiprocessing: 是否使用多进程，默认为True(多进程模式可绕过BaoStock单线程限制)
+            start_date: 开始日期，格式 'YYYYMMDD'，默认为 '20230101'
+            end_date: 结束日期，格式 'YYYYMMDD'，默认为当前日期
+            batch_size: 每批处理的股票数量，默认100（可调整以适应内存）
+            max_workers: 已废弃参数，保留用于兼容性
         """
-        if start_date is None or end_date is None:
-            raise ValueError("必须指定开始日期和结束日期")
+        logger.info("开始分批下载5分钟数据（使用xtdata）...")
 
-        # 冲突检查：多线程与多进程不能同时使用
-        if use_multithreading and use_multiprocessing:
-            logger.warning("多线程和多进程不能同时使用，优先使用多进程")
-            use_multithreading = False
-        
-        # 限制最大工作者数量
-        max_workers = min(max_workers, 5)  # 不超过5个工作者
-        
-        # 多进程模式下，更少的工作者通常更稳定
-        if use_multiprocessing:
-            max_workers = min(max_workers, 3)  # 多进程模式下最多3个进程
-        
-        # 获取要下载的股票列表
+        # 设置默认参数
         if stock_list is None:
-            stock_list = self.metadata.get('stock_list', [])
+            stock_list = self.metadata['stock_list']
             if not stock_list:
-                logger.warning("未找到股票列表，请先下载股票列表")
-                return
-        else:
-            # 确保stock_list是列表类型
-            if isinstance(stock_list, str):
-                stock_list = [stock_list]
-        
-        # 确保日期格式正确
-        start_date = start_date.replace('-', '')
-        end_date = end_date.replace('-', '')
-        
-        # 获取相关日期范围的分区
-        start_partition = self._get_partition_key(start_date)
-        end_partition = self._get_partition_key(end_date)
-        
-        # 确保分区目录存在
-        current_partition = start_partition
-        while current_partition <= end_partition:
-            partition_dir = MINUTE_DIR / current_partition
-            if not partition_dir.exists():
-                partition_dir.mkdir(parents=True, exist_ok=True)
-            
-            # 计算下一个分区
-            year = int(current_partition[:4])
-            month = int(current_partition[4:6])
-            
-            month += 1
-            if month > 12:
-                year += 1
-                month = 1
-            
-            current_partition = f"{year:04d}{month:02d}"
-        
-        # 添加分区到元数据
-        partitions = set(self.metadata['partitions']['minute'])
-        current_partition = start_partition
-        while current_partition <= end_partition:
-            partitions.add(current_partition)
-            
-            # 计算下一个分区
-            year = int(current_partition[:4])
-            month = int(current_partition[4:6])
-            
-            month += 1
-            if month > 12:
-                year += 1
-                month = 1
-            
-            current_partition = f"{year:04d}{month:02d}"
-        
-        self.metadata['partitions']['minute'] = sorted(list(partitions))
-        self._save_metadata()
-        
-        # 确定要下载的字段
-        fields = ['open', 'high', 'low', 'close', 'volume', 'amount']
-        
-        # 批量下载并处理数据
-        total_stocks = len(stock_list)
-        logger.info(f"开始下载 {total_stocks} 支股票的5分钟数据，时间范围: {start_date} 至 {end_date}")
-        
-        # 调整batch_size，确保不会过小
-        batch_size = max(batch_size, 5)
-        
-        # 将股票列表分成多个批次
-        batches = [stock_list[i:i+batch_size] for i in range(0, len(stock_list), batch_size)]
-        logger.info(f"共分为 {len(batches)} 个批次，每批次最多 {batch_size} 支股票")
-        logger.info(f"使用{'多进程' if use_multiprocessing else '单线程'}模式下载数据")
-        
-        # 存储所有批次数据
-        all_batch_data = {}
-        
-        start_time = time.time()
-        
-        # 根据模式选择处理方式
-        if use_multiprocessing:
-            # 多进程模式 - 使用进程池
-            import multiprocessing
-            from multiprocessing import Pool
-            import random
-            import os
-            
-            # 配置日志
-            max_processes = min(max_workers, multiprocessing.cpu_count())
-            logger.info(f"启动多进程池下载模式，CPU核心数: {multiprocessing.cpu_count()}, 使用进程数: {max_processes}")
-            
-            # 创建结果字典，用于存储所有批次的数据
-            manager = multiprocessing.Manager()
-            result_dict = manager.dict()
-            
-            # 进程池适配器函数
-            def pool_worker_adapter(batch_stocks, start_date, end_date, fields, process_id, _):
-                # 处理批次并直接返回结果而非放入队列
-                process_start = time.time()
-                pid = os.getpid()
-                
-                logger.info(f"进程池中的进程 {pid} 开始处理批次 {process_id+1}/{len(batches)}")
-                
-                # 登录baostock（每个进程只登录一次）
-                retry_count = 0
-                max_retries = 3
-                retry_delay = 2
-                
-                while retry_count < max_retries:
-                    try:
-                        lg = bs.login()
-                        if lg.error_code != '0':
-                            logger.error(f"进程 {pid} 登录BaoStock失败: {lg.error_msg}")
-                            retry_count += 1
-                            time.sleep(retry_delay * (1 + random.random()))
-                            continue
-                        logger.info(f"进程 {pid} 登录BaoStock成功")
-                        break
-                    except Exception as e:
-                        logger.error(f"进程 {pid} 登录BaoStock异常: {e}")
-                        retry_count += 1
-                        if retry_count >= max_retries:
-                            logger.error(f"进程 {pid} 登录失败次数过多，放弃下载")
-                            return (process_id, {})
-                        time.sleep(retry_delay * (1 + random.random()))
-                
-                # 调用原始worker函数的核心处理逻辑
-                batch_results = {}
-                
-                try:
-                    # 处理批次数据的逻辑
-                    # 转换日期格式
-                    start_date_str = start_date
-                    end_date_str = end_date
-                    if '-' in start_date:
-                        start_date_str = start_date.replace('-', '')
-                    if '-' in end_date:
-                        end_date_str = end_date.replace('-', '')
-                    
-                    # 转换为BaoStock日期格式 (YYYY-MM-DD)
-                    bs_start_date = f"{start_date_str[:4]}-{start_date_str[4:6]}-{start_date_str[6:8]}"
-                    bs_end_date = f"{end_date_str[:4]}-{end_date_str[4:6]}-{end_date_str[6:8]}"
-                    
-                    # 转换字段列表为BaoStock需要的格式
-                    bs_fields = ['date', 'time', 'code']
-                    field_mapping = {
-                        'open': 'open',
-                        'high': 'high',
-                        'low': 'low',
-                        'close': 'close',
-                        'volume': 'volume',
-                        'amount': 'amount'
-                    }
-                    for field in fields:
-                        if field in field_mapping:
-                            bs_fields.append(field_mapping[field])
-                    bs_fields_str = ",".join(bs_fields)
-                    
-                    # 处理每只股票
-                    for i, stock_code in enumerate(batch_stocks):
-                        stock_start = time.time()
-                        logger.info(f"进程 {pid} 开始下载 {stock_code} ({i+1}/{len(batch_stocks)})")
-                        
-                        # 转换股票代码格式
-                        if '.' in stock_code:
-                            market, code = stock_code.split('.')
-                            bs_stock_code = f"{market.lower()}.{code}"
-                        else:
-                            bs_stock_code = stock_code
-                        
-                        # 设置重试计数
-                        retry_count = 0
-                        max_retries = 3
-                        
-                        # 用重试机制查询数据
-                        while retry_count < max_retries:
-                            try:
-                                # 查询5分钟线数据
-                                rs = bs.query_history_k_data_plus(
-                                    bs_stock_code,
-                                    bs_fields_str,
-                                    start_date=bs_start_date,
-                                    end_date=bs_end_date,
-                                    frequency="5",
-                                    adjustflag="3"
-                                )
-                                
-                                # 获取数据
-                                data_list = []
-                                while (rs.error_code == '0') & rs.next():
-                                    data_list.append(rs.get_row_data())
-                                
-                                if data_list:
-                                    # 转换为DataFrame
-                                    stock_df = pd.DataFrame(data_list, columns=rs.fields)
-                                    batch_results[stock_code] = stock_df
-                                    logger.info(f"进程 {pid} 成功获取 {stock_code} 数据: {len(stock_df)} 条记录，耗时: {time.time() - stock_start:.2f}秒")
-                                else:
-                                    logger.warning(f"进程 {pid} 获取 {stock_code} 数据: 无记录，耗时: {time.time() - stock_start:.2f}秒")
-                                
-                                # 无论是否有数据，都认为已处理完成
-                                break
-                                
-                            except Exception as e:
-                                logger.error(f"进程 {pid} 获取 {stock_code} 数据时出错: {e}")
-                                retry_count += 1
-                                if retry_count >= max_retries:
-                                    logger.error(f"进程 {pid} 获取 {stock_code} 数据失败次数过多，跳过此股票")
-                                    break
-                                time.sleep(retry_delay * (1 + random.random()))
-                    
-                except Exception as e:
-                    logger.error(f"进程 {pid} 处理批次时发生异常: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                finally:
-                    # 确保登出BaoStock（每个进程只登出一次）
-                    try:
-                        bs.logout()
-                        logger.info(f"进程 {pid} 登出BaoStock成功，处理耗时: {time.time() - process_start:.2f}秒")
-                    except Exception as e:
-                        logger.error(f"进程 {pid} 登出BaoStock异常: {e}")
-                
-                return (process_id, batch_results)
-            
-            # 定义进程池处理函数
-            def process_batch_with_pool(batch_idx):
-                batch = batches[batch_idx]
-                process_id = os.getpid()
-                logger.info(f"进程池中的进程 {process_id} 处理批次 {batch_idx+1}/{len(batches)}，包含 {len(batch)} 只股票")
-                
-                try:
-                    # 直接使用pool_worker_adapter处理批次
-                    process_result = pool_worker_adapter(
-                        batch, start_date, end_date, fields, batch_idx, None
-                    )
-                    
-                    # 将结果存储到共享字典中
-                    if process_result and process_result[1]:
-                        result_dict[batch_idx] = process_result[1]
-                        logger.info(f"进程 {process_id} 处理批次 {batch_idx+1} 成功，获取了 {len(process_result[1])} 只股票的数据")
-                    else:
-                        logger.warning(f"进程 {process_id} 处理批次 {batch_idx+1} 未返回数据")
-                    
-                    return batch_idx
-                except Exception as e:
-                    logger.error(f"进程 {process_id} 处理批次 {batch_idx+1} 时出错: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    return None
-            
+                stock_list = self.download_stock_list()
+
+        if start_date is None:
+            start_date = '20230101'
+
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y%m%d')
+
+        # 智能设置批次大小：根据时间跨度和股票数量动态调整
+        if batch_size is None:
+            # 计算时间跨度（天数）
+            from datetime import datetime
             try:
-                # 使用进程池处理所有批次
-                with Pool(processes=max_processes) as pool:
-                    # 提交所有批次任务
-                    batch_indices = list(range(len(batches)))
-                    results = pool.map(process_batch_with_pool, batch_indices)
-                    
-                    # 关闭进程池并等待所有任务完成
-                    pool.close()
-                    pool.join()
-                
-                # 收集所有进程的结果
-                for batch_idx, batch_data in result_dict.items():
-                    if batch_data:
-                        all_batch_data.update(batch_data)
-                        logger.info(f"从结果字典中收集批次 {batch_idx+1} 的数据: {len(batch_data)} 只股票")
-                
-                logger.info(f"所有进程池任务完成，共处理 {len(all_batch_data)} 只股票的数据")
-                
+                start_dt = datetime.strptime(start_date, '%Y%m%d')
+                end_dt = datetime.strptime(end_date, '%Y%m%d')
+                days_span = (end_dt - start_dt).days
+            except:
+                days_span = 30  # 默认按30天计算
+
+            # 根据时间跨度智能设置批次大小
+            if days_span <= 90:  # 3个月内
+                batch_size = 1200  # 较大批次，减少API调用
+            elif days_span <= 180:  # 6个月内
+                batch_size = 800   # 中等批次，平衡内存和效率
+            elif days_span <= 365:  # 1年内
+                batch_size = 600   # 适中批次，避免内存过大
+            else:  # 超过1年
+                batch_size = 400   # 小批次，控制内存使用
+
+            # 根据股票总数做最终调整
+            stock_count = len(stock_list)
+            if stock_count < 1000:
+                batch_size = min(batch_size, stock_count)
+            elif stock_count < 2000:
+                batch_size = min(batch_size, 800)
+            else:  # 5000+股票
+                batch_size = min(batch_size, 600)
+
+            logger.info(f"智能设置批次大小: {batch_size} (时间跨度: {days_span}天, 股票数: {stock_count})")
+
+        # 确保批次大小在合理范围内
+        batch_size = max(200, min(batch_size, 1200))
+
+        logger.info(f"下载参数: 股票总数={len(stock_list)}, 批次大小={batch_size}, 日期范围={start_date}-{end_date}")
+
+        # 5分钟数据只需要基础OHLCV字段
+        fields = ['open', 'high', 'low', 'close', 'volume', 'amount']
+
+        start_time = time.time()
+        total_downloaded = 0
+        success_count = 0
+
+        try:
+            # 确保API连接
+            if not xtdata.get_client().is_connected():
+                xtdata.get_client().connect()
+                time.sleep(0.5)  # 添加短暂延迟确保连接稳定
+
+            # 预先创建所有必要的分区目录
+            self._prepare_minute_partitions(start_date, end_date)
+
+            # 将股票列表分成多个批次
+            stock_batches = [stock_list[i:i+batch_size] for i in range(0, len(stock_list), batch_size)]
+            total_batches = len(stock_batches)
+
+            logger.info(f"将分 {total_batches} 批次下载，每批最多 {batch_size} 只股票")
+            logger.info(f"具体批次分配: 前 {total_batches-1} 批每批 {batch_size} 只，最后一批 {len(stock_list) - (total_batches-1)*batch_size} 只")
+
+            # 分批处理
+            total_expected_records = 0  # 预估总记录数
+            processed_stocks = 0
+            logger.info(f"\n开始下载任务：总共 {len(stock_list)} 只股票的5分钟数据...")
+
+            # 安全处理日期格式
+            def format_date(d):
+                if hasattr(d, 'strftime'):
+                    return d.strftime('%Y-%m-%d')
+                elif isinstance(d, str):
+                    if len(d) == 8:  # YYYYMMDD
+                        return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+                    else:
+                        return d
+                else:
+                    return str(d)
+
+            logger.info(f"时间范围: {format_date(start_date)} 至 {format_date(end_date)}")
+            logger.info(f"预计需要处理 {total_batches} 个批次")
+
+            for batch_idx, batch_stocks in enumerate(stock_batches):
+                batch_start_time = time.time()
+                progress = (batch_idx / total_batches) * 100
+                logger.info(f"\n{'='*60}")
+                logger.info(f"进度: {progress:.1f}% ({batch_idx+1}/{total_batches})")
+                logger.info(f"正在处理第 {batch_idx+1} 批，包含 {len(batch_stocks)} 只股票")
+                logger.info(f"本批股票: {batch_stocks[:3]}{'...' if len(batch_stocks) > 3 else ''}")
+
+                # 增量更新：基于批次记录检查（简单快速）
+                if incremental and self._is_batch_completed_by_record(batch_idx, batch_stocks, session_id):
+                    logger.info(f"批次 {batch_idx+1} 已完成，跳过")
+                    processed_stocks += len(batch_stocks)
+                    success_count += 1
+                    continue
+
+                try:
+                    # 转换时间为字符串格式（xtdata需要字符串格式）
+                    start_str = start_date.strftime('%Y%m%d') if hasattr(start_date, 'strftime') else str(start_date)
+                    end_str = end_date.strftime('%Y%m%d') if hasattr(end_date, 'strftime') else str(end_date)
+
+                    # 下载当前批次的数据
+                    download_start = time.time()
+                    logger.info(f"正在下载数据...")
+                    batch_data = xtdata.get_market_data(
+                        field_list=fields,
+                        stock_list=batch_stocks,
+                        period='5m',
+                        start_time=start_str,
+                        end_time=end_str
+                        # dividend_type='front',  # 前复权
+                    )
+                    download_time = time.time() - download_start
+                    logger.info(f"下载完成，耗时 {download_time:.2f} 秒")
+
+                    if not batch_data or not any(field in batch_data for field in fields):
+                        logger.warning(f"第 {batch_idx+1} 批次下载失败: API返回空数据")
+                        continue
+
+                    # 处理并保存当前批次
+                    process_start = time.time()
+                    logger.info(f"开始处理和保存数据...")
+                    batch_records = self._process_minute_batch_with_save(batch_data, batch_stocks, fields)
+                    process_time = time.time() - process_start
+                    batch_time = time.time() - batch_start_time
+
+                    if batch_records > 0:
+                        success_count += 1
+                        total_downloaded += batch_records
+                        processed_stocks += len(batch_stocks)
+
+                        # 增量更新：记录批次完成状态
+                        if incremental:
+                            self._mark_batch_completed(batch_idx, batch_stocks, session_id, end_date)
+
+                        # 计算预估剩余时间
+                        avg_time_per_batch = (time.time() - start_time) / (batch_idx + 1)
+                        remaining_batches = total_batches - batch_idx - 1
+                        eta_seconds = avg_time_per_batch * remaining_batches
+                        eta_minutes = eta_seconds / 60
+
+                        logger.info(f"\n批次 {batch_idx+1} 完成!")
+                        logger.info(f"  ├─ 下载耗时: {download_time:.2f}秒")
+                        logger.info(f"  ├─ 处理耗时: {process_time:.2f}秒")
+                        logger.info(f"  ├─ 总耗时: {batch_time:.2f}秒")
+                        logger.info(f"  ├─ 记录数: {batch_records:,} 条")
+                        logger.info(f"  └─ 已处理股票: {processed_stocks}/{len(stock_list)} ({processed_stocks/len(stock_list)*100:.1f}%)")
+
+                        if eta_minutes > 60:
+                            logger.info(f"预计剩余时间: {eta_minutes/60:.1f} 小时")
+                        elif eta_minutes > 1:
+                            logger.info(f"预计剩余时间: {eta_minutes:.1f} 分钟")
+                        else:
+                            logger.info(f"预计剩余时间: {eta_seconds:.0f} 秒")
+                    else:
+                        logger.warning(f"第 {batch_idx+1} 批无有效数据")
+
+                    # 立即清理内存
+                    del batch_data
+                    gc.collect()
+
+                except Exception as batch_error:
+                    logger.error(f"处理第 {batch_idx+1} 批时出错: {batch_error}")
+                    logger.error(traceback.format_exc())
+                    continue
+
+            # 保存元数据
+            self._save_metadata()
+
+            total_time = time.time() - start_time
+            logger.info(f"\n=== 下载完成 ===")
+            logger.info(f"总耗时: {total_time:.2f}秒")
+            logger.info(f"成功批次: {success_count}/{total_batches}")
+            logger.info(f"总记录数: {total_downloaded:,}")
+            logger.info(f"平均每批次耗时: {total_time/total_batches:.2f}秒")
+
+            return success_count > 0
+
+        except Exception as e:
+            logger.error(f"下载5分钟数据失败: {e}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def _prepare_minute_partitions(self, start_date, end_date):
+        """预先创建所有必要的分区目录"""
+        from datetime import datetime, timedelta
+
+        # 处理不同的输入类型
+        if isinstance(start_date, (pd.Timestamp, datetime)):
+            start_str = start_date.strftime('%Y%m%d')
+        else:
+            start_str = str(start_date)
+            start_date = datetime.strptime(start_str, '%Y%m%d')
+
+        if isinstance(end_date, (pd.Timestamp, datetime)):
+            end_str = end_date.strftime('%Y%m%d')
+        else:
+            end_str = str(end_date)
+            end_date = datetime.strptime(end_str, '%Y%m%d')
+
+        # 计算所有月份
+        start = start_date
+        end = end_date
+
+        current = start.replace(day=1)
+        partitions = set()
+
+        while current <= end:
+            partition_key = current.strftime('%Y%m')
+            partitions.add(partition_key)
+
+            # 下个月
+            if current.month == 12:
+                current = current.replace(year=current.year+1, month=1)
+            else:
+                current = current.replace(month=current.month+1)
+
+        # 创建所有分区目录（单层结构）
+        for partition_key in sorted(partitions):
+            if partition_key not in self.metadata['partitions']['minute']:
+                self.metadata['partitions']['minute'].append(partition_key)
+
+            # 单层目录：local_data/minute/202401/
+            month_dir = MINUTE_DIR / partition_key
+            month_dir.mkdir(parents=True, exist_ok=True)
+
+    def _process_minute_batch_with_save(self, batch_data, batch_stocks, fields):
+        """处理数据并立即保存到磁盘 - 优化版本"""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import numpy as np
+
+        # 获取所有时间点
+        all_times = set()
+        for field in fields:
+            if field in batch_data:
+                field_df = batch_data[field]
+                all_times.update(field_df.columns)
+
+        if not all_times:
+            return 0
+
+        logger.info(f"处理 {len(batch_stocks)} 只股票，{len(all_times)} 个时间点")
+
+        batch_start = time.time()
+
+        # 1. 收集所有有效的时间戳并转换为datetime
+        all_times = sorted(all_times)
+        time_to_datetime = {}
+        for t in all_times:
+            if isinstance(t, str):
+                dt = pd.to_datetime(t)
+            else:
+                dt = t
+            time_to_datetime[t] = dt
+
+        # 2. 高效筛选有效股票 - 向量化操作
+        valid_stocks = []
+        if 'open' in batch_data:
+            # 使用向量化操作快速筛选有效股票
+            open_df = batch_data['open']
+            for stock in batch_stocks:
+                if stock in open_df.index:
+                    stock_open = open_df.loc[stock]
+                    # 向量化检查：是否有有效数据
+                    if stock_open.notna().any() and (stock_open > 0).any():
+                        valid_stocks.append(stock)
+
+        logger.info(f"识别出 {len(valid_stocks)} 只有效股票")
+
+        if not valid_stocks:
+            logger.warning("没有找到有效股票")
+            return 0
+
+        # 3. 极致优化：分批次策略 + 直接向量化操作
+        logger.info(f"开始极致优化批量处理...")
+        data_start = time.time()
+
+        # 检查数据量，决定处理策略
+        total_stocks = len(valid_stocks)
+        estimated_records = total_stocks * len(all_times) * 0.8  # 估算80%有效数据
+
+        logger.info(f"数据量估算: {total_stocks} 股票 × {len(all_times)} 时间点 ≈ {estimated_records:,} 记录")
+
+        # 如果数据量太大，使用分批策略
+        if estimated_records > 5000000:  # 超过500万记录
+            return self._process_large_batch_optimized(valid_stocks, batch_data, fields, all_times, time_to_datetime, batch_start)
+
+        # 中等数据量：直接处理并保存
+        return self._process_and_save_directly(valid_stocks, batch_data, fields, all_times, time_to_datetime)
+
+    def _process_and_save_directly(self, valid_stocks, batch_data, fields, all_times, time_to_datetime):
+        """直接处理数据并立即保存 - 不带批次开始时间参数"""
+        import numpy as np
+
+        logger.info(f"使用直接处理+保存策略处理 {len(valid_stocks)} 只股票...")
+
+        # 一次性转换所有时间戳
+        all_datetimes = [time_to_datetime.get(ts, pd.to_datetime(ts)) for ts in all_times]
+        all_date_strs = [dt.strftime('%Y%m%d') for dt in all_datetimes]
+
+        # 直接构建二维数据结构
+        start_time = time.time()
+
+        # 准备结果数组 - 预分配内存
+        total_slots = len(valid_stocks) * len(all_times)
+
+        # 构建结果DataFrame的列数据
+        result_data = {
+            'stock_code': [],
+            'datetime': [],
+            'date_str': []
+        }
+        for field in fields:
+            result_data[field] = []
+
+        # 向量化处理所有股票
+        processed_count = 0
+        for stock_idx, stock in enumerate(valid_stocks):
+            if stock_idx % 200 == 0:
+                elapsed = time.time() - start_time
+                logger.info(f"  快速处理进度: {stock_idx}/{len(valid_stocks)} ({stock_idx/len(valid_stocks)*100:.1f}%), "
+                          f"耗时: {elapsed:.1f}s")
+
+            # 获取open数据用于快速过滤
+            if 'open' not in batch_data or stock not in batch_data['open'].index:
+                continue
+
+            stock_open = batch_data['open'].loc[stock]
+            valid_mask = stock_open.notna() & (stock_open > 0)
+
+            if not valid_mask.any():
+                continue
+
+            # 直接获取有效时间点索引
+            valid_indices = np.where(valid_mask)[0]
+
+            if len(valid_indices) == 0:
+                continue
+
+            # 批量处理这只股票的所有有效数据
+            stock_count = len(valid_indices)
+
+            # 批量添加基础信息
+            result_data['stock_code'].extend([stock] * stock_count)
+            result_data['datetime'].extend([all_datetimes[i] for i in valid_indices])
+            result_data['date_str'].extend([all_date_strs[i] for i in valid_indices])
+
+            # 批量处理所有字段
+            for field in fields:
+                if field in batch_data:
+                    # 直接获取该股票的字段数据
+                    field_series = batch_data[field].loc[stock]
+                    field_values = field_series.iloc[valid_indices].values
+                    # 向量化替换NaN
+                    clean_values = [v if pd.notna(v) else None for v in field_values]
+                    result_data[field].extend(clean_values)
+                else:
+                    result_data[field].extend([None] * stock_count)
+
+            processed_count += 1
+
+        # 快速创建DataFrame
+        logger.info(f"创建最终DataFrame...")
+        df_start = time.time()
+
+        result_df = pd.DataFrame(result_data)
+        total_records = len(result_df)
+
+        # 按日期分组并立即保存
+        logger.info(f"开始按日期分组并保存...")
+        save_start = time.time()
+        saved_files = 0
+
+        if total_records > 0:
+            grouped = result_df.groupby('date_str', sort=False)
+
+            for date_str, date_group in grouped:
+                # 移除date_str列，创建PyArrow表
+                data_columns = [col for col in date_group.columns if col != 'date_str']
+                group_data = {col: date_group[col].values for col in data_columns}
+                table = pa.Table.from_pydict(group_data)
+
+                # 立即保存这个分区的数据
+                partition_key = date_str[:6]
+                partition_dir = MINUTE_DIR / partition_key
+                partition_file = partition_dir / "minute_data.parquet"
+
+                try:
+                    # 转换为pandas进行保存操作
+                    new_df = table.to_pandas()
+
+                    if partition_file.exists():
+                        # 读取现有数据并合并
+                        existing_df = pd.read_parquet(partition_file)
+                        original_count = len(existing_df)
+                        # 合并数据
+                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                        # 去重
+                        combined_df.drop_duplicates(subset=['stock_code', 'datetime'],
+                                                keep='last', inplace=True)
+                        final_count = len(combined_df)
+                        # 写回文件 - 使用更快的引擎
+                        combined_df.to_parquet(partition_file, index=False, compression='snappy', engine='fastparquet')
+                        logger.info(f"  ├─ 更新分区: {partition_key} ({original_count:,} -> {final_count:,} 记录)")
+                    else:
+                        # 新文件直接写入 - 使用更快的引擎
+                        new_df.to_parquet(partition_file, index=False, compression='snappy', engine='fastparquet')
+                        logger.info(f"  ├─ 新建分区: {partition_key} ({len(new_df):,} 记录)")
+
+                    saved_files += 1
+                    # 清理这个分区的内存
+                    del new_df
+                    if 'combined_df' in locals():
+                        del combined_df
+
+                except Exception as e:
+                    logger.error(f"保存分区 {date_str} 失败: {e}")
+                    continue
+
+        save_time = time.time() - save_start
+        df_time = time.time() - df_start
+        total_process_time = time.time() - start_time
+
+        logger.info(f"直接处理+保存完成:")
+        logger.info(f"  ├─ DataFrame创建: {df_time:.2f}秒")
+        logger.info(f"  ├─ 保存操作: {save_time:.2f}秒 ({saved_files} 个文件)")
+        logger.info(f"  ├─ 处理股票: {processed_count}/{len(valid_stocks)}")
+        logger.info(f"  ├─ 总记录数: {total_records:,}")
+        logger.info(f"  └─ 总耗时: {total_process_time:.2f}秒 ({total_records/total_process_time:.0f} 记录/秒)")
+
+        # 清理内存
+        del result_df, result_data
+        gc.collect()
+
+        return total_records
+
+    def _process_large_batch_optimized(self, valid_stocks, batch_data, fields, all_times, time_to_datetime, batch_start):
+        """大数据量批次的分批优化处理"""
+        logger.info(f"大数据量检测，使用分批策略处理 {len(valid_stocks)} 只股票...")
+
+        # 分成子批次处理 - 大幅优化批次大小
+        SUB_BATCH_SIZE = 500   # 每个子批次500只股票，大幅减少文件操作次数
+        sub_batches = [valid_stocks[i:i+SUB_BATCH_SIZE] for i in range(0, len(valid_stocks), SUB_BATCH_SIZE)]
+
+        all_tables_by_date = {}
+        total_processed = 0
+        total_records = 0
+
+        for sub_idx, sub_batch in enumerate(sub_batches):
+            logger.info(f"处理子批次 {sub_idx+1}/{len(sub_batches)} ({len(sub_batch)} 只股票)...")
+
+            # 处理当前子批次
+            batch_start_time = time.time()
+
+            # 递归调用直接处理+保存方法，但是数据量较小会进入中等批次处理
+            sub_records = self._process_and_save_directly(
+                sub_batch, batch_data, fields, all_times, time_to_datetime
+            )
+
+            sub_time = time.time() - batch_start_time
+            total_processed += len(sub_batch)
+            total_records += sub_records
+
+            logger.info(f"子批次 {sub_idx+1} 完成: {sub_records:,} 记录, 耗时: {sub_time:.1f}秒")
+
+            # 定期强制内存清理
+            if sub_idx % 3 == 0:
+                gc.collect()
+
+        total_process_time = time.time() - batch_start
+        logger.info(f"大数据量分批处理完成:")
+        logger.info(f"  ├─ 处理股票: {total_processed}/{len(valid_stocks)}")
+        logger.info(f"  ├─ 总记录数: {total_records:,}")
+        logger.info(f"  └─ 总耗时: {total_process_time:.2f}秒 ({total_records/total_process_time:.0f} 记录/秒)")
+
+        return total_records
+
+        # 3. 高效保存策略：批量处理，减少I/O操作
+        write_start = time.time()
+        logger.info(f"开始高效写入文件到磁盘...")
+        saved_files = 0
+
+        # 按分区分组，减少重复操作
+        partition_groups = {}
+        for date_str, table in tables_by_date.items():
+            if table.num_rows == 0:
+                continue
+            partition_key = date_str[:6]
+            if partition_key not in partition_groups:
+                partition_groups[partition_key] = []
+            partition_groups[partition_key].append((date_str, table))
+
+        # 处理每个分区
+        for partition_key, date_tables in partition_groups.items():
+            partition_dir = MINUTE_DIR / partition_key
+            partition_file = partition_dir / "minute_data.parquet"
+
+            try:
+                saved_files += 1
+
+                # 合并该分区的所有日期数据
+                if len(date_tables) == 1:
+                    # 只有一个日期，直接使用
+                    combined_table = date_tables[0][1]
+                else:
+                    # 合并多个日期的表
+                    tables_to_merge = [table for _, table in date_tables]
+                    combined_table = pa.concat_tables(tables_to_merge)
+
+                # 转换为pandas进行保存操作
+                new_df = combined_table.to_pandas()
+
+                if partition_file.exists():
+                    # 使用临时文件策略，避免读取大文件
+                    temp_file = partition_file.with_suffix('.tmp.parquet')
+
+                    # 读取现有数据（如果文件不是太大）
+                    import os
+                    file_size = os.path.getsize(partition_file)
+
+                    if file_size > 100 * 1024 * 1024:  # 大于100MB，使用增量追加
+                        # 大文件：使用PyArrow的追加功能
+                        try:
+                            # 尝试直接追加（如果格式兼容）
+                            from pyarrow.parquet import ParquetWriter
+
+                            # 读取现有文件的schema
+                            import pyarrow.parquet as pq
+                            existing_table = pq.read_table(partition_file)
+
+                            # 合并数据
+                            final_table = pa.concat_tables([existing_table, combined_table])
+
+                            # 去重（在PyArrow层面，更高效）
+                            # 转换为pandas去重（PyArrow没有内置的去重）
+                            final_df = final_table.to_pandas()
+                            final_df.drop_duplicates(subset=['stock_code', 'datetime'],
+                                                   keep='last', inplace=True)
+
+                            # 写回文件
+                            final_table = pa.Table.from_pandas(final_df, preserve_index=False)
+                            writer = pq.ParquetWriter(partition_file, final_table.schema,
+                                                    compression='snappy')
+                            writer.write_table(final_table)
+                            writer.close()
+
+                            original_count = len(existing_table)
+                            final_count = len(final_table)
+
+                        except Exception:
+                            # 如果追加失败，回退到标准方法
+                            existing_df = pd.read_parquet(partition_file)
+                            original_count = len(existing_df)
+                            final_df = pd.concat([existing_df, new_df], ignore_index=True)
+                            final_df.drop_duplicates(subset=['stock_code', 'datetime'],
+                                                  keep='last', inplace=True)
+                            final_count = len(final_df)
+                            final_df.to_parquet(partition_file, index=False, compression='snappy', engine='fastparquet')
+                    else:
+                        # 小文件：使用标准合并方法
+                        existing_df = pd.read_parquet(partition_file)
+                        original_count = len(existing_df)
+                        final_df = pd.concat([existing_df, new_df], ignore_index=True)
+                        final_df.drop_duplicates(subset=['stock_code', 'datetime'],
+                                              keep='last', inplace=True)
+                        final_count = len(final_df)
+                        final_df.to_parquet(partition_file, index=False, compression='snappy', engine='fastparquet')
+
+                    logger.info(f"  ├─ 更新文件: {partition_key}/minute_data.parquet "
+                              f"({original_count:,} -> {final_count:,} 条记录)")
+                else:
+                    # 新文件直接写入 - 使用更快的引擎
+                    new_df.to_parquet(partition_file, index=False, compression='snappy', engine='fastparquet')
+                    logger.info(f"  ├─ 新建文件: {partition_key}/minute_data.parquet "
+                              f"({len(new_df):,} 条记录)")
+
+                # 清理内存
+                del new_df
+                if 'combined_table' in locals():
+                    del combined_table
+                if 'final_df' in locals():
+                    del final_df
+
             except Exception as e:
-                logger.error(f"进程池执行过程中发生错误: {e}")
+                logger.error(f"保存分区 {partition_key} 失败: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-        else:
-            # 单线程模式
-            for i, batch in enumerate(batches):
-                logger.info(f"处理批次 {i+1}/{len(batches)} ({(i+1)/len(batches)*100:.1f}%)")
-                try:
-                    batch_data = self._download_minute_batch(batch, start_date, end_date, fields)
-                    if batch_data:
-                        all_batch_data.update(batch_data)
-                        logger.info(f"批次 {i+1} 获取了 {len(batch_data)} 只股票的数据")
-                    else:
-                        logger.warning(f"批次 {i+1} 未获取到数据")
-                except Exception as e:
-                    logger.error(f"批次 {i+1} 下载失败: {str(e)}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    continue
+                continue
+
+        write_time = time.time() - write_start
+        avg_speed = total_records / write_time if write_time > 0 else 0
+        logger.info(f"数据写入完成，共 {saved_files} 个文件，耗时: {write_time:.2f}秒")
+        logger.info(f"  └─ 平均写入速度: {avg_speed:.0f} 记录/秒")
+
+        # 最终清理
+        del tables_by_date
+        gc.collect()
+
+        return total_records
         
-        total_time = time.time() - start_time
-        logger.info(f"下载耗时: {total_time:.2f}秒，平均每只股票 {total_time/total_stocks:.2f}秒")
-        
-        # 按日期分区处理数据
-        if all_batch_data:
-            # 转换为DataFrame列表
-            all_dfs = list(all_batch_data.values())
-            
-            # 按日期分组，形成分区数据
-            partition_dfs = {}
-            
-            for df in all_dfs:
-                if df is None or df.empty:
-                    continue
-                
-                # 确保日期字段存在
-                if 'date_str' not in df.columns and 'datetime' in df.columns:
-                    df['date_str'] = df['datetime'].dt.strftime('%Y%m%d')
-                
-                # 按日期分组
-                for date, date_df in df.groupby('date_str'):
-                    # 获取分区键
-                    partition_key = self._get_partition_key(date)
-                    
-                    # 添加到相应分区
-                    if partition_key not in partition_dfs:
-                        partition_dfs[partition_key] = []
-                    
-                    partition_dfs[partition_key].append(date_df)
-            
-            # 处理并保存每个分区
-            for partition_key, dfs in partition_dfs.items():
-                self._process_and_save_partition(partition_key, dfs)
-            
-            logger.info(f"成功下载并保存 {len(all_batch_data)} 支股票的5分钟数据，共 {sum(len(df) for df in all_dfs if df is not None)} 条记录")
+    def _is_batch_completed_by_record(self, batch_idx, batch_stocks, session_id):
+        """基于批次记录检查是否完成（简单快速的增量更新）"""
+        if not session_id or 'incremental_update' not in self.metadata:
+            return False
+
+        progress = self.metadata['incremental_update'].get('completed_batches', [])
+
+        # 查找匹配的批次记录
+        for batch_info in progress:
+            if (batch_info.get('batch_index') == batch_idx and
+                batch_info.get('session_id') == session_id and
+                batch_info.get('status') == 'completed'):
+                return True
+
+        return False
+
+    def _mark_batch_completed(self, batch_idx, batch_stocks, session_id, end_date):
+        """标记批次为已完成状态"""
+        if not session_id or 'incremental_update' not in self.metadata:
+            return
+
+        # 确保incremental_update结构存在
+        if 'incremental_update' not in self.metadata:
+            self.metadata['incremental_update'] = {
+                'enabled': True,
+                'minute_download_progress': {},
+                'completed_batches': [],
+                'last_download_date': None,
+                'session_id': session_id
+            }
+
+        # 创建批次完成记录
+        batch_info = {
+            'batch_index': batch_idx,
+            'stocks': batch_stocks.copy(),
+            'stock_count': len(batch_stocks),
+            'completed_time': datetime.now().isoformat(),
+            'end_date': end_date,
+            'status': 'completed',
+            'session_id': session_id
+        }
+
+        # 查找是否已存在该批次的记录
+        existing_batch = None
+        for i, batch in enumerate(self.metadata['incremental_update']['completed_batches']):
+            if (batch.get('batch_index') == batch_idx and
+                batch.get('session_id') == session_id):
+                existing_batch = i
+                break
+
+        if existing_batch is not None:
+            # 更新现有记录
+            self.metadata['incremental_update']['completed_batches'][existing_batch] = batch_info
         else:
-            logger.warning("未成功下载任何5分钟数据")
-    
+            # 添加新记录
+            self.metadata['incremental_update']['completed_batches'].append(batch_info)
+
+        # 更新每只股票的进度
+        for stock in batch_stocks:
+            if stock not in self.metadata['incremental_update']['minute_download_progress']:
+                self.metadata['incremental_update']['minute_download_progress'][stock] = {}
+
+            self.metadata['incremental_update']['minute_download_progress'][stock] = {
+                'latest_date': end_date,
+                'status': 'completed',
+                'batch_index': batch_idx,
+                'completed_time': datetime.now().isoformat(),
+                'session_id': session_id
+            }
+
+        # 更新最后下载日期
+        self.metadata['incremental_update']['last_download_date'] = datetime.now().isoformat()
+
+        # 保存元数据
+        self._save_metadata()
+
+        logger.info(f"  增量更新：已记录批次 {batch_idx+1} 完成状态 ({len(batch_stocks)} 只股票)")
+
+    def get_incremental_progress(self):
+        """获取增量更新进度信息 - 支持双策略显示"""
+        if 'incremental_update' not in self.metadata:
+            return None
+
+        progress = self.metadata['incremental_update']
+
+        completed_batches = [b for b in progress.get('completed_batches', []) if b.get('status') == 'completed']
+        total_stocks_in_progress = sum(b.get('stock_count', 0) for b in completed_batches)
+
+        return {
+            'enabled': progress.get('enabled', False),
+            'last_download_date': progress.get('last_download_date'),
+            'session_id': progress.get('session_id'),
+            'completed_batches_count': len(completed_batches),
+            'completed_stocks_count': total_stocks_in_progress,
+            'stock_progress': progress.get('minute_download_progress', {}),
+            'strategies': {
+                'batch_record_available': len(completed_batches) > 0,
+                'file_content_analysis': 'Enabled' if progress.get('enabled') else 'Disabled'
+            }
+        }
+
+    # 简化数据完整性检查（可选）
+    def quick_data_check(self, stock_list=None):
+        """快速检查数据存在情况（不分析文件内容）"""
+        if stock_list is None:
+            stock_list = self.metadata.get('stock_list', [])
+
+        total_stocks = len(stock_list)
+        partitions = self.metadata.get('partitions', {}).get('minute', [])
+
+        logger.info(f"快速数据检查: {total_stocks} 只股票，{len(partitions)} 个分区")
+
+        return {
+            'total_stocks': total_stocks,
+            'available_partitions': len(partitions),
+            'incremental_update_enabled': self.metadata.get('incremental_update', {}).get('enabled', False)
+        }
+
     def get_trading_calendar(self, start_date=None, end_date=None):
         """获取交易日历
         
@@ -2881,9 +3373,59 @@ def download_daily_data(storage, start_date='20230101', end_date=None, batch_siz
     """
     if end_date is None:
         end_date = datetime.now().strftime('%Y%m%d')
-        
+
     # 获取股票列表
     stocks = storage.metadata['stock_list']
+    logger.info(f"共有股票:{len(stocks)}只")
+
+    # 过滤1: 过滤掉北交所股票（北交所股票代码以8开头，后缀为.BJ）
+    original_count = len(stocks)
+    stocks = [s for s in stocks if not (s.endswith('.BJ'))]
+    bj_filtered_count = original_count - len(stocks)
+
+    if bj_filtered_count > 0:
+        logger.info(f"[北交所过滤] 已过滤掉 {bj_filtered_count} 只北交所股票")
+
+    # 过滤2: 过滤掉没有SW行业映射的股票（参考main.py的过滤逻辑）
+    try:
+        import sys
+        from pathlib import Path
+
+        # 添加 integrated_stock_selection 目录到 sys.path
+        current_dir = Path(__file__).parent
+        integrated_stock_selection_dir = current_dir / 'integrated_stock_selection'
+        if str(integrated_stock_selection_dir) not in sys.path:
+            sys.path.insert(0, str(integrated_stock_selection_dir))
+
+        from sw_encoding_loader import load_standardized_sw_encoding
+
+        # 构建编码文件的绝对路径
+        encoding_file = integrated_stock_selection_dir / 'config' / 'sw2_industry_encoding.pkl'
+
+        encoding_data = load_standardized_sw_encoding(encoding_file=str(encoding_file))
+        if encoding_data and 'mappings' in encoding_data and 'stock_to_industry' in encoding_data['mappings']:
+            sw_sector_mapping = encoding_data['mappings']['stock_to_industry']
+            valid_stocks_with_sw = set(sw_sector_mapping.keys())
+
+            pre_sw_count = len(stocks)
+            stocks = [s for s in stocks if s in valid_stocks_with_sw]
+            sw_filtered_count = pre_sw_count - len(stocks)
+
+            if sw_filtered_count > 0:
+                logger.info(f"[SW行业过滤] 过滤前: {pre_sw_count} 只股票")
+                logger.info(f"[SW行业过滤] 已过滤掉 {sw_filtered_count} 只没有SW行业映射的股票")
+                logger.info(f"[SW行业过滤] 过滤后: {len(stocks)} 只股票")
+
+            if len(stocks) == 0:
+                logger.error("[SW行业过滤] 过滤后没有有效股票，请检查SW行业映射数据")
+                return False
+            elif len(stocks) < 100:
+                logger.warning(f"[SW行业过滤] 过滤后股票数量较少：{len(stocks)}只，可能影响数据质量")
+        else:
+            logger.warning("[SW行业过滤] 无法加载SW行业映射数据，跳过SW行业过滤")
+    except Exception as e:
+        logger.warning(f"[SW行业过滤] 加载SW行业映射失败: {e}，跳过SW行业过滤")
+
     if not stocks:
         logger.info("股票列表为空，先下载股票列表...")
         stocks = storage.download_stock_list()
@@ -2920,18 +3462,17 @@ def download_daily_data(storage, start_date='20230101', end_date=None, batch_siz
         logger.error("日线数据下载失败")
         return False
 
-def download_minute_data(storage, start_date='20230101', end_date=None, batch_size=50, workers=5, use_multithreading=False, use_multiprocessing=True):
-    """下载5分钟数据
-    
+def download_minute_data(storage, start_date='20230101', end_date=None, batch_size=None, max_workers=None, incremental=True):
+    """下载5分钟数据（支持增量更新）
+
     参数:
         storage: ParquetDataStorage实例
         start_date: 开始日期，格式YYYYMMDD
         end_date: 结束日期，格式YYYYMMDD
-        batch_size: 每批处理的股票数
-        workers: 并行下载的线程/进程数
-        use_multithreading: 是否使用多线程
-        use_multiprocessing: 是否使用多进程
-    
+        batch_size: 已废弃参数，保留用于兼容性
+        max_workers: 已废弃参数，保留用于兼容性
+        incremental: 是否启用增量更新，默认True
+
     返回:
         bool: 是否下载成功
     """
@@ -2939,19 +3480,44 @@ def download_minute_data(storage, start_date='20230101', end_date=None, batch_si
     if end_date is None:
         end_date = datetime.now().strftime('%Y%m%d')
 
-    
+
     try:
-        logger.info(f"开始下载5分钟数据，时间范围: {start_date} - {end_date}")
-        storage.download_minute_data(
+        logger.info(f"开始下载5分钟数据，时间范围: {start_date} - {end_date}, 增量更新: {incremental}")
+
+        # 生成新的会话ID
+        import uuid
+        session_id = str(uuid.uuid4())[:8]
+
+        # 更新会话信息
+        if 'incremental_update' not in storage.metadata:
+            storage.metadata['incremental_update'] = {
+                'enabled': incremental,
+                'minute_download_progress': {},
+                'completed_batches': [],
+                'last_download_date': None,
+                'session_id': session_id
+            }
+        else:
+            storage.metadata['incremental_update']['session_id'] = session_id
+            storage.metadata['incremental_update']['enabled'] = incremental
+
+        storage._save_metadata()
+
+        success = storage.download_minute_data(
             stock_list=None,  # 下载所有股票
             start_date=start_date,
             end_date=end_date,
             batch_size=batch_size,
-            max_workers=workers,
-            use_multithreading=use_multithreading
+            max_workers=max_workers,
+            incremental=incremental,
+            session_id=session_id
         )
-        logger.info("5分钟数据下载完成")
-        return True
+        if success:
+            logger.info("5分钟数据下载完成")
+            return True
+        else:
+            logger.error("5分钟数据下载失败")
+            return False
     except Exception as e:
         logger.error(f"下载5分钟数据时出错: {str(e)}")
         import traceback
@@ -3489,16 +4055,24 @@ def main():
     
     # 创建数据存储对象
     storage = ParquetDataStorage()
-    
+
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='高级量化数据下载和存储系统')
+    parser.add_argument('--start_date', '-s', type=str, default='20260112',
+                        help='开始日期 (YYYYMMDD格式，默认: 20260112)')
+    parser.add_argument('--end_date', '-e', type=str, default='20260113',
+                        help='结束日期 (YYYYMMDD格式，默认: 20260113)')
+    args = parser.parse_args()
+
     # 设置时间区间参数
-    start_date = '20230101'  # 开始日期，使用YYYYMMDD格式字符串
+    start_date = args.start_date  # 开始日期，使用YYYYMMDD格式字符串20221001  20251021
     # end_date = datetime.now().strftime('%Y%m%d')  # 结束日期，默认为当前日期
-    end_date = '20230430'
-    batch_size = 500  # 批处理大小
+    end_date = args.end_date
+    batch_size = 2000  # 批处理大小
     workers = 5  # 线程数
     
     # 设置测试参数
-    test_date = '20240101'  # 测试日期
+    test_date = '20251218'  # 测试日期
     end_test_date = '20240430'  # 测试结束日期
     test_stock = '000001.SZ'  # 测试股票代码，设为None则使用默认股票
     
@@ -3507,16 +4081,34 @@ def main():
     # === 1. 数据下载功能 ===
     # 下载股票列表 (如果未下载，这个通常应该首先执行)
     # download_stock_list(storage)
+    # storage.update_trading_calendar()
     
     # 下载交易日历
-    # download_calendar(storage, start_date, end_date)
+    download_calendar(storage, start_date, end_date)
     
     # 下载日线数据
     # download_daily_data(storage, start_date, end_date, batch_size, workers)
     
-    # 下载5分钟数据
-    # download_minute_data(storage, start_date, end_date, batch_size//2, workers)
-    
+    # 下载5分钟数据（支持增量更新）
+    # download_minute_data(storage, start_date, end_date, batch_size, workers, incremental=True)
+
+    # 查看增量更新状态（简化版）
+    progress = storage.get_incremental_progress()
+    if progress:
+        logger.info(f"增量更新状态:")
+        logger.info(f"  ├─ 启用状态: {progress['enabled']}")
+        logger.info(f"  ├─ 会话ID: {progress['session_id']}")
+        logger.info(f"  ├─ 已完成批次: {progress['completed_batches_count']}")
+        logger.info(f"  ├─ 已完成股票: {progress['completed_stocks_count']}")
+        logger.info(f"  └─ 最后下载: {progress['last_download_date']}")
+
+        # 快速数据检查
+        data_check = storage.quick_data_check()
+        logger.info(f"数据状态:")
+        logger.info(f"  ├─ 总股票数: {data_check['total_stocks']}")
+        logger.info(f"  ├─ 可用分区: {data_check['available_partitions']}")
+        logger.info(f"  └─ 增量更新: {'启用' if data_check['incremental_update_enabled'] else '禁用'}")
+
     # 下载所有数据（包括股票列表、交易日历、日线和5分钟数据）
     # download_all_data(storage, start_date, end_date, batch_size, workers)
     
@@ -3547,11 +4139,11 @@ def main():
     # test_minute_data(storage, test_date, end_test_date, test_stock)
 
     # 使用多进程下载缺失数据
-    storage.download_missing_stocks_data(
-        partition_key='202301',
-        max_workers=8,
-        use_multiprocessing=True
-    )
+    # storage.download_missing_stocks_data(
+    #     partition_key='202301',
+    #     max_workers=8,
+    #     use_multiprocessing=True
+    # )
     
     # 检查2023年1月哪些股票没有5分钟数据
     # storage.check_missing_stocks_in_minute_data('202301')

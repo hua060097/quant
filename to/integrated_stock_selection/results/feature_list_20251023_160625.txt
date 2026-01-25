@@ -1,0 +1,55 @@
+训练时间: 2025-10-23 16:06:25.897380
+特征数量: 50
+数据日期范围: 2023-06-01 00:00:00 - 2024-12-31 00:00:00
+训练截止日期: 2025-01-01
+特征列表:
+  1. alpha_012
+  2. alpha_017
+  3. amihud_illiquidity_enhanced
+  4. amount
+  5. amount_rank
+  6. consecutive_up_severity
+  7. corr_20d_mom5
+  8. corr_5d
+  9. corr_slope_20_120
+ 10. distance_from_52w_high
+ 11. distance_from_52w_low
+ 12. drawdown_recovery_speed
+ 13. lower_shadow_ratio
+ 14. ma_convergence_score
+ 15. ma_ratio_5_10
+ 16. market_correlation
+ 17. market_structure_score
+ 18. max_daily_return_60d
+ 19. max_drawdown_20d
+ 20. momentum_reversal
+ 21. near_support_count_60d
+ 22. pct_chg_1d
+ 23. pct_chg_2d
+ 24. price_acceleration
+ 25. price_impact
+ 26. pullback_volume_ratio
+ 27. rank_market_cap
+ 28. rank_momentum_20d
+ 29. rank_pct_chg_0d
+ 30. rank_return_5d
+ 31. rank_rsi
+ 32. rank_turnover_rate
+ 33. rank_volatility_20d
+ 34. resistance_distance
+ 35. return_10d
+ 36. return_5d
+ 37. returns_zscore
+ 38. sector_breadth
+ 39. sector_concentration
+ 40. sector_correlation_20d
+ 41. sector_return_rank_20d
+ 42. size_market_cap_interaction
+ 43. support_distance
+ 44. support_risk_reward_ratio
+ 45. trend_acceleration
+ 46. turnover_rate_strength
+ 47. volatility_adjusted_return
+ 48. volatility_change_rate
+ 49. volatility_correlation
+ 50. volume_correlation

@@ -1,1 +1,0 @@
-    def _calculate_adaptive_weights(self, model_package, market_status=None):

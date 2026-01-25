@@ -194,8 +194,41 @@ def create_stock_sector_mapping():
         "stock_name_to_code": stock_name_to_code,
         "update_time": datetime.now().strftime('%Y%m%d %H:%M:%S')
     }
-    
+
+    # 新增：生成JSON格式的股票-板块映射文件
+    _save_json_mapping(stock_to_sectors)
+
     return stock_sectors_data
+
+def _save_json_mapping(stock_to_sectors):
+    """
+    保存股票-板块映射为JSON格式
+    格式：{"股票代码": ["板块1", "板块2", ...], ...}
+    """
+    import json
+    import os
+    from pathlib import Path
+
+    try:
+        # 创建目标目录
+        json_dir = Path("to/local_data/sector_mapping")
+        json_dir.mkdir(parents=True, exist_ok=True)
+
+        # 转换为简化的JSON格式
+        json_mapping = {}
+        for stock_code, sectors in stock_to_sectors.items():
+            json_mapping[stock_code] = sectors
+
+        # 保存JSON文件
+        json_file_path = json_dir / "stock_sector_mapping.json"
+        with open(json_file_path, 'w', encoding='utf-8') as f:
+            json.dump(json_mapping, f, ensure_ascii=False, indent=2)
+
+        print(f"✅ JSON映射文件已保存: {json_file_path}")
+        print(f"   包含 {len(json_mapping)} 只股票的板块映射")
+
+    except Exception as e:
+        print(f"❌ 保存JSON映射文件失败: {e}")
 
 def save_data(data, filename="stock_sectors_mapping.pkl"):
     """保存数据到文件"""
@@ -338,7 +371,7 @@ if __name__ == "__main__":
     # 通过注释/取消注释下面的行来选择要执行的功能
     
     # 1. 更新股票和TGN概念板块的映射关系
-    # update_mapping()
+    update_mapping()
     
     # 2. 查询股票所属的TGN概念板块 (可通过代码或名称)
     data = load_data()

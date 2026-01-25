@@ -1,109 +1,5 @@
 [
     {
-        "sector_name": "TGN华为概念",
-        "stock_count": 955
-    },
-    {
-        "sector_name": "TGN新能源汽车",
-        "stock_count": 864
-    },
-    {
-        "sector_name": "TGN机器人概念",
-        "stock_count": 847
-    },
-    {
-        "sector_name": "TGN人工智能",
-        "stock_count": 796
-    },
-    {
-        "sector_name": "TGN2024中报预增",
-        "stock_count": 669
-    },
-    {
-        "sector_name": "TGN芯片概念",
-        "stock_count": 666
-    },
-    {
-        "sector_name": "TGN电子商务",
-        "stock_count": 632
-    },
-    {
-        "sector_name": "TGN西部大开发",
-        "stock_count": 625
-    },
-    {
-        "sector_name": "TGN比亚迪概念",
-        "stock_count": 583
-    },
-    {
-        "sector_name": "TGN一带一路",
-        "stock_count": 567
-    },
-    {
-        "sector_name": "TGN光伏概念",
-        "stock_count": 565
-    },
-    {
-        "sector_name": "TGNMSCI概念",
-        "stock_count": 564
-    },
-    {
-        "sector_name": "TGNDeepSeek概念",
-        "stock_count": 557
-    },
-    {
-        "sector_name": "TGN储能",
-        "stock_count": 553
-    },
-    {
-        "sector_name": "TGN军工",
-        "stock_count": 535
-    },
-    {
-        "sector_name": "TGN人民币贬值受益",
-        "stock_count": 501
-    },
-    {
-        "sector_name": "TGN智能制造",
-        "stock_count": 486
-    },
-    {
-        "sector_name": "TGN锂电池概念",
-        "stock_count": 475
-    },
-    {
-        "sector_name": "TGN高股息精选",
-        "stock_count": 445
-    },
-    {
-        "sector_name": "TGN数据中心",
-        "stock_count": 431
-    },
-    {
-        "sector_name": "TGN物联网",
-        "stock_count": 423
-    },
-    {
-        "sector_name": "TGN5G",
-        "stock_count": 406
-    },
-    {
-        "sector_name": "TGN2024年报预增",
-        "stock_count": 405
-    },
-    {
-        "sector_name": "TGN创投",
-        "stock_count": 401
-    },
-    {
-        "sector_name": "TGN新材料概念",
-        "stock_count": 397
-    },
-    {
-        "sector_name": "TGN智慧城市",
-        "stock_count": 388
-    },
-    {
         "sector_name": "TGN央企国企改革",
         "stock_count": 384
     },
@@ -220,20 +116,12 @@
         "stock_count": 264
     },
     {
-        "sector_name": "TGN股权转让(并购重组)",
-        "stock_count": 263
-    },
-    {
         "sector_name": "TGN阿里巴巴概念",
         "stock_count": 261
     },
     {
         "sector_name": "TGN宁德时代概念",
         "stock_count": 256
-    },
-    {
-        "sector_name": "TGN证金持股",
-        "stock_count": 245
     },
     {
         "sector_name": "TGN集成电路概念",
@@ -638,10 +526,6 @@
     {
         "sector_name": "TGN同花顺漂亮100",
         "stock_count": 100
-    },
-    {
-        "sector_name": "TGN2024三季报预增",
-        "stock_count": 99
     },
     {
         "sector_name": "TGN工业母机",

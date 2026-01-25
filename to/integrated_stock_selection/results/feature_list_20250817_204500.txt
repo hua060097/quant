@@ -1,0 +1,20 @@
+训练时间: 2025-08-17 20:45:00.982419
+特征数量: 15
+数据日期范围: 2023-06-01 00:00:00 - 2024-05-31 00:00:00
+训练截止日期: 2024-06-01
+特征列表:
+  1. corr_5d
+  2. institutional_activity_score
+  3. lower_shadow_ratio
+  4. ma_convergence_score
+  5. ma_ratio_5_10
+  6. market_structure_score
+  7. near_support_count_60d
+  8. price_impact
+  9. rank_momentum_20d
+ 10. rank_rsi
+ 11. rank_volume
+ 12. returns_zscore
+ 13. sector_correlation_20d
+ 14. volatility_correlation
+ 15. volume_correlation

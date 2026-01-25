@@ -1,0 +1,43 @@
+训练时间: 2025-09-29 20:45:50.994101
+特征数量: 38
+数据日期范围: 2023-06-01 00:00:00 - 2024-05-31 00:00:00
+训练截止日期: 2024-06-01
+特征列表:
+  1. broken_limit_count_rank_20d
+  2. corr_20d_mom5
+  3. corr_5d
+  4. corr_slope_20_120
+  5. gain_loss_ratio_rank_60d
+  6. institutional_activity_score
+  7. limit_down_count_rank_5d
+  8. limit_down_count_rank_60d
+  9. limit_up_count_rank_20d
+ 10. limit_up_count_rank_60d
+ 11. lower_shadow_ratio
+ 12. ma_convergence_score
+ 13. ma_ratio_5_10
+ 14. market_correlation
+ 15. market_structure_score
+ 16. market_trend_factor
+ 17. market_volatility_atr20d
+ 18. market_volume_rank_20d
+ 19. max_consecutive_limit_rank_20d
+ 20. max_gain_10d_rank_60d
+ 21. max_gain_5d_rank_30d
+ 22. mv_factor
+ 23. near_support_count_60d
+ 24. obv_momentum_factor
+ 25. parkinson_vol
+ 26. price_impact
+ 27. pullback_volume_ratio
+ 28. rank_momentum_20d
+ 29. rank_rsi
+ 30. rank_volume
+ 31. returns_zscore
+ 32. sector_correlation_20d
+ 33. sector_momentum_consistency
+ 34. sector_return_rank_20d
+ 35. volatility_correlation
+ 36. volatility_efficiency
+ 37. volume_correlation
+ 38. volume_strength

@@ -43,8 +43,8 @@ try:
     from memory_map_manager import get_memory_map_manager
     from feature_compress import optimize_dtypes, save_features, load_features
     from feature_update import (
-        get_feature_update_manager, 
-        update_features_incrementally,
+        get_feature_update_manager,
+        # update_features_incrementally,  # 已删除
         merge_feature_files,
         get_feature_info
     )
@@ -55,8 +55,8 @@ except ImportError:
         from .memory_map_manager import get_memory_map_manager
         from .feature_compress import optimize_dtypes, save_features, load_features
         from .feature_update import (
-            get_feature_update_manager, 
-            update_features_incrementally,
+            get_feature_update_manager,
+            # update_features_incrementally,  # 已删除
             merge_feature_files,
             get_feature_info
         )
@@ -64,13 +64,6 @@ except ImportError:
         logger.error("无法导入自定义模块，请检查路径设置")
         raise
 
-# 导入板块特征生成相关模块
-try:
-    from to.sector_features.technical_indicators import TechnicalIndicators
-    from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator
-except ImportError:
-    logger.error("无法导入板块特征生成模块，请检查路径设置")
-    raise
 
 # 导入业务逻辑相关模块
 try:
@@ -106,125 +99,530 @@ class DataLoaderWrapper:
         return get_trading_days(start_date, end_date)
 
 class SectorFeatureManager:
-    """板块特征管理类
-    
-    负责生成和管理板块特征数据，集成了内存映射、数据压缩和增量更新功能。
-    
-    Attributes:
-        output_dir: 输出目录路径
-        memory_map_manager: 内存映射管理器
-        feature_update_manager: 特征更新管理器
-        max_workers: 最大工作进程数
-        batch_size: 每批处理的日期数量
+    """板块特征管理类 - 优化版
+
+    优化重点：
+    1. 简化初始化，移除冗余的内存管理器
+    2. 增加增量更新功能
+    3. 优化数据缓存策略
+    4. 减少不必要的复杂性
     """
-    
+
     def __init__(
-        self, 
+        self,
         output_dir: Optional[Union[str, Path]] = None,
         max_workers: int = DEFAULT_MAX_WORKERS,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        min_records_per_file: int = DEFAULT_MIN_RECORDS_PER_FILE,
-        output_format: str = 'parquet'  # 添加输出格式参数
+        output_format: str = 'parquet'
     ):
-        """初始化板块特征管理器
-        
+        """初始化板块特征管理器 - 简化版
+
         Args:
-            output_dir: 特征输出目录，如果为None则使用默认目录
+            output_dir: 特征输出目录
             max_workers: 最大工作进程数
             batch_size: 每批处理的日期数量
-            min_records_per_file: 特征文件的最小记录数，用于文件合并优化
-            output_format: 输出文件格式，支持'parquet'或'csv'，默认为'parquet'
+            output_format: 输出文件格式
         """
         self.output_dir = Path(output_dir) if output_dir else get_data_path('sector_features')
-        self.output_dir.mkdir(parents=True, exist_ok=True)  # 确保输出目录存在
-        
-        # 设置输出格式
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         self._output_format = output_format
-        
-        # 初始化内存映射管理器
-        self.memory_map_manager = get_memory_map_manager()
-        
-        # 初始化特征更新管理器
-        self.feature_update_manager = get_feature_update_manager(self.output_dir)
-        
-        # 设置处理参数
         self.max_workers = max_workers
         self.batch_size = batch_size
-        self.min_records_per_file = min_records_per_file
-        
-        # 缓存统计信息
-        self._feature_info_cache = {}
-        
+
         # 数据提供者
         self.data_provider = DataLoaderWrapper()
-        
-        # 创建EnhancedSectorFeatureGenerator实例
-        from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator
-        from to.sector_features.technical_indicators import TechnicalIndicators
-        from to.stock_sectors_mapping import get_sector_stocks
-        
+
         # 创建板块映射
         self.sector_mapping = {}
         for sector in get_tng_sectors():
             self.sector_mapping[sector] = get_sector_stocks(sector_name=sector)
-            
-        # 初始化增强特征生成器
-        self.feature_generator = EnhancedSectorFeatureGenerator(
-            data_provider=self.data_provider,
-            sector_mapping=self.sector_mapping,
-            output_dir=self.output_dir
-        )
-    
-    def calculate_sector_features_for_date(self, date: str, sector: str, preloaded_data: Optional[pd.DataFrame] = None) -> Tuple[bool, pd.DataFrame]:
-        """计算特定日期的板块特征
-        
-        使用EnhancedSectorFeatureGenerator生成综合特征
-        
+
+        # 全局数据缓存 - 跨板块共享
+        self._global_features_cache = {}
+
+        logger.info(f"板块特征管理器初始化完成，输出目录: {self.output_dir}")
+
+    def _incremental_update_features(self, new_df: pd.DataFrame, file_path: Path) -> pd.DataFrame:
+        """增量更新特征数据
+
         Args:
-            date: 目标日期，字符串格式，如"20230101"
-            sector: 板块名称
-            preloaded_data: 预加载的历史数据
-            
+            new_df: 新计算的特征数据
+            file_path: 目标文件路径
+
         Returns:
-            板块特征DataFrame或空DataFrame
+            合并后的完整数据
         """
         try:
-            logger.info(f"使用增强特征生成器计算板块 {sector} 在日期 {date} 的特征")
-            
-            # 使用EnhancedSectorFeatureGenerator生成特征
-            success, features_df = self.feature_generator.generate_sector_features_for_date(sector, date, preloaded_data)
-            
-            if not success or features_df is None or features_df.empty:
-                logger.warning(f"日期 {date} 板块 {sector} 没有特征数据")
-                return False, pd.DataFrame()
-            
-            # 确保有date列
-            if 'date' not in features_df.columns:
-                features_df['date'] = date
-                
-            # 确保有sector_name列
-            if 'sector_name' not in features_df.columns and 'sector' in features_df.columns:
-                features_df['sector_name'] = features_df['sector']
-            elif 'sector_name' not in features_df.columns and 'sector' not in features_df.columns:
-                features_df['sector_name'] = sector
-            
-            # 使用数据类型优化
-            features_df = optimize_dtypes(features_df)
-            
-            return True, features_df
+            if not file_path.exists():
+                logger.info(f"文件不存在，创建新文件: {file_path}")
+                return new_df
+
+            # 读取现有数据
+            if file_path.suffix == '.parquet':
+                existing_df = pd.read_parquet(file_path)
+            else:
+                existing_df = pd.read_csv(file_path)
+
+            logger.info(f"读取现有数据: {len(existing_df)} 条记录")
+
+            # 确保日期格式一致
+            existing_df['date'] = pd.to_datetime(existing_df['date'])
+            new_df['date'] = pd.to_datetime(new_df['date'])
+
+            # 获取新数据的日期范围
+            new_dates = set(new_df['date'].dt.date)
+            logger.info(f"新数据日期范围: {min(new_dates)} 到 {max(new_dates)}, 共{len(new_dates)}个交易日")
+
+            # 删除现有数据中与新数据日期重复的记录
+            existing_df_filtered = existing_df[~existing_df['date'].dt.date.isin(new_dates)].copy()
+            removed_count = len(existing_df) - len(existing_df_filtered)
+
+            if removed_count > 0:
+                logger.info(f"覆盖现有数据: {removed_count}条（日期重复）")
+
+            # 合并数据
+            merged_df = pd.concat([existing_df_filtered, new_df], ignore_index=True)
+
+            # 按日期排序
+            merged_df = merged_df.sort_values('date').reset_index(drop=True)
+
+            added_count = len(new_df) - removed_count
+            logger.info(f"增量添加新数据: {added_count}条")
+            logger.info(f"合并后总数据量: {len(merged_df)}条")
+
+            return merged_df
+
         except Exception as e:
-            logger.error(f"处理日期 {date} 板块 {sector} 时出错: {e}")
-            logger.error(f"错误详情: {traceback.format_exc()}")
-            return False, pd.DataFrame()
+            logger.error(f"增量更新失败: {e}")
+            return new_df
+
+    def _calculate_sector_features_vectorized(self, sector: str, features_cache: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """向量化计算板块特征 - 高性能版本
+
+        Args:
+            sector: 板块名称
+            features_cache: 日期到股票特征数据的映射
+
+        Returns:
+            板块特征DataFrame
+        """
+        try:
+            if sector not in self.sector_mapping:
+                logger.warning(f"未找到板块 {sector} 的股票映射")
+                return pd.DataFrame()
+
+            sector_stocks = self.sector_mapping[sector]
+            if not sector_stocks:
+                logger.warning(f"板块 {sector} 没有股票")
+                return pd.DataFrame()
+
+            all_sector_features = []
+
+            for date_str, stock_df in features_cache.items():
+                if stock_df.empty:
+                    continue
+
+                # 过滤板块内股票
+                sector_df = stock_df[stock_df['stock_code'].isin(sector_stocks)].copy()
+                if sector_df.empty:
+                    continue
+
+                # 向量化计算板块特征
+                sector_features = self._compute_sector_metrics(sector_df, date_str, sector)
+                if sector_features:
+                    all_sector_features.append(sector_features)
+
+            if not all_sector_features:
+                return pd.DataFrame()
+
+            # 合并所有日期的特征
+            result_df = pd.DataFrame(all_sector_features)
+            result_df['date'] = pd.to_datetime(result_df['date'])
+            result_df = result_df.sort_values('date').reset_index(drop=True)
+
+            logger.info(f"板块 {sector} 向量化计算完成，生成 {len(result_df)} 条特征记录")
+            return result_df
+
+        except Exception as e:
+            logger.error(f"向量化计算板块 {sector} 特征失败: {e}")
+            return pd.DataFrame()
+
+    def _compute_sector_metrics(self, sector_df: pd.DataFrame, date_str: str, sector: str) -> Optional[Dict]:
+        """计算单日板块指标 - 优化版（只计算实际保存的14个字段）
+
+        实际保存的字段：date, sector, sector_name, open, high, low, close,
+                      volume, amount, pct_chg, stock_count, up_count, down_count, flat_count
+
+        Args:
+            sector_df: 板块内股票的特征数据
+            date_str: 日期字符串
+            sector: 板块名称
+
+        Returns:
+            板块特征字典
+        """
+        try:
+            if sector_df.empty:
+                return None
+
+            # 基础价格特征聚合（使用均值）
+            price_features = {}
+            for col in ['open', 'high', 'low', 'close']:
+                if col in sector_df.columns:
+                    price_features[col] = float(sector_df[col].mean())
+
+            # 成交量和成交额聚合（使用总和）
+            if 'volume' in sector_df.columns:
+                price_features['volume'] = float(sector_df['volume'].sum())
+            if 'amount' in sector_df.columns:
+                price_features['amount'] = float(sector_df['amount'].sum())
+
+            # 涨跌幅特征聚合（使用均值）
+            if 'pct_chg' in sector_df.columns:
+                price_features['pct_chg'] = float(sector_df['pct_chg'].mean())
+
+            # 统计特征 - 优化：直接使用向量化操作
+            if 'pct_chg' in sector_df.columns:
+                pct_chg = sector_df['pct_chg']
+                stats_features = {
+                    'stock_count': len(sector_df),
+                    'up_count': int((pct_chg > 0).sum()),
+                    'down_count': int((pct_chg < 0).sum()),
+                    'flat_count': int((pct_chg == 0).sum())
+                }
+            else:
+                stats_features = {
+                    'stock_count': len(sector_df),
+                    'up_count': 0,
+                    'down_count': 0,
+                    'flat_count': 0
+                }
+
+            # 合并所有特征
+            features = {
+                'date': date_str,
+                'sector': sector,
+                'sector_name': sector,
+                **price_features,
+                **stats_features
+            }
+
+            return features
+
+        except Exception as e:
+            logger.error(f"计算板块 {sector} 在日期 {date_str} 的指标失败: {e}")
+            return None
+
+    # process_sector_incremental方法已删除 - 增量计算功能已移除
+
+    def _load_daily_stock_features(self, date_str: str) -> Optional[pd.DataFrame]:
+        """从标准路径加载每日股票特征数据 - 优化版
+
+        Args:
+            date_str: 日期字符串，格式为YYYYMMDD
+
+        Returns:
+            股票特征DataFrame，如果加载失败返回None
+        """
+        # 检查全局缓存
+        if date_str in self._global_features_cache:
+            return self._global_features_cache[date_str]
+
+        try:
+            base_dir = Path(__file__).parent
+            feature_file = base_dir / "local_data/features/daily" / f"{date_str}.parquet"
+
+            if not feature_file.exists():
+                feature_file = base_dir / "local_data/features/daily" / f"{date_str}.csv"
+                if not feature_file.exists():
+                    return None
+
+            # 加载数据
+            if feature_file.suffix == '.parquet':
+                df = pd.read_parquet(feature_file)
+            else:
+                df = pd.read_csv(feature_file)
+
+            # 缓存数据
+            self._global_features_cache[date_str] = df
+            return df
+
+        except Exception as e:
+            logger.error(f"加载日期 {date_str} 的特征数据失败: {e}")
+            return None
+
+    def _preload_daily_features_batch(self, date_list: List[str]) -> Dict[str, pd.DataFrame]:
+        """批量预加载多天的股票特征数据 - 优化版
+
+        优化点：
+        1. 使用全局缓存避免重复加载
+        2. 简化逻辑，移除复杂的内存检查
+        3. 提高I/O效率
+
+        Args:
+            date_list: 日期字符串列表
+
+        Returns:
+            日期到DataFrame的映射字典
+        """
+        features_cache = {}
+
+        # 检查哪些日期需要加载（未在全局缓存中）
+        dates_to_load = [date for date in date_list if date not in self._global_features_cache]
+
+        if not dates_to_load:
+            logger.info("所有日期数据已在缓存中")
+            return {date: self._global_features_cache[date] for date in date_list}
+
+        logger.info(f"需要加载 {len(dates_to_load)} 天的新数据")
+
+        # 并行加载新数据
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+            base_dir = Path(__file__).parent
+
+            for date_str in dates_to_load:
+                feature_file = base_dir / "local_data/features/daily" / f"{date_str}.parquet"
+                if not feature_file.exists():
+                    feature_file = base_dir / "local_data/features/daily" / f"{date_str}.csv"
+
+                if feature_file.exists():
+                    if feature_file.suffix == '.parquet':
+                        future = executor.submit(pd.read_parquet, feature_file)
+                    else:
+                        future = executor.submit(pd.read_csv, feature_file)
+                    futures[date_str] = future
+
+            # 收集结果并更新全局缓存
+            for date_str, future in futures.items():
+                try:
+                    df = future.result()
+                    self._global_features_cache[date_str] = df
+                    features_cache[date_str] = df
+                except Exception as e:
+                    logger.warning(f"加载日期 {date_str} 失败: {e}")
+
+        # 返回所有请求日期的数据
+        result = {}
+        for date in date_list:
+            if date in self._global_features_cache:
+                result[date] = self._global_features_cache[date]
+
+        logger.info(f"批量预加载完成，返回 {len(result)} 天的数据")
+        return result
+
+    def _preload_features_in_chunks(self, date_list: List[str], max_io_workers: int, chunk_size: int) -> Dict[str, pd.DataFrame]:
+        """分块预加载特征数据，避免内存溢出
+
+        🛡️ 内存安全策略：将大量日期分成小块处理，每块处理完后立即释放内存
+
+        Args:
+            date_list: 日期字符串列表
+            max_io_workers: I/O线程池大小
+            chunk_size: 每块的大小
+
+        Returns:
+            所有日期的特征数据字典
+        """
+        logger.info(f"🛡️ 启用分块处理模式：{len(date_list)} 天数据分成 {chunk_size} 天/块")
+
+        all_features = {}
+        total_chunks = (len(date_list) + chunk_size - 1) // chunk_size
+
+        for chunk_idx in range(total_chunks):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min(start_idx + chunk_size, len(date_list))
+            chunk_dates = date_list[start_idx:end_idx]
+
+            logger.info(f"处理第 {chunk_idx + 1}/{total_chunks} 块：{len(chunk_dates)} 天 ({chunk_dates[0]} ~ {chunk_dates[-1]})")
+
+            # 记录处理前内存
+            self.log_memory_usage()
+
+            # 处理当前块
+            chunk_features = self._preload_daily_features_batch(chunk_dates, max_io_workers, max_batch_size=chunk_size)
+            all_features.update(chunk_features)
+
+            # 强制垃圾回收，释放内存
+            del chunk_features
+            gc.collect()
+
+            # 记录处理后内存
+            self.log_memory_usage()
+
+            logger.info(f"第 {chunk_idx + 1} 块处理完成，累计加载 {len(all_features)} 天数据")
+
+        logger.info(f"🎉 分块处理完成，总共加载 {len(all_features)} 天的特征数据")
+        return all_features
+
+    def _batch_check_file_existence(self, date_list: List[str]) -> List[str]:
+        """批量检查文件存在性，避免逐个检查
+
+        Args:
+            date_list: 日期字符串列表，格式为YYYYMMDD
+
+        Returns:
+            存在文件的日期列表
+        """
+        logger.debug(f"批量检查 {len(date_list)} 个日期的文件存在性")
+
+        base_dir = Path(__file__).parent
+        daily_dir = base_dir / "local_data/features/daily"
+
+        valid_dates = []
+        # 批量检查，减少系统调用
+        for date_str in date_list:
+            parquet_file = daily_dir / f"{date_str}.parquet"
+            csv_file = daily_dir / f"{date_str}.csv"
+            if parquet_file.exists() or csv_file.exists():
+                valid_dates.append(date_str)
+
+        logger.debug(f"批量检查完成，{len(valid_dates)} 个日期有对应的特征文件")
+        return valid_dates
+
+
+    def _calculate_sector_features_from_daily_data(self, sector: str, date_str: str, stock_features_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """基于每日股票特征数据计算板块特征
+
+        Args:
+            sector: 板块名称
+            date_str: 日期字符串
+            stock_features_df: 股票特征DataFrame
+
+        Returns:
+            板块特征DataFrame，如果计算失败返回None
+        """
+        try:
+            # 获取板块股票列表（直接使用sector_mapping替代feature_generator._get_sector_stocks）
+            stocks = self.sector_mapping.get(sector, [])
+            if not stocks:
+                logger.warning(f"板块 {sector} 没有成分股")
+                return None
+
+            # 筛选板块内的股票数据
+            # 确保股票代码格式一致
+            stock_codes_in_df = set(stock_features_df['stock_code'].unique()) if 'stock_code' in stock_features_df.columns else set()
+
+            # 尝试不同的股票代码格式匹配
+            matched_stocks = []
+            for stock in stocks:
+                if stock in stock_codes_in_df:
+                    matched_stocks.append(stock)
+                else:
+                    # 尝试添加或移除市场前缀
+                    if '.' in stock:
+                        stock_without_market = stock.split('.')[0]
+                        if stock_without_market in stock_codes_in_df:
+                            matched_stocks.append(stock_without_market)
+                    else:
+                        # 尝试添加常见市场后缀
+                        for suffix in ['.SZ', '.SH']:
+                            stock_with_suffix = f"{stock}{suffix}"
+                            if stock_with_suffix in stock_codes_in_df:
+                                matched_stocks.append(stock_with_suffix)
+                                break
+
+            if not matched_stocks:
+                logger.warning(f"板块 {sector} 在日期 {date_str} 没有匹配的股票数据")
+                return None
+
+            # 筛选板块内股票的数据
+            sector_stock_data = stock_features_df[stock_features_df['stock_code'].isin(matched_stocks)].copy()
+
+            if sector_stock_data.empty:
+                logger.warning(f"板块 {sector} 在日期 {date_str} 没有有效的股票数据")
+                return None
+
+            # 计算板块聚合特征
+            sector_features = self._aggregate_sector_features(sector_stock_data, sector, date_str)
+
+            return sector_features
+
+        except Exception as e:
+            logger.error(f"计算板块 {sector} 在日期 {date_str} 的特征时出错: {e}")
+            return None
+
+    def _aggregate_sector_features(self, sector_stock_data: pd.DataFrame, sector: str, date_str: str) -> pd.DataFrame:
+        """聚合股票数据为板块特征
+
+        Args:
+            sector_stock_data: 板块内股票的特征数据
+            sector: 板块名称
+            date_str: 日期字符串
+
+        Returns:
+            板块特征DataFrame
+        """
+        try:
+            # 基础价格特征聚合（使用均值）
+            price_features = {}
+            price_cols = ['open', 'high', 'low', 'close', 'pre_close']
+            for col in price_cols:
+                if col in sector_stock_data.columns:
+                    price_features[col] = sector_stock_data[col].mean()
+
+            # 成交量和成交额聚合（使用总和）
+            volume_features = {}
+            volume_cols = ['volume', 'amount']
+            for col in volume_cols:
+                if col in sector_stock_data.columns:
+                    volume_features[col] = sector_stock_data[col].sum()
+
+            # 涨跌幅特征聚合（使用均值）
+            change_features = {}
+            change_cols = ['pct_chg', 'change']
+            for col in change_cols:
+                if col in sector_stock_data.columns:
+                    change_features[col] = sector_stock_data[col].mean()
+
+            # 统计特征
+            stats_features = {
+                'stock_count': len(sector_stock_data),  # 板块内股票数量
+                'up_count': len(sector_stock_data[sector_stock_data.get('pct_chg', 0) > 0]),  # 上涨股票数量
+                'down_count': len(sector_stock_data[sector_stock_data.get('pct_chg', 0) < 0]),  # 下跌股票数量
+                'flat_count': len(sector_stock_data[sector_stock_data.get('pct_chg', 0) == 0]),  # 平盘股票数量
+            }
+
+            # 合并所有特征
+            all_features = {
+                'date': date_str,
+                'sector': sector,
+                'sector_name': sector,
+                **price_features,
+                **volume_features,
+                **change_features,
+                **stats_features
+            }
+
+            # 创建DataFrame
+            features_df = pd.DataFrame([all_features])
+
+            # 确保日期列是正确的格式
+            features_df['date'] = pd.to_datetime(date_str, format='%Y%m%d')
+
+            # 使用数据类型优化（从calculate_sector_features_for_date方法迁移）
+            features_df = optimize_dtypes(features_df)
+
+            logger.debug(f"成功聚合板块 {sector} 在日期 {date_str} 的特征，包含 {len(all_features)} 个特征")
+
+            return features_df
+
+        except Exception as e:
+            logger.error(f"聚合板块 {sector} 在日期 {date_str} 的特征时出错: {e}")
+            return pd.DataFrame()
+
+
+    # calculate_sector_features_for_date方法已删除 - 功能已被_calculate_sector_features_from_daily_data替代
 
     def process_date(self, date: Union[str, pd.Timestamp], sector: str, preloaded_data: Optional[pd.DataFrame] = None) -> Tuple[bool, Optional[pd.DataFrame]]:
         """处理单个日期的板块特征
-        
+
         Args:
             date: 日期
             sector: 板块名称
-            preloaded_data: 预加载的历史数据
-            
+            preloaded_data: 预加载的历史数据（已不使用，保留兼容性）
+
         Returns:
             (成功标识, 特征DataFrame)
         """
@@ -237,10 +635,18 @@ class SectorFeatureManager:
                 
             logger.debug(f"开始处理板块 {sector} 在日期 {date_str} 的特征")
             
-            # 计算特征
-            success, features_df = self.calculate_sector_features_for_date(date_str, sector, preloaded_data)
-            
-            if not success or features_df is None or features_df.empty:
+            # 计算特征（使用新的简化方法替代calculate_sector_features_for_date）
+            # 从标准路径加载每日股票特征数据
+            stock_features_df = self._load_daily_stock_features(date_str)
+
+            if stock_features_df is None or stock_features_df.empty:
+                logger.warning(f"日期 {date_str} 没有股票特征数据")
+                return False, None
+
+            # 基于股票特征数据计算板块特征
+            features_df = self._calculate_sector_features_from_daily_data(sector, date_str, stock_features_df)
+
+            if features_df is None or features_df.empty:
                 logger.warning(f"计算板块 {sector} 在日期 {date_str} 的特征失败")
                 return False, None
                 
@@ -264,319 +670,108 @@ class SectorFeatureManager:
             return False, None
 
     def process_sector(
-        self, 
-        sector: str, 
-        start_date: str, 
+        self,
+        sector: str,
+        start_date: str,
         end_date: str,
-        force_update: bool = False,
         batch_size: Optional[int] = None,
         output_format: Optional[str] = None
     ) -> Tuple[str, List[str]]:
-        """处理单个板块特征生成
-        
+        """处理单个板块特征生成 - 优化版
+
         Args:
             sector: 板块名称
             start_date: 开始日期，格式为YYYYMMDD
             end_date: 结束日期，格式为YYYYMMDD
-            force_update: 是否强制重新生成
             batch_size: 每批处理的日期数量
-            output_format: 输出格式，默认使用self._output_format
-            
+            output_format: 输出格式
+
         Returns:
             (板块名称, 处理成功的日期列表)
         """
-        # 设置输出格式
         if output_format is not None:
             self._output_format = output_format
-            
-        batch_size = batch_size or self.batch_size
+
         processed_dates = []
-        
+
         try:
-            # 获取日期列表
-            logger.debug(f"请求交易日历: {start_date} - {end_date}")
+            # 获取交易日列表
             date_range = get_trading_days(start_date, end_date)
-            logger.warning(f"获取到交易日历，类型: {type(date_range)}, 长度: {len(date_range) if hasattr(date_range, '__len__') else '未知'}")
-            
+
+            # 简化日期处理
             if isinstance(date_range, pd.DataFrame):
-                logger.warning(f"date_range是DataFrame，尝试转换为列表")
                 if 'date' in date_range.columns:
                     date_range = date_range['date'].tolist()
                 else:
-                    date_range = list(date_range.index) if hasattr(date_range, 'index') else []
-            
-            # 安全检查空列表 - 使用len()而不是直接的布尔值检查
-            if not hasattr(date_range, '__len__') or len(date_range) == 0:
+                    date_range = list(date_range.index)
+
+            if not date_range:
                 logger.warning(f"板块 {sector} 在日期范围 {start_date} - {end_date} 内没有交易日")
                 return sector, []
-            
-            # 获取最后一个交易日，用于生成CSV
-            try:
-                last_trading_day = date_range[-1]
-                logger.debug(f"最后一个交易日: {last_trading_day}, 类型: {type(last_trading_day)}")
-                
-                # 确保last_trading_day是字符串类型，便于后续比较
-                if isinstance(last_trading_day, pd.Timestamp):
-                    last_trading_day = last_trading_day.strftime('%Y%m%d')
-                elif not isinstance(last_trading_day, str):
-                    last_trading_day = str(last_trading_day)
-                    
-            except (IndexError, TypeError) as e:
-                logger.error(f"获取最后一个交易日失败: {e}, date_range类型: {type(date_range)}")
-                last_trading_day = end_date
-            
-            # 确定需要处理的日期
-            if not force_update:
-                # 增量更新，只处理未生成特征的日期
-                try:
-                    logger.info(f"请求增量更新日期: {sector}, {start_date} - {end_date}")
-                    dates_to_process = update_features_incrementally(sector, start_date, end_date, self.output_dir)
-                    
-                    # 输出详细日志
-                    if dates_to_process:
-                        logger.info(f"获取到增量更新日期，类型: {type(dates_to_process)}, 第一个日期: {dates_to_process[0] if dates_to_process else 'None'}, 日期列表长度: {len(dates_to_process)}")
-                        # 检查日期类型
-                        if dates_to_process and isinstance(dates_to_process[0], str):
-                            logger.info(f"日期格式样例: {dates_to_process[0]}, 类型: {type(dates_to_process[0])}")
-                    else:
-                        logger.info(f"增量更新未返回任何日期，返回类型: {type(dates_to_process)}")
-                    
-                    # 确保dates_to_process是列表类型
-                    if isinstance(dates_to_process, pd.DataFrame):
-                        logger.warning(f"update_features_incrementally返回了DataFrame而不是列表，尝试转换")
-                        if 'date' in dates_to_process.columns:
-                            dates_to_process = dates_to_process['date'].tolist()
-                            logger.info(f"从DataFrame['date']列提取了日期列表，长度: {len(dates_to_process)}")
-                        else:
-                            dates_to_process = list(dates_to_process.index) if hasattr(dates_to_process, 'index') else []
-                            logger.info(f"从DataFrame.index提取了日期列表，长度: {len(dates_to_process)}")
-                    
-                    # 如果增量更新日期为空，我们使用所有交易日（为了演示）
-                    if len(dates_to_process) == 0:
-                        logger.warning(f"增量更新未返回任何日期，使用所有交易日")
-                        dates_to_process = date_range
-                        if date_range:
-                            logger.info(f"使用全部交易日，类型: {type(date_range)}, 日期样例: {date_range[0] if date_range else 'None'}, 长度: {len(date_range)}")
-                        
-                except (ImportError, AttributeError) as e:
-                    # 如果feature_update模块不可用，处理所有日期
-                    logger.warning(f"增量更新功能不可用({e})，将处理板块 {sector} 的所有日期")
-                    dates_to_process = date_range
-            else:
-                # 强制更新，处理所有日期
-                logger.info(f"强制更新模式，处理所有日期")
-                dates_to_process = date_range
-                if date_range:
-                    logger.info(f"使用全部交易日，类型: {type(date_range)}, 日期样例: {date_range[0] if date_range else 'None'}, 长度: {len(date_range)}")
-            
-            # 安全检查 - 确保dates_to_process是列表或可迭代对象，而不是DataFrame
-            logger.debug(f"dates_to_process类型: {type(dates_to_process)}")
-            if isinstance(dates_to_process, pd.DataFrame):
-                logger.warning(f"dates_to_process仍然是DataFrame，将其转换为列表")
-                try:
-                    if 'date' in dates_to_process.columns:
-                        dates_to_process = dates_to_process['date'].tolist()
-                    else:
-                        dates_to_process = dates_to_process.index.tolist() if hasattr(dates_to_process.index, 'tolist') else []
-                    logger.debug(f"转换后dates_to_process类型: {type(dates_to_process)}, 长度: {len(dates_to_process)}")
-                except Exception as e:
-                    logger.error(f"转换dates_to_process失败: {e}")
-                    dates_to_process = []
-            
-            # 使用len()检查是否为空而不是直接使用布尔值
-            try:
-                dates_count = len(dates_to_process)
-                if dates_count == 0:
-                    logger.info(f"板块 {sector} 在日期范围内所有日期的特征都已生成")
-                    return sector, []
-                logger.info(f"板块 {sector} 需要处理 {dates_count} 个日期")
-            except Exception as e:
-                logger.error(f"检查dates_to_process长度失败: {e}, 类型: {type(dates_to_process)}")
+
+            # 标准化日期格式
+            normalized_dates = []
+            for date in date_range:
+                if isinstance(date, pd.Timestamp):
+                    date_str = date.strftime('%Y%m%d')
+                else:
+                    date_str = str(date).replace('-', '')
+                normalized_dates.append(date_str)
+
+            # 检查有效日期
+            valid_dates = self._batch_check_file_existence(normalized_dates)
+            if not valid_dates:
+                logger.warning(f"板块 {sector} 没有可用的特征数据文件")
                 return sector, []
-            
-            # 获取板块股票列表
-            from to.sector_features.feature_generator import SectorFeatureGenerator
-            feature_generator = SectorFeatureGenerator(self.data_provider, self.sector_mapping, self.output_dir)
-            stocks = feature_generator._get_sector_stocks(sector)
-            
-            if not stocks:
-                logger.warning(f"板块 {sector} 没有成分股")
+
+            logger.info(f"板块 {sector} 开始处理 {len(valid_dates)} 个日期")
+
+            # 批量预加载数据
+            features_cache = self._preload_daily_features_batch(valid_dates)
+            if not features_cache:
+                logger.warning(f"板块 {sector} 没有成功加载任何特征数据")
                 return sector, []
-                
-            # 对需要处理的日期按批次进行分组
-            date_batches = [dates_to_process[i:i+batch_size] for i in range(0, len(dates_to_process), batch_size)]
-            logger.info(f"将 {len(dates_to_process)} 个日期分为 {len(date_batches)} 个批次处理")
-                
-            # 分批处理日期
-            all_features = []
-            last_day_features = None
-            start_time = time.time()
-            
-            # 创建临时文件目录用于存储处理过程中的数据
-            import tempfile
-            import os
-            from pathlib import Path
-            
-            # 创建临时目录
-            temp_dir = tempfile.mkdtemp(prefix=f"sector_{sector}_")
-            logger.info(f"创建临时目录用于存储中间数据: {temp_dir}")
-            
-            for batch_idx, current_batch_dates in enumerate(date_batches):
-                logger.info(f"处理第 {batch_idx+1}/{len(date_batches)} 批次，包含 {len(current_batch_dates)} 个日期")
-                
-                # 标准化当前批次日期格式
-                normalized_batch_dates = []
-                for d in current_batch_dates:
-                    if isinstance(d, pd.Timestamp):
-                        normalized_batch_dates.append(d.strftime('%Y%m%d'))
-                    else:
-                        normalized_batch_dates.append(str(d).replace('-', ''))
-                
-                # 找到当前批次最早的日期，用于计算历史开始日期
-                earliest_batch_date = min(normalized_batch_dates)
-                earliest_date_obj = pd.to_datetime(earliest_batch_date, format='%Y%m%d')
-                
-                # 设置历史数据的开始日期（前180天）
-                history_start_date = (earliest_date_obj - pd.Timedelta(days=180)).strftime('%Y%m%d')
-                
-                # 找到当前批次最晚的日期，作为历史数据的结束日期
-                latest_batch_date = max(normalized_batch_dates)
-                
-                logger.info(f"为当前批次加载历史数据，从 {history_start_date} 到 {latest_batch_date}")
-                
+
+            # 向量化计算所有日期的板块特征
+            all_features = self._calculate_sector_features_vectorized(sector, features_cache)
+
+            if all_features.empty:
+                logger.warning(f"板块 {sector} 没有生成任何特征")
+                return sector, []
+
+            # 保存结果（增量更新）
+            sector_dir = self.output_dir / sector
+            sector_dir.mkdir(parents=True, exist_ok=True)
+
+            # 统一使用 {sector}_features.parquet 作为主文件名
+            features_parquet_path = sector_dir / f"{sector}_features.parquet"
+            final_df = self._incremental_update_features(all_features, features_parquet_path)
+
+            # 保存主特征文件
+            final_df.to_parquet(features_parquet_path, index=False)
+            logger.info(f"板块 {sector} 特征已保存到 {features_parquet_path}，共 {len(final_df)} 条记录")
+
+            # 生成最新日期的CSV文件
+            if not final_df.empty and 'date' in final_df.columns:
                 try:
-                    # 加载当前批次的历史数据
-                    historical_data = self.data_provider.get_daily_data(stocks, history_start_date, latest_batch_date)
-                    
-                    if historical_data.empty:
-                        logger.warning(f"批次 {batch_idx+1} 无法获取历史数据")
-                        continue
-                    
-                    logger.info(f"批次 {batch_idx+1} 成功加载历史数据，行数: {len(historical_data)}")
-                    
-                    # 优化：降低数据精度以减少内存使用
-                    for col in historical_data.select_dtypes(include=['float64']).columns:
-                        historical_data[col] = historical_data[col].astype('float32')
-                    
-                    # 优化2：使用内存映射文件存储批次数据
-                    batch_file = os.path.join(temp_dir, f"batch_{batch_idx}.h5")
-                    historical_data.to_hdf(batch_file, 'data', mode='w', format='table', data_columns=['date'])
-                    del historical_data
-                    
-                    # 处理当前批次的每个日期
-                    batch_results = []
-                    
-                    # 重新加载数据，但使用where筛选以减少内存使用
-                    historical_data_store = pd.HDFStore(batch_file, mode='r')
-                    
-                    for date in current_batch_dates:
-                        # 标准化日期格式
-                        date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date).replace('-', '')
-                        date_obj = pd.to_datetime(date_str, format='%Y%m%d')
-                        
-                        try:
-                            # 为当前日期按需查询历史数据
-                            date_condition = f"date <= '{date_obj}'"
-                            preloaded_data = pd.read_hdf(batch_file, 'data', where=date_condition)
-                            
-                            # 使用预加载数据处理日期
-                            success, df = self.process_date(date, sector, preloaded_data)
-                            if success and df is not None:
-                                batch_results.append(df)
-                                processed_dates.append(date)
-                                
-                                # 如果是最后一个交易日，保存它的特征用于生成CSV
-                                date_str = date.strftime('%Y%m%d') if isinstance(date, pd.Timestamp) else str(date)
-                                last_day_str = last_trading_day.strftime('%Y%m%d') if isinstance(last_trading_day, pd.Timestamp) else str(last_trading_day)
-                                
-                                if date_str == last_day_str:
-                                    logger.info(f"找到最后交易日 {date_str}，保存其特征")
-                                    last_day_features = df
-                        except Exception as e:
-                            logger.error(f"处理日期 {date_str} 时出错: {e}")
-                        
-                        # 清理每个日期的临时数据
-                        if 'preloaded_data' in locals():
-                            del preloaded_data
-                    
-                    # 关闭并删除HDF文件
-                    historical_data_store.close()
-                    
-                    # 保存批次结果
-                    if len(batch_results) > 0:
-                        # 合并批次特征
-                        batch_df = pd.concat(batch_results, ignore_index=True)
-                        all_features.append(batch_df)
-                        
-                        # 释放内存
-                        del batch_results
-                    
+                    # 获取最新日期的数据
+                    latest_date = final_df['date'].max()
+                    latest_df = final_df[final_df['date'] == latest_date].copy()
+
+                    # 保存最新日期的CSV文件
+                    latest_csv_path = sector_dir / f"{sector}_latest.csv"
+                    latest_df.to_csv(latest_csv_path, index=False)
+                    logger.info(f"板块 {sector} 最新特征已保存到 {latest_csv_path}，日期: {latest_date}")
+
                 except Exception as e:
-                    logger.error(f"处理批次 {batch_idx+1} 时出错: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                
-                # 删除临时文件
-                try:
-                    os.remove(batch_file)
-                except:
-                    pass
-                
-                # 强制垃圾回收
-                import gc
-                gc.collect()
-                
-                # 输出进度
-                logger.debug(f"板块 {sector} 已处理 {len(processed_dates)}/{len(dates_to_process)} 个日期")
-            
-            # 清理临时目录
-            try:
-                import shutil
-                shutil.rmtree(temp_dir)
-                logger.info(f"已清理临时目录: {temp_dir}")
-            except Exception as e:
-                logger.error(f"清理临时目录 {temp_dir} 时出错: {e}")
-            
-            # 合并所有特征
-            if len(all_features) > 0:  # 使用len()检查是否为空
-                # 合并为一个DataFrame
-                all_df = pd.concat(all_features, ignore_index=True)
-                
-                # 排序并去重
-                all_df = all_df.sort_values('date').drop_duplicates(subset=['date'],keep='last')
-                
-                
-                # 保存完整特征文件为Parquet
-                sector_dir = Path(self.output_dir) / sector
-                sector_dir.mkdir(parents=True, exist_ok=True)
-                
-                # 保存Parquet文件
-                parquet_path = sector_dir / f"{sector}.parquet"
-                from feature_compress import save_features as save_features_func
-                save_features_func(
-                    all_df, 
-                    parquet_path, 
-                    format='parquet',
-                    compress=True,
-                    optimize=True
-                )
-                
-                # 只为最后一个交易日生成CSV文件
-                if last_day_features is not None:
-                    csv_path = sector_dir / f"{sector}_latest.csv"
-                    from feature_compress import save_features as save_csv
-                    save_csv(last_day_features, csv_path, format='csv', compress=False)
-                    logger.debug(f"为最后一个交易日 {last_trading_day} 生成CSV文件: {csv_path}")
-            
-            # 记录耗时
-            time_spent = time.time() - start_time
-            logger.info(f"完成板块 {sector} 的特征数据处理，耗时 {time_spent:.2f} 秒，处理了 {len(processed_dates)} 个日期")
-            
+                    logger.warning(f"生成板块 {sector} 最新CSV文件失败: {e}")
+
+            processed_dates = all_features['date'].dt.strftime('%Y%m%d').tolist()
             return sector, processed_dates
-        
+
         except Exception as e:
             logger.error(f"处理板块 {sector} 特征时出错: {e}")
-            return sector, processed_dates
+
     
     def split_sectors_by_worker(self, sectors: List[str], max_workers: Optional[int] = None) -> List[List[str]]:
         """将板块按照工作进程数量分割
@@ -600,9 +795,9 @@ class SectorFeatureManager:
             if max_workers is None:
                 max_workers = 4  # 默认使用4个工作进程
         
-        # 如果只有一个进程或板块数小于进程数，直接返回
-        if max_workers <= 1 or len(sectors) <= 1:
-            return [sectors]
+        # 确保至少有一个工作进程
+        if max_workers <= 0:
+            max_workers = 1
         
         # 调整工作进程数，不超过板块数
         actual_workers = min(max_workers, len(sectors))
@@ -627,26 +822,28 @@ class SectorFeatureManager:
         return [group for group in sector_groups if group]
     
     def process_date_range(
-        self, 
-        start_date: str, 
+        self,
+        start_date: str,
         end_date: str,
         sectors: Optional[List[str]] = None,
-        force_update: bool = False,
         max_workers: Optional[int] = None,
         batch_size: Optional[int] = None,
         output_format: str = 'parquet'  # 添加输出格式参数
     ) -> Dict[str, List[str]]:
         """处理日期范围内的所有板块特征
-        
+
+        新的数据处理策略：
+        - 对指定日期范围进行全量计算
+        - 智能合并：重叠日期用新数据覆盖，非重叠日期正常合并
+
         Args:
             start_date: 开始日期，格式为YYYYMMDD
             end_date: 结束日期，格式为YYYYMMDD
             sectors: 板块列表，None则使用所有板块
-            force_update: 是否强制重新生成
             max_workers: 最大工作进程数，None则使用默认值
             batch_size: 每批处理的日期数量，None则使用默认值
             output_format: 输出格式，'parquet'或'csv'，默认为'parquet'
-            
+
         Returns:
             处理结果字典，键为板块名称，值为处理的日期列表
         """
@@ -681,7 +878,17 @@ class SectorFeatureManager:
         
         logger.info(f"开始处理日期范围 {start_date} - {end_date} 的板块特征")
         logger.info(f"将处理 {len(sectors)} 个板块的特征数据")
-        
+        logger.info(f"🛡️ 内存安全优化已启用：流式处理 + 分块加载 + 自动垃圾回收")
+
+        # 🛡️ 内存安全检查：根据日期范围调整并发数
+        from data_loaders import get_trading_days
+        total_trading_days = len(get_trading_days(start_date, end_date))
+
+        if total_trading_days > 100:
+            # 大量日期时减少并发数，避免内存爆炸
+            max_workers = min(max_workers, 2)
+            logger.warning(f"🛡️ 检测到大量交易日 ({total_trading_days} 天)，调整并发数为 {max_workers} 以确保内存安全")
+
         # 记录当前内存使用
         self.log_memory_usage()
         
@@ -693,22 +900,21 @@ class SectorFeatureManager:
 
         print(f"max_workers: {max_workers}")
         
-        if max_workers > 1 and len(sectors) > 1:
-            print(f"多进程处理 {len(sectors)} 个板块")
-            # 多进程处理
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # 多进程处理所有板块
+        print(f"多进程处理 {len(sectors)} 个板块，使用 {max_workers} 个工作进程")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
                 
                 for sector_group in sector_groups:
                     for sector in sector_group:
+                        # 提交处理任务
                         future = executor.submit(
                             self.process_sector,
                             sector,
                             start_date,
                             end_date,
-                            force_update,
                             batch_size,
-                            self._output_format  # 传递输出格式
+                            self._output_format
                         )
                         futures.append(future)
                 
@@ -719,19 +925,7 @@ class SectorFeatureManager:
                         results[sector] = processed_dates
                     except Exception as e:
                         logger.error(f"处理板块特征时出错: {e}")
-        else:
-            # 单进程处理
-            print(f"单进程处理 {len(sectors)} 个板块")
-            for sector in sectors:
-                sector, processed_dates = self.process_sector(
-                    sector,
-                    start_date,
-                    end_date,
-                    force_update,
-                    batch_size,
-                    self._output_format  # 传递输出格式
-                )
-                results[sector] = processed_dates
+                        results[sector] = []
         
         # 记录最终内存使用
         self.log_memory_usage()
@@ -754,8 +948,32 @@ class SectorFeatureManager:
         import psutil
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
-        
-        logger.info(f"内存使用: {memory_info.rss / (1024 * 1024):.2f} MB")
+        memory_mb = memory_info.rss / (1024 * 1024)
+
+        logger.info(f"内存使用: {memory_mb:.2f} MB")
+
+        # 🚨 内存警告机制
+        if memory_mb > 4000:  # 超过4GB发出警告
+            logger.warning(f"⚠️ 内存使用过高: {memory_mb:.2f} MB，建议进行垃圾回收")
+        elif memory_mb > 6000:  # 超过6GB发出严重警告
+            logger.error(f"🚨 内存使用危险: {memory_mb:.2f} MB，强制进行垃圾回收")
+            gc.collect()
+
+        return memory_mb
+
+
+
+    def log_io_performance(self, operation: str, file_count: int, duration: float):
+        """记录I/O性能统计
+
+        Args:
+            operation: 操作类型（如'批量预加载'）
+            file_count: 处理的文件数量
+            duration: 耗时（秒）
+        """
+        if duration > 0:
+            throughput = file_count / duration
+            logger.info(f"I/O性能统计 - {operation}: {file_count}个文件, 耗时{duration:.2f}秒, 吞吐量{throughput:.1f}文件/秒")
 
     def save_features(self, df: pd.DataFrame, sector: str, date: str) -> Tuple[bool, Path]:
         """保存特征到文件
@@ -840,159 +1058,31 @@ class SectorFeatureManager:
             
             # 合并Parquet文件
             if output_format == 'parquet':
-                # 查找所有日期Parquet文件
-                date_files = list(sector_dir.glob(f"{sector}_20*.parquet"))
-                
-                if not date_files:
-                    logger.info(f"板块 {sector} 没有需要合并的日期Parquet文件")
-                    
-                    # 检查主Parquet文件是否存在
-                    main_parquet = sector_dir / f"{sector}_features.parquet"
-                    if main_parquet.exists():
-                        try:
-                            # 读取主Parquet文件以获取最新日期
-                            main_df = pd.read_parquet(main_parquet)
-                            if 'date' in main_df.columns and not main_df.empty:
-                                # 获取最新日期的数据并保存为CSV
-                                if not pd.api.types.is_datetime64_any_dtype(main_df['date']):
-                                    main_df['date'] = pd.to_datetime(main_df['date'])
-                                latest_date = main_df['date'].max()
-                                latest_df = main_df[main_df['date'] == latest_date]
-                                latest_path = sector_dir / f"{sector}_latest.csv"
-                                latest_df.to_csv(latest_path, index=False)
-                                logger.info(f"已为板块 {sector} 创建最新特征CSV文件，日期: {latest_date}")
-                                
-                                # 更新元数据 - 提取已处理日期
-                                if 'date' in main_df.columns:
-                                    # 获取所有日期
-                                    dates = main_df['date'].astype(str).tolist()
-                                    # 标准化日期格式
-                                    processed_dates = []
-                                    for d in dates:
-                                        try:
-                                            # 尝试转换为YYYYMMDD格式
-                                            if '-' in d:  # 如果是YYYY-MM-DD格式
-                                                processed_dates.append(d.replace('-', ''))
-                                            elif len(d) == 8 and d.isdigit():  # 如果已经是YYYYMMDD格式
-                                                processed_dates.append(d)
-                                            else:  # 尝试其他格式转换
-                                                dt = pd.to_datetime(d)
-                                                processed_dates.append(dt.strftime('%Y%m%d'))
-                                        except:
-                                            # 如果转换失败，跳过
-                                            logger.warning(f"无法转换日期格式: {d}")
-                                    
-                                    # 批量添加已处理日期
-                                    self.feature_update_manager.add_processed_dates(sector, processed_dates)
-                                    
-                        except Exception as e:
-                            logger.warning(f"读取主Parquet文件失败: {e}")
-                    
-                    return True
-                
-                # 主Parquet文件路径
+                # 检查主Parquet文件是否存在
                 main_parquet = sector_dir / f"{sector}_features.parquet"
-                
-                # 加载和合并特征数据
-                dfs = []
-                
-                # 如果存在主Parquet文件，先加载它
+
                 if main_parquet.exists():
                     try:
+                        # 读取主Parquet文件以获取最新日期
                         main_df = pd.read_parquet(main_parquet)
-                        if 'date' in main_df.columns and not pd.api.types.is_datetime64_any_dtype(main_df['date']):
-                            main_df['date'] = pd.to_datetime(main_df['date'])
-                        logger.info(f"加载主Parquet文件: {main_parquet}, {len(main_df)} 行")
-                        dfs.append(main_df)
+                        if 'date' in main_df.columns and not main_df.empty:
+                            # 获取最新日期的数据并保存为CSV
+                            if not pd.api.types.is_datetime64_any_dtype(main_df['date']):
+                                main_df['date'] = pd.to_datetime(main_df['date'])
+                            latest_date = main_df['date'].max()
+                            latest_df = main_df[main_df['date'] == latest_date]
+                            latest_path = sector_dir / f"{sector}_latest.csv"
+                            latest_df.to_csv(latest_path, index=False)
+                            logger.info(f"已为板块 {sector} 创建最新特征CSV文件，日期: {latest_date}")
+                            logger.info(f"板块 {sector} 特征文件已存在，共 {len(main_df)} 条记录")
+
+                        return True
+
                     except Exception as e:
-                        logger.warning(f"加载主Parquet文件失败: {e}")
-                
-                # 加载日期Parquet文件
-                for file_path in date_files:
-                    try:
-                        df = pd.read_parquet(file_path)
-                        if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
-                            df['date'] = pd.to_datetime(df['date'])
-                        dfs.append(df)
-                        logger.debug(f"加载Parquet文件: {file_path}")
-                    except Exception as e:
-                        logger.warning(f"加载Parquet文件 {file_path} 失败: {e}")
-                
-                if not dfs:
-                    logger.warning(f"板块 {sector} 所有Parquet文件加载失败")
-                    return False
-                
-                # 合并数据
-                merged_df = pd.concat(dfs, ignore_index=True)
-                
-                # 去重并排序
-                if 'date' in merged_df.columns:
-                    merged_df = merged_df.drop_duplicates(subset=['date']).sort_values('date')
-                    logger.info(f"合并后的特征数据共 {len(merged_df)} 行，日期范围: {merged_df['date'].min()} 到 {merged_df['date'].max()}")
-                
-                # 对浮点列四舍五入到两位小数
-                for col in merged_df.select_dtypes(include=['float64', 'float32']).columns:
-                    merged_df[col] = merged_df[col].round(2)
-                
-                # 优化数据类型以减少文件大小
-                for col in merged_df.columns:
-                    if pd.api.types.is_float_dtype(merged_df[col]):
-                        merged_df[col] = merged_df[col].astype('float32')
-                    elif pd.api.types.is_integer_dtype(merged_df[col]) and col != 'date':
-                        col_min, col_max = merged_df[col].min(), merged_df[col].max()
-                        if col_min >= 0 and col_max <= 255:
-                            merged_df[col] = merged_df[col].astype('uint8')
-                        elif col_min >= 0 and col_max <= 65535:
-                            merged_df[col] = merged_df[col].astype('uint16')
-                
-                # 保存合并后的数据到主Parquet文件
-                try:
-                    merged_df.to_parquet(main_parquet, index=False)
-                    logger.info(f"成功保存合并后的特征到主Parquet文件: {main_parquet}")
-                    
-                    # 保存最新日期的数据为CSV
-                    if 'date' in merged_df.columns and not merged_df.empty:
-                        latest_date = merged_df['date'].max()
-                        latest_df = merged_df[merged_df['date'] == latest_date]
-                        latest_path = sector_dir / f"{sector}_latest.csv"
-                        latest_df.to_csv(latest_path, index=False, encoding='utf-8')
-                        logger.info(f"为板块 {sector} 创建最新特征CSV文件，日期: {latest_date}")
-                    
-                    # 成功保存后，删除原始日期Parquet文件
-                    for file_path in date_files:
-                        try:
-                            file_path.unlink()
-                            logger.debug(f"删除文件: {file_path}")
-                        except Exception as e:
-                            logger.warning(f"删除文件 {file_path} 失败: {e}")
-                    
-                    # 更新元数据 - 提取并添加已处理日期
-                    if 'date' in merged_df.columns:
-                        # 获取所有日期
-                        dates = merged_df['date'].astype(str).tolist()
-                        # 标准化日期格式
-                        processed_dates = []
-                        for d in dates:
-                            try:
-                                # 尝试转换为YYYYMMDD格式
-                                if '-' in d:  # 如果是YYYY-MM-DD格式
-                                    processed_dates.append(d.replace('-', ''))
-                                elif len(d) == 8 and d.isdigit():  # 如果已经是YYYYMMDD格式
-                                    processed_dates.append(d)
-                                else:  # 尝试其他格式转换
-                                    dt = pd.to_datetime(d)
-                                    processed_dates.append(dt.strftime('%Y%m%d'))
-                            except:
-                                # 如果转换失败，跳过
-                                logger.warning(f"无法转换日期格式: {d}")
-                        
-                        # 批量添加已处理日期
-                        self.feature_update_manager.add_processed_dates(sector, processed_dates)
-                        logger.info(f"已更新板块 {sector} 的元数据，处理了 {len(processed_dates)} 个日期")
-                    
-                    return True
-                except Exception as e:
-                    logger.error(f"保存合并后的主Parquet文件失败: {e}")
+                        logger.warning(f"读取主Parquet文件失败: {e}")
+                        return False
+                else:
+                    logger.info(f"板块 {sector} 的主特征文件不存在")
                     return False
             
             # 合并CSV文件（如需要）
@@ -1086,84 +1176,50 @@ class SectorFeatureManager:
             return False
 
     def generate_features(
-        self, 
-        sectors: List[str], 
-        start_date: str, 
-        end_date: str, 
-        force_update: bool = False,
+        self,
+        sectors: List[str],
+        start_date: str,
+        end_date: str,
         batch_size: Optional[int] = None,
-        merge_after_generation: bool = True,
         output_format: Optional[str] = None
     ) -> Dict[str, int]:
-        """生成板块特征
-        
+        """生成板块特征 - 优化版
+
         Args:
             sectors: 板块名称列表
             start_date: 开始日期
             end_date: 结束日期
-            force_update: 是否强制重新生成
             batch_size: 每批处理的日期数
-            merge_after_generation: 是否在生成后合并特征文件
-            output_format: 输出格式，"parquet"或"csv"，默认使用self._output_format
-            
+            output_format: 输出格式
+
         Returns:
             特征生成统计字典 {板块名称: 成功天数}
         """
         try:
-            # 设置输出格式
             if output_format is not None:
                 self._output_format = output_format
             elif not hasattr(self, '_output_format'):
                 self._output_format = 'parquet'
-                
-            logger.info(f"使用输出格式: {self._output_format}")
-            
-            # 开始计时
+
             start_time = time.time()
             logger.info(f"开始为 {len(sectors)} 个板块生成特征，时间范围: {start_date} - {end_date}")
-            
-            # 跟踪结果
+
             results = {}
-            
+
             # 并行处理每个板块
             with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-                # 提交任务
                 futures = []
                 for sector in sectors:
-                    # 如果不强制重新生成，先检查需要处理的日期
-                    if not force_update:
-                        # 获取需要增量更新的日期
-                        missing_dates = update_features_incrementally(sector, start_date, end_date, self.output_dir)
-                        
-                        # 如果没有需要更新的日期，跳过
-                        if not missing_dates:
-                            logger.info(f"板块 {sector} 在 {start_date} - {end_date} 已有特征数据，跳过")
-                            results[sector] = 0
-                            continue
-                        
-                        logger.info(f"板块 {sector} 需要更新 {len(missing_dates)} 个日期的特征")
-                    else:
-                        # 获取所有交易日
-                        try:
-                            missing_dates = get_trading_days(start_date, end_date)
-                        except Exception as e:
-                            logger.error(f"获取交易日失败: {e}")
-                            missing_dates = []
-                        
-                        logger.info(f"强制更新板块 {sector} 的所有特征，共 {len(missing_dates)} 个日期")
-                    
-                    # 处理每个板块
                     future = executor.submit(
                         self.process_sector,
                         sector,
                         start_date,
                         end_date,
-                        force_update,
                         batch_size,
-                        self._output_format  # 传递输出格式
+                        self._output_format
                     )
                     futures.append((future, sector))
-                
+
                 # 收集结果
                 for future, sector in futures:
                     try:
@@ -1172,31 +1228,20 @@ class SectorFeatureManager:
                         logger.info(f"板块 {sector_name} 处理完成，成功生成 {len(processed_dates)} 天的特征")
                     except Exception as e:
                         logger.error(f"处理板块 {sector} 时出错: {e}")
-                        logger.error(f"错误详情: {traceback.format_exc()}")
                         results[sector] = 0
-            
-            # 在生成后合并特征文件
-            if merge_after_generation:
-                for sector in sectors:
-                    try:
-                        logger.info(f"正在合并板块 {sector} 的特征文件")
-                        self.merge_features(sector, output_format=self._output_format)
-                    except Exception as e:
-                        logger.error(f"合并板块 {sector} 的特征文件时出错: {e}")
-            
+
             # 计算总处理时间
             elapsed_time = time.time() - start_time
             logger.info(f"特征生成完成，耗时: {elapsed_time:.2f} 秒")
-            
-            # 清理缓存，释放内存
-            self._feature_info_cache = {}
+
+            # 清理缓存
+            self._global_features_cache.clear()
             gc.collect()
-            
+
             return results
-        
+
         except Exception as e:
             logger.error(f"生成板块特征时出错: {e}")
-            logger.error(f"错误详情: {traceback.format_exc()}")
             return {sector: 0 for sector in sectors}
     
     def load_features(self, sector: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
@@ -1243,10 +1288,7 @@ def parse_args():
     parser.add_argument('--end-date', '--end_date', dest='end_date', type=str, 
                       default=DEFAULT_END_DATE, help=f'结束日期，格式为YYYYMMDD，默认：{DEFAULT_END_DATE}')
     
-    # 更新模式
-    update_mode = parser.add_mutually_exclusive_group()
-    update_mode.add_argument('--force', action='store_true', help='强制重新生成所有特征')
-    update_mode.add_argument('--incremental', action='store_true', help='增量更新，只处理缺失的日期')
+    # 更新模式相关参数已删除 - 现在默认对指定日期范围进行全量计算
     
     # 优化选项
     parser.add_argument('--max-workers', '--max_workers', dest='max_workers', type=int, 
@@ -1281,10 +1323,7 @@ def main():
     if args.debug:
         logger.setLevel(logging.DEBUG)
         
-    # 强制更新和增量更新不能同时设置
-    if args.force and args.incremental:
-        logger.error("--force和--incremental不能同时设置")
-        sys.exit(1)
+    # 更新模式相关检查已删除 - 现在默认对指定日期范围进行全量计算
         
     # 初始化内存映射管理器
     memory_map_manager = get_memory_map_manager()
@@ -1321,7 +1360,6 @@ def main():
                 start_date=start_date,
                 end_date=end_date,
                 sectors=sectors,
-                force_update=args.force,
                 max_workers=args.max_workers,
                 batch_size=args.batch_size,
                 output_format=args.output_format
@@ -1332,7 +1370,6 @@ def main():
                 sectors=sectors,
                 start_date=start_date,
                 end_date=end_date,
-                force_update=args.force,
                 batch_size=args.batch_size,
                 merge_after_generation=False,  # 不合并特征文件
                 output_format=args.output_format

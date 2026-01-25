@@ -10,6 +10,7 @@ import json
 from tqdm import tqdm
 from pathlib import Path
 import sys
+import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import traceback
 
@@ -42,13 +43,13 @@ except ImportError:
         print("无法预加载ParquetDataStorage模块，将在需要时尝试导入")
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('to/log/market_status_processor.log', encoding='utf-8')
-    ])
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.StreamHandler(),
+#         logging.FileHandler('to/log/market_status_processor.log', encoding='utf-8')
+#     ])
 logger = logging.getLogger(__name__)
 
 class MarketStatusProcessor:
@@ -346,6 +347,7 @@ class MarketStatusProcessor:
                         actual_last_date = pd.to_datetime(date_columns[-1])
                         actual_first_date_str = actual_first_date.strftime('%Y%m%d')
                         actual_last_date_str = actual_last_date.strftime('%Y%m%d')
+                        print(f"actual_first_date_str:{actual_first_date_str} and actual_last_date_str:{actual_last_date_str}")
                     except (ValueError, TypeError):
                         self.logger.warning(f"无法从列名解析实际日期范围: {date_columns[0]} - {date_columns[-1]}")
                         # 使用请求范围作为备选
@@ -410,7 +412,7 @@ class MarketStatusProcessor:
             if not date_range:
                 self.logger.error("获取日期范围失败")
                 return False
-            
+            print(f"date:{date_range[-1]}")
             # 获取市场数据
             market_data_dict = self._get_market_data(date_range[0], date_range[-1], index_codes)
             if market_data_dict is None:
@@ -465,7 +467,7 @@ class MarketStatusProcessor:
             # 分析市场状态 (传入转置后的字典)
             analyzer = MarketAnalyzer()
             market_status = analyzer.analyze_market_status(market_data_transposed, indicators)
-            print(f"market_status: {market_status}")
+            # print(f"market_status: {market_status}")
             
             # 保存分析结果
             process_dates = []
@@ -580,8 +582,8 @@ class MarketStatusProcessor:
                 profit_loss_ratio_14 = self._calculate_profit_loss_ratio(close, support_level, resistance_level, n=14)
                 profit_loss_ratio_30 = self._calculate_profit_loss_ratio(close, support_level, resistance_level, n=30)
 
-                print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
-                print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
+                # print(f"profit_loss_ratio_14: {profit_loss_ratio_14}")
+                # print(f"profit_loss_ratio_30: {profit_loss_ratio_30}")
             
                 
                 # 分析价格结构
@@ -626,6 +628,7 @@ class MarketStatusProcessor:
         
         self.logger.info(f"指标计算完成，共处理 {len(indicators)} 个指数")
         return indicators
+ 
     
     def _calculate_ma(self, data, n):
         """计算移动平均线
@@ -2336,6 +2339,8 @@ def update_market_data(processor, start_date=None, end_date=None, index_codes=No
     processor.parallel = parallel
     
     print(f"增量更新 {start_date} 至 {end_date} 的市场状态数据...")
+    # import time
+    # time.sleep(10000)
     # 检查已有数据，只处理未处理的日期
     available_dates = processor.metadata["available_dates"]
     target_dates = processor._get_date_range(start_date, end_date)
@@ -2482,10 +2487,23 @@ if __name__ == "__main__":
     print("status = query_market_status()")
     print("\n# 示例3: 生成市场报告")
     print("report = generate_market_report()")
-    
+
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='市场状态处理器')
+    parser.add_argument('--start_date', '-s', type=str, default='20260113',
+                        help='开始日期 (YYYYMMDD格式，默认: 20260113)')
+    parser.add_argument('--end_date', '-e', type=str, default='20260113',
+                        help='结束日期 (YYYYMMDD格式，默认: 20260113)')
+    args = parser.parse_args()
+
+    start_date = args.start_date
+    end_date = args.end_date
     # 可以在这里添加示例调用
-    process_market_data(start_date='20230101', end_date='20250331', index_codes=['399006.SZ']) 
-    # update_market_data(start_date='20240726', end_date='20250327', index_codes=['399006.SZ']) 
+    # process_market_data(start_date='20230101', end_date='20251021', index_codes=['399006.SZ'])
+    # process_market_data(start_date=start_date, end_date=end_date, index_codes=['399006.SZ']) 
+    # process_market_data(start_date='20230101', end_date='20251231', index_codes=['399006.SZ'])
+
+    update_market_data(start_date='20250424', end_date='20250425', index_codes=['399006.SZ'], force =True) 
     # query_market_status(date='20230103')
     # 添加main代码块，只有直接运行这个文件时才会执行
     # if __name__ == "__main__":

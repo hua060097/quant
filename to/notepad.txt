@@ -1,0 +1,14 @@
+# 修改计划
+
+1. 修改calculate_stock_sector_relative_features方法
+   - 更改返回值类型为元组(result_df, relations_df)
+   - 添加relations_df的缓存逻辑
+   - 修改返回语句
+
+2. 修改使用该方法的地方
+   - 主要在select_stocks_by_change_points方法中
+   - 拆分返回值，正确使用relations_df
+
+3. 修改其他相关方法
+   - 确保_analyze_stock_change_point_patterns可以正确处理
+   - 确保_predict_stocks_with_change_points可以正确处理关联信息 

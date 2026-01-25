@@ -7,7 +7,7 @@ import pickle
 from stock_sectors_mapping import load_data as load_sectors_data
 
 # 定义常量
-START_DATE = '20230101'  # 起始日期
+START_DATE = '20250321'  # 起始日期
 DEFAULT_TOP_N = {
     'ten_day_rise': 60,   # 十日涨幅前60
     'daily_rise': 100,    # 当日涨幅前100
@@ -292,6 +292,45 @@ def get_rankings_for_date(date, stocks, sectors_data):
         'daily_amount': daily_amount_ranking
     }
 
+def check_and_fix_empty_data():
+    """检查并修复空数据"""
+    print("检查排名数据中的空数据...")
+
+    ranking_types = ['ten_day_rise', 'daily_rise', 'daily_fall', 'daily_amount']
+    empty_dates = {}
+
+    for ranking_type in ranking_types:
+        try:
+            with open(OUTPUT_FILES[ranking_type], 'rb') as f:
+                rankings = pickle.load(f)
+
+            empty_dates[ranking_type] = []
+            for date, data in rankings.items():
+                if not data or len(data) == 0:
+                    empty_dates[ranking_type].append(date)
+
+            if empty_dates[ranking_type]:
+                print(f"{ranking_type} 中发现 {len(empty_dates[ranking_type])} 个空数据日期: {empty_dates[ranking_type][:10]}{'...' if len(empty_dates[ranking_type]) > 10 else ''}")
+            else:
+                print(f"{ranking_type} 数据完整")
+
+        except Exception as e:
+            print(f"检查 {ranking_type} 数据时出错: {e}")
+            empty_dates[ranking_type] = []
+
+    # 找出所有有空数据的日期
+    all_empty_dates = set()
+    for dates in empty_dates.values():
+        all_empty_dates.update(dates)
+
+    if all_empty_dates:
+        print(f"\n总共发现 {len(all_empty_dates)} 个日期有空数据")
+        print("建议使用 update_date_range() 函数重新计算这些日期的数据")
+        return sorted(list(all_empty_dates))
+    else:
+        print("所有数据完整，无需修复")
+        return []
+
 def update_all_rankings():
     """更新所有排名数据，从START_DATE到当前日期"""
     # 连接数据源
@@ -322,13 +361,19 @@ def update_all_rankings():
     
     # 更新排名数据
     for date in trading_dates:
-        # 检查是否已有数据
-        if (date in ten_day_rise_rankings and 
-            date in daily_rise_rankings and 
-            date in daily_fall_rankings and 
-            date in daily_amount_rankings):
-            print(f"日期 {date} 的排名数据已存在，跳过")
+        # 检查是否已有有效数据（不仅检查存在，还要检查数据是否为空）
+        has_valid_data = (
+            date in ten_day_rise_rankings and len(ten_day_rise_rankings[date]) > 0 and
+            date in daily_rise_rankings and len(daily_rise_rankings[date]) > 0 and
+            date in daily_fall_rankings and len(daily_fall_rankings[date]) > 0 and
+            date in daily_amount_rankings and len(daily_amount_rankings[date]) > 0
+        )
+
+        if has_valid_data:
+            print(f"日期 {date} 的排名数据已存在且有效，跳过")
             continue
+        elif date in ten_day_rise_rankings or date in daily_rise_rankings or date in daily_fall_rankings or date in daily_amount_rankings:
+            print(f"日期 {date} 的排名数据存在但可能为空，重新计算")
         
         # 获取排名数据
         rankings = get_rankings_for_date(date, stocks, sectors_data)
@@ -471,6 +516,172 @@ def update_date_range(start_date, end_date=None):
     save_rankings(daily_amount_rankings, 'daily_amount')
     
     print(f"日期范围 {start_date} 到 {end_date} 的排名数据更新完成")
+
+def force_update_date(date):
+    """强制重新计算特定日期的排名数据"""
+    print(f"强制重新计算日期 {date} 的排名数据...")
+
+    # 连接数据源
+    if not connect_data_source():
+        return False
+
+    # 检查日期格式
+    try:
+        datetime.strptime(date, '%Y%m%d')
+    except ValueError:
+        print("日期格式错误，请使用YYYYMMDD格式")
+        return False
+
+    # 获取股票列表
+    stocks = get_stock_list()
+    if not stocks:
+        return False
+
+    # 加载板块数据
+    sectors_data = load_sectors_data()
+    if sectors_data is None:
+        print("警告: 未能加载板块数据，将不会包含板块信息")
+
+    # 加载现有排名数据
+    ten_day_rise_rankings = load_or_create_rankings('ten_day_rise')
+    daily_rise_rankings = load_or_create_rankings('daily_rise')
+    daily_fall_rankings = load_or_create_rankings('daily_fall')
+    daily_amount_rankings = load_or_create_rankings('daily_amount')
+
+    # 获取排名数据
+    rankings = get_rankings_for_date(date, stocks, sectors_data)
+
+    if not rankings:
+        print(f"获取日期 {date} 的排名数据失败")
+        return False
+
+    # 更新排名数据
+    ten_day_rise_rankings[date] = rankings['ten_day_rise']
+    daily_rise_rankings[date] = rankings['daily_rise']
+    daily_fall_rankings[date] = rankings['daily_fall']
+    daily_amount_rankings[date] = rankings['daily_amount']
+
+    # 保存排名数据
+    success = True
+    success &= save_rankings(ten_day_rise_rankings, 'ten_day_rise')
+    success &= save_rankings(daily_rise_rankings, 'daily_rise')
+    success &= save_rankings(daily_fall_rankings, 'daily_fall')
+    success &= save_rankings(daily_amount_rankings, 'daily_amount')
+
+    if success:
+        print(f"日期 {date} 的排名数据强制更新完成")
+        # 打印更新后的统计信息
+        print(f"更新结果:")
+        print(f"  十日涨幅: {len(rankings['ten_day_rise'])} 条")
+        print(f"  当日涨幅: {len(rankings['daily_rise'])} 条")
+        print(f"  当日跌幅: {len(rankings['daily_fall'])} 条")
+        print(f"  当日成交额: {len(rankings['daily_amount'])} 条")
+        return True
+    else:
+        print(f"保存日期 {date} 的排名数据时出现错误")
+        return False
+
+def fix_empty_data(max_dates=None):
+    """检查并修复空数据
+
+    参数:
+        max_dates: 最大修复日期数量，默认为None表示修复所有空数据
+    """
+    print("=== 检查并修复空数据 ===")
+
+    # 检查空数据
+    empty_dates = check_and_fix_empty_data()
+
+    if not empty_dates:
+        print("所有数据完整，无需修复")
+        return True
+
+    # 限制修复数量
+    if max_dates is not None and len(empty_dates) > max_dates:
+        print(f"发现 {len(empty_dates)} 个空数据日期，限制修复前 {max_dates} 个")
+        empty_dates = empty_dates[:max_dates]
+    else:
+        print(f"发现 {len(empty_dates)} 个空数据日期，开始修复")
+
+    # 连接数据源
+    if not connect_data_source():
+        return False
+
+    # 获取股票列表
+    stocks = get_stock_list()
+    if not stocks:
+        return False
+
+    # 加载板块数据
+    sectors_data = load_sectors_data()
+    if sectors_data is None:
+        print("警告: 未能加载板块数据，将不会包含板块信息")
+
+    # 加载现有排名数据
+    ten_day_rise_rankings = load_or_create_rankings('ten_day_rise')
+    daily_rise_rankings = load_or_create_rankings('daily_rise')
+    daily_fall_rankings = load_or_create_rankings('daily_fall')
+    daily_amount_rankings = load_or_create_rankings('daily_amount')
+
+    # 修复空数据
+    success_count = 0
+    for i, date in enumerate(empty_dates, 1):
+        print(f"\n修复进度: {i}/{len(empty_dates)} - 处理日期 {date}")
+
+        try:
+            # 获取排名数据
+            rankings = get_rankings_for_date(date, stocks, sectors_data)
+
+            if not rankings:
+                print(f"获取日期 {date} 的排名数据失败，跳过")
+                continue
+
+            # 检查数据是否有效
+            total_records = (len(rankings.get('ten_day_rise', [])) +
+                           len(rankings.get('daily_rise', [])) +
+                           len(rankings.get('daily_fall', [])) +
+                           len(rankings.get('daily_amount', [])))
+
+            if total_records == 0:
+                print(f"日期 {date} 获取的数据仍为空，可能不是交易日")
+                continue
+
+            # 更新排名数据
+            ten_day_rise_rankings[date] = rankings['ten_day_rise']
+            daily_rise_rankings[date] = rankings['daily_rise']
+            daily_fall_rankings[date] = rankings['daily_fall']
+            daily_amount_rankings[date] = rankings['daily_amount']
+
+            success_count += 1
+            print(f"日期 {date} 修复成功:")
+            print(f"  十日涨幅: {len(rankings['ten_day_rise'])} 条")
+            print(f"  当日涨幅: {len(rankings['daily_rise'])} 条")
+            print(f"  当日跌幅: {len(rankings['daily_fall'])} 条")
+            print(f"  当日成交额: {len(rankings['daily_amount'])} 条")
+
+        except Exception as e:
+            print(f"修复日期 {date} 时出错: {e}")
+            continue
+
+    # 保存修复后的数据
+    if success_count > 0:
+        print(f"\n保存修复后的数据...")
+        save_success = True
+        save_success &= save_rankings(ten_day_rise_rankings, 'ten_day_rise')
+        save_success &= save_rankings(daily_rise_rankings, 'daily_rise')
+        save_success &= save_rankings(daily_fall_rankings, 'daily_fall')
+        save_success &= save_rankings(daily_amount_rankings, 'daily_amount')
+
+        if save_success:
+            print(f"✅ 空数据修复完成！成功修复 {success_count}/{len(empty_dates)} 个日期")
+        else:
+            print(f"❌ 数据修复完成但保存时出现错误")
+            return False
+    else:
+        print("❌ 没有成功修复任何日期的数据")
+        return False
+
+    return True
 
 def get_date_rankings(date, ranking_type=None, top_n=None):
     """获取特定日期的排名数据"""
@@ -743,23 +954,30 @@ def get_date_range_rankings(start_date, end_date=None, ranking_type='ten_day_ris
 
 if __name__ == "__main__":
     # 通过注释/取消注释下面的行来选择要执行的功能
-    
+
     # 1. 更新所有排名数据（从START_DATE到当前日期）
-    update_all_rankings()
-    
+    # update_all_rankings()
+
     # 2. 只更新当天的排名数据
     # update_today_rankings()
-    
+
     # 3. 更新指定日期范围的排名数据
     # update_date_range('20230901', '20230930')
-    
-    # 4. 查看特定日期的排名数据
-    print_all_rankings_for_date('20230317', 10)
-    
-    # 5. 导出示例：获取某一天的十日涨幅排名并导出为CSV
+
+    # 4. 检查并修复空数据（修复所有空数据）
+    # fix_empty_data()
+
+    # 5. 检查并修复空数据（限制修复前10个）
+    # fix_empty_data(max_dates=10)
+
+    # 6. 强制重新计算特定日期的数据
+    # force_update_date('20250423')
+
+    # 7. 查看特定日期的排名数据
+    print_all_rankings_for_date('20250723', 10)
+
+    # 8. 导出示例：获取某一天的十日涨幅排名并导出为CSV
     # df = get_ten_day_rise_ranking('20230901')
     # if df is not None:
     #     df.to_csv('十日涨幅排名_20230901.csv', index=False, encoding='utf-8-sig')
     #     print("数据已导出到CSV文件")
-    # 这里添加一个pass语句避免空代码块导致的缩进错误
-    pass 

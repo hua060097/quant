@@ -1,0 +1,84 @@
+# RQAlpha 5分钟数据源配置文件
+
+# 基础配置
+base:
+  data_bundle_path: "~/.rqalpha/bundle"
+  start_date: "2024-10-01"
+  end_date: "2024-11-22"
+  frequency: "5m"  # 5分钟频率
+  benchmark: "399006.SZ"  # 000300.SH 沪深300作为基准
+  account_type: "STOCK"
+
+# 5分钟数据源配置
+mod:
+  rqalpha_minute_datasource:
+    enabled: true
+    data_path: "../local_data/minute/"
+    cache_size: 100
+    # 支持的时间频率
+    supported_frequencies: ["1m", "5m", "15m", "30m", "60m"]
+
+# 选股回测配置
+backtest:
+  # 选股配置
+  stock_selection:
+    stock_counts: [1, 2, 3, 5]  # Top-1/2/3/5选股
+    holding_minutes: 30         # 持仓分钟数（可调整）
+
+  # 交易成本配置
+  trading_cost:
+    slippage_rate: 0.001        # 滑点0.1%
+    commission_rate: 0.0003     # 手续费0.03%
+
+  # 风险控制配置
+  risk_control:
+    max_position_ratio: 1.0     # 最大仓位比例
+    max_single_position: 0.3    # 单只股票最大仓位
+
+  # 股票过滤条件（复用原有逻辑）
+  stock_filters:
+    # 基础过滤
+    min_price: 1.0              # 最低价格
+    max_price: 100.0            # 最高价格
+    min_volume: 1000000         # 最小成交额（100万）
+
+    # 技术指标过滤
+    min_atr14: 0.02             # 最小ATR
+    max_rsi14: 80               # 最大RSI
+    max_bollinger_percent_b: 0.95  # 最大布林带位置
+
+    # 涨跌停过滤
+    exclude_limit_up: true      # 排除涨停股
+    exclude_limit_down: true    # 排除跌停股
+    exclude_zhaban: true        # 排除炸板股
+
+    # 板块过滤
+    exclude_bj_exchange: true   # 排除北交所股票
+    exclude_st_stocks: true     # 排除ST股
+
+# 绩效分析配置
+performance:
+  # 基准比较
+  benchmark_comparison: true
+
+  # 风险指标
+  risk_metrics:
+    - "total_return"
+    - "annual_return"
+    - "sharpe_ratio"
+    - "max_drawdown"
+    - "win_rate"
+    - "profit_loss_ratio"
+    - "calmar_ratio"
+
+  # 详细分析
+  detailed_analysis: true
+
+  # 可视化
+  visualization: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/minute_backtest.log"

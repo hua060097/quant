@@ -5,6 +5,8 @@ import os
 import pandas as pd
 import numpy as np
 import threading
+from data_loaders import get_stock_list
+import tushare as ts
 
 class DownloadProgress:
     def __init__(self):
@@ -41,9 +43,109 @@ class DownloadProgress:
          """Thread-safe method to get current progress."""
          with self._lock:
               return self.hasfinished, self.total_items
+         
 
 
-def download_a_shares_tick_data():
+
+def down_sw_sector():
+    """
+    获取申万一级行业分类下的股票列表，并保存为JSON格式
+
+    功能：
+    1. 获取所有申万一级行业列表
+    2. 筛选出以"sw1"开头且不以"加权"结尾的行业
+    3. 遍历每个行业，获取对应的股票列表
+    4. 保存为{股票代码: 所属行业}的格式到to/local_data/sw_sector/sw_sector.json
+    """
+    import json
+
+    print("开始获取申万一级行业分类数据...")
+
+    # 下载板块数据
+    xtdata.download_sector_data()
+    sector_list = xtdata.get_sector_list()
+
+
+    print(f"获取到总行业数量: {len(sector_list)}")
+
+    # 筛选条件：以"sw1"开头，且不以"加权"结尾
+    sw1_sectors = []
+    for sector_name in sector_list:
+        if sector_name.startswith('SW3') and not sector_name.endswith('加权'):
+            sw1_sectors.append(sector_name)
+
+    print(f"筛选出申万一级行业数量: {len(sw1_sectors)}")
+    print(f"申万一级行业列表: {sw1_sectors}")
+
+    # 创建股票到行业的映射字典
+    stock_sector_mapping = {}
+    total_stocks = 0
+
+    # 遍历每个申万一级行业
+    for sector_name in sw1_sectors:
+        print(f"\n正在处理行业: {sector_name}")
+
+        try:
+            # 获取该行业下的股票列表
+            stock_list = xtdata.get_stock_list_in_sector(sector_name)
+
+            if stock_list and len(stock_list) > 0:
+                print(f"  获取到股票数量: {len(stock_list)}")
+                print(f"  股票列表示例: {stock_list[:5]}")
+
+                # 将每只股票映射到该行业
+                for stock_code in stock_list:
+                    stock_sector_mapping[stock_code] = sector_name
+
+                total_stocks += len(stock_list)
+            else:
+                print(f"  未获取到股票数据")
+
+        except Exception as e:
+            print(f"  处理行业 {sector_name} 时出错: {e}")
+            continue
+
+    print(f"\n总计处理股票数量: {total_stocks}")
+    print(f"股票到行业映射字典长度: {len(stock_sector_mapping)}")
+
+    # 确保目录存在
+    output_dir = 'to/local_data/sw_sector3'
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 保存到JSON文件
+    output_file = os.path.join(output_dir, 'sw_sector.json')
+
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(stock_sector_mapping, f, ensure_ascii=False, indent=2)
+
+        print(f"\n成功保存股票-行业映射数据到: {output_file}")
+        print(f"文件大小: {os.path.getsize(output_file)} 字节")
+
+        # 验证保存的数据
+        with open(output_file, 'r', encoding='utf-8') as f:
+            loaded_data = json.load(f)
+
+        print(f"验证：成功读取 {len(loaded_data)} 条股票-行业映射记录")
+
+        # 显示一些示例数据
+        sample_items = list(loaded_data.items())[:10]
+        print("\n股票-行业映射示例:")
+        for stock_code, sector in sample_items:
+            print(f"  {stock_code}: {sector}")
+
+        return True
+
+    except Exception as e:
+        print(f"\n保存数据时出错: {e}")
+        return False
+    
+
+
+
+
+
+def download_a_shares_tick_data(start_date=None, end_date=None):
     # 获取沪深A股所有股票代码
     try:
         # Ensure connection
@@ -55,8 +157,8 @@ def download_a_shares_tick_data():
         # sector_list = xtdata.get_sector_list()
         # print(f"板块列表: {sector_list}")
         # stock_list = xtdata.get_stock_list_in_sector('沪深A股')
-    #     from data_loaders import get_bj_stock_list
-    #     stock_list = get_bj_stock_list()
+        # from data_loaders import get_bj_stock_list
+        # stock_list = get_bj_stock_list()
     #     # stock_list = xtdata.get_stock_list_in_sector('GN北交所')
     #     # stock_list.extend(bj_stock_list)
     #     print(f"获取到的股票代码数量: {len(stock_list)} , 股票列表: {stock_list}")
@@ -77,74 +179,76 @@ def download_a_shares_tick_data():
     #     '899050.BJ',  # 北证50
     # ]
 
-    # # 设置时间范围：2023年6月至今
-    # start_date = '20220601'
-    # end_date = '20250423'
+    period = "1d"
 
-    # print(f"下载时间范围: {start_date} - {end_date}")
+    # 设置时间范围：如果未提供参数则使用默认值
+    if start_date is None:
+        start_date = '20260113'
+    if end_date is None:
+        end_date = '20260113'
 
-    # #初始化下载进度跟踪器
-    # progress = DownloadProgress()
+    test_list = get_stock_list()
+    print(f"下载时间范围: {start_date} - {end_date}")
 
-    # # stock_list = ['399006.SZ','899050.BJ']
-    # # 下载tick数据
-    # print("开始下载沪深A股 5分钟 数据...")
-    # # Use 5m period as originally intended
-    # result = xtdata.download_history_data2(
-    #     stock_list=stock_list,
-    #     period='1d',
-    #     start_time=start_date,
-    #     end_time=end_date,
-    #     callback=progress.on_progress,
-    #     incrementally = True
-    # )
-    # print(f"下载请求已发出 ({result})，等待下载完成...")
+    #初始化下载进度跟踪器
+    progress = DownloadProgress()
 
-    # # 新增：等待下载完成的循环
-    # start_wait_time = time.time()
-    # timeout_seconds = 3600 * 2 # Example: 2 hour timeout
-    # while not progress.check_finished():
-    #     current_has, current_total = progress.get_progress()
-    #     elapsed_time = time.time() - start_wait_time
-    #     print(f"等待中... 进度: {current_has}/{current_total}. 已耗时: {elapsed_time:.1f} 秒", flush=True)
-    #     if elapsed_time > timeout_seconds:
-    #          print(f"下载超时 ({timeout_seconds}秒).")
-    #          break
-    #     time.sleep(5) # Check every 5 seconds
+    # test_list = test_list + ['399006.SZ']
+    test_list =  ['399006.SZ']
 
-    # if progress.check_finished():
-    #     print("主程序检测到下载已完成。")
-    # else:
-    #      print("主程序退出等待，下载可能未完成或超时。")
+
+
+
+    # test_list = ['399006.SZ','899050.BJ']
+    # 下载tick数据
+    print("开始下载沪深A股 1d数据...")
+    # Use 5m period as originally intended
+    result = xtdata.download_history_data2(
+        stock_list= test_list,
+        period=period,
+        start_time=start_date,
+        end_time=end_date,
+        callback=progress.on_progress,
+        incrementally = False
+    )
+    print(f"下载请求已发出 ({result})，等待下载完成...")
+
+    # 新增：等待下载完成的循环
+    start_wait_time = time.time()
+    timeout_seconds = 3600 * 2 # Example: 2 hour timeout
+    while not progress.check_finished():
+        current_has, current_total = progress.get_progress()
+        elapsed_time = time.time() - start_wait_time
+        print(f"等待中... 进度: {current_has}/{current_total}. 已耗时: {elapsed_time:.1f} 秒", flush=True)
+        if elapsed_time > timeout_seconds:
+             print(f"下载超时 ({timeout_seconds}秒).")
+             break
+        time.sleep(5) # Check every 5 seconds
+
+    if progress.check_finished():
+        print("主程序检测到下载已完成。")
+    else:
+        print("主程序退出等待，下载可能未完成或超时。")
 
 
     # 测试获取某只股票的tick数据
-    test_code = '838163.BJ'  # 贵州茅台
-    print(f"验证股票 {test_code} 的5分钟数据...")
+    test_code = '399006.SZ'  # 贵州茅台
+    print(f"验证股票 {test_code} 的1d钟数据...")
 
     try:
         test_data = xtdata.get_market_data(
             field_list=[], # Empty list to get all available fields
-            stock_list=['838163.BJ'],
-            period='1d',
+            stock_list=[test_code],
+            period=period,
             # start_time='20230316093500',
             # end_time='20230317094500'
-            start_time='20231216',
-            end_time='20231225'
+            start_time=end_date,
+            end_time=end_date,
+            dividend_type='front'
         )
 
         print(f"验证数据获取成功 : {test_data}.")
 
-        if test_data and 'time' in test_data and not test_data['time'].empty:
-             print(f"验证数据获取成功 for {test_code}.")
-             # Print shape of one of the dataframes
-             if 'close' in test_data:
-                  print(f"收盘价数据形状: {test_data['close'].shape}")
-                  print(f"收盘价数据示例:\n{test_data['close'].head()}")
-             else:
-                  print("收盘价数据字段不存在。")
-        else:
-             print(f"验证数据获取失败或为空 for {test_code}. Result:\n{test_data}")
 
     except Exception as e:
         print(f"验证数据时出错: {e}")
@@ -571,10 +675,101 @@ def download_and_check_financial_data():
         traceback.print_exc()
 
 
+def download_all_stock_ipo_dates():
+    """
+    获取所有股票的上市日期并保存到JSON文件
+
+    功能：
+    1. 获取沪深A股和北交所股票列表
+    2. 逐个获取股票的上市日期（OpenDate）
+    3. 保存到 to/local_data/ipo_date.json
+
+    返回：
+    dict: {股票代码: 上市日期}
+    """
+    import json
+    import os
+
+    print("开始获取所有股票的上市日期...")
+
+    # 确保连接
+    if not xtdata.get_client().is_connected():
+        print("连接xtdata API...")
+        xtdata.connect()
+        time.sleep(1)
+
+    # 1. 获取股票列表（参考 download_a_shares_tick_data 的逻辑）
+    stock_list = get_stock_list()
+
+    if not stock_list:
+        print("未能获取到股票列表")
+        return {}
+
+    print(f"获取到 {len(stock_list)} 只股票")
+
+    # 2. 逐个获取上市日期
+    ipo_dates = {}
+    failed_stocks = []
+
+    for i, stock in enumerate(stock_list, 1):
+        try:
+            # 获取股票详细信息
+            detail = xtdata.get_instrument_detail(stock)
+
+            # 提取上市日期
+            if detail and 'OpenDate' in detail:
+                ipo_date = detail['OpenDate']
+                ipo_dates[stock] = ipo_date
+
+                # 每100只股票打印一次进度
+                if i % 100 == 0:
+                    print(f"进度: {i}/{len(stock_list)}")
+
+            else:
+                print(f"警告: {stock} 没有OpenDate字段")
+                failed_stocks.append(stock)
+
+        except Exception as e:
+            print(f"错误: {stock} 获取失败 - {e}")
+            failed_stocks.append(stock)
+            continue
+
+    print(f"\n成功获取 {len(ipo_dates)} 只股票的上市日期")
+    if failed_stocks:
+        print(f"失败 {len(failed_stocks)} 只股票")
+
+    # 3. 保存到JSON文件
+    output_dir = 'to/local_data'
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_file = os.path.join(output_dir, 'ipo_date.json')
+
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(ipo_dates, f, ensure_ascii=False, indent=2)
+
+        print(f"成功保存到: {output_file}")
+
+        # 显示前5个示例
+        sample_items = list(ipo_dates.items())[:5]
+        print("\n示例数据:")
+        for stock_code, ipo_date in sample_items:
+            print(f"  {stock_code}: {ipo_date}")
+
+        return ipo_dates
+
+    except Exception as e:
+        print(f"保存文件时出错: {e}")
+        return None
+
+
 if __name__ == "__main__":
     # Add basic logging setup if needed elsewhere
     import logging
+    import argparse
     import threading # Import threading for the lock
+    from datetime import datetime
+
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler()
@@ -582,7 +777,51 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    # download_a_shares_tick_data()
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='下载A股Tick数据和股票列表数据')
+    parser.add_argument('--start', '-s', type=str, default=None,
+                        help='开始日期 (YYYYMMDD格式，可选，目前download_a_shares_tick_data不使用此参数)')
+    parser.add_argument('--end', '-e', type=str, default=None,
+                        help='结束日期 (YYYYMMDD格式，可选，目前download_a_shares_tick_data不使用此参数)')
+    args = parser.parse_args()
+
+    print("=== 申万一级行业股票映射下载程序 ===")
+    if args.start:
+        print(f"开始日期: {args.start}")
+    if args.end:
+        print(f"结束日期: {args.end}")
+
+    # xtdata.download_sector_data()
+    # sector_list = xtdata.get_sector_list()
+    # print(f"sector_list:{sector_list}")
+
+    # 调用完善后的down_sw_sector函数
+    # success = down_sw_sector()
+
+    # test_data = xtdata.get_market_data(
+    #         field_list=[], # Empty list to get all available fields
+    #         stock_list=['603363.SH','688188.SH'],
+    #         period='1d',
+    #         # start_time='20230316093500',
+    #         # end_time='20230317094500'
+    #         start_time='20241224',
+    #         end_time='20241227',
+    #         dividend_type='front'
+    #     )
+    # ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000')
+    # df = ts.pro_bar(ts_code='300622.SZ', adj='qfq', start_date='20221001', end_date='20251231')
+    # # 只打印 20240813~20240819 日的数据
+    # filtered_df = df[(df['trade_date'] >= '20240813') & (df['trade_date'] <= '20240819')]
+    # print(filtered_df)
+
+    # 测试单只股票
+    # ipoDate = xtdata.get_instrument_detail("000001.SZ")['OpenDate']
+    # print(ipoDate)
+
+    # 调用新函数获取所有股票上市日期
+    # download_all_stock_ipo_dates()
+
+    # 其他可用函数（注释状态）
+    download_a_shares_tick_data(start_date=args.start, end_date=args.end)
     # download_and_verify_stock_data()
-    # 调用新函数下载和验证财务数据
-    download_and_check_financial_data()
+    # download_and_check_financial_data()

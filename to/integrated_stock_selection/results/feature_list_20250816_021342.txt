@@ -1,0 +1,21 @@
+训练时间: 2025-08-16 02:13:42.953606
+特征数量: 16
+数据日期范围: 2023-06-01 00:00:00 - 2024-05-31 00:00:00
+训练截止日期: 2024-06-01
+特征列表:
+  1. amihud_illiquidity
+  2. buying_pressure
+  3. corr_5d
+  4. institutional_activity_score
+  5. intraday_momentum
+  6. lower_shadow_ratio
+  7. ma_convergence_score
+  8. ma_ratio_5_10
+  9. market_structure_score
+ 10. near_support_count_60d
+ 11. near_support_win_count_60d
+ 12. returns_zscore
+ 13. reversal_score
+ 14. volatility20
+ 15. volatility_correlation
+ 16. volume_correlation

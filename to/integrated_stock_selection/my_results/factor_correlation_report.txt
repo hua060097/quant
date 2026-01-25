@@ -1,0 +1,47 @@
+ATR三分类标签系统 - 因子相关性分析报告
+============================================================
+
+分析时间: 2023-06-01 00:00:00 至 2025-01-10 00:00:00
+数据量: 1,998,633 条记录
+分析因子数量: 20
+相关性阈值: 0.7
+
+分析因子列表:
+   1. returns_zscore
+   2. market_structure_score
+   3. intraday_momentum
+   4. ma_ratio_5_10
+   5. corr_5d
+   6. volatility_correlation
+   7. volume_correlation
+   8. near_support_count_60d
+   9. near_support_win_count_60d
+  10. institutional_activity_score
+  11. reversal_score
+  12. ma_convergence_score
+  13. lower_shadow_ratio
+  14. buying_pressure
+  15. sector_correlation_20d
+  16. price_impact
+  17. rank_momentum_20d
+  18. rank_rsi
+  19. rank_macd
+  20. rank_volume
+
+高相关性因子对 (5对):
+   1. near_support_count_60d ↔ near_support_win_count_60d: 0.885 (正相关)
+   2. market_structure_score ↔ buying_pressure: 0.873 (正相关)
+   3. market_structure_score ↔ reversal_score: -0.831 (负相关)
+   4. returns_zscore ↔ intraday_momentum: 0.822 (正相关)
+   5. rank_momentum_20d ↔ rank_macd: 0.711 (正相关)
+
+因子冗余性排名:
+   1. market_structure_score: 2次高相关
+   2. near_support_count_60d: 1次高相关
+   3. near_support_win_count_60d: 1次高相关
+   4. buying_pressure: 1次高相关
+   5. reversal_score: 1次高相关
+   6. returns_zscore: 1次高相关
+   7. intraday_momentum: 1次高相关
+   8. rank_momentum_20d: 1次高相关
+   9. rank_macd: 1次高相关

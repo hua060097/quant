@@ -1,11 +1,13 @@
 import xtquant.xtdata as xtdata
 from datetime import datetime, timedelta
+from data_loaders import get_stock_list
 
 test_code = '600556.SH'  # 测试股票代码
+test_list = get_stock_list()
 # 获取最近30个交易日
 # 计算近一年的日期范围
-end_date =  '20230928'
-start_date = '20230401'
+end_date =  '20250421'
+start_date = '20250431'
 
 class DownloadProgress:
     def __init__(self):
@@ -19,7 +21,7 @@ try:
     progress = DownloadProgress()
     xtdata.connect()
     down_result = xtdata.download_history_data2(
-        stock_list=[test_code],
+        stock_list=test_list,
         period='1d',
         start_time=start_date,
         end_time=end_date,

@@ -379,28 +379,50 @@
 
 ## 4. 市场特征 (Market Features)
 
-基于_extract_market_environment_features函数的实现：
+基于market_status_processor.py和market_analyzer.py的真实市场状态计算：
 
 ### 4.1 基础市场状态特征
-- **market_type**: 市场类型
-- **market_cycle**: 市场周期
-- **market_trend_strength**: 市场趋势强度
+- **market_type**: 市场类型（牛市/熊市/震荡/极端）
+- **market_cycle**: 市场周期（上升/下降/盘整/转换）
+- **market_trend_strength**: 市场趋势强度（0-100评分）
 - **market_group**: 市场分组（1:牛市, 2:熊市, 3:震荡, 4:极端）
+- **total_score**: 市场综合评分（0-100）
+- **trend_score**: 趋势评分（基于MA、MACD、RSI综合计算）
+- **position_score**: 位置评分（价格相对MA60位置）
+- **volume_score**: 成交量评分（成交量相对历史水平）
+- **momentum_score**: 动能评分（RSI和MACD动量指标）
+- **volatility_score**: 波动率评分（价格波动程度）
+- **structure_score**: 结构评分（支撑阻力位分析）
+- **cycle_score**: 周期评分（市场周期位置）
 
-### 4.2 市场信号特征
-- **market_risk_level**: 市场风险等级
-- **market_trading_signal**: 市场交易信号
-- **market_signal_strength**: 市场信号强度
-
-### 4.3 市场基准特征（创业板指数）
-- **market_benchmark_change**: 市场基准变化
-- **market_rsi6**: 市场RSI6
-- **market_rsi12**: 市场RSI12
-- **market_macd**: 市场MACD
+### 4.2 市场技术指标特征
+- **market_rsi6**: 市场6日RSI
+- **market_rsi12**: 市场12日RSI
+- **market_macd**: 市场MACD值
+- **market_macd_signal**: 市场MACD信号线
+- **market_macd_hist**: 市场MACD柱状图
 - **market_bb_width**: 市场布林带宽度
-- **market_ma5**: 市场MA5
-- **market_ma10**: 市场MA10
-- **market_profit_loss_ratio**: 市场盈亏比
+- **market_bb_position**: 市场布林带位置
+- **market_ma5**: 市场5日均线
+- **market_ma10**: 市场10日均线
+- **market_ma20**: 市场20日均线
+- **market_ma60**: 市场60日均线
+- **market_profit_loss_ratio_14d**: 市场14日盈亏比
+- **market_profit_loss_ratio_30d**: 市场30日盈亏比
+
+### 4.3 市场风险与信号特征
+- **market_risk_level**: 市场风险等级（1-5级）
+- **market_trading_signal**: 市场交易信号（买入/卖出/观望）
+- **market_signal_strength**: 市场信号强度（0-1）
+- **market_benchmark_change**: 市场基准变化（创业板指数涨跌幅）
+- **market_volatility**: 市场波动率（20日历史波动率）
+- **market_momentum**: 市场动量（10日价格动量）
+
+### 4.4 多指数综合特征
+- **composite_market_type**: 综合市场类型（基于多个指数加权）
+- **index_consensus**: 指数一致性（各指数信号一致程度）
+- **market_regime**: 市场制度（趋势/震荡/转换）
+- **market_phase**: 市场阶段（早期/中期/后期）
 
 ### 4.4 板块与市场相对特征
 - **relative_change_percent**: 相对涨跌幅
