@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # 导入必要的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from to.sector_features.feature_generator import SectorFeatureGenerator
-from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator
+# from to.sector_features.enhanced_feature_generator import EnhancedSectorFeatureGenerator  # 已删除
 
 # 模拟get_sector_stocks函数
 def mock_get_sector_stocks(sector_name=None):

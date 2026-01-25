@@ -1,8 +1,16 @@
 # Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
-*.log
 /past
 *.pkl
 *.pickle
+*.parquet
+*.parquet.gz
+*.parquet.gzip
+*.parquet.gzip.zstd
+*.parquet.zstd
+*.parquet.zstd.gzip
+*.parquet.zstd.gzip.zstd
+*.bak
+*.bak.gz
 
 
 
