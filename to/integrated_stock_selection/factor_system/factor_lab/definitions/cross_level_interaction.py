@@ -1,11 +1,13 @@
 """
-跨层级交互因子 (Cross-Level Interaction Factors)
+跨层级交互因子 (Cross-Level Interaction Factors) - 时序去极值版
 
 核心逻辑：
 1. 方向二：个股 * 市场 (Stock-Market Interaction) —— 引入市场波动环境与趋势强度，动态调整风险暴露。
 2. 方向三：三位一体 (Stock-Sector-Market) —— 识别处于超额收益板块中的头部个股。
 
-日期：2025-01-25
+优化日志：
+1. 修复未来函数：使用 _rolling_adaptive_clip (120日窗口) 替代全局 Clip。
+2. 保留时序幅度：不强制 Rank，保留大波动日的因子强度。
 """
 
 from __future__ import annotations
@@ -15,10 +17,48 @@ from ..base import FactorContext, FactorDefinition
 from ..registry import register_factor
 
 # ==============================================================================
-# 1. 辅助工具函数
+# 1. 基础统计学工具 (时序滚动去极值)
 # ==============================================================================
-def _adaptive_clip(series: pd.Series, n_mad: float = 3.0) -> pd.Series:
-    pass
+
+def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: float = 3.0, window: int = 120) -> pd.Series:
+    """
+    时序滚动去极值 (Rolling Adaptive Clip)
+    逻辑：利用过去 N 天(120天)的数据分布来决定今天的截断阈值。
+    """
+    if series.empty: return series
+    
+    # 1. 构造 DF 并按日期分组
+    df = pd.DataFrame({'val': series.values, 'date': date_series.values}, index=series.index)
+    
+    # 2. 计算每日截面统计量
+    daily_stats = df.groupby('date')['val'].agg(
+        median='median',
+        mad=lambda x: (x - x.median()).abs().median()
+    ).sort_index()
+    
+    # 3. 计算历史平滑阈值 (Rolling 120)
+    # min_periods=1 保证初期数据可用
+    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    
+    # 4. 映射回个股数据
+    df['thresh_median'] = df['date'].map(rolling_stats['median'])
+    df['thresh_mad'] = df['date'].map(rolling_stats['mad'])
+    
+    # 5. 稀疏保护
+    mask_sparse = (df['thresh_mad'] < 1e-6)
+    
+    # 计算最终上下界
+    half_width = n_mad * df['thresh_mad'] * 1.4826
+    final_half_width = half_width.where(~mask_sparse, np.inf)
+    
+    upper = df['thresh_median'] + final_half_width
+    lower = df['thresh_median'] - final_half_width
+    
+    # 6. 执行截断
+    upper = upper.fillna(np.inf)
+    lower = lower.fillna(-np.inf)
+    
+    return series.clip(lower, upper)
 
 def _get_market_data(ctx: FactorContext) -> pd.DataFrame:
     """获取对齐后的市场数据"""
@@ -83,45 +123,24 @@ class _CrossInteractionHelper:
         # 3. 行业内当日排名 (Intra-Sector Rank)
         self.data['intra_rank'] = self.data.groupby(['date', 'sector_code'])['pct_chg'].rank(pct=True) * 2 - 1
 
-
-    def _daily_clip(self, series: pd.Series, n_mad: float = 2.0) -> pd.Series:
-        """内部使用的按日去极值函数"""
-        df = pd.DataFrame({'val': series.values, 'date': self.data['date'].values}, index=series.index)
-        
-        # 按日计算中位数和MAD
-        medians = df.groupby('date')['val'].transform('median')
-        abs_diff = (df['val'] - medians).abs()
-        
-        # 这里必须再次构造DF来按日算MAD
-        temp_mad = pd.DataFrame({'diff': abs_diff.values, 'date': self.data['date'].values})
-        mads = temp_mad.groupby('date')['diff'].transform('median')
-        
-        threshold = n_mad * mads * 1.4826
-        # 极值处理：如果MAD为0，阈值设为0（不让它炸，也不让它变成无穷大）
-        threshold = threshold.replace(0, 0) 
-        
-        upper = medians + threshold
-        lower = medians - threshold
-        
-        return series.clip(lower, upper)
-
-
     def compute_factor(self, factor_name: str) -> pd.Series:
         """根据名称执行具体的交互逻辑"""
-        
+        n_mad = 3.1
         if factor_name == 'market_vols_adaptive_iv':
             # 特征 3: 市场波动 * (-个股特质波动)
             # 逻辑: 大波动环境惩罚高波股
             m_gate = self.data['date'].map(self.mkt_vol)
             alpha = -self.data['stk_vol_intra_z']
-            return self._daily_clip(m_gate * alpha, n_mad=2.0)
+            # Rolling Clip (120日)
+            return _rolling_adaptive_clip(m_gate * alpha, self.data['date'], n_mad=n_mad, window=120)
 
         elif factor_name == 'market_trend_adaptive_beta':
             # 特征 4: 市场趋势强度 * 个股 Beta
             # 逻辑: 顺境买高Beta, 逆境买低Beta
             m_gate = self.data['date'].map(self.mkt_trend)
             alpha = self.data['beta_60d']
-            return self._daily_clip(m_gate * alpha, n_mad=2.0)
+            # Rolling Clip (120日)
+            return _rolling_adaptive_clip(m_gate * alpha, self.data['date'], n_mad=n_mad, window=120)
 
         elif factor_name == 'sector_excess_intra_rank':
             # 特征 5: 行业超额收益 * 个股行业内排名
@@ -130,7 +149,8 @@ class _CrossInteractionHelper:
             m_ret = self.data['date'].map(self.mkt_ret_today)
             s_excess = s_ret - m_ret
             alpha = self.data['intra_rank']
-            return self._daily_clip(s_excess * alpha, n_mad=2.0)
+            # Rolling Clip (120日)
+            return _rolling_adaptive_clip(s_excess * alpha, self.data['date'], n_mad=n_mad, window=120)
 
         return pd.Series(0.0, index=self.original_index)
 
@@ -138,7 +158,7 @@ class _CrossInteractionHelper:
 # 3. 注册与外部接口
 # ==============================================================================
 def _get_helper(data: pd.DataFrame, ctx: FactorContext) -> _CrossInteractionHelper:
-    key = '_cross_interaction_helper'
+    key = '_cross_interaction_helper_rolling_120'
     if key not in ctx.extra:
         ctx.extra[key] = _CrossInteractionHelper(data, ctx)
     return ctx.extra[key]
@@ -176,3 +196,5 @@ sector_excess_intra_rank = register_factor(FactorDefinition(
     calculator=_calc_sec_excess,
     description='三位一体领先因子: 行业跑赢大盘且个股领涨行业'
 ))
+
+__all__ = ['market_vols_adaptive_iv', 'market_trend_adaptive_beta', 'sector_excess_intra_rank']

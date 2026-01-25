@@ -1,10 +1,10 @@
 """
-市场结构与行业宽度因子 (Market Structure & Sector Breadth Factors) - 120日数据优化版
+市场结构与行业宽度因子 (Market Structure & Sector Breadth Factors) - 时序去极值版
 
 优化说明：
-1. 将 stock_sector_pos_align 的 250 日锚点调整为 120 日（半年线）或 60 日（季线）。
-2. 调低 min_periods 门槛，确保在历史数据有限时能更早产出因子。
-3. 调整 lookback_days 注册参数，适配 120 日数据限制。
+1. 核心修复：引入 _rolling_adaptive_clip (60日) 替代全局 Clip，消除未来函数并保留幅度。
+2. mkt_sector_dispersion: 豁免 Clip 操作，保留全市场状态的原始波动性。
+3. 适配 120 日数据窗口，降低 min_periods 门槛。
 """
 
 from __future__ import annotations
@@ -14,30 +14,47 @@ from ..base import FactorContext, FactorDefinition
 from ..registry import register_factor
 
 # ==============================================================================
-# 1. 辅助函数
+# 1. 基础统计学工具 (时序滚动去极值)
 # ==============================================================================
-# [修改 1] 替换全局 _adaptive_clip 为按日处理
-def _daily_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: float = 3.0) -> pd.Series:
-    """按日截面去极值"""
+
+def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: float = 3.0, window: int = 120) -> pd.Series:
+    """
+    时序滚动去极值 (Rolling Adaptive Clip)
+    逻辑：利用过去 N 天(60天)的数据分布来决定今天的截断阈值。
+    """
     if series.empty: return series
     
-    # 构造临时DF
+    # 1. 构造 DF 并按日期分组
     df = pd.DataFrame({'val': series.values, 'date': date_series.values}, index=series.index)
     
-    # 按日计算中位数
-    medians = df.groupby('date')['val'].transform('median')
+    # 2. 计算每日截面统计量
+    daily_stats = df.groupby('date')['val'].agg(
+        median='median',
+        mad=lambda x: (x - x.median()).abs().median()
+    ).sort_index()
     
-    # 按日计算MAD
-    abs_diff = (df['val'] - medians).abs()
-    # 必须再次构造DF按日算
-    temp_mad = pd.DataFrame({'diff': abs_diff.values, 'date': date_series.values})
-    mads = temp_mad.groupby('date')['diff'].transform('median')
+    # 3. 计算历史平滑阈值 (Rolling 60)
+    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
     
-    threshold = n_mad * mads * 1.4826
-    # 处理MAD=0的情况
-    threshold = threshold.replace(0, 0)
+    # 4. 映射回个股数据
+    df['thresh_median'] = df['date'].map(rolling_stats['median'])
+    df['thresh_mad'] = df['date'].map(rolling_stats['mad'])
     
-    return series.clip(medians - threshold, medians + threshold)
+    # 5. 稀疏保护
+    mask_sparse = (df['thresh_mad'] < 1e-6)
+    
+    # 计算最终上下界
+    half_width = n_mad * df['thresh_mad'] * 1.4826
+    final_half_width = half_width.where(~mask_sparse, np.inf)
+    
+    upper = df['thresh_median'] + final_half_width
+    lower = df['thresh_median'] - final_half_width
+    
+    # 6. 执行截断
+    upper = upper.fillna(np.inf)
+    lower = lower.fillna(-np.inf)
+    
+    return series.clip(lower, upper)
 
 def _get_market_data(ctx: FactorContext) -> pd.DataFrame:
     """获取市场基准数据"""
@@ -79,45 +96,45 @@ class _MarketStructureHelper:
         self.s_breadth = self.data.assign(is_pos=is_positive).groupby(['date', 'sector_code'])['is_pos'].mean().unstack('sector_code')
 
         # --- C. 个股-行业层级计算 (针对 120 日数据优化) ---
-        # 4. 价格位置共振 (由 250 日改为 120 日锚点)
-        # 120日约等于半年线位置，是 A 股中线逻辑的重要参考
+        # 4. 价格位置共振
         window_size = 120
-        min_p = 40  # 降低准入门槛，有 2 个月数据即可计算位置
+        min_p = 40
         
         high_anchor = self.data.groupby('stock_code')['high'].transform(lambda x: x.rolling(window_size, min_periods=min_p).max())
         low_anchor = self.data.groupby('stock_code')['low'].transform(lambda x: x.rolling(window_size, min_periods=min_p).min())
         
-        # 个股在过去 120 日内的相对位置 (0-1)
-        # 优化：加入极小值防止除以 0，同时处理新股数据不足的情况
+        # 个股位置
         self.data['stock_pos'] = (self.data['close'] - low_anchor) / (high_anchor - low_anchor + 1e-8)
         
-        # 行业平均位置 (反映行业处于周期的什么阶段)
+        # 行业平均位置
         self.s_pos_mean = self.data.groupby(['date', 'sector_code'])['stock_pos'].mean().unstack('sector_code')
 
     def compute(self, factor_name: str) -> pd.Series:
         """执行因子映射逻辑"""
-        
+        x = 3.1
         if factor_name == 'mkt_sector_dispersion':
+            # [特殊处理] 这是一个全市场广播因子，每天只有一个值。
+            # 不要进行 Clip，直接保留原始数值，反映市场状态。
             return self.data['date'].map(self.mkt_sector_dispersion)
 
         elif factor_name == 'sector_mkt_corr_20d':
             s_val = self.s_mkt_corr.stack().rename('v')
             raw = self.data.join(s_val, on=['date', 'sector_code'], how='left')['v']
-            return _daily_adaptive_clip(raw, self.data['date'], n_mad=2.0)
+            # 使用 Rolling Clip  多改了一个window 60到120,下面三个都是   18:17
+            return _rolling_adaptive_clip(raw, self.data['date'], n_mad=x, window=120)
 
         elif factor_name == 'intra_sector_breadth':
             s_val = self.s_breadth.stack().rename('v')
             raw = self.data.join(s_val, on=['date', 'sector_code'], how='left')['v']
-            # [修改] 使用按日 Clip
-            return _daily_adaptive_clip(raw, self.data['date'], n_mad=2.0)
+            # 使用 Rolling Clip
+            return _rolling_adaptive_clip(raw, self.data['date'], n_mad=x, window=120)
 
         elif factor_name == 'stock_sector_pos_align':
-            # 个股 120 日位置 vs 行业 120 日平均位置
             s_pos = self.s_pos_mean.stack().rename('sp')
             joined = self.data.join(s_pos, on=['date', 'sector_code'], how='left')
             raw = joined['stock_pos'] - joined['sp']
-            # [修改] 使用按日 Clip
-            return _daily_adaptive_clip(raw, self.data['date'], n_mad=2.0)
+            # 使用 Rolling Clip
+            return _rolling_adaptive_clip(raw, self.data['date'], n_mad=x, window=120)
 
         return pd.Series(0.0, index=self.original_index)
 
@@ -125,7 +142,7 @@ class _MarketStructureHelper:
 # 3. 注册逻辑
 # ==============================================================================
 def _get_helper(data: pd.DataFrame, ctx: FactorContext) -> _MarketStructureHelper:
-    key = '_market_structure_helper'
+    key = '_market_structure_helper_rolling'
     if key not in ctx.extra:
         ctx.extra[key] = _MarketStructureHelper(data, ctx)
     return ctx.extra[key]
@@ -136,7 +153,6 @@ def _calc_breadth(d, c): return _get_helper(d, c).compute('intra_sector_breadth'
 def _calc_align(d, c): return _get_helper(d, c).compute('stock_sector_pos_align')
 
 # 因子注册
-# 🔧 优化：lookback_days 由 260 降至 130，确保 120 天数据环境下能运行
 mkt_sector_dispersion = register_factor(FactorDefinition(name='mkt_sector_dispersion', required_columns={'date', 'pct_chg'}, requires_sector_data=True, lookback_days=30, calculator=_calc_disp))
 sector_mkt_corr_20d = register_factor(FactorDefinition(name='sector_mkt_corr_20d', required_columns={'date', 'pct_chg'}, requires_market_data=True, requires_sector_data=True, lookback_days=40, calculator=_calc_corr))
 intra_sector_breadth = register_factor(FactorDefinition(name='intra_sector_breadth', required_columns={'date', 'pct_chg'}, requires_sector_data=True, lookback_days=10, calculator=_calc_breadth))

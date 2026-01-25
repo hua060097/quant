@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_lg104_修复了因子计算的全局clip_稀疏因子修复_还原了sector_dis到原始因子.log',
+        'stock_selection_test_mode_walkforward_排序模型_lg113_修改了market_vols_adaptive_iv和coskewness.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2924,9 +2924,9 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'lambdarank_norm': True,  # 标准化梯度，防止头部过度优化
             'boosting_type': 'gbdt',
             'learning_rate': 0.02,
-            'num_leaves': 63, #31,300
+            'num_leaves': 15, #31,300
             'max_depth': -1,
-            'min_data_in_leaf': 345, #350,60
+            'min_data_in_leaf': 320, #350,60
             'feature_fraction': 0.5, 
             'bagging_fraction': 0.7,
             # 'max_bin': 63,
@@ -6937,27 +6937,27 @@ def run_generate_factors_mode(args):
             st_filtered_count = 0
 
         # 3. 过滤新股（使用新的_filter_new_stocks_batch函数，放到循环之外）
-        if has_date_column:
-            print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
-            try:
-                # 使用新的批量处理函数，一次性处理整个stock_data
-                original_stock_count = len(stock_data)
-                stock_data = _filter_new_stocks_batch(stock_data, logger)
-                final_count = len(stock_data)
-                total_new_filtered = original_stock_count - final_count
+        # if has_date_column:
+        #     print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
+        #     try:
+        #         # 使用新的批量处理函数，一次性处理整个stock_data
+        #         original_stock_count = len(stock_data)
+        #         stock_data = _filter_new_stocks_batch(stock_data, logger)
+        #         final_count = len(stock_data)
+        #         total_new_filtered = original_stock_count - final_count
 
-                if total_new_filtered > 0:
-                    print(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
-                else:
-                    print(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
+        #         if total_new_filtered > 0:
+        #             print(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
+        #         else:
+        #             print(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
 
-            except Exception as e:
-                print(f"⚠️  批量新股过滤失败: {e}")
-                logger.error(f"批量新股过滤失败: {e}")
-                final_count = len(stock_data)
-        else:
-            print("⚠️  警告：缺少date列，跳过新股过滤")
-            final_count = len(stock_data)
+        #     except Exception as e:
+        #         print(f"⚠️  批量新股过滤失败: {e}")
+        #         logger.error(f"批量新股过滤失败: {e}")
+        #         final_count = len(stock_data)
+        # else:
+        #     print("⚠️  警告：缺少date列，跳过新股过滤")
+        #     final_count = len(stock_data)
 
         # 最终过滤统计
         total_filtered = original_count# - final_count
@@ -6966,7 +6966,7 @@ def run_generate_factors_mode(args):
             logger.info(f"🎯 股票过滤总结: 原始 {original_count} -> 最终  (过滤掉 {total_filtered} 只)")
             logger.info(f"   - 北交所: {bj_filtered_count} 只")
             logger.info(f"   - ST股票: {st_filtered_count} 只")
-            logger.info(f"   - 新股: {new_filtered_count} 只")
+            # logger.info(f"   - 新股: {new_filtered_count} 只")
 
             # # 如果过滤后股票数量太少，发出警告
             # if final_count == 0:
@@ -9684,12 +9684,12 @@ def _run_stock_selection_backtest(
     #     logger.info(f"{window_prefix}[FILTER] 无stock_code列，跳过北交所过滤")
 
     # 然后过滤新股
-    # logger.info(f"{window_prefix}[FILTER] 开始批量新股过滤...")
-    # new_stock_original_count = len(backtest_data)
-    # backtest_data = _filter_new_stocks_batch(backtest_data, logger)
-    # filtered_count = len(backtest_data)
-    # new_stock_filtered = new_stock_original_count - filtered_count
-    # logger.info(f"{window_prefix}[FILTER] 批量新股过滤完成: {new_stock_original_count} -> {filtered_count} (过滤掉 {new_stock_filtered} 条新股期间数据)")
+    logger.info(f"{window_prefix}[FILTER] 开始批量新股过滤...")
+    new_stock_original_count = len(backtest_data)
+    backtest_data = _filter_new_stocks_batch(backtest_data, logger)
+    filtered_count = len(backtest_data)
+    new_stock_filtered = new_stock_original_count - filtered_count
+    logger.info(f"{window_prefix}[FILTER] 批量新股过滤完成: {new_stock_original_count} -> {filtered_count} (过滤掉 {new_stock_filtered} 条新股期间数据)")
 
     # 获取所有交易日
     trading_dates = sorted(backtest_data['date'].unique())
@@ -16074,8 +16074,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20251227_190526.pkl"
-        # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
+        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None

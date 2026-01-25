@@ -127,9 +127,12 @@ def _coskewness(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
     if market_ret.index.duplicated().any():
          market_ret = market_ret[~market_ret.index.duplicated(keep='first')]
 
+
+    # [关键修复] 使用 Expanding Mean
+    # 模拟“累积至今的历史均值”，逼近 Global Mean 但不泄露未来
+    m_mean = market_ret.expanding(min_periods=20).mean()
+    m_centered = market_ret - m_mean
     # m_centered = market_ret - market_ret.mean()
-    # 修改为（滚动窗口，切断历史污染）：
-    m_centered = market_ret - market_ret.rolling(window=20, min_periods=10).mean()
     df['m_sq'] = df['date'].map(m_centered ** 2)
 
     # 2. 向量化计算
