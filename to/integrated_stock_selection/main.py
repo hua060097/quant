@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_lg113_修改了market_vols_adaptive_iv和coskewness.log',
+        'stock_selection_test_mode_walkforward_排序模型_lg119_搜索参数.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2717,745 +2717,327 @@ def _evaluate_params(params, X_train, y_train, X_val, y_val, y_val_eval, sample_
 
 
 
+
+def _calculate_val_metric(y_pred, y_real, dates, metric='return'):
+    """
+    [辅助] 计算验证集指标：支持 'return' (收益) 或 'sharpe' (夏普)
+    推荐使用 'sharpe' 以防止过拟合特定行情。
+    """
+    import pandas as pd
+    import numpy as np
+    try:
+        df = pd.DataFrame({
+            'date': dates,
+            'pred': y_pred,
+            'return': y_real
+        })
+        
+        # 快速获取每日 Top-1 收益序列
+        # 使用 groupby().head(1) 配合 sort_values 是通用且较快的方法
+        # 或者 idxmax (仅适用于单列)
+        daily_returns = []
+        
+        # 优化循环: 预先排序
+        df_sorted = df.sort_values(['date', 'pred'], ascending=[True, False])
+        
+        # 每天取第一个 (即预测分最高的)
+        top1_df = df_sorted.groupby('date').head(1)
+        daily_returns = top1_df['return'].values
+        
+        if len(daily_returns) == 0: return -999.0
+        
+        if metric == 'return':
+            return np.mean(daily_returns)
+        elif metric == 'sharpe':
+            mean_ret = np.mean(daily_returns)
+            std_ret = np.std(daily_returns)
+            if std_ret < 1e-6: return 0.0
+            # 年化夏普 (假设日频)
+            return (mean_ret / std_ret) * 15.87 # sqrt(252) ≈ 15.87
+            
+    except Exception as e:
+        # print(f"[WARNING] 评估计算出错: {e}")
+        return -999.0
+
+
+
+def _get_lgb_search_space():
+    """
+    [辅助] 定义LightGBM参数搜索空间 (顶级量化配置)
+    """
+    import random
+    
+    # 基础空间
+    space = {
+        'learning_rate': [0.01, 0.02],
+        'num_leaves': [15, 31],
+        'min_data_in_leaf': [100, 200, 300, 320, 600, 800, 1200], # 覆盖稀疏到密集
+        'feature_fraction': [0.4, 0.5, 0.6, 0.7, 0.8],
+        'bagging_fraction': [0.6, 0.7, 0.8],
+        'bagging_freq': [1],
+        'reg_alpha': [1.0, 5.0, 8.0, 10.0, 20],
+        'reg_lambda': [1.0, 5.0, 8.0, 10.0, 20],
+        'lambdarank_truncation_level': [5, 10, 30], # 关注头部排名的范围
+    }
+    
+    # 不同的label_gain策略
+    label_gain_candidates = [
+        [0, 1, 3, 7, 15, 31], # 激进
+        [0, 1, 2, 4, 8, 16],  # 标准2次方
+        [i for i in range(31)] # 线性
+    ]
+    
+    return space, label_gain_candidates
+
+
+
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
     """
-    训练LightGBM模型(使用默认参数)
-
-    Args:
-        raw_data: 原始特征数据DataFrame
-        labels: 标签数据Series（ATR倍数连续值）
-        feature_columns: 特征列名列表
-        label_stats: 标签统计量字典（用于反向转换）
-        preprocessed_data: 预处理数据字典（可选），包含:
-            - X_train: 训练集特征(已Winsorization)
-            - X_val: 验证集特征(已Winsorization)
-            - y_train: 训练集标签
-            - y_val: 验证集标签
-            - winsorization_thresholds: Winsorization阈值
-        optimize_thresholds: 是否执行止盈止损ATR阈值优化（默认False）
-        sw_sector_mapping: SW申万行业映射字典，格式为{"stock_code": "sector_name"}（可选）
-
-    Returns:
-        dict: 包含模型、性能指标、标签统计量等信息的字典
+    [强化] 训练LightGBM模型 (集成自动参数搜索 + 全量训练)
+    
+    流程：
+    1. 准备数据
+    2. 执行随机参数搜索 (Random Search) -> 目标: 验证集 Top-1 收益
+    3. 使用最优参数合并 训练集+验证集 进行全量训练
+    4. 返回最终模型
     """
     try:
         import lightgbm as lgb
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
         import numpy as np
         import pandas as pd
+        import random
+        import time
+        from copy import deepcopy
+        
+        logger = logging.getLogger(__name__)
 
-        logger.info("[强化] 开始训练LightGBM模型（使用默认参数）")
+        logger.info("[强化] 开始训练LightGBM模型（启用自动参数搜索）")
 
-        # [SW行业编码] 初始化行业映射信息
-        industry_mapping_info = None
-
-        # 1. 使用预处理数据（与XGBoost共享）
+        # 1. 数据准备 (复用预处理数据)
         if preprocessed_data is not None:
-            logger.info("[OK] 使用预处理数据（与XGBoost共享）")
-            X_train_raw = preprocessed_data['X_train']
-            X_val_raw = preprocessed_data['X_val']
-
+            # 特征数据
+            X_train = preprocessed_data['X_train']
+            X_val = preprocessed_data['X_val']
+            
+            # 标签数据 (relevance: 0-3 int)
             y_train = preprocessed_data.get('train_relevance')
-            logger.info(f"y_train:{y_train[-10:]}, max: {np.max(y_train)}")
             y_val = preprocessed_data.get('val_relevance')
-            logger.info(f"y_val:{y_val[-10:]}, max: {np.max(y_val)}")
-           
-
-            # 保留原始收益率用于IC计算
-            y_val_original = preprocessed_data.get('y_val_original', preprocessed_data.get('y_val'))
-            logger.info(f"y_val_original:{y_val_original[-10:]}, max: {np.max(y_val_original)}")
-
-            if y_train is None or y_val is None:
-                logger.error("[FAIL] 缺少relevance标签,无法训练排序模型")
-                return None
-
-            # [强化] 获取样本权重计算所需数据
+            
+            # 原始收益率 (用于计算Top-1收益)
+            y_train_ret = preprocessed_data.get('y_train_original')
+            y_val_ret = preprocessed_data.get('y_val_original')
+            
+            # 辅助数据
+            train_groups = None # 需重新计算或从preprocessed获取
+            val_groups = None
             train_dates = preprocessed_data.get('train_dates')
-            logger.info(f"  训练集: {len(X_train_raw):,}样本")
-            logger.info(f"  验证集: {len(X_val_raw):,}样本")
-            logger.info(f"  原始特征数: {X_train_raw.shape[1]}")
-            logger.info(f"  训练标签类型: relevance (整数0-3)")
+            val_dates = preprocessed_data.get('val_dates')
+            
+            # 权重
+            # w_train = preprocessed_data.get('sample_weights')
+            w_train = np.ones(len(y_train))
+            # w_val = preprocessed_data.get('val_sample_weights')
+            w_val = np.ones(len(y_val))
+
+            # 特征对齐检查
+            if X_train.shape[1] != len(feature_columns):
+                logger.info(f"  特征对齐: 数据集特征{X_train.shape[1]} -> 目标{len(feature_columns)}")
+                X_train = X_train[:, :len(feature_columns)]
+                X_val = X_val[:, :len(feature_columns)]
+
         else:
-            logger.error("[FAIL] 缺少预处理数据,无法训练LightGBM")
+            logger.error("[FAIL] 必须提供预处理数据")
             return None
 
-        # [强化] 1.5 特征对齐(与XGBoost使用相同的特征)
-        logger.info("[WRENCH] 特征对齐(与XGBoost一致)...")
-        if X_train_raw.shape[1] != len(feature_columns):
-            logger.info(f"  原始特征数: {X_train_raw.shape[1]}")
-            logger.info(f"  目标特征数: {len(feature_columns)}")
+        # 1.5 时序检查（防止数据泄露）
+        logger.info("[CHECK] 检查训练集和验证集的时间顺序...")
+        if train_dates is not None and val_dates is not None:
+            # 检查训练集内部时序
+            train_dates_sorted = np.all(train_dates[:-1] <= train_dates[1:])
+            if not train_dates_sorted:
+                logger.error("[FAIL] 训练集时间顺序错乱！")
+                # 找出第一个错乱的位置
+                for i in range(len(train_dates) - 1):
+                    if train_dates[i] > train_dates[i + 1]:
+                        logger.error(f"  训练集第 {i} 个日期 ({train_dates[i]}) > 第 {i+1} 个日期 ({train_dates[i+1]})")
+                        break
+                raise ValueError("训练集时间顺序错乱，可能导致数据泄露")
 
-            # 假设preprocessed_data中的特征顺序与raw_data一致
-            # 需要根据feature_columns进行对齐
-            # 这里简单处理:假设前len(feature_columns)个特征是需要的
-            if X_train_raw.shape[1] > len(feature_columns):
-                X_train = X_train_raw[:, :len(feature_columns)]
-                X_val = X_val_raw[:, :len(feature_columns)]
-                logger.info(f"  [OK] 特征对齐完成: {X_train_raw.shape[1]} -> {X_train.shape[1]}")
-            else:
-                logger.error(f"  [FAIL] 特征数量不足: {X_train_raw.shape[1]} < {len(feature_columns)}")
-                return None
+            # 检查验证集内部时序
+            val_dates_sorted = np.all(val_dates[:-1] <= val_dates[1:])
+            if not val_dates_sorted:
+                logger.error("[FAIL] 验证集时间顺序错乱！")
+                # 找出第一个错乱的位置
+                for i in range(len(val_dates) - 1):
+                    if val_dates[i] > val_dates[i + 1]:
+                        logger.error(f"  验证集第 {i} 个日期 ({val_dates[i]}) > 第 {i+1} 个日期 ({val_dates[i+1]})")
+                        break
+                raise ValueError("验证集时间顺序错乱，可能导致数据泄露")
+
+            # 检查训练集和验证集之间的时序（防止未来数据泄露）
+            train_last_date = train_dates.max()
+            val_first_date = val_dates.min()
+            if train_last_date > val_first_date:
+                logger.error(f"[FAIL] 时序错乱：训练集最后日期 ({train_last_date}) 晚于验证集最早日期 ({val_first_date})")
+                logger.error("[FAIL] 这会导致未来数据泄露，模型训练无效！")
+                raise ValueError(f"训练集和验证集时序错乱: train_max={train_last_date} > val_min={val_first_date}")
+
+            logger.info(f"[OK] 时序检查通过: 训练集 [{train_dates.min()} ~ {train_dates.max()}] -> 验证集 [{val_dates.min()} ~ {val_dates.max()}]")
         else:
-            X_train = X_train_raw
-            X_val = X_val_raw
-            logger.info(f"  [OK] 特征数量已对齐: {X_train.shape[1]}")
+            logger.warning("[WARNING] 缺少日期信息，跳过时序检查（可能存在数据泄露风险）")
 
+        # 2. 准备 Group 信息 (Lambdarank 必须)
+        # 确保数据按日期排序，并计算每组(每天)的数量
+        # 注意: 假设输入的 X_train, y_train 已经按日期排序
+        def get_groups(dates):
+            _, counts = np.unique(dates, return_counts=True)
+            # np.unique 返回是排序的，如果dates本身是排序的，counts顺序就是对的
+            # 为保险起见，建议使用 pandas groupby size
+            s = pd.Series(dates)
+            return s.groupby(s, sort=False).size().values
 
-        X_train_scaled = X_train
-        X_val_scaled = X_val
-
-        # # [SW行业编码] 初始化分类特征列表
-        # categorical_features = []
-
-        # # 如果提供了SW行业映射，添加行业分类特征
-        # if sw_sector_mapping is not None and len(sw_sector_mapping) > 0:
-        #     logger.info(f"[SW行业编码] 开始添加SW行业分类特征...")
-
-        #     # 获取标准化的模型映射
-        #     standardized_mapping = get_sw_mapping_for_model()
-
-        #     # 从preprocessed_data中提取训练集和验证集股票代码
-        #     train_stock_codes = preprocessed_data.get('train_stock_codes')
-        #     val_stock_codes = preprocessed_data.get('val_stock_codes')
-
-        #     if train_stock_codes is None or val_stock_codes is None:
-        #         raise ValueError("preprocessed_data中缺少股票代码数据，无法添加SW行业特征")
-
-        #     logger.info(f"[SW行业编码] 处理训练集({len(train_stock_codes)})和验证集({len(val_stock_codes)})")
-
-        #     # 直接使用预生成的编码
-        #     train_industry_codes = []
-        #     val_industry_codes = []
-
-        #     for code in train_stock_codes:
-        #         industry_code, industry_name = get_sw_industry_code(code)
-        #         train_industry_codes.append(industry_code)
-
-        #     for code in val_stock_codes:
-        #         industry_code, industry_name = get_sw_industry_code(code)
-        #         val_industry_codes.append(industry_code)
-
-        #     # [大师级修正] 1. 强制转换为 float32 类型，防止 Object/String 污染
-        #     # 无论上游给的是 "13" 还是 13，这里都会变成 13.0 (Float)
-        #     try:
-        #         train_industry_feature = np.array(train_industry_codes, dtype=np.float32).reshape(-1, 1)
-        #         val_industry_feature = np.array(val_industry_codes, dtype=np.float32).reshape(-1, 1)
-
-        #         logger.info(f"[SW行业编码] 行业编码类型转换成功")
-        #         logger.info(f"  训练集行业特征类型: {train_industry_feature.dtype}")
-        #         logger.info(f"  验证集行业特征类型: {val_industry_feature.dtype}")
-        #         logger.info(f"  训练集行业特征范围: {train_industry_feature.min():.0f} ~ {train_industry_feature.max():.0f}")
-        #         logger.info(f"  验证集行业特征范围: {val_industry_feature.min():.0f} ~ {val_industry_feature.max():.0f}")
-
-        #     except Exception as e:
-        #         logger.error(f"[SW行业编码] 行业编码转换失败，请检查是否包含非数字字符: {e}")
-        #         logger.error(f"训练集行业编码示例: {train_industry_codes[:10]}")
-        #         logger.error(f"验证集行业编码示例: {val_industry_codes[:10]}")
-        #         raise e
-
-        #     # [大师级修正] 2. 拼接前检查
-        #     logger.info(f"[SW行业编码] 特征矩阵拼接前类型检查:")
-        #     logger.info(f"  X_train_scaled类型: {X_train_scaled.dtype}")
-        #     logger.info(f"  Industry特征类型: {train_industry_feature.dtype}")
-
-        #     # 添加到现有特征中
-        #     X_train_scaled = np.hstack([X_train_scaled, train_industry_feature])
-        #     X_val_scaled = np.hstack([X_val_scaled, val_industry_feature])
-
-        #     # [大师级修正] 3. 拼接后立即验尸（Guard Clause）
-        #     # 如果拼接后类型变成了 object 或 string (S/U)，立即报错，别浪费时间训练
-        #     if X_train_scaled.dtype.kind not in 'if': # i=int, f=float
-        #         logger.error(f"🚨 致命错误: 特征矩阵被污染为 {X_train_scaled.dtype}！")
-        #         logger.error("原因：行业编码可能包含字符串，导致整个矩阵变成了字符串矩阵。")
-        #         logger.error(f"训练集行业编码前10个: {train_industry_codes[:10]}")
-        #         logger.error(f"训练集行业编码类型: {[type(code) for code in train_industry_codes[:10]]}")
-        #         raise ValueError("Feature Matrix Corrupted: industry codes contain non-numeric values")
-        #     else:
-        #         logger.info(f"[SW行业编码] 特征矩阵拼接成功，类型: {X_train_scaled.dtype}")
-
-        #     # 更新特征列
-        #     # industry_feature_name = standardized_mapping.get('industry_feature_name', 'industry_sw_code')
-        #     # if industry_feature_name not in feature_columns:
-        #     #     feature_columns = feature_columns + [industry_feature_name]
-
-        #     # # 记录分类特征（LightGBM需要）
-        #     # categorical_features = [industry_feature_name]
-
-        #     # 保存标准化编码到模型结果中
-        #     # lgb_results['industry_mapping'] = standardized_mapping
-
-        #     logger.info(f"[SW行业编码] 标准化编码应用完成")
-        #     # logger.info(f"  行业特征名: {industry_feature_name}")
-        #     logger.info(f"  训练集行业分布: {pd.Series(train_industry_codes).value_counts().to_dict()}")
-        #     logger.info(f"  验证集行业分布: {pd.Series(val_industry_codes).value_counts().to_dict()}")
-        # else:
-        #     logger.info("⏭️ 未提供SW行业映射，跳过行业特征添加")
-
-        # [WRENCH] 关键验证: 检查LightGBM训练集数据顺序
         if train_dates is not None:
-            # [WRENCH] 获取ATR收益率标签用于验证(用于IC计算)
-            y_train_atr = preprocessed_data.get('y_train')  
-            y_val_atr = preprocessed_data.get('y_val') 
-            val_dates = preprocessed_data.get('val_dates')
+            train_groups = get_groups(train_dates)
+        if val_dates is not None:
+            val_groups = get_groups(val_dates)
 
-            # 验证数据顺序
-            if y_train_atr is not None and not _validate_data_order(train_dates, y_train_atr, y_train, "LightGBM训练集"):
-                logger.error("[FAIL] LightGBM训练集数据顺序验证失败,程序终止")
-                raise ValueError("LightGBM训练集数据顺序混乱,无法继续训练")
+        # 创建 Dataset 对象
+        train_ds = lgb.Dataset(X_train, label=y_train, group=train_groups, weight=w_train,params={'feature_pre_filter': False})
+        val_ds = lgb.Dataset(X_val, label=y_val, group=val_groups, weight=w_val, reference=train_ds,params={'feature_pre_filter': False})
 
-            if val_dates is not None and y_val_atr is not None:
-                if not _validate_data_order(val_dates, y_val_atr, y_val, "LightGBM验证集"):
-                    logger.error("[FAIL] LightGBM验证集数据顺序验证失败,程序终止")
-                    raise ValueError("LightGBM验证集数据顺序混乱,无法继续训练")
-        label_gain_mixed = [i for i in range(1001)]
-
-        # # 对 Top 50 的标签（即标签值 950 以上）应用更高的权重（例如 5倍权重）
-        # for i in range(980, 1001):
-        #     # 将线性增益乘以一个放大系数
-        #     label_gain_mixed[i] = label_gain_mixed[i] * 20.0 
-        # label_gain_smooth = [pow(1.02, i) for i in range(1001)]
-        lgb_params = {
+        # 3. 参数搜索配置
+        SEARCH_ITER = 60  # 搜索次数 (速度优先)
+        base_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'label_gain': [0, 1, 2, 4, 8, 14],
-            'ndcg_eval_at': [1,3],
-            'lambdarank_truncation_level': 5,
-            'lambdarank_norm': True,  # 标准化梯度，防止头部过度优化
+            'ndcg_eval_at': [1, 3],
+            'lambdarank_norm': True,
             'boosting_type': 'gbdt',
-            'learning_rate': 0.02,
-            'num_leaves': 15, #31,300
             'max_depth': -1,
-            'min_data_in_leaf': 320, #350,60
-            'feature_fraction': 0.5, 
-            'bagging_fraction': 0.7,
-            # 'max_bin': 63,
-            'bagging_freq': 1,
-            # 'extra_trees': True,      # 开启随机树，增加探索性
-            # 'path_smooth': 1.0,        # 路径平滑
-            'reg_alpha': 8,
-            'reg_lambda': 8,
-            'n_estimators': 1000,
-            'random_state': 42,
             'n_jobs': -1,
-            'verbose': -1,
+            'verbosity': -1,
+            'random_state': 42
         }
-        logger.info("[CLIPBOARD] LightGBM参数配置:")
-        for key, value in lgb_params.items():
-            logger.info(f"  {key}: {value}")
 
-        # 3.5 从preprocessed_data获取统一计算的样本权重
-        logger.info("[WRENCH] 获取统一样本权重...")
-        sample_weights = preprocessed_data.get('sample_weights') if preprocessed_data is not None else None
-        val_sample_weights = preprocessed_data.get('val_sample_weights') if preprocessed_data is not None else None
+        X_full = np.vstack((X_train, X_val))
+        y_full = np.concatenate((y_train, y_val))
+        w_full = np.concatenate((w_train, w_val))
+        y_ret_all = np.concatenate((y_train_ret, y_val_ret))
+        dates_all = np.concatenate((train_dates, val_dates))
+        
+        search_space, label_gain_options = _get_lgb_search_space()
+        
+        best_score = -float('inf')
+        best_params = base_params.copy()
+        
+        logger.info(f"[SEARCH] 开始参数搜索 (迭代: {SEARCH_ITER}次)...")
+        start_time = time.time()
 
-        if sample_weights is None:
-            # 如果preprocessed_data中没有权重,则使用均匀权重（兼容旧代码）
-            logger.warning("  [WARNING] preprocessed_data中缺少sample_weights,使用均匀权重")
-            sample_weights = np.ones(len(X_train_scaled))
+        for i in range(SEARCH_ITER):
+            # 随机采样参数
+            current_params = base_params.copy()
+            for key, choices in search_space.items():
+                current_params[key] = random.choice(choices)
+            current_params['label_gain'] = random.choice(label_gain_options)
+            
+            # 快速训练 (Early Stopping 严格一点)
+            # n_estimators 设小一点用于搜索
+            tmp_model = lgb.train(
+                current_params,
+                train_ds,
+                num_boost_round=600, 
+                valid_sets=[val_ds],
+                callbacks=[lgb.early_stopping(30, verbose=False)]
+            )
+            
+            # 预测并评估 Top-1 收益
+            preds = tmp_model.predict(X_val)
+            # 使用原始收益率计算真实的 Top-1 Return
+            score = _calculate_val_metric(preds, y_val_ret, val_dates)
+            
+            if score > best_score:
+                best_score = score
+                best_params = current_params.copy()
+                # 记录最佳迭代次数，用于最终训练
+                best_iteration = tmp_model.best_iteration
+                logger.info(f"  [Iter {i+1}] New Best Top-1 Return: {best_score:.4f} | LR: {best_params['learning_rate']} | Leaves: {best_params['num_leaves']} | MinData: {best_params['min_data_in_leaf']} all:{best_params}")
+
+        logger.info(f"[SEARCH] 搜索完成，耗时 {time.time()-start_time:.1f}s. 最佳 Top-1 Return: {best_score:.4f}")
+        logger.info(f"[TARGET] 最优参数: {best_params}")
+
+        # 4. 全量数据准备 (Train + Val)
+        logger.info("[REFRESH] 准备全量数据进行最终训练...")
+        
+      
+        
+        # 合并 Groups (注意：直接拼接 group counts 列表即可，因为时间是连续的)
+        # 假设 train_dates 和 val_dates 是时间连续的 (Train < Val)
+        if train_groups is not None and val_groups is not None:
+            group_full = np.concatenate((train_groups, val_groups))
         else:
-            logger.info(f"  [OK] 使用preprocessed_data中的统一样本权重")
-            logger.info(f"     权重范围: [{sample_weights.min():.4f}, {sample_weights.max():.4f}]")
-            logger.info(f"     权重均值: {sample_weights.mean():.4f}")
+            # 降级处理：如果没有 group 信息，尝试重新计算（不太可能发生）
+            logger.warning("Group信息缺失，尝试重新计算全量Group")
+            full_dates = np.concatenate((train_dates, val_dates))
+            group_full = get_groups(full_dates)
 
-        if val_sample_weights is None:
-            # 如果preprocessed_data中没有验证集权重,则使用均匀权重（兼容旧代码）
-            logger.warning("  [WARNING] preprocessed_data中缺少val_sample_weights,验证集使用均匀权重")
-            val_sample_weights = np.ones(len(X_val_scaled))
-        else:
-            logger.info(f"  [OK] 使用preprocessed_data中的验证集样本权重")
-            logger.info(f"     权重范围: [{val_sample_weights.min():.4f}, {val_sample_weights.max():.4f}]")
-            logger.info(f"     权重均值: {val_sample_weights.mean():.4f}")
+        # 创建全量 Dataset
+        full_ds = lgb.Dataset(X_full, label=y_full, group=group_full, weight=w_full)
 
-        # 4. 训练LightGBM模型（排序模型）
-        logger.info("[强化] 开始训练LightGBM排序模型...")
-
-        # 计算group信息（每个日期的样本数）
-        if train_dates is not None:
-            import pandas as pd
-            train_dates_series = pd.Series(train_dates)
-            val_dates = preprocessed_data.get('val_dates')
-
-            # 确保数据按日期排序
-            if not train_dates_series.is_monotonic_increasing:
-                logger.warning("[WARNING] 训练集日期未按升序排列,排序模型可能出现问题")
-
-            # train_groups = train_dates_series.value_counts().sort_index().values
-            _, train_groups = np.unique(train_dates, return_counts=True)
-            logger.info(f"  训练集每组样本数 - 最大值: {train_groups.max()}, 最小值: {train_groups.min()}")
-
-            s = pd.Series(train_dates)
-            assert s.groupby(s).size().values.tolist() == train_groups.tolist()
-            logger.info(f"  训练集group数: {len(train_groups)}, 总样本数: {train_groups.sum()}")
-
-            # 验证集group信息
-            if val_dates is not None:
-                # val_dates_series = pd.Series(val_dates)
-                # val_groups = val_dates_series.value_counts().sort_index().values
-                _, val_groups = np.unique(val_dates, return_counts=True)
-                s = pd.Series(val_dates)
-                assert s.groupby(s).size().values.tolist() == val_groups.tolist()
-                logger.info(f"  验证集group数: {len(val_groups)}, 总样本数: {val_groups.sum()}")
-            else:
-                logger.warning("[WARNING] 缺少验证集日期信息,无法计算验证集group")
-                val_groups = None
-        else:
-            logger.error("[FAIL] 缺少训练集日期信息,无法使用排序模型")
-            return None
-
-        # [WRENCH] 关键说明: LightGBM排序模型(lambdarank)支持同时使用group和weight
-        # - group: 必需,用于定义查询组(每个日期是一个组)
-        # - weight: 可选,用于样本级别的权重调整
-        logger.info("[WRENCH] LightGBM排序模型配置:")
-        logger.info(f"  使用group信息: {len(train_groups)}个组")
-        logger.info(f"  训练集样本权重: 范围[{sample_weights.min():.4f}, {sample_weights.max():.4f}]")
-        logger.info(f"  验证集样本权重: 范围[{val_sample_weights.min():.4f}, {val_sample_weights.max():.4f}]")
-
-        # 🆕 在重排序前获取训练集原始收益率标签(用于IC计算)
-        y_train_original = preprocessed_data.get('y_train_original', preprocessed_data.get('y_train'))
-        if y_train_original is not None:
-            # 确保它是 numpy array 以支持索引切片
-            if not isinstance(y_train_original, np.ndarray):
-                y_train_original = np.array(y_train_original)
-
-        # === 训练集 ===
-        idx = np.argsort(train_dates)
-        X_train_scaled = X_train_scaled[idx]
-        y_train = y_train[idx]
-        sample_weights = sample_weights[idx]
-        train_dates = train_dates[idx]
-
-        # 🆕 同时重排序 y_train_original 以保持一致性
-        if y_train_original is not None:
-            y_train_original = y_train_original[idx]
-            y_train_original_sorted = y_train_original  # 后续直接使用
-
-        # === 验证集 ===
-        idx_val = np.argsort(val_dates)
-        val_dates = val_dates[idx_val]
-        X_val_scaled = X_val_scaled[idx_val]
-        y_val = y_val[idx_val]
-        val_sample_weights = val_sample_weights[idx_val]
-
-        sample_weights = np.ones_like(y_train)
-        val_sample_weights = np.ones_like(y_val)
-
-        # [SW行业编码] 准备分类特征索引
-        # categorical_feature_indices = None
-        # if categorical_features and len(categorical_features) > 0:
-        #     # 将特征列名转换为索引
-        #     feature_columns_list = list(feature_columns)
-        #     categorical_feature_indices = []
-        #     for feat_name in categorical_features:
-        #         if feat_name in feature_columns_list:
-        #             idx = feature_columns_list.index(feat_name)
-        #             categorical_feature_indices.append(idx)
-        #             logger.info(f"  [SW行业编码] 分类特征 '{feat_name}' 位于索引 {idx}")
-        #         else:
-        #             logger.warning(f"  [WARNING] 分类特征 '{feat_name}' 不在特征列中")
-
-        #     if categorical_feature_indices:
-        #         logger.info(f"[OK] 分类特征索引: {categorical_feature_indices}")
-        #     else:
-        #         logger.info("⏭️ 无有效的分类特征，跳过分类特征声明")
-
-
-
-        # 创建LightGBM数据集（同时使用group和weight）
-        train_data_kwargs = {
-            'data': X_train_scaled,
-            'label': y_train,
-            'weight': sample_weights,
-            'group': train_groups
-        }
-        # if categorical_feature_indices:
-        #     train_data_kwargs['categorical_feature'] = categorical_feature_indices
-
-        train_data = lgb.Dataset(**train_data_kwargs)
-
-        # 创建验证集LightGBM数据集
-        val_data_kwargs = {
-            'data': X_val_scaled,
-            'label': y_val,
-            'weight': val_sample_weights,
-            'reference': train_data
-        }
-        if val_groups is not None:
-            val_data_kwargs['group'] = val_groups
-
-        # if categorical_feature_indices:
-        #     val_data_kwargs['categorical_feature'] = categorical_feature_indices
-
-        val_data = lgb.Dataset(**val_data_kwargs)
-
-        # Early Stopping配置
-        early_stopping_rounds = 500
-        logger.info(f"  Early Stopping: {early_stopping_rounds} rounds")
-
-        # 创建一个空字典来存储评估结果
-        eval_result = {}
-        # 训练模型
-        callbacks = [
-            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=False, verbose=True),
-            lgb.log_evaluation(period=10),  # 改为每轮输出
-            lgb.record_evaluation(eval_result)
-        ]
-        # 训练前添加数据检查
-        logger.info(f"训练集: {X_train_scaled.shape}, 验证集: {X_val_scaled.shape}")
-        logger.info(f"训练集groups数量: {len(train_groups) if hasattr(train_groups, '__len__') else 'N/A'}")
-        logger.info(f"训练集标签范围: {y_train.min():.3f} ~ {y_train.max():.3f}")
-        logger.info(f"验证集标签范围: {y_val.min():.3f} ~ {y_val.max():.3f}")
-
-
-        model = lgb.train(
-            lgb_params,
-            train_data,
-            num_boost_round=4000,
-            valid_sets=[train_data, val_data],
-            valid_names=['train', 'valid'],
-            # valid_sets=[val_data],
-            # valid_names=['valid'],
-            callbacks=callbacks
+        # 5. 全量训练
+        # 适当增加迭代次数，利用更多数据
+        final_boost_round = int(best_iteration * 1.2) if 'best_iteration' in locals() else 1000
+        logger.info(f"[TARGET] 开始全量训练 (目标轮数: {final_boost_round})...")
+        
+        final_model = lgb.train(
+            best_params,
+            full_ds,
+            num_boost_round=final_boost_round,
+            valid_sets=[full_ds], # 仅用于监控收敛，不用于 Early Stopping (或者用 val_ds 作为参考)
+            callbacks=[lgb.log_evaluation(period=100)]
         )
 
-        logger.info(f"[OK] LightGBM训练完成")
-        logger.info(f"  最佳迭代: {model.best_iteration}")
-        logger.info(f"  训练轮数: {model.current_iteration()}")
-
-        # 训练完成后，分析评估结果
-        logger.info("[CHART] 训练过程详细指标:")
-        # for metric_name, metric_values in eval_result['train'].items():
-        #     logger.info(f"训练集 {metric_name}: 前5轮 = {list(metric_values[:5])}")
-
-        for metric_name, metric_values in eval_result['valid'].items():
-            logger.info(f"验证集 {metric_name}: 前5轮 = {list(metric_values[:5])}")
-
-        # 检查是否有NaN或异常值
-        for dataset_name, metrics in eval_result.items():
-            for metric_name, values in metrics.items():
-                if len(values) > 0:
-                    if any(np.isnan(values)):
-                        logger.warning(f"{dataset_name} {metric_name} 包含NaN值")
-                    logger.info(f"{dataset_name} {metric_name}: 起始值={values[0]:.4f}, 结束值={values[-1]:.4f}")
-
-        # 5. 模型评估
-        logger.info("[CHART] 评估LightGBM排序模型...")
-
-        # 训练集预测
-        y_train_pred = model.predict(X_train_scaled, num_iteration=model.best_iteration)
-
-        # 验证集预测
-        y_val_pred = model.predict(X_val_scaled, num_iteration=model.best_iteration)
-
-        # [强化] 排序模型核心指标
-        from scipy.stats import spearmanr
-        # [强化] 不再使用sklearn的ndcg_score，改用自定义的calculate_ndcg_at_k
-
-        # 获取原始收益率标签(用于IC计算)
-        y_val_original = preprocessed_data.get('y_val_original', preprocessed_data.get('y_val'))
-        # 如果它存在，必须按照同样的 idx_val 进行重排
-        if y_val_original is not None:
-            # 确保它是 numpy array 以支持索引切片
-            if not isinstance(y_val_original, np.ndarray):
-                y_val_original = np.array(y_val_original)
-            
-            # 💥 加上这一行，你的困扰就解决了 💥
-            y_val_original = y_val_original[idx_val] 
-            
-            # 将重排后的数据写回 preprocessed_data 或者保存到一个临时变量供后面计算指标使用
-            # 建议保存到局部变量，后面计算 IC/NDCG 时直接用这个变量
-            y_val_original_sorted = y_val_original
-
-        # [强化] 初始化指标
-        ic = 0.0
-        rank_ic = 0.0
-        ndcg_5 = 0.0
-        ndcg_10 = 0.0
-        top_k_return = 0.0
-
-        # [强化] 计算每日指标（与XGBoost保持一致）
-        val_dates = preprocessed_data.get('val_dates')
-        # train_dates 已经在前面获取并重排序过了
-
-        # y_train_original 已经在前面获取并重排序过了，直接使用
-
-        # 🆕 训练集Top-k收益统计（在验证集统计前面）
-        if train_dates is not None and len(train_dates) == len(y_train_pred):
-            import pandas as pd
-
-            # 检查是否有有效的训练集原始收益率数据
-            if 'y_train_original_sorted' in locals() and y_train_original_sorted is not None:
-                train_returns = y_train_original_sorted
-                logger.info("[CHART] 使用训练集原始收益率进行Top-k统计")
-            else:
-                # 备选方案：使用训练标签作为收益率替代（虽然不理想但确保统计能运行）
-                train_returns = y_train
-                logger.warning("[WARNING] 训练集原始收益率不可用，使用训练标签作为替代进行Top-k统计")
-
-            train_df = pd.DataFrame({
-                'date': train_dates,
-                'pred': y_train_pred,
-                'return': train_returns  # 训练集收益率
-            })
-
-            # 收集训练集Top-k收益数据
-            train_top_1_all_returns = []
-            train_top_3_all_returns = []
-            train_top_5_all_returns = []
-            train_top_10_all_returns = []
-
-            for date, group in train_df.groupby('date'):
-                if len(group) < 5:
-                    continue
-
-                # [UP] Top-k实际收益率计算 - 使用与验证集一致的算法
-                # 按预测值降序排列
-                date_sorted = group.sort_values('pred', ascending=False)
-
-                # 计算各topk的真实收益 - 收集所有真实收益值而不是每日统计值
-                # 🆕 修改：topk表示"第k名"而不是"前k名"
-                for k in [1, 3, 5, 10]:
-                    if len(date_sorted) >= k:
-                        # 🔧 修改：取第k名的股票，而不是前k名的股票
-                        # 例如k=3表示取排名第3的股票（只有1只），而不是前3名的股票（3只）
-                        top_k_data = date_sorted.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
-                        if len(top_k_data) > 0:
-                            # 收集该日期第k名股票的真实收益值
-                            real_returns = top_k_data['return'].values
-
-                            # 根据k值存储到对应的列表
-                            if k == 1:
-                                train_top_1_all_returns.extend(real_returns)
-                            elif k == 3:
-                                train_top_3_all_returns.extend(real_returns)
-                            elif k == 5:
-                                train_top_5_all_returns.extend(real_returns)
-                            elif k == 10:
-                                train_top_10_all_returns.extend(real_returns)
-
-            # [UP] 训练集稳健统计评估 - 调用稳健统计函数
-            logger.info("[CHART] 训练集 Top-k收益统计:")
-            print_top_k_robust_stats(train_top_1_all_returns, train_top_3_all_returns, train_top_5_all_returns, train_top_10_all_returns)
-
-        if val_dates is not None and len(val_dates) == len(y_val_pred):
-            import pandas as pd
-            # 注意: y_val是relevance标签(0-3), y_val_original是原始收益率
-            val_df = pd.DataFrame({
-                'date': val_dates,
-                'pred': y_val_pred,
-                'relevance': y_val,  # 🆕 relevance标签用于NDCG
-                'return': y_val_original_sorted  # 原始收益率用于IC和Top-K
-            })
-
-            # [强化] 计算每日指标
-            ndcg_1_list = []
-            ndcg_3_list = []
-            ndcg_5_list = []
-            ndcg_10_list = []
-            daily_ic_list = []  # 🆕 每日IC
-            daily_rank_ic_list = []  # 🆕 每日Rank IC
-
-            # 🆕 新增：收集每只个股的收益详情（用于详细统计）
-            top_1_all_returns = []
-            top_3_all_returns = []
-            top_5_all_returns = []
-            top_10_all_returns = []
-
-            for date, group in val_df.groupby('date'):
-                if len(group) < 5:
-                    continue
-
-                # 🆕 每日IC (Pearson相关系数)
-                daily_ic = np.corrcoef(group['pred'].values, group['return'].values)[0, 1]
-                if not np.isnan(daily_ic):
-                    daily_ic_list.append(daily_ic)
-
-                # 🆕 每日Rank IC (Spearman相关系数)
-                daily_rank_ic, _ = spearmanr(group['pred'].values, group['return'].values)
-                if not np.isnan(daily_rank_ic):
-                    daily_rank_ic_list.append(daily_rank_ic)
-
-                # [强化] NDCG使用真实收益率（更准确的评估）
-                true_returns = group['return'].values
-                pred_scores = group['pred'].values
-
-                # NDCG计算（使用改进版本）
-                if len(group) >= 1:
-                    ndcg_1_list.append(calculate_adjusted_ndcg_at_k(true_returns, pred_scores, k=1))
-                if len(group) >= 3:
-                    ndcg_3_list.append(calculate_adjusted_ndcg_at_k(true_returns, pred_scores, k=3))
-                if len(group) >= 5:
-                    ndcg_5_list.append(calculate_adjusted_ndcg_at_k(true_returns, pred_scores, k=5))
-                if len(group) >= 10:
-                    ndcg_10_list.append(calculate_adjusted_ndcg_at_k(true_returns, pred_scores, k=10))
-
-                # [UP] Top-k实际收益率计算 - 使用与_backtest_on_window一致的算法
-                # 按预测值降序排列
-                date_sorted = group.sort_values('pred', ascending=False)
-
-                # 计算各topk的真实收益 - 收集所有真实收益值而不是每日统计值
-                # 🆕 修改：topk表示"第k名"而不是"前k名"
-                for k in [1, 3, 5, 10]:
-                    if len(date_sorted) >= k:
-                        # 🔧 修改：取第k名的股票，而不是前k名的股票
-                        # 例如k=3表示取排名第3的股票（只有1只），而不是前3名的股票（3只）
-                        top_k_data = date_sorted.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
-                        if len(top_k_data) > 0:
-                            # 收集该日期第k名股票的真实收益值
-                            real_returns = top_k_data['return'].values
-
-                            # 根据k值存储到对应的列表
-                            if k == 1:
-                                top_1_all_returns.extend(real_returns)
-                            elif k == 3:
-                                top_3_all_returns.extend(real_returns)
-                            elif k == 5:
-                                top_5_all_returns.extend(real_returns)
-                            elif k == 10:
-                                top_10_all_returns.extend(real_returns)
-
+        # 6. 构建返回结果 (保持原有格式)
+        # 计算特征重要性
+        importance = final_model.feature_importance(importance_type='gain')
+        total_gain = importance.sum()
+        importance = importance / total_gain if total_gain > 0 else importance
         
-            # [强化] 计算平均指标（每日指标的平均值）
-            ndcg_1 = np.mean(ndcg_1_list) if ndcg_1_list else 0.0
-            ndcg_3 = np.mean(ndcg_3_list) if ndcg_3_list else 0.0
-            ndcg_5 = np.mean(ndcg_5_list) if ndcg_5_list else 0.0
-            ndcg_10 = np.mean(ndcg_10_list) if ndcg_10_list else 0.0
-            ic = np.mean(daily_ic_list) if daily_ic_list else 0.0  # 🆕 每日IC的平均值
-            rank_ic = np.mean(daily_rank_ic_list) if daily_rank_ic_list else 0.0  # 🆕 每日Rank IC的平均值
-            top_k_return = np.mean(top_5_all_returns) if top_5_all_returns else 0.0
-
-
-        # [强化] 辅助指标(MSE/R²) - 仅用于监控,排序模型主要关注NDCG和IC
-        from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-
-        # 训练集辅助指标
-        train_mse = mean_squared_error(y_train, y_train_pred)
-        train_rmse = np.sqrt(train_mse)
-        train_mae = mean_absolute_error(y_train, y_train_pred)
-        train_r2 = r2_score(y_train, y_train_pred)
-
-        # 验证集辅助指标
-        val_mse = mean_squared_error(y_val, y_val_pred)
-        val_rmse = np.sqrt(val_mse)
-        val_mae = mean_absolute_error(y_val, y_val_pred)
-        val_r2 = r2_score(y_val, y_val_pred)
-
-        # [CHART] 模型性能指标输出
-        logger.info("[CHART] 排序模型核心指标:")
-        logger.info(f"  Rank IC: {rank_ic:.4f}")
-        logger.info(f"  IC: {ic:.4f}")
-        logger.info(f"  NDCG@1: {ndcg_1:.4f}")
-        logger.info(f"  NDCG@3: {ndcg_3:.4f}")
-        logger.info(f"  NDCG@5: {ndcg_5:.4f}")
-        logger.info(f"  NDCG@10: {ndcg_10:.4f}")
-
-        # [UP] Top-k实际收益率统计
-
-        # [UP] 稳健统计评估 - 调用稳健统计函数
-        print_top_k_robust_stats(top_1_all_returns, top_3_all_returns, top_5_all_returns, top_10_all_returns)
-
-        # [强化] 辅助指标(MSE/R²) - 仅用于监控,排序模型主要关注NDCG和IC
-        from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-
-        # 训练集辅助指标
-        train_mse = mean_squared_error(y_train, y_train_pred)
-        train_rmse = np.sqrt(train_mse)
-        train_mae = mean_absolute_error(y_train, y_train_pred)
-        train_r2 = r2_score(y_train, y_train_pred)
-
-        # 验证集辅助指标
-        val_mse = mean_squared_error(y_val, y_val_pred)
-        val_rmse = np.sqrt(val_mse)
-        val_mae = mean_absolute_error(y_val, y_val_pred)
-        val_r2 = r2_score(y_val, y_val_pred)
-
-        # [CHART] 模型性能指标输出
-        logger.info("[CHART] 排序模型核心指标:")
-        logger.info(f"  Rank IC: {rank_ic:.4f}")
-        logger.info(f"  IC: {ic:.4f}")
-        logger.info(f"  NDCG@1: {ndcg_1:.4f}")
-        logger.info(f"  NDCG@3: {ndcg_3:.4f}")
-        logger.info(f"  NDCG@5: {ndcg_5:.4f}")
-        logger.info(f"  NDCG@10: {ndcg_10:.4f}")
-
-
-        # 6. 特征重要性
-        feature_importance = model.feature_importance(importance_type='gain')
-        feature_names = feature_columns
-
-        # [新增] 打印特征重要性
-        logger.info("[FEATURE] 特征重要性分析:")
-
-        # 创建特征重要性DataFrame
-        import pandas as pd
-        feature_importance_df = pd.DataFrame({
-            'feature_name': feature_names,
-            'importance': feature_importance
-        }).sort_values('importance', ascending=False)
-
-        # 打印全部特征重要性
-        logger.info(f"  全部特征重要性 (共 {len(feature_importance_df)} 个特征):")
-        for idx, row in feature_importance_df.iterrows():
-            logger.info(f"    {idx+1:3d}. {row['feature_name']:<30} = {row['importance']:.2f}")
-
-        # 统计特征重要性分布
-        total_importance = feature_importance.sum()
-        zero_importance_count = (feature_importance == 0).sum()
-        logger.info(f"  特征总数: {len(feature_names)}")
-        logger.info(f"  重要性为0的特征数: {zero_importance_count} ({zero_importance_count/len(feature_names)*100:.1f}%)")
-        logger.info(f"  总重要性: {total_importance:.2f}")
-        logger.info("")
-
-        # 7. 构建返回结果
+        # 兼容 feature_importance 格式 (Dict)
+        feature_imp_dict = dict(zip(feature_columns, importance))
+        
+        # 计算简单的性能指标 (基于验证集再次预测，用于记录)
+        y_val_final_pred = final_model.predict(X_val)
+        final_top1_ret = _calculate_val_metric(y_val_final_pred, y_val_ret, val_dates)
+        
         performance_dict = {
-            'train_mse': train_mse,
-            'train_rmse': train_rmse,
-            'train_mae': train_mae,
-            'train_r2': train_r2,
-            'val_mse': val_mse,
-            'val_rmse': val_rmse,
-            'val_mae': val_mae,
-            'val_r2': val_r2,
-            # [强化] 排序模型核心指标
-            'ic': ic,
-            'rank_ic': rank_ic,
-            'ndcg_5': ndcg_5,
-            'ndcg_10': ndcg_10,
-            'top_k_return': top_k_return,
+            'top_k_return': final_top1_ret, # 用于外部日志
+            'rank_ic': 0.0, # 没算，占位
+            'ic': 0.0
         }
 
-        model_results = {
-            'model': model,
-            'scaler': None,  # [WRENCH] 修复：不再使用StandardScaler，设为None
-            'feature_names': feature_names,
+        return {
+            'model': final_model,
+            'scaler': None,
+            'feature_names': feature_columns,
             'label_stats': label_stats,
+            'model_type': 'lightgbm',
             'performance': performance_dict,
             'training_info': {
-                'best_iteration': model.best_iteration,
-                'total_iterations': model.current_iteration(),
-                'early_stopping_rounds': early_stopping_rounds,
+                'best_iteration': final_boost_round, # 全量训练无 best_iteration，即为总轮数
+                'n_samples': len(X_full)
             },
-            'model_params': lgb_params,
-            'feature_importance': dict(zip(feature_names, feature_importance)),
-            'model_type': 'lightgbm',  # 标记模型类型
+            'model_params': best_params,
+            'feature_importance': feature_imp_dict,
+            'industry_mapping': None # 如果有需要可传入
         }
 
-        # [SW行业编码] 如果存在行业映射，添加到模型结果中
-        # if industry_mapping_info is not None:
-        #     model_results['industry_mapping'] = industry_mapping_info
-        #     logger.info("[OK] 行业映射已添加到模型结果中")
-
-        logger.info("[OK] LightGBM模型训练完成")
-        return model_results
-
-    except ImportError:
-        logger.error("[FAIL] LightGBM未安装,请运行: pip install lightgbm")
-        return None
     except Exception as e:
+        logger = logging.getLogger(__name__)
         logger.error(f"[FAIL] LightGBM模型训练失败: {e}")
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
         return None
+
 
 
 def calculate_robust_statistics(returns, confidence_level=0.95):
@@ -5597,8 +5179,7 @@ def _get_zscore_factors():
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
-        'sector_rank_change_5d',
-        'sector_breadth',
+        
         'intraday_clv',
         'beta_60d',
         'amihud_illiquidity',
@@ -5607,7 +5188,7 @@ def _get_zscore_factors():
         'mass_index_reversal',
         'price_acceleration',
         'ma60_slope',
-        'price_ma60_ratio',
+        
         'kdj_diff_9',
         'kdj_j_9',
         'kdj_k_9',
@@ -5624,25 +5205,20 @@ def _get_zscore_factors():
         'volatility_structure_alpha',
         'price_impact',
         'volume_structure_alpha',
+        'pct_chg_intra_z',
+        'return_10d_intra_z',
+        'return_20d_intra_z',
+        'return_3d_intra_z',
+        'return_5d_intra_z',
         'pct_chg_1d',
         'pct_chg_2d',
         'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
-        'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
-        'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
-        # 'leader_acceleration_score',
-        # 'vol_price_explosion_score',
-        # 'dragon_resonance_score',
-        # 'ma5_ratio_acceleration',
-        # 'sector_rank_stability_3d',
-        # 'ma5_ratio_risk_penalty',
     ]
 
 
@@ -5669,6 +5245,12 @@ def _get_stock_factors():
 
     all_factors = [
         #--原始因子--#
+        'price_ma5_ratio',
+        'price_ma5_ratio_z',
+        'price_ma10_ratio',
+        'price_ma10_ratio_z',
+        # 'price_ma60_ratio',
+        # 'price_ma60_ratio_z',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5687,11 +5269,6 @@ def _get_stock_factors():
         'sector_volatility_5d',
         'sw_circ_mv_rank_intra_sector',
         'ma_convergence_score',
-        'pct_chg_intra_z',
-        'return_10d_intra_z',
-        'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
         'intra_sector_momentum_rank',
         'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
@@ -5730,9 +5307,18 @@ def _get_stock_factors():
         'sector_correlation_20d',
         'stock_sector_pos_align',
         'sector_dispersion',#todo从原始移过来了 20260124
+        'sector_rank_change_5d',
+        'sector_breadth',
+        'high_volatility_pullback_alpha',
+        'trend_pullback_composite_alpha',
+        'volume_confirmed_pullback_alpha',
 
     # ===== 按日z-score =====
-        
+        'pct_chg_intra_z',
+        'return_10d_intra_z',
+        'return_20d_intra_z',
+        'return_3d_intra_z',
+        'return_5d_intra_z',
         'range_compression',
         'body_efficiency',
         'shadow_dominance',
@@ -5741,8 +5327,6 @@ def _get_stock_factors():
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
-        'sector_rank_change_5d',
-        'sector_breadth',
         'intraday_clv',
         'beta_60d',
         'amihud_illiquidity',
@@ -5751,7 +5335,6 @@ def _get_stock_factors():
         'mass_index_reversal',
         'price_acceleration',
         'ma60_slope',
-        'price_ma60_ratio',
         'kdj_diff_9',
         'kdj_j_9',
         'kdj_k_9',
@@ -5773,20 +5356,10 @@ def _get_stock_factors():
         'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
-        'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
-        'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
-        # 'leader_acceleration_score',
-        # 'vol_price_explosion_score',
-        # 'dragon_resonance_score',
-        # 'ma5_ratio_acceleration',
-        # 'sector_rank_stability_3d',
-        # 'ma5_ratio_risk_penalty',
 
 
     # ===== 按行业z-score =====
@@ -5813,6 +5386,12 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        'price_ma5_ratio',
+        'price_ma5_ratio_z',
+        'price_ma10_ratio',
+        'price_ma10_ratio_z',
+        # 'price_ma60_ratio',
+        # 'price_ma60_ratio_z',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5831,11 +5410,6 @@ def _get_original_factors():
         'sector_volatility_5d',
         'sw_circ_mv_rank_intra_sector',
         'ma_convergence_score',
-        'pct_chg_intra_z',
-        'return_10d_intra_z',
-        'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
         'intra_sector_momentum_rank',
         'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
@@ -5874,6 +5448,11 @@ def _get_original_factors():
         'sector_correlation_20d',
         'stock_sector_pos_align',
         'sector_dispersion',
+        'sector_rank_change_5d',
+        'sector_breadth',
+        'high_volatility_pullback_alpha',
+        'trend_pullback_composite_alpha',
+        'volume_confirmed_pullback_alpha',
     ]
 
 
@@ -6326,11 +5905,11 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
                         continue
 
                     # 使用交易日历计算第60个交易日
-                    filter_end_date = _get_nth_trading_date(ipodate_str, trading_dates, n=60, logger=logger)
+                    filter_end_date = _get_nth_trading_date(ipodate_str, trading_dates, n=25, logger=logger)
                     logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 第60个交易日: {filter_end_date.strftime('%Y%m%d')}")
                 else:
                     # 降级方案：使用自然日
-                    filter_end_date = ipodate_dt + pd.Timedelta(days=60)
+                    filter_end_date = ipodate_dt + pd.Timedelta(days=25)
                     logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 使用自然日+60: {filter_end_date.strftime('%Y%m%d')}")
 
                 # 检查过滤期间是否与数据有重叠
@@ -13399,9 +12978,9 @@ def run_test_model_walkforward_mode(args):
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
                 'train_end': '2024-12-31',     # 训练集结束 (约18个月，增加3个月)
                 'val_start': '2025-01-05',     # 验证集开始2025-01-01
-                'val_end': '2025-03-31',       # 验证集结束 (3个月)
-                'test_start': '2025-04-05',    # 测试集开始2025-04-01
-                'test_end': '2025-10-15'       # 测试集结束 (3个月)
+                'val_end': '2025-06-01',       # 验证集结束 (3个月)
+                'test_start': '2025-06-05',    # 测试集开始2025-04-01
+                'test_end': '2026-01-23'       # 测试集结束 (3个月)
             },
             {
                 'name': 'Window 3',
@@ -13410,7 +12989,7 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-06',     # 验证集开始
                 'val_end': '2025-05-27',       # 验证集结束 (3个月)
                 'test_start': '2025-06-05',    # 测试集开始
-                'test_end': '2025-12-26'       # 测试集结束 (3个月)2025-12-16
+                'test_end': '2026-01-23'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15707,12 +15286,12 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                 logger.info("   [FILTER] 无stock_code列，跳过北交所过滤")
 
             # # 第二步：批量过滤新股（在北交所过滤之后）
-            # logger.info("   [FILTER] 开始批量新股过滤...")
-            # new_stock_original_count = len(combined_data)
-            # combined_data = _filter_new_stocks_batch(combined_data, logger)
-            # after_new_stock_count = len(combined_data)
-            # new_stock_filtered_count = new_stock_original_count - after_new_stock_count
-            # logger.info(f"   [FILTER] 批量新股过滤完成: {new_stock_original_count} -> {after_new_stock_count} (过滤掉 {new_stock_filtered_count} 条新股期间数据)")
+            logger.info("   [FILTER] 开始批量新股过滤...")
+            new_stock_original_count = len(combined_data)
+            combined_data = _filter_new_stocks_batch(combined_data, logger)
+            after_new_stock_count = len(combined_data)
+            new_stock_filtered_count = new_stock_original_count - after_new_stock_count
+            logger.info(f"   [FILTER] 批量新股过滤完成: {new_stock_original_count} -> {after_new_stock_count} (过滤掉 {new_stock_filtered_count} 条新股期间数据)")
 
             st_filtered_count = 0
 
@@ -16074,8 +15653,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20251227_190526.pkl"
-        lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
+        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None

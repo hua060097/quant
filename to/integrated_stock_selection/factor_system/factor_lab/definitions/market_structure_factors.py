@@ -34,7 +34,8 @@ def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: flo
     ).sort_index()
     
     # 3. 计算历史平滑阈值 (Rolling 60)
-    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    # rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    rolling_stats = daily_stats.expanding(min_periods=1).median()
     
     # 4. 映射回个股数据
     df['thresh_median'] = df['date'].map(rolling_stats['median'])
@@ -111,7 +112,7 @@ class _MarketStructureHelper:
 
     def compute(self, factor_name: str) -> pd.Series:
         """执行因子映射逻辑"""
-        x = 3.1
+        x = 3.0
         if factor_name == 'mkt_sector_dispersion':
             # [特殊处理] 这是一个全市场广播因子，每天只有一个值。
             # 不要进行 Clip，直接保留原始数值，反映市场状态。

@@ -44,7 +44,8 @@ def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: flo
     # 但考虑到截面统计量本身不包含个股未来，用当日截面统计量作为基准也是合规的截面处理。
     # 为了最强稳健性，模拟旧模型的"积累"效应，我们使用包含当日的 Rolling 平滑。
     
-    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    # rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    rolling_stats = daily_stats.expanding(min_periods=1).median()
     
     # 4. 映射回个股数据
     # 将计算好的"历史平滑基准"映射回每一行
@@ -178,7 +179,7 @@ class _LimitInteractionHelper:
         
         # B. [核心修改] 时序滚动去极值 (Rolling Adaptive Clip)
         # 窗口 60 天，n_mad=3.0 (保留更多幅度信息) 多改了一个window 60到120 18:16
-        clipped_res = _rolling_adaptive_clip(joined_res, self.data['date'], n_mad=3.1, window=120)
+        clipped_res = _rolling_adaptive_clip(joined_res, self.data['date'], n_mad=3.0, window=120)
         
         # C. 标准化分流
         # 注意：不再强制 Rank，而是保留数值幅度

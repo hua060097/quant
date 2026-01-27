@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_lg100_新因子计算.log',
+        'stock_selection_test_mode_walkforward_排序模型_lg116_使用旧的新股过滤.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2918,8 +2918,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         lgb_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'label_gain': [0, 1, 2, 4, 8, 14],
-            'ndcg_eval_at': [1,3],
+            'label_gain': [0, 1, 2, 4, 8, 13],
+            'ndcg_eval_at': [1],
             'lambdarank_truncation_level': 5,
             'lambdarank_norm': True,  # 标准化梯度，防止头部过度优化
             'boosting_type': 'gbdt',
@@ -2927,14 +2927,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'num_leaves': 15, #31,300
             'max_depth': -1,
             'min_data_in_leaf': 320, #350,60
-            'feature_fraction': 0.5, 
+            'feature_fraction': 0.4, 
             'bagging_fraction': 0.7,
             # 'max_bin': 63,
             'bagging_freq': 1,
             # 'extra_trees': True,      # 开启随机树，增加探索性
             # 'path_smooth': 1.0,        # 路径平滑
-            'reg_alpha': 8,
-            'reg_lambda': 8,
+            'reg_alpha': 2.5,
+            'reg_lambda': 2.5,
             'n_estimators': 1000,
             'random_state': 42,
             'n_jobs': -1,
@@ -3089,14 +3089,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         val_data = lgb.Dataset(**val_data_kwargs)
 
         # Early Stopping配置
-        early_stopping_rounds = 500
+        early_stopping_rounds = 60
         logger.info(f"  Early Stopping: {early_stopping_rounds} rounds")
 
         # 创建一个空字典来存储评估结果
         eval_result = {}
         # 训练模型
         callbacks = [
-            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=False, verbose=True),
+            lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True, verbose=True),
             lgb.log_evaluation(period=10),  # 改为每轮输出
             lgb.record_evaluation(eval_result)
         ]
@@ -3110,7 +3110,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         model = lgb.train(
             lgb_params,
             train_data,
-            num_boost_round=4000,
+            num_boost_round=500,
             valid_sets=[train_data, val_data],
             valid_names=['train', 'valid'],
             # valid_sets=[val_data],
@@ -3121,6 +3121,9 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         logger.info(f"[OK] LightGBM训练完成")
         logger.info(f"  最佳迭代: {model.best_iteration}")
         logger.info(f"  训练轮数: {model.current_iteration()}")
+        best_idx = np.argmax(eval_result['valid']['ndcg@1'])
+        best_val = eval_result['valid']['ndcg@1'][best_idx]
+        logger.info(f"[CHECK] valid ndcg@1 最大值 = {best_val:.6f} @ iter {best_idx + 1}")
 
         # 训练完成后，分析评估结果
         logger.info("[CHART] 训练过程详细指标:")
@@ -3128,7 +3131,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         #     logger.info(f"训练集 {metric_name}: 前5轮 = {list(metric_values[:5])}")
 
         for metric_name, metric_values in eval_result['valid'].items():
-            logger.info(f"验证集 {metric_name}: 前5轮 = {list(metric_values[:5])}")
+            logger.info(f"验证集 {metric_name}: 所有轮 = {list(metric_values)}")
 
         # 检查是否有NaN或异常值
         for dataset_name, metrics in eval_result.items():
@@ -5591,24 +5594,24 @@ def _get_zscore_factors():
         'range_compression',
         'body_efficiency',
         'shadow_dominance',
-        'gap_power',
-        'overnight_return',
+        # 'gap_power',
+        # 'overnight_return',
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
         'sector_rank_change_5d',
-        'sector_breadth',
-        'intraday_clv',
+        # 'sector_breadth',
+        # 'intraday_clv',
         'beta_60d',
         'amihud_illiquidity',
         'abnormal_turnover',
-        'efficiency_ratio',
-        'mass_index_reversal',
-        'price_acceleration',
+        # 'efficiency_ratio',
+        # 'mass_index_reversal',
+        # 'price_acceleration',
         'ma60_slope',
-        'price_ma60_ratio',
-        'kdj_diff_9',
-        'kdj_j_9',
+        # 'price_ma60_ratio',
+        # 'kdj_diff_9',
+        # 'kdj_j_9',
         'kdj_k_9',
         'stable_momentum',
         'momentum_decay',
@@ -5618,22 +5621,21 @@ def _get_zscore_factors():
         'max_drawdown_20d',
         'max_rally_20d',
         'ppo_strength',
-        'mfi_strength',
+        # 'mfi_strength',
         'relative_strength_20d',
         'volatility_structure_alpha',
-        'price_impact',
+        # 'price_impact',
         'volume_structure_alpha',
-        'pct_chg_1d',
+        # 'pct_chg_1d',
         'pct_chg_2d',
-        'regime_aware_reversal_alpha',
+        # 'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
         'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
+        # 'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
-        'distance_from_52w_high',
+        # 'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
     ]
@@ -5662,6 +5664,10 @@ def _get_stock_factors():
 
     all_factors = [
         #--原始因子--#
+        'price_ma5_ratio',
+        'price_ma5_ratio_z',
+        'price_ma10_ratio',
+        'price_ma10_ratio_z',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5684,11 +5690,11 @@ def _get_stock_factors():
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
+        # 'return_3d_intra_z',
+        # 'return_5d_intra_z',
         'intra_sector_momentum_rank',
-        'sector_trend_gated_momentum_intra_z',
-        'sector_rotation_breakout_intra_z',
+        # 'sector_trend_gated_momentum_intra_z',
+        # 'sector_rotation_breakout_intra_z',
         'sector_leader_capture_rank',
         'sector_strong_leader_alpha',
         'sector_liquidity_gated_turnover_z',
@@ -5702,11 +5708,11 @@ def _get_stock_factors():
         'intra_sector_breadth',
         'market_vols_adaptive_iv',
         'market_trend_adaptive_beta',
-        'sector_excess_intra_rank',
+        # 'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
-        'sector_turnover_surge_pv_alpha',
+        # 'sector_turnover_surge_pv_alpha',
         'sector_dispersion_leader_alpha',
-        'vortex_trend',
+        # 'vortex_trend',
         'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
@@ -5717,9 +5723,9 @@ def _get_stock_factors():
         'coskewness',
         'kurtosis_20d',
         'skewness_20d',
-        'alpha_001',
-        'alpha_002',
-        'alpha_017',
+        # 'alpha_001',
+        # 'alpha_002',
+        # 'alpha_017',
         'downside_beta',
         'sector_correlation_20d',
         'stock_sector_pos_align',
@@ -5728,24 +5734,24 @@ def _get_stock_factors():
         'range_compression',
         'body_efficiency',
         'shadow_dominance',
-        'gap_power',
-        'overnight_return',
+        # 'gap_power',
+        # 'overnight_return',
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
         'sector_rank_change_5d',
-        'sector_breadth',
-        'intraday_clv',
+        # 'sector_breadth',
+        # 'intraday_clv',
         'beta_60d',
         'amihud_illiquidity',
         'abnormal_turnover',
-        'efficiency_ratio',
-        'mass_index_reversal',
-        'price_acceleration',
+        # 'efficiency_ratio',
+        # 'mass_index_reversal',
+        # 'price_acceleration',
         'ma60_slope',
-        'price_ma60_ratio',
-        'kdj_diff_9',
-        'kdj_j_9',
+        # 'price_ma60_ratio',
+        # 'kdj_diff_9',
+        # 'kdj_j_9',
         'kdj_k_9',
         'stable_momentum',
         'momentum_decay',
@@ -5755,22 +5761,22 @@ def _get_stock_factors():
         'max_drawdown_20d',
         'max_rally_20d',
         'ppo_strength',
-        'mfi_strength',
+        # 'mfi_strength',
         'relative_strength_20d',
         'volatility_structure_alpha',
-        'price_impact',
+        # 'price_impact',
         'volume_structure_alpha',
-        'pct_chg_1d',
+        # 'pct_chg_1d',
         'pct_chg_2d',
-        'regime_aware_reversal_alpha',
+        # 'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
         'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
+       
+        # 'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
-        'distance_from_52w_high',
+        # 'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
 
@@ -5799,6 +5805,10 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        'price_ma5_ratio',
+        'price_ma5_ratio_z',
+        'price_ma10_ratio',
+        'price_ma10_ratio_z',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5821,11 +5831,11 @@ def _get_original_factors():
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
+        # 'return_3d_intra_z',
+        # 'return_5d_intra_z',
         'intra_sector_momentum_rank',
-        'sector_trend_gated_momentum_intra_z',
-        'sector_rotation_breakout_intra_z',
+        # 'sector_trend_gated_momentum_intra_z',
+        # 'sector_rotation_breakout_intra_z',
         'sector_leader_capture_rank',
         'sector_strong_leader_alpha',
         'sector_liquidity_gated_turnover_z',
@@ -5839,11 +5849,11 @@ def _get_original_factors():
         'intra_sector_breadth',
         'market_vols_adaptive_iv',
         'market_trend_adaptive_beta',
-        'sector_excess_intra_rank',
+        # 'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
-        'sector_turnover_surge_pv_alpha',
+        # 'sector_turnover_surge_pv_alpha',
         'sector_dispersion_leader_alpha',
-        'vortex_trend',
+        # 'vortex_trend',
         'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
@@ -5854,9 +5864,9 @@ def _get_original_factors():
         'coskewness',
         'kurtosis_20d',
         'skewness_20d',
-        'alpha_001',
-        'alpha_002',
-        'alpha_017',
+        # 'alpha_001',
+        # 'alpha_002',
+        # 'alpha_017',
         'downside_beta',
         'sector_correlation_20d',
         'stock_sector_pos_align',
@@ -10865,7 +10875,7 @@ def run_test_model_mode(args):
         # [OK] 调用统一的选股回测函数
         backtest_result = _run_stock_selection_backtest(
             backtest_data=prediction_data_with_proba,
-            stock_counts=[1, 2, 3, 5],  # Top-1/2/3/5选股
+            stock_counts=[1],  # Top-1/2/3/5选股
             window_name="test_model",
             market_data=None,  # test_model暂不使用市场状态
             frequency='minute'  # 默认日线回测，保持向后兼容
@@ -15343,7 +15353,7 @@ def _backtest_on_window(test_data, model_result, window, args):
         # 调用统一选股回测函数
         backtest_result = _run_stock_selection_backtest(
             backtest_data=test_data_with_pred,
-            stock_counts=[1, 2, 3, 5],  # Top-1/2/3/5选股
+            stock_counts=[1],  # Top-1/2/3/5选股
             window_name=window['name'],
             market_data=None,  # Walk-Forward暂不使用市场状态
             frequency='minute'  # 默认日线回测，保持向后兼容

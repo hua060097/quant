@@ -10,6 +10,30 @@ import pandas as pd
 from ..base import FactorContext, FactorDefinition
 from ..registry import register_factor
 
+def _daily_robust_zscore(series: pd.Series, date_series: pd.Series) -> pd.Series:
+    """按日稳健 Z-Score (Cross-Sectional)"""
+    df = pd.DataFrame({'val': series.values, 'date': date_series.values}, index=series.index)
+    
+    medians = df.groupby('date')['val'].transform('median')
+    abs_diff = (df['val'] - medians).abs()
+    
+    # 按日计算 MAD
+    temp_mad = pd.DataFrame({'diff': abs_diff.values, 'date': date_series.values}, index=series.index)
+    mads = temp_mad.groupby('date')['diff'].transform('median')
+    
+    # 计算 Z-Score
+    z_score = (df['val'] - medians) / (mads * 1.4826 + 1e-9)
+    
+    # 极值处理
+    mask_zero_mad = (mads < 1e-6)
+    if mask_zero_mad.any():
+        means = df.groupby('date')['val'].transform('mean')
+        stds = df.groupby('date')['val'].transform('std')
+        z_fallback = (df['val'] - means) / (stds + 1e-9)
+        z_score = z_score.where(~mask_zero_mad, z_fallback)
+        
+    return z_score.clip(-6.0, 6.0) # 这里的硬截断是为了防止计算过程中的极端异常
+
 # ==============================================================================
 # 1. 均线纠缠度 (MA Entanglement / Convergence) - 变盘预警
 # ==============================================================================
@@ -159,6 +183,35 @@ price_ma60_ratio = register_factor(
     )
 )
 
+def _price_ma60_ratio_z(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    60日均线乖离率
+    
+    逻辑：
+    (Close - MA60) / MA60
+    这是衡量中期趋势强弱和超买超卖的核心指标。
+    """
+    if 'close' not in data.columns:
+        return pd.Series(0.0, index=data.index)
+    
+    # 计算 MA60
+    ma60 = data.groupby('stock_code', sort=False)['close'].rolling(60, min_periods=30).mean().reset_index(level=0, drop=True)
+    
+    # 计算乖离 (百分比)
+    ratio = (data['close'] - ma60) / (ma60 + 1e-9)
+    return _daily_robust_zscore(ratio, data['date']).astype('float64')
+
+
+price_ma60_ratio_z = register_factor(
+    FactorDefinition(
+        name='price_ma60_ratio_z',
+        required_columns={'stock_code', 'date', 'close'},
+        lookback_days=80,
+        calculator=_price_ma60_ratio_z,
+        description='价格相对60日均线的乖离率',
+    )
+)
+
 # ==============================================================================
 # 4. 均线斜率 (Normalized Slope) - 趋势速度
 # ==============================================================================
@@ -228,5 +281,84 @@ price_ma5_ratio = register_factor(
     )
 )
 
+def _price_ma10_ratio(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    价格相对MA5的比率（短期乖离）
+    
+    大师点评：
+    保留此因子，配合 range_compression 使用。
+    """
+    if 'close' not in data.columns:
+        return pd.Series(0.0, index=data.index)
+    
+    grouped = data.groupby('stock_code', sort=False)['close']
+    ma10 = grouped.rolling(10, min_periods=1).mean().reset_index(level=0, drop=True)
+    
+    ratio = ((data['close'] - ma10) / (ma10 + 1e-9)) * 100
+    return ratio.astype('float64')
 
-__all__ = ['ma_convergence_score', 'ma60_slope', 'price_ma60_ratio', 'ma_alignment_score','price_ma5_ratio']
+price_ma10_ratio = register_factor(
+    FactorDefinition(
+        name='price_ma10_ratio',
+        required_columns={'stock_code', 'date', 'close'},
+        lookback_days=10,
+        calculator=_price_ma10_ratio,
+        description='5日均线乖离率（短期情绪极限）',
+    )
+)
+
+def _price_ma10_ratio_z(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    价格相对MA5的比率（短期乖离）
+    
+    大师点评：
+    保留此因子，配合 range_compression 使用。
+    """
+    if 'close' not in data.columns:
+        return pd.Series(0.0, index=data.index)
+    
+    grouped = data.groupby('stock_code', sort=False)['close']
+    ma10 = grouped.rolling(10, min_periods=1).mean().reset_index(level=0, drop=True)
+    
+    ratio = ((data['close'] - ma10) / (ma10 + 1e-9)) * 100
+    return _daily_robust_zscore(ratio, data['date']).astype('float64')
+    
+price_ma10_ratio_z = register_factor(
+    FactorDefinition(
+        name='price_ma10_ratio_z',
+        required_columns={'stock_code', 'date', 'close'},
+        lookback_days=10,
+        calculator=_price_ma10_ratio_z,
+        description='5日均线乖离率（短期情绪极限）',
+    )
+)
+
+def _price_ma5_ratio_z(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    价格相对MA5的比率（短期乖离）
+    
+    大师点评：
+    保留此因子，配合 range_compression 使用。
+    """
+    if 'close' not in data.columns:
+        return pd.Series(0.0, index=data.index)
+    
+    grouped = data.groupby('stock_code', sort=False)['close']
+    ma5 = grouped.rolling(5, min_periods=1).mean().reset_index(level=0, drop=True)
+    
+    ratio = ((data['close'] - ma5) / (ma5 + 1e-9)) * 100
+    return _daily_robust_zscore(ratio, data['date']).astype('float64')
+    
+price_ma5_ratio_z = register_factor(
+    FactorDefinition(
+        name='price_ma5_ratio_z',
+        required_columns={'stock_code', 'date', 'close'},
+        lookback_days=10,
+        calculator=_price_ma5_ratio_z,
+        description='5日均线乖离率（短期情绪极限）',
+    )
+)
+
+
+
+__all__ = ['ma_convergence_score', 'ma60_slope', 'price_ma60_ratio','price_ma60_ratio_z','ma_alignment_score','price_ma5_ratio','price_ma10_ratio','price_ma10_ratio_z','price_ma5_ratio_z']

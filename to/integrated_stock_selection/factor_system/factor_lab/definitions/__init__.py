@@ -3,8 +3,12 @@ from .moving_average import (
     ma_convergence_score,
     ma60_slope,
     price_ma60_ratio,
+    price_ma60_ratio_z,
     ma_alignment_score,
-    price_ma5_ratio
+    price_ma5_ratio,
+    price_ma10_ratio,
+    price_ma10_ratio_z,
+    price_ma5_ratio_z,
 )  # noqa: F401
 from .candlestick import (
     body_efficiency,

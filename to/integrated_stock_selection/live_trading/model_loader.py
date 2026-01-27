@@ -125,7 +125,7 @@ class ModelLoader:
 
             # 如果没有指定模型路径，查找最新的LightGBM模型
             if model_path is None:
-                lgb_files = list(model_dir.glob("lightgbm_model_*.pkl"))
+                lgb_files = list(model_dir.glob("lightgbm_model_window3_20260107_033514.pkl"))
                 if not lgb_files:
                     self.logger.error("未找到LightGBM模型文件")
                     return False

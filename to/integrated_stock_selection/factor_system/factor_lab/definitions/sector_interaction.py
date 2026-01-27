@@ -32,7 +32,8 @@ def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: flo
     ).sort_index()
     
     # 3. 计算历史平滑阈值 (Rolling 60)
-    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    # rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    rolling_stats = daily_stats.expanding(min_periods=1).median()
     
     # 4. 映射回个股数据
     df['thresh_median'] = df['date'].map(rolling_stats['median'])
@@ -202,7 +203,7 @@ class _SectorInteractionHelper:
         
         # 4. 后处理：使用 Rolling Adaptive Clip
         # 60日窗口，n_mad=3.0   这里多改了一个window从60改到120 202618:15
-        return _rolling_adaptive_clip(raw_factor, self.data['date'], n_mad=3.1, window=120).reindex(self.original_index).astype('float64')
+        return _rolling_adaptive_clip(raw_factor, self.data['date'], n_mad=3.0, window=120).reindex(self.original_index).astype('float64')
 
 # ==============================================================================
 # 3. 注册因子

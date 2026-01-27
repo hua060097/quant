@@ -38,7 +38,8 @@ def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: flo
     
     # 3. 计算历史平滑阈值 (Rolling 120)
     # min_periods=1 保证初期数据可用
-    rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    # rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
+    rolling_stats = daily_stats.expanding(min_periods=1).median()
     
     # 4. 映射回个股数据
     df['thresh_median'] = df['date'].map(rolling_stats['median'])
@@ -125,7 +126,7 @@ class _CrossInteractionHelper:
 
     def compute_factor(self, factor_name: str) -> pd.Series:
         """根据名称执行具体的交互逻辑"""
-        n_mad = 3.1
+        n_mad = 3.0
         if factor_name == 'market_vols_adaptive_iv':
             # 特征 3: 市场波动 * (-个股特质波动)
             # 逻辑: 大波动环境惩罚高波股

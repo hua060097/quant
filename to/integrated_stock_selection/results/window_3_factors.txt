@@ -1,18 +1,20 @@
 窗口 3 训练模型使用的因子列表
-生成时间: 2026-01-25 16:24:09
-总因子数量: 109
+生成时间: 2026-01-27 18:30:22
+总因子数量: 111
 
 === 按类型分组的因子列表 ===
 
-Z-score归一化因子 (8个):
+Z-score归一化因子 (10个):
    1. pct_chg_intra_z
-   2. return_10d_intra_z
-   3. return_20d_intra_z
-   4. return_3d_intra_z
-   5. return_5d_intra_z
-   6. sector_liquidity_gated_turnover_z
-   7. sector_rotation_breakout_intra_z
-   8. sector_trend_gated_momentum_intra_z
+   2. price_ma10_ratio_z
+   3. price_ma5_ratio_z
+   4. return_10d_intra_z
+   5. return_20d_intra_z
+   6. return_3d_intra_z
+   7. return_5d_intra_z
+   8. sector_liquidity_gated_turnover_z
+   9. sector_rotation_breakout_intra_z
+  10. sector_trend_gated_momentum_intra_z
 
 排名归一化因子 (5个):
    1. intra_sector_momentum_rank
@@ -83,8 +85,8 @@ Z-score归一化因子 (8个):
   47. ppo_strength
   48. price_acceleration
   49. price_impact
-  50. price_ma5_ratio
-  51. price_ma60_ratio
+  50. price_ma10_ratio
+  51. price_ma5_ratio
   52. range_compression
   53. regime_aware_reversal_alpha
   54. relative_strength_20d
@@ -184,61 +186,63 @@ Z-score归一化因子 (8个):
  49. ppo_strength
  50. price_acceleration
  51. price_impact
- 52. price_ma5_ratio
- 53. price_ma60_ratio
- 54. range_compression
- 55. regime_aware_reversal_alpha
- 56. relative_strength_20d
- 57. resistance_distance
- 58. return_10d_intra_z
- 59. return_10d_sector_mean
- 60. return_20d_intra_z
- 61. return_20d_sector_mean
- 62. return_3d_intra_z
- 63. return_3d_sector_mean
- 64. return_5d_intra_z
- 65. return_5d_sector_mean
- 66. sector_breadth
- 67. sector_broken_resilience_alpha
- 68. sector_concentration
- 69. sector_correlation_20d
- 70. sector_dispersion
- 71. sector_dispersion_leader_alpha
- 72. sector_excess_intra_rank
- 73. sector_hhi_change
- 74. sector_leader_capture_rank
- 75. sector_limit_overflow_alpha
- 76. sector_liquidity_gated_turnover_z
- 77. sector_mkt_corr_20d
- 78. sector_momentum_accel_rank
- 79. sector_momentum_consistency
- 80. sector_momentum_dispersion_rank
- 81. sector_momentum_interaction
- 82. sector_rank_change_5d
- 83. sector_relative_strength_vs_market
- 84. sector_relative_volatility
- 85. sector_rotation_breakout_intra_z
- 86. sector_strong_leader_alpha
- 87. sector_trend_gated_momentum_intra_z
- 88. sector_turnover_change_5d_20d
- 89. sector_turnover_surge_pv_alpha
- 90. sector_volatility_5d
- 91. sector_vols_divergence_alpha
- 92. sector_weak_reversal_alpha
- 93. shadow_dominance
- 94. size_rotation_strength
- 95. skewness_20d
- 96. stable_momentum
- 97. stock_sector_pos_align
- 98. support_distance
- 99. sw_circ_mv_rank_intra_sector
-100. trend_acceleration
-101. trend_consistency
-102. trend_pullback_composite_alpha
-103. turnover_stability
-104. ulcer_index
-105. value_growth_rotation
-106. volatility_structure_alpha
-107. volume_confirmed_pullback_alpha
-108. volume_structure_alpha
-109. vortex_trend
+ 52. price_ma10_ratio
+ 53. price_ma10_ratio_z
+ 54. price_ma5_ratio
+ 55. price_ma5_ratio_z
+ 56. range_compression
+ 57. regime_aware_reversal_alpha
+ 58. relative_strength_20d
+ 59. resistance_distance
+ 60. return_10d_intra_z
+ 61. return_10d_sector_mean
+ 62. return_20d_intra_z
+ 63. return_20d_sector_mean
+ 64. return_3d_intra_z
+ 65. return_3d_sector_mean
+ 66. return_5d_intra_z
+ 67. return_5d_sector_mean
+ 68. sector_breadth
+ 69. sector_broken_resilience_alpha
+ 70. sector_concentration
+ 71. sector_correlation_20d
+ 72. sector_dispersion
+ 73. sector_dispersion_leader_alpha
+ 74. sector_excess_intra_rank
+ 75. sector_hhi_change
+ 76. sector_leader_capture_rank
+ 77. sector_limit_overflow_alpha
+ 78. sector_liquidity_gated_turnover_z
+ 79. sector_mkt_corr_20d
+ 80. sector_momentum_accel_rank
+ 81. sector_momentum_consistency
+ 82. sector_momentum_dispersion_rank
+ 83. sector_momentum_interaction
+ 84. sector_rank_change_5d
+ 85. sector_relative_strength_vs_market
+ 86. sector_relative_volatility
+ 87. sector_rotation_breakout_intra_z
+ 88. sector_strong_leader_alpha
+ 89. sector_trend_gated_momentum_intra_z
+ 90. sector_turnover_change_5d_20d
+ 91. sector_turnover_surge_pv_alpha
+ 92. sector_volatility_5d
+ 93. sector_vols_divergence_alpha
+ 94. sector_weak_reversal_alpha
+ 95. shadow_dominance
+ 96. size_rotation_strength
+ 97. skewness_20d
+ 98. stable_momentum
+ 99. stock_sector_pos_align
+100. support_distance
+101. sw_circ_mv_rank_intra_sector
+102. trend_acceleration
+103. trend_consistency
+104. trend_pullback_composite_alpha
+105. turnover_stability
+106. ulcer_index
+107. value_growth_rotation
+108. volatility_structure_alpha
+109. volume_confirmed_pullback_alpha
+110. volume_structure_alpha
+111. vortex_trend
