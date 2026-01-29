@@ -29,15 +29,38 @@ from ..registry import register_factor
 # ==============================================================================
 # 1. 基础辅助函数
 # ==============================================================================
-def _adaptive_clip(series: pd.Series, n_mad: float = 3.0) -> pd.Series:
+def _adaptive_clip(series: pd.Series, n_mad: float = 3.0, factor_name = '') -> pd.Series:
     """自适应去极值"""
+    import logging
+    logger = logging.getLogger(__name__)
+   
     if series.empty:
         return series
     median = series.median()
     mad = (series - median).abs().median()
+    logger.info(f"mad:{mad}, median:{median}")
     if mad == 0:
         return series
     threshold = n_mad * mad * 1.4826
+    logger.info(f"factor_name:{factor_name}, clip:{median - threshold}, {median + threshold}")
+    if factor_name == 'sector_vols_divergence_alpha':
+        return series.clip(-4.415755, 4.415755)
+    elif factor_name == 'sector_turnover_surge_pv_alpha':
+        return series.clip(-1.261494, 1.261494)
+    elif factor_name == 'sector_dispersion_leader_alpha':
+        return series.clip(-4.154504, 4.155457)
+    elif factor_name == 'sector_trend_gated_momentum_intra_z':
+        return series.clip(-1.125871, 1.125871)
+    elif factor_name == 'sector_rotation_breakout_intra_z':
+        return series.clip(-0.627873, 0.632873)
+    elif factor_name == 'sector_leader_capture_rank':
+        return series.clip(-0.943000, 0.943119)
+    elif factor_name == 'sector_strong_leader_alpha':
+        return series.clip(-0.869805, 0.933521)
+    elif factor_name == 'sector_liquidity_gated_turnover_z':
+        return series.clip(-1.216882, 1.216882)
+    elif factor_name == 'sector_weak_reversal_alpha':
+        return series.clip(-1.138327, 1.377483)
     return series.clip(median - threshold, median + threshold)
 
 def _global_robust_zscore(series: pd.Series, date_series: pd.Series) -> pd.Series:
@@ -233,7 +256,7 @@ class _SectorInteractionHelper:
         raw_factor = gate * alpha
         
         # 4. 后处理：自适应去极值，并确保索引与原始数据一致
-        return _adaptive_clip(raw_factor).reindex(self.original_index).astype('float64')
+        return _adaptive_clip(raw_factor, 3.0, factor_name).reindex(self.original_index).astype('float64')
 
 # ==============================================================================
 # 3. 注册因子

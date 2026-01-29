@@ -16,12 +16,23 @@ from ..registry import register_factor
 # ==============================================================================
 # 1. 辅助函数
 # ==============================================================================
-def _adaptive_clip(series: pd.Series, n_mad: float = 3.0) -> pd.Series:
+def _adaptive_clip(series: pd.Series, n_mad: float = 3.0, factor_name = "") -> pd.Series:
     """自适应去极值"""
     if series.empty: return series
     median = series.median()
     mad = (series - median).abs().median()
     threshold = n_mad * mad * 1.4826
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"factor_name:{factor_name}, clip:{median - threshold}, {median + threshold}")
+    if factor_name == 'mkt_sector_dispersion':
+        return series.clip(0.639049,1.929177)
+    elif factor_name == 'sector_mkt_corr_20d':
+        return series.clip(-0.081383, 0.987982)
+    elif factor_name == 'intra_sector_breadth':
+        return series.clip(0.000000, 1.000000)
+    elif factor_name == 'stock_sector_pos_align':
+        return series.clip(-0.593889, 0.559325)
     return series.clip(median - threshold, median + threshold)
 
 def _get_market_data(ctx: FactorContext) -> pd.DataFrame:
@@ -83,22 +94,22 @@ class _MarketStructureHelper:
         """执行因子映射逻辑"""
         
         if factor_name == 'mkt_sector_dispersion':
-            return _adaptive_clip(self.data['date'].map(self.mkt_sector_dispersion))
+            return _adaptive_clip(self.data['date'].map(self.mkt_sector_dispersion), 3.0, factor_name)
 
         elif factor_name == 'sector_mkt_corr_20d':
             s_val = self.s_mkt_corr.stack().rename('v')
-            return _adaptive_clip(self.data.join(s_val, on=['date', 'sector_code'], how='left')['v'])
+            return _adaptive_clip(self.data.join(s_val, on=['date', 'sector_code'], how='left')['v'], 3.0, factor_name)
 
         elif factor_name == 'intra_sector_breadth':
             s_val = self.s_breadth.stack().rename('v')
-            return _adaptive_clip(self.data.join(s_val, on=['date', 'sector_code'], how='left')['v'])
+            return _adaptive_clip(self.data.join(s_val, on=['date', 'sector_code'], how='left')['v'], 3.0, factor_name)
 
         elif factor_name == 'stock_sector_pos_align':
             # 个股 120 日位置 vs 行业 120 日平均位置
             s_pos = self.s_pos_mean.stack().rename('sp')
             joined = self.data.join(s_pos, on=['date', 'sector_code'], how='left')
             # 这里的逻辑是：即便行业整体在低位，先行反弹的个股会获得极高分
-            return _adaptive_clip(joined['stock_pos'] - joined['sp'])
+            return _adaptive_clip(joined['stock_pos'] - joined['sp'], 3.0, factor_name)
 
         return pd.Series(0.0, index=self.original_index)
 

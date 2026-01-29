@@ -45,7 +45,7 @@ class StrategyConfig:
     #       - stop_loss_threshold = 0.00   : 收益为负（0%）就卖出（激进风控）
     #       - stop_loss_threshold = 0.01   : 收益低于1%就卖出（要求正收益）
     #       - stop_loss_threshold = -0.10  : 跌幅超过10%才卖出（宽松风控）
-    stop_loss_threshold: float = -0.00  # 默认-5%，保持向后兼容
+    stop_loss_threshold: float = -0.05  # 默认-5%，保持向后兼容
 
 @dataclass
 class Position:

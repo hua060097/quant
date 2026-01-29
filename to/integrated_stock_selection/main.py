@@ -2718,48 +2718,62 @@ def _evaluate_params(params, X_train, y_train, X_val, y_val, y_val_eval, sample_
 
 
 
-def _calculate_val_metric(y_pred, y_real, dates, metric='return'):
+def _calculate_val_metric(y_pred, y_real, dates, metric='composite'):
     """
-    [辅助] 计算验证集指标：支持 'return' (收益) 或 'sharpe' (夏普)
-    推荐使用 'sharpe' 以防止过拟合特定行情。
+    [辅助] 计算验证集指标 (增强版：返回详细字典)
     """
     import pandas as pd
     import numpy as np
+    
+    result = {'score': -999.0, 'sharpe': 0.0, 'median': 0.0, 'win_rate': 0.0}
+    
     try:
+        if len(y_pred) != len(y_real) or len(y_pred) != len(dates):
+            return result
+
         df = pd.DataFrame({
             'date': dates,
             'pred': y_pred,
             'return': y_real
         })
         
-        # 快速获取每日 Top-1 收益序列
-        # 使用 groupby().head(1) 配合 sort_values 是通用且较快的方法
-        # 或者 idxmax (仅适用于单列)
-        daily_returns = []
-        
         # 优化循环: 预先排序
         df_sorted = df.sort_values(['date', 'pred'], ascending=[True, False])
-        
-        # 每天取第一个 (即预测分最高的)
         top1_df = df_sorted.groupby('date').head(1)
         daily_returns = top1_df['return'].values
         
-        if len(daily_returns) == 0: return -999.0
+        if len(daily_returns) < 5: return result
         
-        if metric == 'return':
-            return np.mean(daily_returns)
-        elif metric == 'sharpe':
-            mean_ret = np.mean(daily_returns)
-            std_ret = np.std(daily_returns)
-            if std_ret < 1e-6: return 0.0
-            # 年化夏普 (假设日频)
-            return (mean_ret / std_ret) * 15.87 # sqrt(252) ≈ 15.87
+        # 基础指标
+        mean_ret = np.mean(daily_returns)
+        median_ret = np.median(daily_returns)
+        std_ret = np.std(daily_returns)
+        win_rate = np.mean(daily_returns > 0)
+        
+        # 夏普 (年化)
+        sharpe = (mean_ret / (std_ret + 1e-6)) * 15.87
+        
+        # 复合打分
+        # 1. 中位数项：目标是 > 0.002 (0.2%)
+        #    乘以 500 -> 1.0 (与夏普量级对齐)
+        median_score = median_ret * 500.0
+        
+        # 2. 夏普项
+        sharpe_score = sharpe * 0.5
+        
+        # 3. 最终分
+        final_score = sharpe_score + median_score
+        
+        return {
+            'score': final_score,
+            'sharpe': sharpe,
+            'median': median_ret,
+            'win_rate': win_rate
+        }
             
     except Exception as e:
-        # print(f"[WARNING] 评估计算出错: {e}")
-        return -999.0
-
-
+        return result
+    
 
 def _get_lgb_search_space():
     """
@@ -2770,8 +2784,8 @@ def _get_lgb_search_space():
     # 基础空间
     space = {
         'learning_rate': [0.01, 0.02],
-        'num_leaves': [15, 31],
-        'min_data_in_leaf': [100, 200, 300, 320, 600, 800, 1200], # 覆盖稀疏到密集
+        'num_leaves': [7, 15, 31],
+        'min_data_in_leaf': [100, 200, 300, 320, 360], # 覆盖稀疏到密集
         'feature_fraction': [0.4, 0.5, 0.6, 0.7, 0.8],
         'bagging_fraction': [0.6, 0.7, 0.8],
         'bagging_freq': [1],
@@ -2783,8 +2797,9 @@ def _get_lgb_search_space():
     # 不同的label_gain策略
     label_gain_candidates = [
         [0, 1, 3, 7, 15, 31], # 激进
-        [0, 1, 2, 4, 8, 16],  # 标准2次方
-        [i for i in range(31)] # 线性
+        [0, 1, 2, 4, 8, 14],
+        [0, 1, 2, 4, 8, 16]  # 标准2次方
+        # [i for i in range(31)] # 线性
     ]
     
     return space, label_gain_candidates
@@ -2793,13 +2808,12 @@ def _get_lgb_search_space():
 
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
     """
-    [强化] 训练LightGBM模型 (集成自动参数搜索 + 全量训练)
+    [顶尖级] 训练LightGBM模型 (Purged Walk-Forward CV + Max-Min Sharpe优化)
     
-    流程：
-    1. 准备数据
-    2. 执行随机参数搜索 (Random Search) -> 目标: 验证集 Top-1 收益
-    3. 使用最优参数合并 训练集+验证集 进行全量训练
-    4. 返回最终模型
+    核心优化：
+    1. 放弃单一验证集，改用内部 K-Fold TimeSeriesSplit 交叉验证。
+    2. 评价指标：Max-Min Sharpe (选择在最差时期表现最好的参数)。
+    3. 目的：强制模型学习"穿越牛熊"的稳健特征，而非过拟合某一段行情。
     """
     try:
         import lightgbm as lgb
@@ -2807,106 +2821,81 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         import pandas as pd
         import random
         import time
+        from sklearn.model_selection import TimeSeriesSplit
         from copy import deepcopy
         
         logger = logging.getLogger(__name__)
+        logger.info("[顶尖级] 启动稳健训练流程 (CV + Max-Min Sharpe)")
 
-        logger.info("[强化] 开始训练LightGBM模型（启用自动参数搜索）")
-
-        # 1. 数据准备 (复用预处理数据)
+        # 1. 数据准备 (合并 Train + Val 作为总训练池)
         if preprocessed_data is not None:
-            # 特征数据
-            X_train = preprocessed_data['X_train']
-            X_val = preprocessed_data['X_val']
+            X_train_raw = preprocessed_data['X_train']
+            X_val_raw = preprocessed_data['X_val']
+            y_train_raw = preprocessed_data.get('train_relevance')
+            y_val_raw = preprocessed_data.get('val_relevance')
             
-            # 标签数据 (relevance: 0-3 int)
-            y_train = preprocessed_data.get('train_relevance')
-            y_val = preprocessed_data.get('val_relevance')
-            
-            # 原始收益率 (用于计算Top-1收益)
+            # 原始收益率 (用于计算真实 Sharpe)
             y_train_ret = preprocessed_data.get('y_train_original')
             y_val_ret = preprocessed_data.get('y_val_original')
             
-            # 辅助数据
-            train_groups = None # 需重新计算或从preprocessed获取
-            val_groups = None
+            # 日期 (用于切分)
             train_dates = preprocessed_data.get('train_dates')
             val_dates = preprocessed_data.get('val_dates')
             
             # 权重
-            # w_train = preprocessed_data.get('sample_weights')
-            w_train = np.ones(len(y_train))
-            # w_val = preprocessed_data.get('val_sample_weights')
-            w_val = np.ones(len(y_val))
+            # w_train_raw = preprocessed_data.get('sample_weights')
+            w_train_raw = np.ones(len(y_train_raw))
+            # w_val_raw = preprocessed_data.get('val_sample_weights')
+            w_val_raw = np.ones(len(y_val_raw))
 
             # 特征对齐检查
-            if X_train.shape[1] != len(feature_columns):
-                logger.info(f"  特征对齐: 数据集特征{X_train.shape[1]} -> 目标{len(feature_columns)}")
-                X_train = X_train[:, :len(feature_columns)]
-                X_val = X_val[:, :len(feature_columns)]
+            if X_train_raw.shape[1] != len(feature_columns):
+                logger.info(f"  特征对齐: 数据集特征{X_train_raw.shape[1]} -> 目标{len(feature_columns)}")
+                X_train_raw = X_train_raw[:, :len(feature_columns)]
+                X_val_raw = X_val_raw[:, :len(feature_columns)]
 
+            # 合并数据
+            X_all = np.vstack((X_train_raw, X_val_raw))
+            y_all = np.concatenate((y_train_raw, y_val_raw))
+            y_ret_all = np.concatenate((y_train_ret, y_val_ret))
+            w_all = np.concatenate((w_train_raw, w_val_raw))
+            dates_all = np.concatenate((train_dates, val_dates))
+            
         else:
             logger.error("[FAIL] 必须提供预处理数据")
             return None
 
-        # 1.5 时序检查（防止数据泄露）
-        logger.info("[CHECK] 检查训练集和验证集的时间顺序...")
-        if train_dates is not None and val_dates is not None:
-            # 检查训练集内部时序
-            train_dates_sorted = np.all(train_dates[:-1] <= train_dates[1:])
-            if not train_dates_sorted:
-                logger.error("[FAIL] 训练集时间顺序错乱！")
-                # 找出第一个错乱的位置
-                for i in range(len(train_dates) - 1):
-                    if train_dates[i] > train_dates[i + 1]:
-                        logger.error(f"  训练集第 {i} 个日期 ({train_dates[i]}) > 第 {i+1} 个日期 ({train_dates[i+1]})")
-                        break
-                raise ValueError("训练集时间顺序错乱，可能导致数据泄露")
+        # 2. TimeSeriesSplit 交叉验证准备
+        # 将数据切分为 K 折 (3折)。
+        tscv = TimeSeriesSplit(n_splits=3)
+        
+        # 预先计算所有 Fold 的索引，避免循环中重复计算
+        # 注意：我们要根据 Date 进行切分
+        unique_dates = np.unique(dates_all)
+        # 确保日期有序
+        unique_dates = np.sort(unique_dates)
+        
+        folds = []
+        # split 返回的是索引，我们需要映射回 dates_all 的 mask
+        for train_date_idx, val_date_idx in tscv.split(unique_dates):
+            train_dates_split = unique_dates[train_date_idx]
+            val_dates_split = unique_dates[val_date_idx]
+            
+            # 生成布尔索引 (假设 dates_all 也是有序的，如果不是，np.isin 会处理)
+            # 为了速度，使用 np.isin
+            train_mask = np.isin(dates_all, train_dates_split)
+            val_mask = np.isin(dates_all, val_dates_split)
+            
+            folds.append((train_mask, val_mask))
 
-            # 检查验证集内部时序
-            val_dates_sorted = np.all(val_dates[:-1] <= val_dates[1:])
-            if not val_dates_sorted:
-                logger.error("[FAIL] 验证集时间顺序错乱！")
-                # 找出第一个错乱的位置
-                for i in range(len(val_dates) - 1):
-                    if val_dates[i] > val_dates[i + 1]:
-                        logger.error(f"  验证集第 {i} 个日期 ({val_dates[i]}) > 第 {i+1} 个日期 ({val_dates[i+1]})")
-                        break
-                raise ValueError("验证集时间顺序错乱，可能导致数据泄露")
+        logger.info(f"  [CV] 数据切分完成: {len(folds)} 折 TimeSeriesSplit")
 
-            # 检查训练集和验证集之间的时序（防止未来数据泄露）
-            train_last_date = train_dates.max()
-            val_first_date = val_dates.min()
-            if train_last_date > val_first_date:
-                logger.error(f"[FAIL] 时序错乱：训练集最后日期 ({train_last_date}) 晚于验证集最早日期 ({val_first_date})")
-                logger.error("[FAIL] 这会导致未来数据泄露，模型训练无效！")
-                raise ValueError(f"训练集和验证集时序错乱: train_max={train_last_date} > val_min={val_first_date}")
-
-            logger.info(f"[OK] 时序检查通过: 训练集 [{train_dates.min()} ~ {train_dates.max()}] -> 验证集 [{val_dates.min()} ~ {val_dates.max()}]")
-        else:
-            logger.warning("[WARNING] 缺少日期信息，跳过时序检查（可能存在数据泄露风险）")
-
-        # 2. 准备 Group 信息 (Lambdarank 必须)
-        # 确保数据按日期排序，并计算每组(每天)的数量
-        # 注意: 假设输入的 X_train, y_train 已经按日期排序
-        def get_groups(dates):
-            _, counts = np.unique(dates, return_counts=True)
-            # np.unique 返回是排序的，如果dates本身是排序的，counts顺序就是对的
-            # 为保险起见，建议使用 pandas groupby size
-            s = pd.Series(dates)
-            return s.groupby(s, sort=False).size().values
-
-        if train_dates is not None:
-            train_groups = get_groups(train_dates)
-        if val_dates is not None:
-            val_groups = get_groups(val_dates)
-
-        # 创建 Dataset 对象
-        train_ds = lgb.Dataset(X_train, label=y_train, group=train_groups, weight=w_train,params={'feature_pre_filter': False})
-        val_ds = lgb.Dataset(X_val, label=y_val, group=val_groups, weight=w_val, reference=train_ds,params={'feature_pre_filter': False})
-
-        # 3. 参数搜索配置
-        SEARCH_ITER = 60  # 搜索次数 (速度优先)
+        # 3. 执行搜索 (Random Search + CV)
+        SEARCH_ITER = 35 # 迭代次数
+        best_robust_score = -float('inf')
+        
+        search_space, label_gain_options = _get_lgb_search_space()
+        
         base_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
@@ -2918,100 +2907,173 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'verbosity': -1,
             'random_state': 42
         }
-
-        X_full = np.vstack((X_train, X_val))
-        y_full = np.concatenate((y_train, y_val))
-        w_full = np.concatenate((w_train, w_val))
-        y_ret_all = np.concatenate((y_train_ret, y_val_ret))
-        dates_all = np.concatenate((train_dates, val_dates))
         
-        search_space, label_gain_options = _get_lgb_search_space()
-        
-        best_score = -float('inf')
         best_params = base_params.copy()
+        # 给个默认值防止第一次就失败
+        best_params['learning_rate'] = 0.02 
+        best_params['num_leaves'] = 31
         
-        logger.info(f"[SEARCH] 开始参数搜索 (迭代: {SEARCH_ITER}次)...")
+        logger.info(f"[SEARCH] 开始 Max-Min CV 搜索 ({SEARCH_ITER} 组参数 x {len(folds)} 折)...")
         start_time = time.time()
 
         for i in range(SEARCH_ITER):
-            # 随机采样参数
+            # 采样参数
             current_params = base_params.copy()
             for key, choices in search_space.items():
                 current_params[key] = random.choice(choices)
             current_params['label_gain'] = random.choice(label_gain_options)
             
-            # 快速训练 (Early Stopping 严格一点)
-            # n_estimators 设小一点用于搜索
-            tmp_model = lgb.train(
-                current_params,
-                train_ds,
-                num_boost_round=600, 
-                valid_sets=[val_ds],
-                callbacks=[lgb.early_stopping(30, verbose=False)]
-            )
+            fold_val_scores = []
+            fold_train_scores = []
+            fold_details = []
             
-            # 预测并评估 Top-1 收益
-            preds = tmp_model.predict(X_val)
-            # 使用原始收益率计算真实的 Top-1 Return
-            score = _calculate_val_metric(preds, y_val_ret, val_dates)
+            # 遍历每一折
+            for fold_idx, (train_mask, val_mask) in enumerate(folds):
+                # 准备 Dataset
+                # Group 信息必须重新计算
+                def get_groups_fast(mask):
+                    d = dates_all[mask]
+                    # 使用 pandas groupby size 也是比较快的
+                    s = pd.Series(d)
+                    return s.groupby(s, sort=False).size().values
+                
+                train_g = get_groups_fast(train_mask)
+                val_g = get_groups_fast(val_mask)
+                
+                # 构造 Dataset
+                dtrain = lgb.Dataset(
+                    X_all[train_mask], 
+                    label=y_all[train_mask], 
+                    group=train_g, 
+                    weight=w_all[train_mask],
+                    params={'feature_pre_filter': False}
+                )
+                dval = lgb.Dataset(
+                    X_all[val_mask], 
+                    label=y_all[val_mask], 
+                    group=val_g, 
+                    weight=w_all[val_mask], 
+                    reference=dtrain,
+                    params={'feature_pre_filter': False}
+                )
+                
+                # 快速训练
+                tmp_model = lgb.train(
+                    current_params,
+                    dtrain,
+                    num_boost_round=400, # 搜索时少一点
+                    valid_sets=[dval],
+                    callbacks=[lgb.early_stopping(50, verbose=False)]
+                )
+                
+                # 评估: 计算该折验证集的 Top-1 Sharpe
+                preds = tmp_model.predict(X_all[val_mask])
+                ret_real = y_ret_all[val_mask]
+                dates_val = dates_all[val_mask]
+                
+                # 计算夏普
+                res_val = _calculate_val_metric(preds, ret_real, dates_val)
+                fold_val_scores.append(res_val['score'])
+                fold_details.append(f"Val Sharpe:{res_val['sharpe']:.2f}, Med:{res_val['median']:.4f}")
+
+                 # --- 2. 计算训练集表现 (Train Score) [关键步骤] ---
+                # 为了速度，只在训练集中随机抽样 20% 或最近的 N 天计算
+                # 这里取最近的 3000 条样本 (约1个月)，既快又能反映过拟合
+                train_indices = np.where(train_mask)[0]
+                if len(train_indices) > 3000:
+                    sample_indices = train_indices[-3000:] # 取最近的数据
+                else:
+                    sample_indices = train_indices
+                
+                preds_train = tmp_model.predict(X_all[sample_indices])
+                # 注意：Train Score 计算逻辑要和 Val 一致
+                res_train = _calculate_val_metric(preds_train, y_ret_all[sample_indices], dates_all[sample_indices], metric='composite')
+                train_score_curr = res_train['score']
+                fold_train_scores.append(train_score_curr)
+                
             
-            if score > best_score:
-                best_score = score
+            # [核心逻辑] Max-Min 评分
+            # 目标是找到下限最高的参数 (稳健性)
+            if not fold_val_scores: continue
+            
+            # 计算平均表现
+            avg_val_score = np.mean(fold_val_scores)
+            avg_train_score = np.mean(fold_train_scores)
+            min_val_score = np.min(fold_val_scores) # 最差一折的表现
+            
+            # [核心] 泛化差距 (Generalization Gap)
+            # 如果 Train >> Val，说明过拟合
+            gap = avg_train_score - avg_val_score
+            
+            # 惩罚项计算
+            # 容忍度 (Tolerance): 0.5 (允许训练集比验证集稍微好一点)
+            # 惩罚系数 (Penalty): 0.5 (每超过1点Gap，扣0.5分)
+            penalty = 0.0
+            if gap > 0.5:
+                penalty = (gap - 0.5) * 0.5
+            
+            # 最终得分 = (最差验证集表现 * 0.7 + 平均验证集表现 * 0.3) - 泛化惩罚
+            # 逻辑：既要下限高(稳健)，又要防止你是靠"背答案"(Overfitting)得来的
+            robust_score = (min_val_score * 0.7 + avg_val_score * 0.3) - penalty
+            
+            if robust_score > best_robust_score:
+                best_robust_score = robust_score
                 best_params = current_params.copy()
-                # 记录最佳迭代次数，用于最终训练
-                best_iteration = tmp_model.best_iteration
-                logger.info(f"  [Iter {i+1}] New Best Top-1 Return: {best_score:.4f} | LR: {best_params['learning_rate']} | Leaves: {best_params['num_leaves']} | MinData: {best_params['min_data_in_leaf']} all:{best_params}")
+                # 记录最后一次训练的 best_iteration 作为参考
+                best_iteration_ref = tmp_model.best_iteration
+                logger.info(f"  [Iter {i+1}] New Best! Score: {robust_score:.4f} (Min:{avg_val_score:.2f})")
+                logger.info(f"    Params: Lr={best_params['learning_rate']} | Leaves={best_params['num_leaves']} | MinData={best_params['min_data_in_leaf']} | Reg={best_params['reg_alpha']}")
+                logger.info(f"    Details: {fold_details}")
 
-        logger.info(f"[SEARCH] 搜索完成，耗时 {time.time()-start_time:.1f}s. 最佳 Top-1 Return: {best_score:.4f}")
+        logger.info(f"[SEARCH] 搜索完成，耗时 {time.time()-start_time:.1f}s. 最佳稳健得分: {best_robust_score:.4f}")
         logger.info(f"[TARGET] 最优参数: {best_params}")
-
-        # 4. 全量数据准备 (Train + Val)
-        logger.info("[REFRESH] 准备全量数据进行最终训练...")
         
-      
+        # 4. 全量训练
+        logger.info("[TARGET] 使用最优参数进行全量训练...")
         
-        # 合并 Groups (注意：直接拼接 group counts 列表即可，因为时间是连续的)
-        # 假设 train_dates 和 val_dates 是时间连续的 (Train < Val)
-        if train_groups is not None and val_groups is not None:
-            group_full = np.concatenate((train_groups, val_groups))
-        else:
-            # 降级处理：如果没有 group 信息，尝试重新计算（不太可能发生）
-            logger.warning("Group信息缺失，尝试重新计算全量Group")
-            full_dates = np.concatenate((train_dates, val_dates))
-            group_full = get_groups(full_dates)
-
-        # 创建全量 Dataset
-        full_ds = lgb.Dataset(X_full, label=y_full, group=group_full, weight=w_full)
-
-        # 5. 全量训练
-        # 适当增加迭代次数，利用更多数据
-        final_boost_round = int(best_iteration * 1.2) if 'best_iteration' in locals() else 1000
-        logger.info(f"[TARGET] 开始全量训练 (目标轮数: {final_boost_round})...")
+        # 全量 Group
+        full_groups = pd.Series(dates_all).groupby(pd.Series(dates_all), sort=False).size().values
+        
+        full_ds = lgb.Dataset(
+            X_all, 
+            label=y_all, 
+            group=full_groups, 
+            weight=w_all,
+            params={'feature_pre_filter': False}
+        )
+        
+        # 增加轮数 (全量数据需要更多迭代)
+        # 如果有 best_iteration_ref，按比例放大，否则默认 1000
+        final_boost_round = int(best_iteration_ref * 1.5) if 'best_iteration_ref' in locals() else 1000
         
         final_model = lgb.train(
             best_params,
             full_ds,
             num_boost_round=final_boost_round,
-            valid_sets=[full_ds], # 仅用于监控收敛，不用于 Early Stopping (或者用 val_ds 作为参考)
             callbacks=[lgb.log_evaluation(period=100)]
         )
-
-        # 6. 构建返回结果 (保持原有格式)
-        # 计算特征重要性
+        
+        # 5. 构建结果
         importance = final_model.feature_importance(importance_type='gain')
-        total_gain = importance.sum()
-        importance = importance / total_gain if total_gain > 0 else importance
-        
-        # 兼容 feature_importance 格式 (Dict)
+        # total_gain = importance.sum()
+        # importance = importance / total_gain if total_gain > 0 else importance
         feature_imp_dict = dict(zip(feature_columns, importance))
+
+        # [找回日志] 打印 Top 20 特征
+        sorted_imp = sorted(feature_imp_dict.items(), key=lambda x: x[1], reverse=True)
+        logger.info("[FEATURE] 最终模型特征重要性:")
+        for idx, (fname, imp) in enumerate(sorted_imp):
+            logger.info(f"  {idx+1:2d}. {fname:<40}: {imp:.4f}")
         
-        # 计算简单的性能指标 (基于验证集再次预测，用于记录)
-        y_val_final_pred = final_model.predict(X_val)
-        final_top1_ret = _calculate_val_metric(y_val_final_pred, y_val_ret, val_dates)
+        # 简单计算一下最终模型在最后一部分验证数据上的表现（仅供记录）
+        # 使用最后 20% 数据作为伪验证集
+        last_split_idx = int(len(X_all) * 0.8)
+        y_val_final_pred = final_model.predict(X_all[last_split_idx:])
+        final_top1_ret = _calculate_val_metric(y_val_final_pred, y_ret_all[last_split_idx:], dates_all[last_split_idx:])
         
         performance_dict = {
-            'top_k_return': final_top1_ret, # 用于外部日志
-            'rank_ic': 0.0, # 没算，占位
+            'top_k_return': final_top1_ret, # 这里存的是 Sharpe
+            'rank_ic': 0.0,
             'ic': 0.0
         }
 
@@ -3023,12 +3085,12 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'model_type': 'lightgbm',
             'performance': performance_dict,
             'training_info': {
-                'best_iteration': final_boost_round, # 全量训练无 best_iteration，即为总轮数
-                'n_samples': len(X_full)
+                'best_iteration': final_boost_round,
+                'n_samples': len(X_all)
             },
             'model_params': best_params,
             'feature_importance': feature_imp_dict,
-            'industry_mapping': None # 如果有需要可传入
+            'industry_mapping': None
         }
 
     except Exception as e:
@@ -3037,7 +3099,6 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
         return None
-
 
 
 def calculate_robust_statistics(returns, confidence_level=0.95):
@@ -5998,71 +6059,89 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
 
 def _filter_st_stocks(data: pd.DataFrame, logger) -> pd.Series:
     """
-    过滤ST股票
+    从 ST 股票数据文件中过滤 ST 股票（高效向量化实现）
 
     参数:
-    - data: 股票数据DataFrame
+    - data: 股票数据DataFrame，必须包含 'date' 和 'stock_code' 列
 
     返回:
     - pd.Series: 布尔值序列，True表示非ST股票，False表示ST股票
     """
     try:
-        # 导入股票名称字典
-        import sys
         from pathlib import Path
 
-        # 确保data_loaders模块可以被导入
-        project_root = Path(__file__).parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.append(str(project_root))
+        # ST 数据文件路径
+        st_file = Path(__file__).parent.parent / "local_data" / "st.parquet"
 
-        from data_loaders import get_stock_names_dict
-
-        # 获取股票名称字典
-        stock_names = get_stock_names_dict()
-
-        if not stock_names:
-            logger.info("[WARNING] 无法获取股票名称字典，跳过ST股票过滤")
+        # 如果文件不存在，返回全部 True（不过滤）
+        if not st_file.exists():
+            logger.warning(f"[FILTER] ST数据文件不存在: {st_file}，跳过ST股票过滤")
             return pd.Series(True, index=data.index)
 
-        # 过滤ST股票（向量化优化）
-        # 步骤1: 映射股票名称
-        data['_stock_name'] = data['stock_code'].map(stock_names).fillna("")
+        # 检查数据必要列
+        if 'date' not in data.columns or 'stock_code' not in data.columns:
+            logger.error(f"[FILTER] 数据缺少必要列，可用列: {data.columns.tolist()}")
+            return pd.Series(True, index=data.index)
 
-        # 步骤2: 向量化判断是否为ST股票
-        st_mask = (
-            data['_stock_name'].str.contains('ST', case=False, na=False) |
-            data['_stock_name'].str.contains('st', case=False, na=False) |
-            data['_stock_name'].str.contains('退', case=False, na=False) |
-            data['_stock_name'].str.contains('上证', case=False, na=False) |
-            data['_stock_name'].str.contains('\\*', case=False, na=False)
+        # 快速日期格式转换（向量化）
+        if pd.api.types.is_datetime64_any_dtype(data['date']):
+            date_str = data['date'].dt.strftime('%Y%m%d')
+        else:
+            date_str = data['date'].astype(str).str.replace('-', '').str[:8]
+
+        # 读取 ST 数据（只加载需要的列以提高性能）
+        try:
+            st_df = pd.read_parquet(st_file, columns=['trade_date', 'ts_code'])
+        except Exception as e:
+            logger.error(f"[FILTER] 读取ST数据文件失败: {e}")
+            return pd.Series(True, index=data.index)
+
+        # 检查 ST 数据列
+        if 'trade_date' not in st_df.columns or 'ts_code' not in st_df.columns:
+            logger.error(f"[FILTER] ST数据文件缺少必要列，可用列: {st_df.columns.tolist()}")
+            return pd.Series(True, index=data.index)
+
+        # 高效过滤算法：使用 merge + 向量化操作
+        # 步骤1: 准备临时列
+        data['_temp_date'] = date_str
+
+        # 步骤2: 使用 merge 快速匹配（比循环+字典查找更快）
+        merged = data.merge(
+            st_df,
+            left_on=['_temp_date', 'stock_code'],
+            right_on=['trade_date', 'ts_code'],
+            how='left',
+            indicator=True
         )
 
-        # 步骤3: 创建过滤结果（True表示非ST股票，False表示ST股票）
-        st_filter = ~st_mask
+        # 步骤3: 向量化判断：只在 ST 数据中的股票被标记为 True
+        is_st = merged['_merge'] == 'both'
 
-        # 步骤4: 收集ST股票信息用于日志显示（仅收集前100只避免性能问题）
-        st_stocks_data = data[st_mask][['stock_code', '_stock_name']].head(100)
-        st_stocks = [f"{row['stock_code']}({row['_stock_name']})" for _, row in st_stocks_data.iterrows()]
+        # 步骤4: 创建过滤结果（True = 非ST，False = ST）
+        st_filter = ~is_st
 
-        # 清理临时列
-        del data['_stock_name']
+        # 步骤5: 清理临时列
+        if '_temp_date' in data.columns:
+            del data['_temp_date']
 
+        # 统计和日志
         st_count = (~st_filter).sum()
         if st_count > 0:
+            # 获取ST股票示例（用于日志）
+            st_stocks_example = data.loc[~st_filter, 'stock_code'].unique()[:5]
             logger.info(f"[FILTER] ST股票过滤: 过滤掉 {st_count} 只ST股票")
-            if len(st_stocks) <= 5:  # 如果数量不多，显示具体股票
-                logger.info(f"   ST股票: {', '.join(st_stocks)}")
-            elif len(st_stocks) > 5:
-                logger.info(f"   ST股票示例: {', '.join(st_stocks[:3])} 等{len(st_stocks)}只")
+            if len(st_stocks_example) > 0:
+                logger.info(f"   ST股票示例: {', '.join(st_stocks_example)} 等{st_count}只")
 
         remaining_count = st_filter.sum()
-        # logger.info(f"[CHART] ST股票过滤后剩余: {remaining_count} 只非ST股票")
+        logger.info(f"[FILTER] ST股票过滤后剩余: {remaining_count} 只非ST股票")
 
         return st_filter
 
     except Exception as e:
-        logger.info(f"[FAIL] ST股票过滤失败: {e}")
+        logger.error(f"[FAIL] ST股票过滤失败: {e}")
+        import traceback
+        logger.error(f"[FAIL] 错误详情: {traceback.format_exc()}")
         # 出错时不过滤任何股票
         return pd.Series(True, index=data.index)
 
@@ -6318,16 +6397,10 @@ def run_generate_factors_mode(args):
         )
 
         stock_data = data_loader.load_stock_features(extended_start_date, end_date)
-        try:
-            # 修复：板块数据也需要历史窗口（最大需求20天，使用extended_start_date确保足够）
-            sector_data = data_loader.load_sector_features(extended_start_date, end_date)
-        except Exception as exc:
-            logger.warning('sector data loader raised an exception: %s', exc)
-            sector_data = None
 
-        if sector_data is None or sector_data.empty:
-            logger.warning('sector data missing, falling back to local cache')
-            sector_data = _load_sector_features_basic(extended_start_date, end_date)
+        # 板块数据已改用 extra_context['stock_to_sw_sector'] 传入，不再需要单独加载 sector_data
+        sector_data = None
+        logger.info("[INFO] 板块数据通过 extra_context['stock_to_sw_sector'] 传入，跳过单独加载")
 
         try:
             # 修复：市场数据也需要历史窗口（最大需求120天，使用extended_start_date确保足够）
@@ -6350,16 +6423,15 @@ def run_generate_factors_mode(args):
             print('stock data is empty, stop factor generation.')
             return False
 
-        if sector_data is None or sector_data.empty:
-
-            logger.warning('no valid sector data, sector-related factors may be missing')
+        # sector_data 已不再使用，相关检查已删除
+        # 板块数据现在通过 extra_context['stock_to_sw_sector'] 传入
 
         if market_data is None or market_data.empty:
 
             logger.warning('no valid market data, placeholder values will be used')
 
 
-        for dataset in (stock_data, sector_data, market_data):
+        for dataset in (stock_data, market_data):  # 移除 sector_data
 
             if dataset is not None and not dataset.empty and 'date' in dataset.columns:
 
@@ -6367,11 +6439,7 @@ def run_generate_factors_mode(args):
 
         print(f"? 股票记录数: {len(stock_data)}")
 
-        if sector_data is not None and not sector_data.empty:
-            print(f"? 板块记录数: {len(sector_data)}")
-
-        else:
-            print('[warning] sector data missing, using stock-only factors')
+        # 板块数据记录数打印已删除
         if market_data is not None and not market_data.empty:
             print(f"? 市场记录数: {len(market_data)}")
         else:
@@ -6657,7 +6725,7 @@ def run_generate_factors_mode(args):
             store=store,
             pipeline=pipeline,
             market_data=market_data,
-            sector_data=sector_data,
+            sector_data=None,  # ✅ 板块数据通过 extra_context['stock_to_sw_sector'] 传入，不再使用 sector_data
             context_extra=extra_context,
             enable_batch_save=enable_batch_save,  # 🆕 分批保存开关
             batch_size=batch_size,  # 🆕 批次大小
@@ -7006,103 +7074,6 @@ def _check_factor_data_quality(data: pd.DataFrame, factors: List[str]):
         else:
             print("    - 状态: 数值分布正常")
 
-
-def _load_sector_features_basic(start_date: str, end_date: str):
-    """从本地缓存的板块文件中加载数据，供因子生成兜底使用"""
-    logger = logging.getLogger(__name__)
-    try:
-        base_dir = Path(__file__).resolve().parent.parent / "local_data" / "sector_features"
-        if not base_dir.exists():
-            logger.warning("sector_features 目录不存在，无法加载板块数据")
-            return None
-
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        frames = []
-
-        for sector_dir in base_dir.iterdir():
-            if not sector_dir.is_dir():
-                continue
-            sector_code = sector_dir.name
-            candidates = [
-                sector_dir / f"{sector_code}_features.parquet",
-                sector_dir / f"{sector_code}.parquet",
-            ]
-            feature_file = next((p for p in candidates if p.exists()), None)
-            if feature_file is None:
-                continue
-
-            try:
-                df = pd.read_parquet(feature_file)
-            except Exception as exc:
-                logger.debug("读取板块文件失败 %s: %s", feature_file, exc)
-                continue
-
-            if 'date' not in df.columns:
-                if 'date_str' in df.columns:
-                    df['date'] = pd.to_datetime(df['date_str'], errors='coerce')
-                else:
-                    logger.debug("板块文件 %s 缺少 date 字段，跳过", feature_file)
-                    continue
-            else:
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-            df = df.dropna(subset=['date'])
-            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
-            if df.empty:
-                continue
-
-            if 'sector_code' not in df.columns:
-                if 'sector' in df.columns:
-                    df['sector_code'] = df['sector']
-                elif 'sector_name' in df.columns:
-                    df['sector_code'] = df['sector_name']
-                else:
-                    df['sector_code'] = sector_code
-            df['sector_code'] = df['sector_code'].astype(str)
-
-            if 'sector_name' not in df.columns:
-                df['sector_name'] = df.get('sector', df['sector_code'])
-
-            if 'pct_chg' in df.columns:
-                df['return_1d'] = df['pct_chg'].astype(float)
-            elif 'close' in df.columns:
-                df = df.sort_values(['sector_code', 'date'])
-                df['return_1d'] = df.groupby('sector_code')['close'].pct_change() * 100
-            else:
-                df['return_1d'] = 0.0
-
-            df['return'] = df['return_1d']
-            df['daily_return'] = df['return_1d']
-
-            if 'close' in df.columns:
-                df = df.sort_values(['sector_code', 'date'])
-                close_group = df.groupby('sector_code')['close']
-                for window in (3, 5, 10, 20):
-                    col = f'return_{window}d'
-                    if col not in df.columns:
-                        df[col] = close_group.pct_change(window) * 100
-            else:
-                logger.debug("板块文件 %s 缺少 close 列，无法计算多日收益", feature_file)
-
-            for col in ['return_1d', 'return', 'daily_return', 'return_3d', 'return_5d', 'return_10d', 'return_20d']:
-                if col in df.columns:
-                    df[col] = df[col].astype(float).fillna(0.0)
-
-            df['date_str'] = df['date'].dt.strftime('%Y%m%d')
-            frames.append(df)
-
-        if not frames:
-            logger.warning("未在本地板块缓存中找到有效数据")
-            return None
-
-        sector_data = pd.concat(frames, ignore_index=True)
-        sector_data = sector_data.sort_values(['sector_code', 'date']).reset_index(drop=True)
-        return sector_data
-
-    except Exception as exc:
-        logger.warning("板块数据兜底加载失败: %s", exc)
-        return None
 
 
 def analyze_bucket_ranges(board_data, valid_mask):

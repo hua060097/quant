@@ -179,13 +179,13 @@ def download_a_shares_tick_data(start_date=None, end_date=None):
     #     '899050.BJ',  # 北证50
     # ]
 
-    period = "1d"
+    period = "5m"
 
     # 设置时间范围：如果未提供参数则使用默认值
     if start_date is None:
-        start_date = '20260113'
+        start_date = '20260101'
     if end_date is None:
-        end_date = '20260113'
+        end_date = '20260126'
 
     test_list = get_stock_list()
     print(f"下载时间范围: {start_date} - {end_date}")
@@ -193,8 +193,8 @@ def download_a_shares_tick_data(start_date=None, end_date=None):
     #初始化下载进度跟踪器
     progress = DownloadProgress()
 
-    # test_list = test_list + ['399006.SZ']
-    test_list =  ['399006.SZ']
+    test_list = test_list #+ ['399006.SZ']
+    # test_list =  ['399006.SZ']
 
 
 
@@ -798,16 +798,17 @@ if __name__ == "__main__":
     # 调用完善后的down_sw_sector函数
     # success = down_sw_sector()
 
-    # test_data = xtdata.get_market_data(
-    #         field_list=[], # Empty list to get all available fields
-    #         stock_list=['603363.SH','688188.SH'],
-    #         period='1d',
-    #         # start_time='20230316093500',
-    #         # end_time='20230317094500'
-    #         start_time='20241224',
-    #         end_time='20241227',
-    #         dividend_type='front'
-    #     )
+    test_data = xtdata.get_market_data(
+            field_list=[], # Empty list to get all available fields
+            stock_list=['399006.SZ'],
+            period='1d',
+            # start_time='20230316093500',
+            # end_time='20230317094500'
+            start_time='20241224',
+            end_time='20241224',
+            dividend_type='front'
+        )
+    print(test_data)
     # ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000')
     # df = ts.pro_bar(ts_code='300622.SZ', adj='qfq', start_date='20221001', end_date='20251231')
     # # 只打印 20240813~20240819 日的数据
@@ -822,6 +823,6 @@ if __name__ == "__main__":
     # download_all_stock_ipo_dates()
 
     # 其他可用函数（注释状态）
-    download_a_shares_tick_data(start_date=args.start, end_date=args.end)
+    # download_a_shares_tick_data(start_date=args.start, end_date=args.end)
     # download_and_verify_stock_data()
     # download_and_check_financial_data()

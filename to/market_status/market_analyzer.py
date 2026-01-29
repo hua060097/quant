@@ -282,6 +282,7 @@ class MarketAnalyzer:
         open_series = indicators.get('open_series')
         high_series = indicators.get('high_series')
         low_series = indicators.get('low_series')
+        preclose_series = indicators.get('preclose_series')  # ✅ 获取 preClose 系列
         if close_series is None or volume_series is None or open_series is None or high_series is None or low_series is None:
             logger.error(f"指数 {index_code} 的指标数据中缺少必要的原始数据 Series (close/volume/open/high/low)")
             return {}
@@ -334,7 +335,12 @@ class MarketAnalyzer:
                 
                 # 获取当日和前一日收盘价 (使用 .iloc 访问 Series)
                 current_close = close_series.iloc[i]
-                prev_close = close_series.iloc[i-1] if i > 0 else current_close # 安全获取前一日
+                # ✅ 修复：使用 preClose 字段，避免索引越界问题
+                if preclose_series is not None and not preclose_series.empty:
+                    prev_close = preclose_series.iloc[i]
+                else:
+                    # 备用方案：如果 preClose 不可用，使用索引获取
+                    prev_close = close_series.iloc[i-1] if i > 0 else current_close
                 # 获取当日其他市场数据
                 current_open = open_series.iloc[i]
                 current_high = high_series.iloc[i]
@@ -380,8 +386,10 @@ class MarketAnalyzer:
             daily_change_pct = 0.0
             if prev_close != 0 and not np.isnan(prev_close):
                 daily_change_pct = (current_close - prev_close) / prev_close * 100
+                if daily_change_pct == 0.0 or date_str == '20221205':
+                    print(f"日期{date_str} daily_change_pct为0, current_close:{current_close}, prev_close:{prev_close}")
             else:
-                logger.debug(f"日期 {date_str}: 前一日收盘价为0或NaN，无法计算涨跌幅")
+                print(f"日期 {date_str}: 前一日收盘价为0或NaN，无法计算涨跌幅")
 
             # 1. 趋势强度评估 (需要一个接受单日数值的版本)
             # 假设已创建 _calculate_trend_score_single 方法

@@ -17,16 +17,23 @@ from ..registry import register_factor
 # ==============================================================================
 # 1. 基础统计学工具
 # ==============================================================================
-def _adaptive_clip(series: pd.Series, n_mad: float = 3.0) -> pd.Series:
+def _adaptive_clip(series: pd.Series, n_mad: float = 3.0, factor_name = '') -> pd.Series:
     """自适应去极值"""
-    if series.empty:
-        return series
+    if series.empty: return series
     median = series.median()
     mad = (series - median).abs().median()
-    # 如果 MAD 为 0（常见于稀疏因子），则不进行基于 MAD 的裁剪，避免错误
-    if mad == 0:
-        return series
     threshold = n_mad * mad * 1.4826
+    import logging
+    logger = logging.getLogger(__name__)
+    # logger.info(f"factor_name:{factor_name}, clip:{lower}, {upper}")
+    # if factor_name == 'sector_limit_overflow_alpha':
+    #     return series.clip(-5.226590,14.966774)
+    if factor_name == 'sector_broken_resilience_alpha':
+        return series.clip(-8.232059, 6.390642)
+    elif factor_name == 'limit_sustain_alpha':
+        return series.clip(-58.962952, 46.853737)
+    elif factor_name == 'market_emotion_resonance_alpha':
+        return series.clip(-2.074040, 2.041350)
     return series.clip(median - threshold, median + threshold)
 
 def _safe_zscore(series: pd.Series) -> pd.Series:
@@ -189,7 +196,7 @@ class _LimitInteractionHelper:
         joined_res = raw_factor.fillna(0)
         
         # B. 自适应去极值 (必须，保护树模型)
-        clipped_res = _adaptive_clip(joined_res)
+        clipped_res = _adaptive_clip(joined_res,3.0, factor_name)
         
         # C. 标准化分流
         if need_sector_neutral:

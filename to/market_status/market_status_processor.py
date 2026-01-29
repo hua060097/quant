@@ -160,9 +160,26 @@ class MarketStatusProcessor:
         status_file = os.path.join(self.daily_status_dir, "market_status.json")
         if os.path.exists(status_file):
             try:
-                with open(status_file, "r") as f:
-                    self.market_status_data = json.load(f)
-                self.logger.info(f"成功加载市场状态数据，包含 {len(self.market_status_data)} 个日期的数据")
+                # ✅ 修复：检查文件是否为空
+                if os.path.getsize(status_file) == 0:
+                    self.logger.warning(f"市场状态文件为空: {status_file}，将初始化为空字典")
+                    self.market_status_data = {}
+                else:
+                    with open(status_file, "r", encoding='utf-8') as f:
+                        self.market_status_data = json.load(f)
+                    self.logger.info(f"成功加载市场状态数据，包含 {len(self.market_status_data)} 个日期的数据")
+            except json.JSONDecodeError as e:
+                self.logger.error(f"JSON 解析失败: {str(e)}，文件可能损坏或格式错误")
+                self.logger.info(f"将备份并重新创建市场状态文件")
+                # 备份损坏的文件
+                backup_file = status_file + ".backup"
+                try:
+                    import shutil
+                    shutil.copy2(status_file, backup_file)
+                    self.logger.info(f"已备份损坏的文件到: {backup_file}")
+                except Exception as backup_error:
+                    self.logger.warning(f"备份文件失败: {backup_error}")
+                self.market_status_data = {}
             except Exception as e:
                 self.logger.error(f"加载市场状态数据时出错: {str(e)}")
                 self.market_status_data = {}
@@ -253,6 +270,117 @@ class MarketStatusProcessor:
         # 返回规范化的绝对路径
         return os.path.normpath(os.path.join(dir_path, f"market_status_{date_str}.parquet"))
     
+    def _load_trading_calendar(self):
+        """
+        加载交易日历
+
+        返回:
+            pd.DataFrame: 交易日历，包含 date_str, date, market 列
+            None: 加载失败
+        """
+        try:
+            import pandas as pd
+            from pathlib import Path
+
+            # 构建交易日历文件路径
+            # 当前文件: to/market_status/market_status_processor.py
+            # 交易日历: to/local_data/calendar/trading_calendar.parquet
+            current_dir = Path(__file__).resolve().parent  # to/market_status/
+            project_root = current_dir.parent.parent  # path/
+            calendar_file = project_root / "to" / "local_data" / "calendar" / "trading_calendar.parquet"
+
+            self.logger.debug(f"加载交易日历: {calendar_file}")
+
+            if not calendar_file.exists():
+                self.logger.error(f"交易日历文件不存在: {calendar_file}")
+                return None
+
+            # 读取交易日历
+            trading_calendar = pd.read_parquet(calendar_file)
+
+            # 验证必要列
+            if 'date_str' not in trading_calendar.columns:
+                self.logger.error("交易日历缺少 date_str 列")
+                return None
+
+            self.logger.info(f"成功加载交易日历: {len(trading_calendar)} 个交易日")
+            self.logger.debug(f"交易日历范围: {trading_calendar['date_str'].min()} ~ {trading_calendar['date_str'].max()}")
+
+            return trading_calendar
+
+        except Exception as e:
+            self.logger.error(f"加载交易日历失败: {str(e)}")
+            return None
+
+    def _get_history_start_date_by_trading_days(self, start_date_str, trading_days_back=180):
+        """
+        根据交易日历回溯指定数量的交易日
+
+        参数:
+            start_date_str: str, 开始日期字符串 (YYYYMMDD)
+            trading_days_back: int, 回溯的交易日数量，默认180
+
+        返回:
+            str: 回溯后的日期字符串 (YYYYMMDD)
+            None: 失败或交易日历不足
+        """
+        try:
+            # 加载交易日历
+            trading_calendar = self._load_trading_calendar()
+            if trading_calendar is None:
+                self.logger.warning("无法加载交易日历，使用自然日回溯（备用方案）")
+                return None
+
+            # 找到 start_date_str 在交易日历中的位置
+            matching_rows = trading_calendar[trading_calendar['date_str'] == start_date_str]
+
+            if matching_rows.empty:
+                self.logger.warning(f"开始日期 {start_date_str} 不在交易日历中")
+                # 尝试找到最接近的交易日
+                # 将 start_date_str 转换为 datetime
+                from datetime import datetime
+                start_date_dt = datetime.strptime(start_date_str, '%Y%m%d')
+
+                # 找到最接近的交易日（之后或等于）
+                future_dates = trading_calendar[trading_calendar['date'] >= start_date_dt]
+                if not future_dates.empty:
+                    closest_date_str = future_dates.iloc[0]['date_str']
+                    self.logger.info(f"开始日期 {start_date_str} 不是交易日，使用最接近的交易日 {closest_date_str}")
+                    start_date_str = closest_date_str
+                    matching_rows = trading_calendar[trading_calendar['date_str'] == start_date_str]
+                else:
+                    self.logger.error(f"无法找到接近 {start_date_str} 的交易日")
+                    return None
+
+            # 获取索引
+            start_index = matching_rows.index[0]
+
+            # 回溯交易日
+            history_index = start_index - trading_days_back
+
+            # 检查边界
+            if history_index < 0:
+                self.logger.warning(
+                    f"交易日历不足 {trading_days_back} 个交易日 "
+                    f"(可用: {start_index + 1} 个)，将使用最早交易日"
+                )
+                history_index = 0
+
+            # 获取历史开始日期
+            history_start_date_str = trading_calendar.iloc[history_index]['date_str']
+
+            self.logger.info(
+                f"交易日历回溯: {start_date_str} (索引 {start_index}) "
+                f"-> {history_start_date_str} (索引 {history_index}), "
+                f"回溯 {start_index - history_index} 个交易日"
+            )
+
+            return history_start_date_str
+
+        except Exception as e:
+            self.logger.error(f"根据交易日历回溯日期失败: {str(e)}")
+            return None
+
     def _get_market_data(self, start_date, end_date, index_codes=None):
         """
         获取指定日期范围内的市场数据
@@ -286,17 +414,27 @@ class MarketStatusProcessor:
                 return None
             
             # 获取市场数据
-            fields = ['open', 'high', 'low', 'close', 'volume']
+            fields = ['open', 'high', 'low', 'close', 'volume', 'preClose']
             
             # 计算历史数据开始日期 (需要至少120天 + 一些缓冲)
-            required_history_days = 180
+            required_history_days = 200
             try:
-                request_start_date = self._str_to_date(start_date_str)
-                history_start_date = request_start_date - timedelta(days=required_history_days)
-                history_start_date_str = self._date_to_str(history_start_date)
+                # ✅ 修复：使用交易日历回溯，而非自然日
+                history_start_date_str = self._get_history_start_date_by_trading_days(
+                    start_date_str,
+                    trading_days_back=required_history_days
+                )
+
+                # 如果交易日历方法失败，回退到自然日回溯（备用方案）
+                if history_start_date_str is None:
+                    self.logger.warning("交易日历回溯失败，使用自然日回溯（备用方案）")
+                    request_start_date = self._str_to_date(start_date_str)
+                    history_start_date = request_start_date - timedelta(days=required_history_days)
+                    history_start_date_str = self._date_to_str(history_start_date)
+
             except (ValueError, TypeError):
                  self.logger.warning(f"无法解析请求的开始日期 {start_date_str}，将使用默认历史回溯期")
-                 # 如果无法解析日期，设置一个默认的回溯开始日期，或者采取其他策略
+                 # 备用方案：使用自然日回溯
                  history_start_date_str = (datetime.now() - timedelta(days=required_history_days*2)).strftime('%Y%m%d')
 
             print(f"start_date_str: {start_date_str}, end_date_str: {end_date_str}, history_start_date_str: {history_start_date_str}")
@@ -525,6 +663,7 @@ class MarketStatusProcessor:
                 high_series = market_data_transposed.get('high', pd.DataFrame()).get(index_code, pd.Series(dtype=float))
                 low_series = market_data_transposed.get('low', pd.DataFrame()).get(index_code, pd.Series(dtype=float))
                 volume_series = market_data_transposed.get('volume', pd.DataFrame()).get(index_code, pd.Series(dtype=float))
+                preclose_series = market_data_transposed.get('preClose', pd.DataFrame()).get(index_code, pd.Series(dtype=float))
                 
                 # 检查序列是否为空
                 if close_series.empty or high_series.empty or low_series.empty:
@@ -605,18 +744,19 @@ class MarketStatusProcessor:
                     'kdj_k': kdj_k, 'kdj_d': kdj_d, 'kdj_j': kdj_j,
                     'bollinger_upper': bb_upper, 'bollinger_middle': bb_middle, 'bollinger_lower': bb_lower,
                     'bollinger_width': bb_width, 'bollinger_position': bb_position,
-                    'support_level': support_level, 
-                    'resistance_level': resistance_level, 
-                    'price_structure': price_structure, 
-                    'market_cycle': market_cycle, 
+                    'support_level': support_level,
+                    'resistance_level': resistance_level,
+                    'price_structure': price_structure,
+                    'market_cycle': market_cycle,
                     # 存储原始Series方便后续访问
                     'close_series': close_series,
                     'open_series': open_series,
                     'high_series': high_series,
                     'low_series': low_series,
                     'volume_series': volume_series,
+                    'preclose_series': preclose_series,  # ✅ 添加 preClose 系列
                     'profit_loss_ratio_14': profit_loss_ratio_14,
-                    'profit_loss_ratio_30': profit_loss_ratio_30    
+                    'profit_loss_ratio_30': profit_loss_ratio_30
                 }
                 self.logger.info(f"成功计算指数 {index_code} 的指标")
 
@@ -1846,9 +1986,17 @@ class MarketStatusProcessor:
             existing_data = {}
             if os.path.exists(status_file):
                 try:
-                    with open(status_file, "r", encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                    self.logger.info(f"加载现有市场状态数据，共 {len(existing_data)} 个日期")
+                    # ✅ 修复：检查文件是否为空
+                    if os.path.getsize(status_file) == 0:
+                        self.logger.warning(f"市场状态文件为空: {status_file}，将创建新文件")
+                        existing_data = {}
+                    else:
+                        with open(status_file, "r", encoding='utf-8') as f:
+                            existing_data = json.load(f)
+                        self.logger.info(f"加载现有市场状态数据，共 {len(existing_data)} 个日期")
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"JSON 解析失败: {str(e)}，文件可能损坏，将创建新文件")
+                    existing_data = {}
                 except Exception as e:
                     self.logger.warning(f"加载现有市场状态数据时出错: {str(e)}，将创建新文件")
             
@@ -2501,9 +2649,10 @@ if __name__ == "__main__":
     # 可以在这里添加示例调用
     # process_market_data(start_date='20230101', end_date='20251021', index_codes=['399006.SZ'])
     # process_market_data(start_date=start_date, end_date=end_date, index_codes=['399006.SZ']) 
-    # process_market_data(start_date='20230101', end_date='20251231', index_codes=['399006.SZ'])
+    # process_market_data(start_date='20230101', end_date='20251231', index_codes=['399006.SZ'])  20250630
+    process_market_data(start_date='20230101', end_date='20230601', index_codes=['399006.SZ'])
 
-    update_market_data(start_date='20250424', end_date='20250425', index_codes=['399006.SZ'], force =True) 
+    # update_market_data(start_date='20250424', end_date='20250425', index_codes=['399006.SZ'], force =True) 
     # query_market_status(date='20230103')
     # 添加main代码块，只有直接运行这个文件时才会执行
     # if __name__ == "__main__":

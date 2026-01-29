@@ -182,9 +182,9 @@ def compare_factors_in_date_range(file1_path, file2_path, start_date, end_date, 
         print(f"  {'日期':<12} {'平均差异':<12} {'最大差异':<12} {'样本数':<10} {'因子均值':<12} {'因子标准差':<12}")
         print("  " + "-" * 80)
 
-        for date, stat_row in date_stats.iterrows():
-            date_str = str(date.date())
-            print(f"  {date_str:<12} {stat_row['mean_diff']:<12.6f} {stat_row['max_diff']:<12.6f} {int(stat_row['count']):<10} {stat_row['mean_val']:<12.6f} {stat_row['std_val']:<12.6f}")
+        # for date, stat_row in date_stats.iterrows():
+        #     date_str = str(date.date())
+        #     print(f"  {date_str:<12} {stat_row['mean_diff']:<12.6f} {stat_row['max_diff']:<12.6f} {int(stat_row['count']):<10} {stat_row['mean_val']:<12.6f} {stat_row['std_val']:<12.6f}")
 
     print(f"\n{'=' * 120}")
     print(f"对比完成")
@@ -193,14 +193,14 @@ def compare_factors_in_date_range(file1_path, file2_path, start_date, end_date, 
 if __name__ == "__main__":
     base_path = Path(r"C:\Users\86151\.trae-cn\pythons\path\to\integrated_stock_selection\factor_lab_data")
 
-    file1 = base_path / "factors-correct.parquet"
+    file1 = base_path / "factors_correct.parquet"
     file2 = base_path / "factors.parquet"
 
     # 对比 2025-04-24 至 2025-04-29 的数据
     compare_factors_in_date_range(
         file1,
         file2,
-        start_date='20250306',
-        end_date='20250527',
+        start_date='20250106',
+        end_date='20251027',
         top_n=10  # 显示差异最大的前10个因子
     )

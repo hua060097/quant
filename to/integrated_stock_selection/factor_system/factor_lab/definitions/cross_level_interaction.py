@@ -61,6 +61,8 @@ def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: flo
     
     return series.clip(lower, upper)
 
+
+
 def _get_market_data(ctx: FactorContext) -> pd.DataFrame:
     """获取对齐后的市场数据"""
     market = ctx.require_market()

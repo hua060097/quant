@@ -184,7 +184,7 @@ def compare_parquet_files(file1_path, file2_path):
 if __name__ == "__main__":
     # 文件路径
     base_path = Path(r"C:\Users\86151\.trae-cn\pythons\path\to\integrated_stock_selection\factor_lab_data")
-    file1 = base_path / "factors - 副本.parquet"
+    file1 = base_path / "factors_correct.parquet"
     file2 = base_path / "factors.parquet"
 
     compare_parquet_files(file1, file2)

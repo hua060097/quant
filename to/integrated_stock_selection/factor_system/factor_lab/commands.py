@@ -241,7 +241,7 @@ def generate_and_store(
                     if len(valid_data) > 0:
                         mean_val = valid_data.mean()
                         std_val = valid_data.std()
-                        logger.info(f"[调试] 批次因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
+                        logger.info(f"[调试] 批次因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 最小值: {valid_data.min()}, 最大值:{valid_data.max()}, 有效={len(valid_data)}/{total_count})")
                     else:
                         logger.error(f"[调试] 批次因子 {col}: 无有效数据")
                         batch_problematic.append(col)
@@ -439,17 +439,8 @@ def generate_and_store(
         # 从normalization_config中获取智能裁剪设置
         enable_intelligent_clipping = normalization_config.get('enable_intelligent_clipping', True)
 
-        # 🔧 修复：确保sector_data被正确转换为SW行业映射
-        if sector_data is not None and 'sw_sector_mapping' not in normalization_config:
-            if isinstance(sector_data, pd.DataFrame):
-                if sector_data.index.name == 'stock_code' and 'SW' in sector_data.columns:
-                    sw_mapping = sector_data['SW'].to_dict()
-                    normalization_config['sw_sector_mapping'] = sw_mapping
-                    logger.info(f"从sector_data构建SW行业映射: {len(sw_mapping)}个股票")
-                elif 'stock_code' in sector_data.columns and 'SW' in sector_data.columns:
-                    sw_mapping = dict(zip(sector_data['stock_code'], sector_data['SW']))
-                    normalization_config['sw_sector_mapping'] = sw_mapping
-                    logger.info(f"从sector_data构建SW行业映射: {len(sw_mapping)}个股票")
+        # SW 行业映射现在通过 normalization_config['sw_sector_mapping'] 直接传入，不再从 sector_data 提取
+        logger.debug(f"[DEBUG] SW行业映射: normalization_config['sw_sector_mapping'] = {len(normalization_config.get('sw_sector_mapping', {}))}个股票")
 
         processed, clipping_report = pipe._apply_postprocessing(computed, working, normalization_config, logger, enable_intelligent_clipping)
         logger.info(f"后处理完成，最终因子数量: {len(processed)}")
@@ -823,19 +814,10 @@ def generate_and_store_batch_processing(
 
     logger.info(f"🔄 开始批次级全流程处理，共 {len(remaining_factors)} 个待计算因子")
 
-    # 准备sector mapping
-    if sector_data is not None and normalization_config and 'sw_sector_mapping' not in normalization_config:
-        if isinstance(sector_data, pd.DataFrame):
-            if sector_data.index.name == 'stock_code' and 'SW' in sector_data.columns:
-                sw_mapping = sector_data['SW'].to_dict()
-                normalization_config['sw_sector_mapping'] = sw_mapping
-                logger.info(f"从sector_data构建SW行业映射: {len(sw_mapping)}个股票")
-            elif 'stock_code' in sector_data.columns and 'SW' in sector_data.columns:
-                sw_mapping = dict(zip(sector_data['stock_code'], sector_data['SW']))
-                normalization_config['sw_sector_mapping'] = sw_mapping
-                logger.info(f"从sector_data构建SW行业映射: {len(sw_mapping)}个股票")
+    # SW 行业映射现在通过 normalization_config['sw_sector_mapping'] 直接传入，不再从 sector_data 提取
+    logger.debug(f"[DEBUG] SW行业映射: normalization_config['sw_sector_mapping'] = {len(normalization_config.get('sw_sector_mapping', {}))}个股票")
 
-      # 🆕 修复：初始化完整的结果数据结构
+    # 🆕 修复：初始化完整的结果数据结构
     logger.info(f"[DEBUG] 初始化完整数据结构 - 原始数据: {data.shape}")
 
     # 确保在目标日期范围内
