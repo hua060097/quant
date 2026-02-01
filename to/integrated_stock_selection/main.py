@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_lg119_搜索参数.log',
+        'stock_selection_test_mode_walkforward_排序模型_lg119_搜索参数1_优化了几个容易跳动的因子.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2749,6 +2749,7 @@ def _calculate_val_metric(y_pred, y_real, dates, metric='composite'):
         median_ret = np.median(daily_returns)
         std_ret = np.std(daily_returns)
         win_rate = np.mean(daily_returns > 0)
+
         
         # 夏普 (年化)
         sharpe = (mean_ret / (std_ret + 1e-6)) * 15.87
@@ -2756,6 +2757,7 @@ def _calculate_val_metric(y_pred, y_real, dates, metric='composite'):
         # 复合打分
         # 1. 中位数项：目标是 > 0.002 (0.2%)
         #    乘以 500 -> 1.0 (与夏普量级对齐)
+
         median_score = median_ret * 500.0
         
         # 2. 夏普项
@@ -2763,7 +2765,7 @@ def _calculate_val_metric(y_pred, y_real, dates, metric='composite'):
         
         # 3. 最终分
         final_score = sharpe_score + median_score
-        
+
         return {
             'score': final_score,
             'sharpe': sharpe,
@@ -2784,19 +2786,19 @@ def _get_lgb_search_space():
     # 基础空间
     space = {
         'learning_rate': [0.01, 0.02],
-        'num_leaves': [7, 15, 31],
-        'min_data_in_leaf': [100, 200, 300, 320, 360], # 覆盖稀疏到密集
+        'num_leaves': [7, 15],
+        'min_data_in_leaf': [ 300, 315, 320, 325], # 覆盖稀疏到密集
         'feature_fraction': [0.4, 0.5, 0.6, 0.7, 0.8],
         'bagging_fraction': [0.6, 0.7, 0.8],
         'bagging_freq': [1],
-        'reg_alpha': [1.0, 5.0, 8.0, 10.0, 20],
-        'reg_lambda': [1.0, 5.0, 8.0, 10.0, 20],
-        'lambdarank_truncation_level': [5, 10, 30], # 关注头部排名的范围
+        'reg_alpha': [5.0, 7.0, 8.0, 10.0, 20],
+        'reg_lambda': [5.0, 7.0, 8.0, 10.0, 20],
+        'lambdarank_truncation_level': [5], # 关注头部排名的范围
     }
     
     # 不同的label_gain策略
     label_gain_candidates = [
-        [0, 1, 3, 7, 15, 31], # 激进
+        # [0, 1, 3, 7, 15, 31], # 激进
         [0, 1, 2, 4, 8, 14],
         [0, 1, 2, 4, 8, 16]  # 标准2次方
         # [i for i in range(31)] # 线性
@@ -2804,6 +2806,71 @@ def _get_lgb_search_space():
     
     return space, label_gain_candidates
 
+
+
+class PurgedTimeSeriesSplit:
+    """
+    Purged TimeSeriesSplit - 防止信息泄露的时间序列交叉验证
+
+    原理:
+    - 在训练集和验证集之间留出 gap（缓冲区）
+    - 防止特征计算时使用未来数据（Look-ahead Bias）
+
+    示例:
+        Train: [1~100]
+        Gap:   [101~120]  ← 缓冲区，不使用
+        Val:   [121~200]
+
+    参数:
+        n_splits: 折数
+        gap_size: 训练集和验证集之间的缓冲区大小（天数）
+    """
+
+    def __init__(self, n_splits=3, gap_size=20):
+        self.n_splits = n_splits
+        self.gap_size = gap_size
+
+    def split(self, dates):
+        """
+        生成训练集和验证集的划分
+
+        参数:
+            dates: 日期数组（必须是排序好的）
+
+        返回:
+            generator: (train_dates, val_dates) 元组
+        """
+        n_samples = len(dates)
+
+        if n_samples < self.n_splits + 1:
+            raise ValueError(f"样本数({n_samples})太少，无法进行 {self.n_splits} 折交叉验证")
+
+        # 计算每折的大小
+        fold_size = n_samples // (self.n_splits + 1)
+
+        for i in range(self.n_splits):
+            # 训练集结束位置
+            train_end = (i + 1) * fold_size
+
+            # 验证集开始位置（训练集结束后 + gap）
+            val_start = train_end + self.gap_size
+
+            # 验证集结束位置
+            val_end = val_start + fold_size
+
+            # 检查边界
+            if val_end > n_samples:
+                # 样本不够，跳过这一折
+                continue
+
+            train_dates = dates[:train_end]
+            val_dates = dates[val_start:val_end]
+
+            if len(train_dates) == 0 or len(val_dates) == 0:
+                # 避免空集
+                continue
+
+            yield train_dates, val_dates
 
 
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
@@ -2827,21 +2894,22 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         logger = logging.getLogger(__name__)
         logger.info("[顶尖级] 启动稳健训练流程 (CV + Max-Min Sharpe)")
 
-        # 1. 数据准备 (合并 Train + Val 作为总训练池)
+        # 1. 数据准备 (划分 Train / Val / Test = 70% / 15% / 15%)
+        # ✅ 修复：引入真正的测试集，用于评估泛化能力
         if preprocessed_data is not None:
             X_train_raw = preprocessed_data['X_train']
             X_val_raw = preprocessed_data['X_val']
             y_train_raw = preprocessed_data.get('train_relevance')
             y_val_raw = preprocessed_data.get('val_relevance')
-            
+
             # 原始收益率 (用于计算真实 Sharpe)
             y_train_ret = preprocessed_data.get('y_train_original')
             y_val_ret = preprocessed_data.get('y_val_original')
-            
+
             # 日期 (用于切分)
             train_dates = preprocessed_data.get('train_dates')
             val_dates = preprocessed_data.get('val_dates')
-            
+
             # 权重
             # w_train_raw = preprocessed_data.get('sample_weights')
             w_train_raw = np.ones(len(y_train_raw))
@@ -2854,48 +2922,87 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 X_train_raw = X_train_raw[:, :len(feature_columns)]
                 X_val_raw = X_val_raw[:, :len(feature_columns)]
 
-            # 合并数据
-            X_all = np.vstack((X_train_raw, X_val_raw))
-            y_all = np.concatenate((y_train_raw, y_val_raw))
-            y_ret_all = np.concatenate((y_train_ret, y_val_ret))
-            w_all = np.concatenate((w_train_raw, w_val_raw))
-            dates_all = np.concatenate((train_dates, val_dates))
-            
+            # ✅ 修复：从现有数据重新划分 Train / Val / Test = 70% / 15% / 15%
+            # 合并所有数据
+            X_all_raw = np.vstack((X_train_raw, X_val_raw))
+            y_all_raw = np.concatenate((y_train_raw, y_val_raw))
+            y_ret_all_raw = np.concatenate((y_train_ret, y_val_ret))
+            w_all_raw = np.concatenate((w_train_raw, w_val_raw))
+            dates_all_raw = np.concatenate((train_dates, val_dates))
+
+            # 计算划分点 (按时间顺序)
+            total_samples = len(X_all_raw)
+            train_end = int(total_samples * 0.70)  # 70% 训练
+            val_end = int(total_samples * 0.85)    # 85% 训练+验证
+
+            # 划分数据
+            X_train_final = X_all_raw[:train_end]
+            y_train_final = y_all_raw[:train_end]
+            y_ret_train_final = y_ret_all_raw[:train_end]
+            w_train_final = w_all_raw[:train_end]
+            dates_train_final = dates_all_raw[:train_end]
+
+            X_val_final = X_all_raw[train_end:val_end]
+            y_val_final = y_all_raw[train_end:val_end]
+            y_ret_val_final = y_ret_all_raw[train_end:val_end]
+            w_val_final = w_all_raw[train_end:val_end]
+            dates_val_final = dates_all_raw[train_end:val_end]
+
+            # ✅ 测试集数据（独立，不参与训练）
+            X_test_raw = X_all_raw[val_end:]
+            y_test_raw = y_all_raw[val_end:]
+            y_test_ret = y_ret_all_raw[val_end:]
+            w_test = w_all_raw[val_end:]
+            test_dates = dates_all_raw[val_end:]
+
+            logger.info(f"  [DATA] 数据划分: Train={len(X_train_final)}, Val={len(X_val_final)}, Test={len(X_test_raw)}")
+
+            # ✅ 修复：合并 Train + Val 用于训练和参数搜索
+            # Test 单独保留，用于最终评估
+            X_train_val = np.vstack((X_train_final, X_val_final))
+            y_train_val = np.concatenate((y_train_final, y_val_final))
+            y_ret_train_val = np.concatenate((y_ret_train_final, y_ret_val_final))
+            w_train_val = np.concatenate((w_train_final, w_val_final))
+            dates_train_val = np.concatenate((dates_train_final, dates_val_final))
+
+            # 保留原始数据（用于后续分析）
+            X_all_train = X_train_final
+            X_all_val = X_val_final
+            y_all_train = y_train_final
+            y_all_val = y_val_final
+            y_ret_all_train = y_ret_train_final
+            y_ret_all_val = y_ret_val_final
+            w_all_train = w_train_final
+            w_all_val = w_val_final
+            dates_all_train = dates_train_final
+            dates_all_val = dates_val_final
+
+            # 为保持兼容性，创建旧的 X_all 变量（用于后续代码）
+            X_all = X_train_val
+            y_all = y_train_val
+            y_ret_all = y_ret_train_val
+            w_all = w_train_val
+            dates_all = dates_train_val
+
         else:
             logger.error("[FAIL] 必须提供预处理数据")
             return None
 
-        # 2. TimeSeriesSplit 交叉验证准备
-        # 将数据切分为 K 折 (3折)。
-        tscv = TimeSeriesSplit(n_splits=3)
-        
-        # 预先计算所有 Fold 的索引，避免循环中重复计算
-        # 注意：我们要根据 Date 进行切分
-        unique_dates = np.unique(dates_all)
-        # 确保日期有序
-        unique_dates = np.sort(unique_dates)
-        
-        folds = []
-        # split 返回的是索引，我们需要映射回 dates_all 的 mask
-        for train_date_idx, val_date_idx in tscv.split(unique_dates):
-            train_dates_split = unique_dates[train_date_idx]
-            val_dates_split = unique_dates[val_date_idx]
-            
-            # 生成布尔索引 (假设 dates_all 也是有序的，如果不是，np.isin 会处理)
-            # 为了速度，使用 np.isin
-            train_mask = np.isin(dates_all, train_dates_split)
-            val_mask = np.isin(dates_all, val_dates_split)
-            
-            folds.append((train_mask, val_mask))
+        # 2. 准备固定的训练集和验证集（用于参数搜索）
+        # ✅ 修复：使用简单的 Train/Val 划分，不再使用交叉验证
+        # 使用之前划分好的 X_all_train, X_all_val
+        logger.info(f"  [DATA] 参数搜索使用固定划分: Train={len(X_all_train)}, Val={len(X_all_val)}")
 
-        logger.info(f"  [CV] 数据切分完成: {len(folds)} 折 TimeSeriesSplit")
+        # 计算分组
+        train_groups = pd.Series(dates_all_train).groupby(pd.Series(dates_all_train), sort=False).size().values
+        val_groups = pd.Series(dates_all_val).groupby(pd.Series(dates_all_val), sort=False).size().values
 
-        # 3. 执行搜索 (Random Search + CV)
-        SEARCH_ITER = 35 # 迭代次数
-        best_robust_score = -float('inf')
-        
+        # 3. 执行参数搜索 (Random Search)
+        SEARCH_ITER = 48  # 迭代次数
+        best_val_score = -float('inf')
+
         search_space, label_gain_options = _get_lgb_search_space()
-        
+
         base_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
@@ -2907,13 +3014,13 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'verbosity': -1,
             'random_state': 42
         }
-        
+
         best_params = base_params.copy()
         # 给个默认值防止第一次就失败
-        best_params['learning_rate'] = 0.02 
+        best_params['learning_rate'] = 0.02
         best_params['num_leaves'] = 31
-        
-        logger.info(f"[SEARCH] 开始 Max-Min CV 搜索 ({SEARCH_ITER} 组参数 x {len(folds)} 折)...")
+
+        logger.info(f"[SEARCH] 开始参数搜索 ({SEARCH_ITER} 组参数)...")
         start_time = time.time()
 
         for i in range(SEARCH_ITER):
@@ -2922,136 +3029,111 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             for key, choices in search_space.items():
                 current_params[key] = random.choice(choices)
             current_params['label_gain'] = random.choice(label_gain_options)
-            
-            fold_val_scores = []
-            fold_train_scores = []
-            fold_details = []
-            
-            # 遍历每一折
-            for fold_idx, (train_mask, val_mask) in enumerate(folds):
-                # 准备 Dataset
-                # Group 信息必须重新计算
-                def get_groups_fast(mask):
-                    d = dates_all[mask]
-                    # 使用 pandas groupby size 也是比较快的
-                    s = pd.Series(d)
-                    return s.groupby(s, sort=False).size().values
-                
-                train_g = get_groups_fast(train_mask)
-                val_g = get_groups_fast(val_mask)
-                
-                # 构造 Dataset
-                dtrain = lgb.Dataset(
-                    X_all[train_mask], 
-                    label=y_all[train_mask], 
-                    group=train_g, 
-                    weight=w_all[train_mask],
-                    params={'feature_pre_filter': False}
-                )
-                dval = lgb.Dataset(
-                    X_all[val_mask], 
-                    label=y_all[val_mask], 
-                    group=val_g, 
-                    weight=w_all[val_mask], 
-                    reference=dtrain,
-                    params={'feature_pre_filter': False}
-                )
-                
-                # 快速训练
-                tmp_model = lgb.train(
-                    current_params,
-                    dtrain,
-                    num_boost_round=400, # 搜索时少一点
-                    valid_sets=[dval],
-                    callbacks=[lgb.early_stopping(50, verbose=False)]
-                )
-                
-                # 评估: 计算该折验证集的 Top-1 Sharpe
-                preds = tmp_model.predict(X_all[val_mask])
-                ret_real = y_ret_all[val_mask]
-                dates_val = dates_all[val_mask]
-                
-                # 计算夏普
-                res_val = _calculate_val_metric(preds, ret_real, dates_val)
-                fold_val_scores.append(res_val['score'])
-                fold_details.append(f"Val Sharpe:{res_val['sharpe']:.2f}, Med:{res_val['median']:.4f}")
 
-                 # --- 2. 计算训练集表现 (Train Score) [关键步骤] ---
-                # 为了速度，只在训练集中随机抽样 20% 或最近的 N 天计算
-                # 这里取最近的 3000 条样本 (约1个月)，既快又能反映过拟合
-                train_indices = np.where(train_mask)[0]
-                if len(train_indices) > 3000:
-                    sample_indices = train_indices[-3000:] # 取最近的数据
-                else:
-                    sample_indices = train_indices
-                
-                preds_train = tmp_model.predict(X_all[sample_indices])
-                # 注意：Train Score 计算逻辑要和 Val 一致
-                res_train = _calculate_val_metric(preds_train, y_ret_all[sample_indices], dates_all[sample_indices], metric='composite')
-                train_score_curr = res_train['score']
-                fold_train_scores.append(train_score_curr)
-                
-            
-            # [核心逻辑] Max-Min 评分
-            # 目标是找到下限最高的参数 (稳健性)
-            if not fold_val_scores: continue
-            
-            # 计算平均表现
-            avg_val_score = np.mean(fold_val_scores)
-            avg_train_score = np.mean(fold_train_scores)
-            min_val_score = np.min(fold_val_scores) # 最差一折的表现
-            
-            # [核心] 泛化差距 (Generalization Gap)
-            # 如果 Train >> Val，说明过拟合
-            gap = avg_train_score - avg_val_score
-            
-            # 惩罚项计算
-            # 容忍度 (Tolerance): 0.5 (允许训练集比验证集稍微好一点)
-            # 惩罚系数 (Penalty): 0.5 (每超过1点Gap，扣0.5分)
-            penalty = 0.0
-            if gap > 0.5:
-                penalty = (gap - 0.5) * 0.5
-            
-            # 最终得分 = (最差验证集表现 * 0.7 + 平均验证集表现 * 0.3) - 泛化惩罚
-            # 逻辑：既要下限高(稳健)，又要防止你是靠"背答案"(Overfitting)得来的
-            robust_score = (min_val_score * 0.7 + avg_val_score * 0.3) - penalty
-            
-            if robust_score > best_robust_score:
-                best_robust_score = robust_score
+            # 构造 Dataset
+            dtrain = lgb.Dataset(
+                X_all_train,
+                label=y_all_train,
+                group=train_groups,
+                weight=w_all_train,
+                params={'feature_pre_filter': False}
+            )
+            dval = lgb.Dataset(
+                X_all_val,
+                label=y_all_val,
+                group=val_groups,
+                weight=w_all_val,
+                reference=dtrain,
+                params={'feature_pre_filter': False}
+            )
+
+            # 快速训练
+            tmp_model = lgb.train(
+                current_params,
+                dtrain,
+                num_boost_round=400,
+                valid_sets=[dval],
+                callbacks=[lgb.early_stopping(50, verbose=False)]
+            )
+
+            # 评估: 计算验证集的 Top-1 Sharpe
+            preds_val = tmp_model.predict(X_all_val)
+            ret_real_val = y_ret_all_val
+            dates_val = dates_all_val
+
+            # 计算夏普
+            res_val = _calculate_val_metric(preds_val, ret_real_val, dates_val)
+            val_score = res_val['score']
+
+            # ✅ 特征重要性检查 - 强制核心特征进入 Top10
+            importance = tmp_model.feature_importance(importance_type='gain')
+            feature_imp_dict = dict(zip(feature_columns, importance))
+            top10_features = sorted(feature_imp_dict.items(), key=lambda x: x[1], reverse=True)[:10]
+            top10_names = [f[0] for f in top10_features]
+
+            # 核心特征必须至少有一个在 Top10
+            core_features = ['price_ma5_ratio', 'price_ma5_ratio_z']
+            core_in_top10 = any(f in top10_names for f in core_features)
+
+            if not core_in_top10:
+                logger.info(f"  [SKIP] Iter {i+1}: 核心特征未进入 Top10，跳过 (Score={val_score:.4f})")
+                logger.info(f"    Top10特征: {top10_names}")
+                continue  # 跳过该参数组合，不更新 best_params
+
+            # 更新最佳参数
+            if val_score > best_val_score:
+                best_val_score = val_score
                 best_params = current_params.copy()
-                # 记录最后一次训练的 best_iteration 作为参考
-                best_iteration_ref = tmp_model.best_iteration
-                logger.info(f"  [Iter {i+1}] New Best! Score: {robust_score:.4f} (Min:{avg_val_score:.2f})")
-                logger.info(f"    Params: Lr={best_params['learning_rate']} | Leaves={best_params['num_leaves']} | MinData={best_params['min_data_in_leaf']} | Reg={best_params['reg_alpha']}")
-                logger.info(f"    Details: {fold_details}")
 
-        logger.info(f"[SEARCH] 搜索完成，耗时 {time.time()-start_time:.1f}s. 最佳稳健得分: {best_robust_score:.4f}")
+                # 查找核心特征在 Top10 中的排名
+                core_rank_str = ", ".join([f"{f}#{top10_names.index(f)+1}" for f in core_features if f in top10_names])
+
+                logger.info(f"  [Iter {i+1}] New Best! Score: {val_score:.4f} (Sharpe:{res_val['sharpe']:.4f}, Median:{res_val['median']:.4f})")
+                logger.info(f"    Core特征排名: {core_rank_str}")
+                logger.info(f"    Params: Lr={best_params['learning_rate']} | Leaves={best_params['num_leaves']} | MinData={best_params['min_data_in_leaf']} | Reg={best_params['reg_alpha']}")
+
+        logger.info(f"[SEARCH] 搜索完成，耗时 {time.time()-start_time:.1f}s. 最佳验证集得分: {best_val_score:.4f}")
         logger.info(f"[TARGET] 最优参数: {best_params}")
         
         # 4. 全量训练
         logger.info("[TARGET] 使用最优参数进行全量训练...")
-        
-        # 全量 Group
-        full_groups = pd.Series(dates_all).groupby(pd.Series(dates_all), sort=False).size().values
-        
-        full_ds = lgb.Dataset(
-            X_all, 
-            label=y_all, 
-            group=full_groups, 
-            weight=w_all,
+
+        # ✅ 修复：使用与搜索时完全相同的训练集和验证集
+        # 原因：确保特征重要性一致
+        # 搜索时: X_all_train, X_all_val
+        # 最终: 使用相同的数据集
+        logger.info(f"  [TRAIN] 使用固定划分: Train={len(X_all_train)}, Val={len(X_all_val)}")
+
+        # 构造 Dataset（与搜索时相同）
+        train_ds = lgb.Dataset(
+            X_all_train,
+            label=y_all_train,
+            group=train_groups,
+            weight=w_all_train,
             params={'feature_pre_filter': False}
         )
-        
-        # 增加轮数 (全量数据需要更多迭代)
-        # 如果有 best_iteration_ref，按比例放大，否则默认 1000
-        final_boost_round = int(best_iteration_ref * 1.5) if 'best_iteration_ref' in locals() else 1000
-        
+        val_ds = lgb.Dataset(
+            X_all_val,
+            label=y_all_val,
+            group=val_groups,
+            weight=w_all_val,
+            reference=train_ds,
+            params={'feature_pre_filter': False}
+        )
+
+        # ✅ 使用与搜索时相同的训练方式（Early Stopping）
         final_model = lgb.train(
             best_params,
-            full_ds,
-            num_boost_round=final_boost_round,
-            callbacks=[lgb.log_evaluation(period=100)]
+            train_ds,
+            num_boost_round=400,
+            valid_sets=[val_ds],
+            callbacks=[
+                lgb.early_stopping(50, verbose=False),
+                lgb.log_evaluation(period=100)
+            ]
         )
+
+        logger.info(f"[TARGET] 最终模型训练完成，最佳轮次: {final_model.best_iteration}")
         
         # 5. 构建结果
         importance = final_model.feature_importance(importance_type='gain')
@@ -3062,17 +3144,76 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         # [找回日志] 打印 Top 20 特征
         sorted_imp = sorted(feature_imp_dict.items(), key=lambda x: x[1], reverse=True)
         logger.info("[FEATURE] 最终模型特征重要性:")
-        for idx, (fname, imp) in enumerate(sorted_imp):
-            logger.info(f"  {idx+1:2d}. {fname:<40}: {imp:.4f}")
+        for idx, (fname, imp) in enumerate(sorted_imp[:20]):  # 只打印 Top 20
+            logger.info(f"  {idx+1:2d}. {fname:<40}: {imp:.2f}")
+
+        # ✅ 双重保险：检查最终模型的核心特征排名
+        top10_names = [f[0] for f in sorted_imp[:10]]
+        core_features = ['price_ma5_ratio', 'price_ma5_ratio_z']
+        core_in_top10 = any(f in top10_names for f in core_features)
+
+        if core_in_top10:
+            core_rank_str = ", ".join([f"{f}#{top10_names.index(f)+1}" for f in core_features if f in top10_names])
+            logger.info(f"[✅] 最终模型核心特征排名: {core_rank_str}")
+        else:
+            logger.warning("=" * 80)
+            logger.warning("[⚠️ WARNING] 最终模型核心特征未进入 Top10！")
+            logger.warning(f"  Top10特征: {top10_names}")
+            logger.warning(f"  可能原因: 训练数据/验证集划分导致特征分布变化")
+            logger.warning("  建议: 检查数据质量或调整核心特征检查逻辑")
+            logger.warning("=" * 80)
         
-        # 简单计算一下最终模型在最后一部分验证数据上的表现（仅供记录）
-        # 使用最后 20% 数据作为伪验证集
+        # 5. 在测试集上评估（真正的泛化能力）
+        # ✅ 修复：使用独立的测试集评估，而非训练集的子集
+        logger.info("=" * 80)
+        logger.info("[TEST] 最终模型泛化能力评估")
+        logger.info("=" * 80)
+
+        # 在 Train+Val 上的最后 20% 评估（向后兼容）
         last_split_idx = int(len(X_all) * 0.8)
         y_val_final_pred = final_model.predict(X_all[last_split_idx:])
-        final_top1_ret = _calculate_val_metric(y_val_final_pred, y_ret_all[last_split_idx:], dates_all[last_split_idx:])
-        
+        final_val_metric = _calculate_val_metric(y_val_final_pred, y_ret_all[last_split_idx:], dates_all[last_split_idx:])
+
+        # ✅ 核心：在独立测试集上评估
+        if 'X_test_raw' in locals() and X_test_raw is not None:
+            y_test_pred = final_model.predict(X_test_raw)
+            test_metric = _calculate_val_metric(y_test_pred, y_test_ret, test_dates)
+
+            # 计算泛化 Gap (Val - Test)
+            sharpe_gap = final_val_metric['sharpe'] - test_metric['sharpe']
+            median_gap = final_val_metric['median'] - test_metric['median']
+
+            logger.info(f"\n[VAL] 验证集 (Train+Val 最后20%):")
+            logger.info(f"  Sharpe: {final_val_metric['sharpe']:.4f}")
+            logger.info(f"  Median: {final_val_metric['median']:.4f}")
+            logger.info(f"  Win Rate: {final_val_metric['win_rate']:.2%}")
+
+            logger.info(f"\n[TEST] 测试集 (独立数据, 未参与训练):")
+            logger.info(f"  Sharpe: {test_metric['sharpe']:.4f}")
+            logger.info(f"  Median: {test_metric['median']:.4f}")
+            logger.info(f"  Win Rate: {test_metric['win_rate']:.2%}")
+
+            logger.info(f"\n[GENERALIZATION] 泛化 Gap (Val - Test):")
+            logger.info(f"  Sharpe Gap: {sharpe_gap:+.4f} {'✓ 好' if abs(sharpe_gap) < 0.3 else '⚠ 过拟合风险' if sharpe_gap > 0.3 else '✗ 严重过拟合'}")
+            logger.info(f"  Median Gap: {median_gap:+.4f}")
+
+            # 判断过拟合程度
+            if sharpe_gap > 0.5:
+                logger.warning(f"  [⚠️ WARNING] 严重过拟合！测试集 Sharpe 低于验证集 {sharpe_gap:.2f}")
+            elif sharpe_gap > 0.3:
+                logger.warning(f"  [⚠️] 存在过拟合风险，Gap 较大")
+            else:
+                logger.info(f"  [✅] 泛化能力良好")
+
+        else:
+            logger.warning("[WARNING] 没有测试集数据，使用验证集指标")
+            test_metric = final_val_metric
+
+        logger.info("=" * 80)
+
         performance_dict = {
-            'top_k_return': final_top1_ret, # 这里存的是 Sharpe
+            'top_k_return': test_metric,  # ✅ 使用测试集指标（真正的泛化能力）
+            'val_metric': final_val_metric,  # 验证集指标（向后兼容）
             'rank_ic': 0.0,
             'ic': 0.0
         }
@@ -3085,8 +3226,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'model_type': 'lightgbm',
             'performance': performance_dict,
             'training_info': {
-                'best_iteration': final_boost_round,
-                'n_samples': len(X_all)
+                'best_iteration': final_model.best_iteration,  # ✅ 修复：使用模型的 best_iteration
+                'n_samples': len(X_train_final)  # ✅ 使用训练集样本数
             },
             'model_params': best_params,
             'feature_importance': feature_imp_dict,
@@ -5308,8 +5449,8 @@ def _get_stock_factors():
         #--原始因子--#
         'price_ma5_ratio',
         'price_ma5_ratio_z',
-        'price_ma10_ratio',
-        'price_ma10_ratio_z',
+        # 'price_ma10_ratio',
+        # 'price_ma10_ratio_z',
         # 'price_ma60_ratio',
         # 'price_ma60_ratio_z',
         'market_trend_strength',
@@ -5449,8 +5590,8 @@ def _get_original_factors():
     return [
         'price_ma5_ratio',
         'price_ma5_ratio_z',
-        'price_ma10_ratio',
-        'price_ma10_ratio_z',
+        # 'price_ma10_ratio',
+        # 'price_ma10_ratio_z',
         # 'price_ma60_ratio',
         # 'price_ma60_ratio_z',
         'market_trend_strength',

@@ -149,7 +149,7 @@ def compare_factors_in_date_range(file1_path, file2_path, start_date, end_date, 
         abs_diff = np.abs(col2 - col1)
 
         # 找出差异最大的样本
-        top_diff_indices = abs_diff[valid_mask].nlargest(10).index
+        top_diff_indices = abs_diff[valid_mask].nlargest(13).index
 
         print(f"\n  差异最大的10个样本:")
         print(f"  {'排名':<6} {'股票代码':<15} {'日期':<12} {'文件1值':<15} {'文件2值':<15} {'差异':<12} {'绝对差异':<12}")
@@ -200,7 +200,7 @@ if __name__ == "__main__":
     compare_factors_in_date_range(
         file1,
         file2,
-        start_date='20250106',
-        end_date='20251027',
+        start_date='20250727',
+        end_date='20251031',
         top_n=10  # 显示差异最大的前10个因子
     )

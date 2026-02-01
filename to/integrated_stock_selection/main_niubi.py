@@ -2923,11 +2923,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'lambdarank_truncation_level': 5,
             'lambdarank_norm': True,  # 标准化梯度，防止头部过度优化
             'boosting_type': 'gbdt',
-            'learning_rate': 0.02,
-            'num_leaves': 15, #31,300
+            'learning_rate': 0.01,
+            'num_leaves': 7, #31,300
             'max_depth': -1,
-            'min_data_in_leaf': 320, #350,60
-            'feature_fraction': 0.5, 
+            'min_data_in_leaf': 315, #350,60
+            'feature_fraction': 0.4, 
             'bagging_fraction': 0.7,
             # 'max_bin': 63,
             'bagging_freq': 1,
@@ -2935,7 +2935,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # 'path_smooth': 1.0,        # 路径平滑
             'reg_alpha': 8,
             'reg_lambda': 8,
-            'n_estimators': 41,
+            'n_estimators': 400,
             'random_state': 42,
             'n_jobs': -1,
             'verbose': -1,
@@ -3089,7 +3089,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         val_data = lgb.Dataset(**val_data_kwargs)
 
         # Early Stopping配置
-        early_stopping_rounds = 20000
+        early_stopping_rounds = 50
         logger.info(f"  Early Stopping: {early_stopping_rounds} rounds")
 
         # 创建一个空字典来存储评估结果
@@ -3110,7 +3110,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         model = lgb.train(
             lgb_params,
             train_data,
-            num_boost_round=14,
+            num_boost_round=400,
             valid_sets=[train_data, val_data],
             valid_names=['train', 'valid'],
             # valid_sets=[val_data],

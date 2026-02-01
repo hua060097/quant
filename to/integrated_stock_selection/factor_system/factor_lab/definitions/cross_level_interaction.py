@@ -1,203 +1,284 @@
 """
-跨层级交互因子 (Cross-Level Interaction Factors) - 时序去极值版
+跨层级交互因子 (Cross-Level Interaction Factors)
 
 核心逻辑：
-1. 方向二：个股 * 市场 (Stock-Market Interaction) —— 引入市场波动环境与趋势强度，动态调整风险暴露。
-2. 方向三：三位一体 (Stock-Sector-Market) —— 识别处于超额收益板块中的头部个股。
+1) Stock * Market：引入市场波动环境与趋势强度，动态调整风险暴露。
+2) Stock * Sector * Market：识别处于超额收益板块中的头部个股。
 
-优化日志：
-1. 修复未来函数：使用 _rolling_adaptive_clip (120日窗口) 替代全局 Clip。
-2. 保留时序幅度：不强制 Rank，保留大波动日的因子强度。
+本版本改动（关键）：
+- 将原先 _adaptive_clip（全样本 MAD 去极值）改为 Frozen MAD Clipper：
+  只使用训练集日期范围拟合（train_start~train_end）的 median / MAD 阈值，
+  并冻结用于全体日期（train/val/test）clip，避免未来信息泄露。
+
+训练集日期范围（由用户指定）：
+- train_start: 2023-06-01
+- train_end:   2025-03-01
+
+日期：2026-01-31
 """
 
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+
 from ..base import FactorContext, FactorDefinition
 from ..registry import register_factor
 
+
 # ==============================================================================
-# 1. 基础统计学工具 (时序滚动去极值)
+# 0. Frozen（训练期阈值冻结）MAD Clipper
 # ==============================================================================
-
-def _rolling_adaptive_clip(series: pd.Series, date_series: pd.Series, n_mad: float = 3.0, window: int = 120) -> pd.Series:
+class FrozenMADClipper:
     """
-    时序滚动去极值 (Rolling Adaptive Clip)
-    逻辑：利用过去 N 天(120天)的数据分布来决定今天的截断阈值。
+    Frozen MAD Clipper:
+    - fit(): 仅用训练期样本拟合 median 与 MAD（全局阈值）
+    - transform(): 对全样本使用冻结阈值 clip
+
+    说明：
+    - 这是“最小侵入”的替代方案：尽量保持你旧 alpha 的“锋利度”和分布，
+      同时彻底去除“用未来数据确定 clip 边界”的泄露。
+    - 阈值是全局的（不是按日/按行业），以最大程度贴近你旧版 _adaptive_clip 的风格。
     """
-    if series.empty: return series
-    
-    # 1. 构造 DF 并按日期分组
-    df = pd.DataFrame({'val': series.values, 'date': date_series.values}, index=series.index)
-    
-    # 2. 计算每日截面统计量
-    daily_stats = df.groupby('date')['val'].agg(
-        median='median',
-        mad=lambda x: (x - x.median()).abs().median()
-    ).sort_index()
-    
-    # 3. 计算历史平滑阈值 (Rolling 120)
-    # min_periods=1 保证初期数据可用
-    # rolling_stats = daily_stats.rolling(window=window, min_periods=1).median()
-    rolling_stats = daily_stats.expanding(min_periods=1).median()
-    
-    # 4. 映射回个股数据
-    df['thresh_median'] = df['date'].map(rolling_stats['median'])
-    df['thresh_mad'] = df['date'].map(rolling_stats['mad'])
-    
-    # 5. 稀疏保护
-    mask_sparse = (df['thresh_mad'] < 1e-6)
-    
-    # 计算最终上下界
-    half_width = n_mad * df['thresh_mad'] * 1.4826
-    final_half_width = half_width.where(~mask_sparse, np.inf)
-    
-    upper = df['thresh_median'] + final_half_width
-    lower = df['thresh_median'] - final_half_width
-    
-    # 6. 执行截断
-    upper = upper.fillna(np.inf)
-    lower = lower.fillna(-np.inf)
-    
-    return series.clip(lower, upper)
+
+    def __init__(self, n_mad: float = 3.0, eps: float = 1e-12):
+        self.n_mad = float(n_mad)
+        self.eps = float(eps)
+        self._fitted = False
+        self.median_ = 0.0
+        self.mad_ = 0.0
+        self.lower_ = -np.inf
+        self.upper_ = np.inf
+
+    def fit(self, series: pd.Series) -> "FrozenMADClipper":
+        s = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if s.empty:
+            # 极端情况下训练期全 NaN：退化为不裁剪
+            self.median_, self.mad_ = 0.0, 0.0
+            self.lower_, self.upper_ = -np.inf, np.inf
+            self._fitted = True
+            return self
+
+        med = float(s.median())
+        mad = float((s - med).abs().median())
+        # MAD -> robust std
+        thr = self.n_mad * mad * 1.4826
+
+        # 稀疏保护：mad 极小就不裁剪
+        if mad < self.eps or thr < self.eps:
+            self.median_, self.mad_ = med, mad
+            self.lower_, self.upper_ = -np.inf, np.inf
+        else:
+            self.median_, self.mad_ = med, mad
+            self.lower_, self.upper_ = med - thr, med + thr
+
+        self._fitted = True
+        return self
+
+    def transform(self, series: pd.Series) -> pd.Series:
+        if not self._fitted:
+            raise RuntimeError("FrozenMADClipper must be fitted before transform().")
+        s = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
+        return s.clip(self.lower_, self.upper_)
+
+    def fit_transform(self, series: pd.Series) -> pd.Series:
+        return self.fit(series).transform(series)
 
 
-
+# ==============================================================================
+# 1. 辅助工具函数
+# ==============================================================================
 def _get_market_data(ctx: FactorContext) -> pd.DataFrame:
     """获取对齐后的市场数据"""
     market = ctx.require_market()
-    return market.sort_values('date').reset_index(drop=True)
+    return market.sort_values("date").reset_index(drop=True)
+
+
+def _to_ts(date_series: pd.Series) -> pd.Series:
+    """
+    将 date 列稳健转换为 pandas Timestamp（支持 'YYYY-MM-DD' / 'YYYYMMDD' / int）
+    """
+    if date_series.dtype == "datetime64[ns]":
+        return date_series
+    # 尽量处理 int(YYYYMMDD)、str(YYYY-MM-DD/YYYMMDD)
+    ds = date_series.astype(str)
+    ds = ds.str.replace("-", "", regex=False)
+    return pd.to_datetime(ds, format="%Y%m%d", errors="coerce")
+
 
 # ==============================================================================
 # 2. 核心交互计算类
 # ==============================================================================
 class _CrossInteractionHelper:
+    # 训练期阈值拟合范围（用户指定）
+    TRAIN_START = pd.Timestamp("2023-06-01")
+    TRAIN_END = pd.Timestamp("2025-03-01")
+
     def __init__(self, data: pd.DataFrame, ctx: FactorContext):
         self.data = data.copy()
         self.ctx = ctx
         self.original_index = data.index
 
-        # 获取行业映射
-        sector_map = ctx.extra.get('stock_to_sw_sector', {})
-        self.data['sector_code'] = self.data['stock_code'].map(sector_map).fillna('Unknown')
-        
-        # 获取市场数据
+        # 行业映射（SW二级行业等均可，只要 sector_code 一致）
+        sector_map = ctx.extra.get("stock_to_sw_sector", {})
+        self.data["sector_code"] = self.data["stock_code"].map(sector_map).fillna("Unknown")
+
+        # 市场数据
         self.market_df = _get_market_data(ctx)
-        
-        # 预计算所有跨层级指标
+
+        # 统一时间戳列（用于训练期 mask）
+        self.data["_ts"] = _to_ts(self.data["date"])
+        self.market_df["_ts"] = _to_ts(self.market_df["date"])
+
+        # Frozen clippers（按因子名缓存一次，避免重复拟合）
+        self._clipper_cache: dict[str, FrozenMADClipper] = {}
+
+        # 预计算跨层级指标
         self._precompute()
 
+    def _train_mask(self, ts: pd.Series) -> pd.Series:
+        """训练期日期 mask（包含端点）"""
+        return (ts >= self.TRAIN_START) & (ts <= self.TRAIN_END)
+
     def _intra_sector_zscore(self, series: pd.Series) -> pd.Series:
-        """行业内按日 Z-Score 标准化算子"""
-        return self.data.assign(tmp=series).groupby(['date', 'sector_code'])['tmp'].transform(
+        """行业内按日 Z-Score 标准化算子（对齐你原实现）"""
+        return self.data.assign(tmp=series).groupby(["date", "sector_code"])["tmp"].transform(
             lambda x: (x - x.mean()) / (x.std() + 1e-8)
         )
 
     def _precompute(self):
         """预计算市场背景、行业趋势与个股敏感度指标"""
-        # --- A. 市场维度 (Market Level) ---
-        mkt = self.market_df.set_index('date')
-        # 市场波动环境 (20日年化波动率代理值)
-        self.mkt_vol = mkt['daily_change_pct'].rolling(20, min_periods=10).std()
-        # 市场趋势强度 (20日累计收益)
-        self.mkt_trend = mkt['daily_change_pct'].rolling(20, min_periods=10).sum()
-        # 市场当日收益 (用于计算超额)
-        self.mkt_ret_today = mkt['daily_change_pct']
+        # --- A. 市场维度 ---
+        mkt = self.market_df.set_index("date")
+        self.mkt_vol = mkt["daily_change_pct"].rolling(20, min_periods=10).std()
+        self.mkt_trend = mkt["daily_change_pct"].rolling(20, min_periods=10).sum()
+        self.mkt_ret_today = mkt["daily_change_pct"]
 
-        # --- B. 行业维度 (Sector Level) ---
-        # 行业日均收益率
-        self.s_ret_daily = self.data.groupby(['date', 'sector_code'])['pct_chg'].mean()
+        # --- B. 行业维度 ---
+        self.s_ret_daily = self.data.groupby(["date", "sector_code"])["pct_chg"].mean()
 
-        # --- C. 个股与交互基础维度 (Stock Level) ---
-        # 1. 20日个股波动率 (IV代理项)
-        stk_vol = self.data.groupby('stock_code')['pct_chg'].transform(lambda x: x.rolling(20, min_periods=10).std())
-        self.data['stk_vol_intra_z'] = self._intra_sector_zscore(stk_vol)
-        
-        # 2. 60日个股 Beta (相对于大盘)
-        # 合并市场收益以计算协方差
-        df_with_mkt = self.data.merge(self.market_df[['date', 'daily_change_pct']], on='date', how='left')
-        df_with_mkt = df_with_mkt.rename(columns={'daily_change_pct': 'm_ret'})
-        
-        grouped = df_with_mkt.groupby('stock_code', sort=False)
-        cov_60d = grouped[['pct_chg', 'm_ret']].rolling(60, min_periods=30).cov().unstack().iloc[:, 1].reset_index(level=0, drop=True)
-        var_m_60d = grouped['m_ret'].transform(lambda x: x.rolling(60, min_periods=30).var())
-        self.data['beta_60d'] = cov_60d / (var_m_60d + 1e-8)
-        
-        # 3. 行业内当日排名 (Intra-Sector Rank)
-        self.data['intra_rank'] = self.data.groupby(['date', 'sector_code'])['pct_chg'].rank(pct=True) * 2 - 1
+        # --- C. 个股维度 ---
+        # 1) 20日个股波动率（IV 代理） -> 行业内 z
+        stk_vol = self.data.groupby("stock_code")["pct_chg"].transform(
+            lambda x: x.rolling(20, min_periods=10).std()
+        )
+        self.data["stk_vol_intra_z"] = self._intra_sector_zscore(stk_vol)
+
+        # 2) 60日 beta（相对大盘）
+        df_with_mkt = self.data.merge(
+            self.market_df[["date", "daily_change_pct"]], on="date", how="left"
+        ).rename(columns={"daily_change_pct": "m_ret"})
+
+        grouped = df_with_mkt.groupby("stock_code", sort=False)
+        cov_60d = (
+            grouped[["pct_chg", "m_ret"]]
+            .rolling(60, min_periods=30)
+            .cov()
+            .unstack()
+            .iloc[:, 1]
+            .reset_index(level=0, drop=True)
+        )
+        var_m_60d = grouped["m_ret"].transform(lambda x: x.rolling(60, min_periods=30).var())
+        self.data["beta_60d"] = cov_60d / (var_m_60d + 1e-8)
+
+        # 3) 行业内当日排名（[-1, 1]）
+        self.data["intra_rank"] = (
+            self.data.groupby(["date", "sector_code"])["pct_chg"].rank(pct=True) * 2 - 1
+        )
+
+    # ------------------------------
+    # Frozen clip 应用
+    # ------------------------------
+    def _frozen_clip(self, name: str, raw: pd.Series, ts: pd.Series, n_mad: float = 3.0) -> pd.Series:
+        """
+        对 raw 应用“训练期拟合、全期使用”的 Frozen MAD clip。
+        - name: 因子名，用于 cache
+        - ts: 时间戳序列（用于训练期 mask）
+        """
+        clipper = self._clipper_cache.get(name)
+        if clipper is None:
+            clipper = FrozenMADClipper(n_mad=n_mad)
+            mask = self._train_mask(ts)
+            clipper.fit(raw[mask])
+            self._clipper_cache[name] = clipper
+        return clipper.transform(raw)
 
     def compute_factor(self, factor_name: str) -> pd.Series:
-        """根据名称执行具体的交互逻辑"""
-        n_mad = 3.0
-        if factor_name == 'market_vols_adaptive_iv':
-            # 特征 3: 市场波动 * (-个股特质波动)
-            # 逻辑: 大波动环境惩罚高波股
-            m_gate = self.data['date'].map(self.mkt_vol)
-            alpha = -self.data['stk_vol_intra_z']
-            # Rolling Clip (120日)
-            return _rolling_adaptive_clip(m_gate * alpha, self.data['date'], n_mad=n_mad, window=120)
+        """根据名称执行具体的交互逻辑（Frozen clip 版）"""
 
-        elif factor_name == 'market_trend_adaptive_beta':
-            # 特征 4: 市场趋势强度 * 个股 Beta
-            # 逻辑: 顺境买高Beta, 逆境买低Beta
-            m_gate = self.data['date'].map(self.mkt_trend)
-            alpha = self.data['beta_60d']
-            # Rolling Clip (120日)
-            return _rolling_adaptive_clip(m_gate * alpha, self.data['date'], n_mad=n_mad, window=120)
+        if factor_name == "market_vols_adaptive_iv":
+            # 市场波动 * (-个股特质波动)
+            m_gate = self.data["date"].map(self.mkt_vol)
+            alpha = -self.data["stk_vol_intra_z"]
+            raw = (m_gate * alpha).astype("float64")
+            out = self._frozen_clip("market_vols_adaptive_iv", raw, self.data["_ts"], n_mad=3.0)
+            return out.reindex(self.original_index)
 
-        elif factor_name == 'sector_excess_intra_rank':
-            # 特征 5: 行业超额收益 * 个股行业内排名
-            # 逻辑: 寻找强板块中的领涨股 (三位一体)
-            s_ret = self.data.set_index(['date', 'sector_code']).index.map(self.s_ret_daily)
-            m_ret = self.data['date'].map(self.mkt_ret_today)
-            s_excess = s_ret - m_ret
-            alpha = self.data['intra_rank']
-            # Rolling Clip (120日)
-            return _rolling_adaptive_clip(s_excess * alpha, self.data['date'], n_mad=n_mad, window=120)
+        elif factor_name == "market_trend_adaptive_beta":
+            # 市场趋势强度 * 个股 beta
+            m_gate = self.data["date"].map(self.mkt_trend)
+            alpha = self.data["beta_60d"]
+            raw = (m_gate * alpha).astype("float64")
+            out = self._frozen_clip("market_trend_adaptive_beta", raw, self.data["_ts"], n_mad=3.0)
+            return out.reindex(self.original_index)
 
-        return pd.Series(0.0, index=self.original_index)
+        elif factor_name == "sector_excess_intra_rank":
+            # 行业超额收益 * 个股行业内排名
+            s_ret = self.data.set_index(["date", "sector_code"]).index.map(self.s_ret_daily)
+            m_ret = self.data["date"].map(self.mkt_ret_today)
+            s_excess = (s_ret - m_ret).astype("float64")
+            alpha = self.data["intra_rank"].astype("float64")
+            raw = (s_excess * alpha).astype("float64")
+            out = self._frozen_clip("sector_excess_intra_rank", raw, self.data["_ts"], n_mad=3.0)
+            return out.reindex(self.original_index)
+
+        return pd.Series(0.0, index=self.original_index, dtype="float64")
+
 
 # ==============================================================================
 # 3. 注册与外部接口
 # ==============================================================================
 def _get_helper(data: pd.DataFrame, ctx: FactorContext) -> _CrossInteractionHelper:
-    key = '_cross_interaction_helper_rolling_120'
+    key = "_cross_interaction_helper"
     if key not in ctx.extra:
         ctx.extra[key] = _CrossInteractionHelper(data, ctx)
     return ctx.extra[key]
 
-# 包装器函数
-def _calc_mkt_iv(d, c): return _get_helper(d, c).compute_factor('market_vols_adaptive_iv')
-def _calc_mkt_beta(d, c): return _get_helper(d, c).compute_factor('market_trend_adaptive_beta')
-def _calc_sec_excess(d, c): return _get_helper(d, c).compute_factor('sector_excess_intra_rank')
 
-# 因子注册
+def _calc_mkt_iv(d, c): return _get_helper(d, c).compute_factor("market_vols_adaptive_iv")
+def _calc_mkt_beta(d, c): return _get_helper(d, c).compute_factor("market_trend_adaptive_beta")
+def _calc_sec_excess(d, c): return _get_helper(d, c).compute_factor("sector_excess_intra_rank")
+
+
 market_vols_adaptive_iv = register_factor(FactorDefinition(
-    name='market_vols_adaptive_iv',
-    required_columns={'stock_code', 'date', 'pct_chg'},
+    name="market_vols_adaptive_iv",
+    required_columns={"stock_code", "date", "pct_chg"},
     requires_market_data=True,
     lookback_days=40,
     calculator=_calc_mkt_iv,
-    description='环境自适应波动因子: 市场高波动时倾向低波股'
+    description="环境自适应波动因子(FrozenClip): 市场高波动时倾向低波股"
 ))
 
 market_trend_adaptive_beta = register_factor(FactorDefinition(
-    name='market_trend_adaptive_beta',
-    required_columns={'stock_code', 'date', 'pct_chg'},
+    name="market_trend_adaptive_beta",
+    required_columns={"stock_code", "date", "pct_chg"},
     requires_market_data=True,
-    lookback_days=80, # Beta需要更长的回看窗口
+    lookback_days=80,
     calculator=_calc_mkt_beta,
-    description='趋势自适应贝塔: 市场走强时倾向高Beta股'
+    description="趋势自适应贝塔(FrozenClip): 市场走强时倾向高Beta股"
 ))
 
 sector_excess_intra_rank = register_factor(FactorDefinition(
-    name='sector_excess_intra_rank',
-    required_columns={'stock_code', 'date', 'pct_chg'},
+    name="sector_excess_intra_rank",
+    required_columns={"stock_code", "date", "pct_chg"},
     requires_market_data=True,
     requires_sector_data=True,
     lookback_days=10,
     calculator=_calc_sec_excess,
-    description='三位一体领先因子: 行业跑赢大盘且个股领涨行业'
+    description="三位一体领先因子(FrozenClip): 行业跑赢大盘且个股领涨行业"
 ))
 
-__all__ = ['market_vols_adaptive_iv', 'market_trend_adaptive_beta', 'sector_excess_intra_rank']
+__all__ = [
+    "market_vols_adaptive_iv",
+    "market_trend_adaptive_beta",
+    "sector_excess_intra_rank",
+]
