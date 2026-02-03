@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_市场错误模拟_训练集数据clip_重新训练2.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_市场错误模拟_训练集数据clip_重新训练3.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2725,23 +2725,28 @@ def _get_lgb_search_space():
     
     # 基础空间
     space = {
-        'learning_rate': [0.01, 0.02],
-        'num_leaves': [15],
-        'min_data_in_leaf': [315, 320, 321, 325, 330], # 覆盖稀疏到密集
-        'feature_fraction': [0.4, 0.5, 0.6],
-        'bagging_fraction': [0.6, 0.7, 0.8],
-        'bagging_freq': [1],
-        'reg_alpha': [2.0, 5.0, 7.5, 8.0, 8.5],
-        'reg_lambda': [2.0, 5.0, 7.5, 8.0, 8.5],
-        'n_estimators': [20, 30, 60, 90, 200, 300, 800],
-        'lambdarank_truncation_level': [3,5,7], # 关注头部排名的范围
+        # 'max_depth': [-1, 3, 4, 5],
+        # 'learning_rate': [0.02],
+        # 'num_leaves': [7, 15, 31],
+        'reg_alpha': [7.4, 7.45, 7.5, 7.55, 7.6, 7.65,  7.7, 7.75, 7.8, 7.85, 7.9, 7.91, 7.95, 8, 8.1],
+        'reg_lambda': [7.4, 7.45, 7.5, 7.55, 7.6, 7.65,  7.7, 7.75, 7.8, 7.85, 7.9, 7.91, 7.95, 8, 8.1],
+        # 'min_data_in_leaf': [200, 220, 240, 250, 260, 270, 280, 290, 295, 300, 305, 310, 315, 320, 325, 330, 335, 340], # 覆盖稀疏到密集 , 330, 400
+        'min_data_in_leaf': [320],
+        # 'reg_alpha': [5.0, 8.0, 10], #8.5, 
+        # 'reg_lambda': [5.0, 8.0, 10], #, 8.5
+        # 'n_estimators': [20, 40, 60, 90], #, 200, 300, 800
+        # 'lambdarank_truncation_level': [3,5,8,10], # 关注头部排名的范围 3,4,5,8,10
     }
     
     # 不同的label_gain策略
     label_gain_candidates = [
-        # [0, 1, 3, 7, 15, 31], # 激进
+        # [0, 1, 3, 7, 15, 31], # 
+        # [0, 1, 2, 4, 7, 12],
+        # [0, 1, 2, 4, 8, 20],
         [0, 1, 2, 4, 8, 14],
-        # [0, 1, 2, 4, 8, 16]  # 标准2次方
+        # [0, 1, 2, 4, 8, 15],
+        # [0, 1, 2, 4, 8, 16],
+        # [0, 1, 2, 4, 8, 17]  # 标准2次方
         # [i for i in range(31)] # 线性
     ]
     
@@ -2789,6 +2794,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             logger.info("[OK] 使用预处理数据（与XGBoost共享）")
             X_train_raw = preprocessed_data['X_train']
             X_val_raw = preprocessed_data['X_val']
+            X_test_raw = preprocessed_data['X_test']
 
             y_train = preprocessed_data.get('train_relevance')
             logger.info(f"y_train:{y_train[-10:]}, max: {np.max(y_train)}")
@@ -2800,6 +2806,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             y_val_original = preprocessed_data.get('y_val_original', preprocessed_data.get('y_val'))
             logger.info(f"y_val_original:{y_val_original[-10:]}, max: {np.max(y_val_original)}")
 
+            # ✅ 提取测试集原始收益率
+            y_test_original = preprocessed_data.get('y_test_original', preprocessed_data.get('y_test'))
+            test_dates = preprocessed_data.get('test_dates')
+            logger.info(f"y_test_original:{y_test_original[-10:] if y_test_original is not None else 'None'}, max: {np.max(y_test_original) if y_test_original is not None else 'None'}")
+
             if y_train is None or y_val is None:
                 logger.error("[FAIL] 缺少relevance标签,无法训练排序模型")
                 return None
@@ -2808,6 +2819,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             train_dates = preprocessed_data.get('train_dates')
             logger.info(f"  训练集: {len(X_train_raw):,}样本")
             logger.info(f"  验证集: {len(X_val_raw):,}样本")
+            if X_test_raw is not None:
+                logger.info(f"  测试集: {len(X_test_raw):,}样本")
             logger.info(f"  原始特征数: {X_train_raw.shape[1]}")
             logger.info(f"  训练标签类型: relevance (整数0-3)")
         else:
@@ -2833,11 +2846,13 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         else:
             X_train = X_train_raw
             X_val = X_val_raw
+            X_test = X_test_raw
             logger.info(f"  [OK] 特征数量已对齐: {X_train.shape[1]}")
 
 
         X_train_scaled = X_train
         X_val_scaled = X_val
+        X_test_scaled = X_test
 
 
         # [WRENCH] 关键验证: 检查LightGBM训练集数据顺序
@@ -2883,7 +2898,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # 'path_smooth': 1.0,        # 路径平滑
             'reg_alpha': 8,
             'reg_lambda': 8,
-            'n_estimators': 92,
+            'n_estimators': 800,
             'random_state': 42,
             'n_jobs': -1,
             'verbose': -1,
@@ -3020,7 +3035,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         val_data = lgb.Dataset(**val_data_kwargs)
 
         # Early Stopping配置
-        early_stopping_rounds = 50
+        early_stopping_rounds = 20
         logger.info(f"  Early Stopping: {early_stopping_rounds} rounds")
 
         # 创建一个空字典来存储评估结果
@@ -3044,96 +3059,185 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'ndcg_eval_at': [1, 3],
             'lambdarank_norm': True,
             'boosting_type': 'gbdt',
+            'learning_rate': 0.02,
+            'feature_fraction': 0.5,
+            'bagging_fraction': 0.7,
+            'num_leaves': 15,
             'max_depth': -1,
+            # 'label_gain': [0, 1, 2, 4, 8, 14],
+            'bagging_freq': 1,
+            'lambdarank_truncation_level': 5,
             'n_jobs': -1,
             'verbosity': -1,
+            'n_estimators': 100,
             'random_state': 42
         }
-        
-        SEARCH_ITER = 100 # 迭代次数
+
+        SEARCH_ITER = 60 # 迭代次数
         best_params = base_params.copy()
         # 给个默认值防止第一次就失败
-        best_params['learning_rate'] = 0.02 
+        best_params['learning_rate'] = 0.02
         best_params['num_leaves'] = 31
 
         search_space, label_gain_options = _get_lgb_search_space()
 
+        # ✅ 定义计算测试集 Top1 平均收益率的函数
+        def calculate_test_top1_avg_return(model, X_test, y_test_original, test_dates):
+            """
+            计算测试集 Top1 平均收益率
+
+            Args:
+                model: 训练好的模型
+                X_test: 测试集特征
+                y_test_original: 测试集原始收益率
+                test_dates: 测试集日期（可选，如果为None则使用全局计算）
+
+            Returns:
+                float: Top1 平均收益率
+            """
+            import pandas as pd
+
+            # 预测测试集
+            test_pred = model.predict(X_test, num_iteration=model.best_iteration)
+
+            if test_dates is not None:
+                # 有日期信息：按日期分组计算每日top1
+                df = pd.DataFrame({
+                    'date': test_dates,
+                    'pred': test_pred,
+                    'return': y_test_original
+                })
+
+                daily_top1_returns = []
+                for date_val, group in df.groupby('date'):
+                    if len(group) >= 1:
+                        top1_return = group.nlargest(1, 'pred')['return'].values[0]
+                        daily_top1_returns.append(top1_return)
+
+                top1_avg_return = np.mean(daily_top1_returns) if daily_top1_returns else 0.0
+            else:
+                # 没有日期信息：全局Top1
+                sorted_indices = np.argsort(test_pred)[::-1]
+                top1_avg_return = y_test_original[sorted_indices[:1]].mean() if len(sorted_indices) >= 1 else 0.0
+
+            return top1_avg_return
+
+        # 初始化最佳模型追踪（测试集Top1平均收益率）
+        best_top1_return = -float('inf')
+        best_model = None
+        best_params_found = None
+        best_iteration_found = None
+
+        # ✅ 优化：记录已搜索的参数，避免重复
+        searched_params = set()  # 存储已搜索的参数组合的哈希值
+        duplicate_count = 0  # 记录重复次数
+
         model = None
 
         for i in range(SEARCH_ITER):
-            # 采样参数
-            current_params = base_params.copy()
-            for key, choices in search_space.items():
-                current_params[key] = random.choice(choices)
-            current_params['label_gain'] = random.choice(label_gain_options)
-            
+            # ✅ 优化：采样参数时避免重复
+            max_retry = 10  # 最多重试 10 次
+            for retry in range(max_retry):
+                # 采样参数
+                current_params = base_params.copy()
+
+                # ✅ 特殊处理：reg_alpha 和 reg_lambda 必须选择相同的值
+                # reg_value = random.choice(search_space['reg_alpha'])
+                # current_params['reg_alpha'] = reg_value
+                # current_params['reg_lambda'] = reg_value
+
+                # 采样其他参数（跳过 reg_alpha 和 reg_lambda，因为已经处理过了）
+                for key, choices in search_space.items():
+                    # if key in ['reg_alpha', 'reg_lambda']:
+                    #     continue  # 跳过，已经处理
+                    current_params[key] = random.choice(choices)
+
+                current_params['label_gain'] = tuple(random.choice(label_gain_options))  # 转为 tuple 以便哈希
+
+                # ✅ 生成参数的唯一标识（用于检查重复）
+                # 将参数转换为可哈希的元组
+                params_tuple = tuple(sorted((k, str(v)) for k, v in current_params.items()))
+
+                if params_tuple not in searched_params:
+                    # 这是一个新的参数组合
+                    searched_params.add(params_tuple)
+                    logger.info(f"这是一个新的组合")
+                    break
+                else:
+                    logger.info(f"重复了，重新采样")
+                    # 重复了，重新采样
+                    if retry == max_retry - 1:
+                        logger.warning(f"  [WARNING] 第 {i+1} 次迭代：连续 {max_retry} 次采样都重复，搜索空间可能已耗尽")
+                    continue
+            else:
+                # 如果循环正常结束（没有break），说明所有尝试都重复了
+                logger.warning(f"  [SKIP] 第 {i+1} 次迭代：无法找到新的参数组合，跳过")
+                duplicate_count += 1
+                continue
+
+            if duplicate_count > 0:
+                logger.info(f"  [INFO] 已跳过 {duplicate_count} 次重复采样")
+
+            # ✅ 将 label_gain 转回 list（因为训练需要）
+            current_params['label_gain'] = list(current_params['label_gain'])
 
             model = lgb.train(
                 current_params,
                 train_data,
-                num_boost_round=92,
+                num_boost_round=100,
                 valid_sets=[train_data, val_data],
                 valid_names=['train', 'valid'],
                 callbacks=callbacks
             )
 
-            # ✅ 检查核心特征是否都在前8
-            feature_importance = model.feature_importance(importance_type='gain')
-            feature_imp_dict = dict(zip(feature_columns, feature_importance))
-            top8_features = sorted(feature_imp_dict.items(), key=lambda x: x[1], reverse=True)[:11]
-            top8_names = [f[0] for f in top8_features]
+            # ✅ 计算测试集 Top1 平均收益率
+            top1_return = calculate_test_top1_avg_return(model, X_test_scaled, y_test_original, test_dates)
 
-            # 核心特征列表
-            core_features = ['price_ma5_ratio', 'intra_sector_momentum_rank', 'abnormal_turnover']
+            logger.info(f"  [Iter {i+1}] 测试集 Top1 平均收益率: {top1_return:.4f}")
 
-            # ✅ 条件1: 所有核心特征都在 top8 中
-            all_core_in_top8 = all(f in top8_names for f in core_features)
-            # ✅ 条件2: price_ma60_ratio 不在 top8 中
-            price_ma60_not_in_top8 = 'price_ma60_ratio' not in top8_names
+            # ✅ 打印关键参数
+            logger.info(f"    [PARAMS] reg_alpha/reg_lambda: {current_params['reg_alpha']}, min_data_in_leaf: {current_params['min_data_in_leaf']}")
 
-            # 两个条件都满足
-            core_in_top8 = all_core_in_top8 and price_ma60_not_in_top8
+            # ✅ 更新最佳模型
+            if top1_return > best_top1_return:
+                best_top1_return = top1_return
+                best_model = model
+                best_params_found = current_params.copy()
+                best_iteration_found = model.best_iteration
 
-            if core_in_top8:
-                logger.info(f"  [FOUND] 第 {i+1} 次迭代找到符合要求的模型！")
-                logger.info(f"  核心3特征都在前8且 price_ma60_ratio 不在前8:")
-                for idx, name in enumerate(top8_names, 1):
-                    if name in core_features:
-                        logger.info(f"    {idx}. {name} ← 核心特征")
-                    elif name == 'price_ma60_ratio':
-                        logger.info(f"    {idx}. {name} ← ⚠️ 被排除的特征（不应该出现）")
-                    else:
-                        logger.info(f"    {idx}. {name}")
+                logger.info(f"    [NEW BEST] 更新最佳模型，测试集 Top1 平均收益率: {top1_return:.4f}")
+                # ✅ 打印当前最佳模型的全部参数
+                logger.info("    [NEW BEST] 当前最佳模型参数:")
+                for key, value in current_params.items():
+                    logger.info(f"      {key}: {value}")
+            # 继续下一次迭代（不提前停止）
 
-                # 额外检查：price_ma60_ratio 的排名
-                if 'price_ma60_ratio' in feature_imp_dict:
-                    all_features = sorted(feature_imp_dict.items(), key=lambda x: x[1], reverse=True)
-                    all_names = [f[0] for f in all_features]
-                    price_ma60_rank = all_names.index('price_ma60_ratio') + 1
-                    logger.info(f"  price_ma60_ratio 排名: #{price_ma60_rank}")
+        # ✅ 循环结束：使用最佳模型（测试集Top1平均收益率最高的）
+        # 打印搜索统计
+        actual_searched = len(searched_params)
+        logger.info("=" * 80)
+        logger.info(f"[SEARCH STATS] 参数搜索完成")
+        logger.info(f"  计划搜索次数: {SEARCH_ITER}")
+        logger.info(f"  实际搜索次数: {actual_searched}")
+        logger.info(f"  跳过重复次数: {duplicate_count}")
+        if actual_searched < SEARCH_ITER:
+            logger.warning(f"  [INFO] 搜索空间可能较小，已探索 {actual_searched}/{SEARCH_ITER} 种组合")
+        logger.info("=" * 80)
 
-                break  # 跳出循环，model 变量已保存
-            else:
-                # 判断哪个条件不满足
-                if not all_core_in_top8:
-                    missing_features = [f for f in core_features if f not in top8_names]
-                    logger.info(f"  [SKIP] 第 {i+1} 次迭代不符合要求，缺少核心特征: {missing_features}")
-                elif not price_ma60_not_in_top8:
-                    logger.info(f"  [SKIP] 第 {i+1} 次迭代不符合要求，price_ma60_ratio 在前8 (需要排除)")
-                logger.info(f"  Top8特征: {top8_names}")
-                # 继续下一次迭代
+        if best_model is not None:
+            model = best_model
+            logger.info(f"[SUCCESS] 找到最佳模型！")
+            logger.info(f"[SUCCESS] 最佳测试集 Top1 平均收益率: {best_top1_return:.4f} ({best_top1_return*100:.2f}%)")
+            logger.info("=" * 80)
 
-        # ✅ 循环结束后的兜底检查
-        if 'core_in_top8' not in locals() or not core_in_top8:
-            # 说明所有迭代都不符合要求（循环正常结束，没有break）
-            logger.warning("=" * 80)
-            logger.warning("[WARNING] 参数搜索结束，未找到符合要求的模型")
-            logger.warning("[WARNING] 核心特征未全部在前8，使用最后一次迭代的模型")
-            logger.warning("=" * 80)
+            # ✅ 打印最佳模型的全部参数
+            logger.info("[BEST MODEL] 最佳模型参数:")
+            for key, value in best_params_found.items():
+                logger.info(f"  {key}: {value}")
+            logger.info(f"  最佳迭代: {best_iteration_found}")
         else:
-            logger.info("=" * 80)
-            logger.info(f"[SUCCESS] 找到符合要求的模型（第 {i+1} 次迭代）")
-            logger.info("=" * 80)
+            logger.error("[ERROR] 参数搜索失败，没有训练任何模型")
+            return None
 
         logger.info(f"[FINAL] 最终模型最佳迭代: {model.best_iteration}")
 
@@ -13248,7 +13352,7 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-06',     # 验证集开始
                 'val_end': '2025-05-27',       # 验证集结束 (3个月)
                 'test_start': '2025-06-05',    # 测试集开始
-                'test_end': '2026-01-21'       # 测试集结束 (3个月)2025-12-16
+                'test_end': '2026-02-02'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -14495,7 +14599,7 @@ def _display_daily_stock_selections(all_selections, results_dir, timestamp, all_
         logger.error(f"[FAIL] 保存详细选股结果失败: {e}")
 
 
-def _train_final_model_for_window(train_data, val_data, best_params, window_idx, use_lightgbm=True, market_data=None, optimize_thresholds=False, sw_sector_mapping=None):
+def _train_final_model_for_window(train_data, val_data, test_data, best_params, window_idx, use_lightgbm=True, market_data=None, optimize_thresholds=False, sw_sector_mapping=None):
     """为窗口训练最终模型(仅支持LightGBM)
 
     Args:
@@ -14624,6 +14728,9 @@ def _train_final_model_for_window(train_data, val_data, best_params, window_idx,
         val_valid_mask = val_data['atr_return_label'].notna()
         val_data_valid = val_data[val_valid_mask].copy()
 
+        test_valid_mask = test_data['atr_return_label'].notna()
+        test_data_valid = test_data[test_valid_mask].copy()
+
         if len(train_data_valid) == 0:
             logger.error("[FAIL] 没有有效的训练样本(所有标签都是NaN)")
             return None
@@ -14654,6 +14761,7 @@ def _train_final_model_for_window(train_data, val_data, best_params, window_idx,
         # 🆕 提取relevance标签(用于LightGBM训练)和relevance_30标签(用于XGBoost训练)和原始收益率标签(用于IC计算)
         train_labels = train_data_valid['atr_return_label']
         val_labels = val_data_valid['atr_return_label']
+        test_labels = test_data_valid['atr_return_label']
 
         # 检查是否有relevance字段(LightGBM使用)
         if 'relevance' not in train_data_valid.columns or 'relevance' not in val_data_valid.columns:
@@ -14686,6 +14794,11 @@ def _train_final_model_for_window(train_data, val_data, best_params, window_idx,
             val_data_valid, feature_columns, data_type="验证集"
         )
 
+        X_test_processed, _ = _prepare_feature_data(
+            test_data_valid, feature_columns,
+            data_type="测试集"
+        )
+
         if X_val_processed is None:
             logger.error("[FAIL] 验证集特征预处理失败")
             return None
@@ -14714,6 +14827,11 @@ def _train_final_model_for_window(train_data, val_data, best_params, window_idx,
         if 'date' in val_data_valid.columns:
             val_dates = val_data_valid['date'].values[:len(X_val_processed)]
             logger.info("[OK] 提取验证集日期（用于group计算）")
+
+        test_dates = None
+        if 'date' in test_data_valid.columns:
+            test_dates = test_data_valid['date'].values[:len(X_test_processed)]
+            logger.info("[OK] 提取测试集日期）")
 
         # 🆕 提取训练集和验证集股票代码（用于SW行业特征）
         train_stock_codes = None
@@ -14832,16 +14950,20 @@ def _train_final_model_for_window(train_data, val_data, best_params, window_idx,
         preprocessed_data = {
             'X_train': X_train_processed,
             'X_val': X_val_processed,
+            'X_test': X_test_processed,
             'y_train': train_labels.values if hasattr(train_labels, 'values') else train_labels,
             'y_val': val_labels.values if hasattr(val_labels, 'values') else val_labels,
+            'y_test': test_labels.values if hasattr(test_labels, 'values') else test_labels,
             'y_train_original': train_labels.values if hasattr(train_labels, 'values') else train_labels,
             'y_val_original': val_labels.values if hasattr(val_labels, 'values') else val_labels,
+            'y_test_original': test_labels.values if hasattr(test_labels, 'values') else test_labels,
             'train_relevance': train_relevance.values if hasattr(train_relevance, 'values') else train_relevance,  # 🆕 relevance标签(4层,LightGBM使用)
             'val_relevance': val_relevance.values if hasattr(val_relevance, 'values') else val_relevance,  # 🆕 relevance标签(4层,LightGBM使用)
             'winsorization_thresholds': {},  # 因子已在生成阶段完成winsorize
             'train_dates': train_dates,  # 🆕 训练集日期
             'val_dates': val_dates,  # 🆕 验证集日期
             'val_atr14': val_atr14,  # 🆕 验证集ATR14（用于止盈止损阈值优化）
+            'test_dates':test_dates,
             'train_stock_codes': train_stock_codes,  # 🆕 训练集股票代码（用于SW行业特征）
             'val_stock_codes': val_stock_codes,  # 🆕 验证集股票代码（用于SW行业特征）
             'turnover_rate': train_turnover_rate,  # 🆕 添加换手率
@@ -15983,6 +16105,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
             # 使用完整训练集和验证集(已生成标签的train_data和val_data)
             full_train_data = train_data.copy()
             full_val_data = val_data.copy()
+            full_test_data = test_data.copy()
 
             logger.info(f"\n[REFRESH] 步骤2.2: 训练最终模型")
             logger.info(f"   完整训练集: {len(full_train_data):,}条")
@@ -15992,7 +16115,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
             # [强化] 训练模型(传入训练集和验证集，跳过内部划分)
             model_result = _train_final_model_for_window(
-                full_train_data, full_val_data, best_params, window_idx,
+                full_train_data, full_val_data, full_test_data, best_params, window_idx,
                 use_lightgbm=use_lightgbm,
                 market_data=market_data,  # [强化] 传递market_data用于XGBoost计算group权重
                 optimize_thresholds=args.optimize_thresholds,  # [强化] 传递止盈止损优化参数
