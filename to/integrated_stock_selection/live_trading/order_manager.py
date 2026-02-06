@@ -32,6 +32,72 @@ except ImportError:
         FIX_PRICE = 11#42  # 固定价格
 
 
+# ==============================================================================
+# 配置项（写死在文件内，避免依赖 self.config）
+# ==============================================================================
+# 目标下单窗口（本地时间）
+BUY_WINDOW_START = "09:30:00"
+BUY_WINDOW_END   = "09:30:20"
+
+# 当盘口快速下跌时，偏“被动”的比例（降低追价，利用下跌降低成本）
+# 0.0=完全追价，1.0=完全被动。建议 0.55~0.75 区间。
+FALL_PASSIVE_RATIO = 0.65
+
+# 被动挂单时给一个很小的加价（避免挂得太低完全成交不到）
+# 例如 0.0005 表示在 ask1 基础上 +5bp。
+BUY_SMALL_PREMIUM = 0.0005
+
+
+
+def _safe_float(x, default: float = float("nan")) -> float:
+    """Best-effort float conversion for tick fields."""
+    import numpy as np
+    try:
+        if x is None:
+            return default
+        if isinstance(x, (list, tuple, np.ndarray)):
+            if len(x) == 0:
+                return default
+            x = x[0]
+        v = float(x)
+        return v
+    except Exception:
+        return default
+
+
+def _round_price(price: float, tick_size: float = 0.01) -> float:
+    """Round price to A-share tick size (default 0.01)."""
+    import numpy as np
+    try:
+        if price is None or not np.isfinite(price):
+            return float("nan")
+        price = max(float(price), tick_size)
+        ticks = round(price / tick_size)
+        return float(ticks * tick_size)
+    except Exception:
+        return float(price)
+
+# 允许的最大追价（相对当日开盘价）
+# 例：0.010 表示最多追到 open * 1.01
+BUY_SLIPPAGE_CAP_PCT = 0.010
+
+# 分批下单参数（资金 30~50 万：建议 3~5 片，兼顾成交概率与冲击成本）
+BUY_SLICES = 4
+
+# 每片之间等待秒数（给撮合/回报一个节奏，避免频繁撤改导致拒单/拥塞）
+BUY_WAIT_SECONDS = 0.6
+
+# 每片最多撤单重试次数
+BUY_MAX_RETRIES_PER_SLICE = 3
+
+# 快涨/快跌判定阈值（相对开盘价）
+FAST_UP_TH = 0.006
+FAST_DOWN_TH = -0.006
+
+# 价格撮合微调（单位：元，默认 A 股 0.01）
+DEFAULT_TICK_SIZE = 0.01
+
+
 class LiveTradingCallback(XtQuantTraderCallback):
     """
     实盘交易回调类
@@ -165,27 +231,15 @@ class SmartOrderManager:
     def smart_buy_full_position(self, stock_code: str,
                                 buy_date: str,
                                 target_volume: int = None) -> Optional[str]:
-        """
-        全仓买入top1股票
+        """开盘 09:30:00~09:30:20 智能买入（最小改动版，含急涨/急跌逻辑 + 追价上限）。
 
-        流程:
-        1. 等待到09:30（仅trade模式）
-        2. 获取最新价（开盘价）
-        3. 查询账户资金
-        4. 计算买入数量（全仓或指定数量）
-        5. 执行开盘风控检查（仅trade模式）
-        6. 立即下单买入
-        7. 监控订单状态
-        8. 部成/超时 → 撤单重试
-        9. 全部成交 → 返回订单号
+        设计目标（贴合你的诉求）：
+          - **急涨**：尽量在 BUY_SLIPPAGE_CAP_PCT 范围内“有限追价”抢到；超过 cap 则不追（宁可错过）。
+          - **急跌**：窗口前段更被动（尽量靠近低位成交），窗口后段若仍未成交再逐步抬价保证成交。
+          - 下单价格同时受：涨停价、open*cap、以及卖一/买一报价约束。
 
-        Args:
-            stock_code: 股票代码
-            buy_date: 买入日期
-            target_volume: 指定买入数量（可选，用于手动交易模式）
-
-        Returns:
-            str: 订单号（失败返回None）
+        说明：
+          - MiniQMT 普通权限只有五档/一档，对“真正的盘口速度”无法完全拟合，本实现尽量稳健。
         """
         self.logger.info("=" * 60)
         if target_volume:
@@ -194,126 +248,205 @@ class SmartOrderManager:
             self.logger.info(f"开始全仓买入: {stock_code}")
         self.logger.info("=" * 60)
 
-        # 1. 等待到09:30（仅限trade模式，手动模式不等待）
+        # -------------------------
+        # 1) trade 模式：等待到 09:30:00（手动模式不等待）
+        # -------------------------
         if target_volume is None:
             self._wait_until_market_open()
 
-        # 2. 获取价格（区分买入当日和manual模式）
-        if target_volume is None:
-            # ===== trade模式（买入当日）：获取真实开盘价 =====
-            self.logger.info(f"🎯 {stock_code}: 买入当日，获取真实开盘价进行风控")
+        # -------------------------
+        # 2) 获取 prev_close（用于涨停价/风控）
+        # -------------------------
+        prev_close = self._get_prev_close(stock_code, buy_date)
+        if not prev_close or prev_close <= 0:
+            self.logger.warning(f"[{stock_code}] prev_close 获取失败，后续将尽量用 tick 上限价兜底")
 
-            today_open = self._get_today_open_price_from_tick(stock_code)
-
-            if today_open is None:
-                self.logger.error(f"❌ {stock_code}: 无法获取开盘价，放弃买入")
-                return None
-
-            current_price = today_open
-            self.logger.info(f"📊 {stock_code}: 今日开盘价 = {today_open:.2f}")
-        else:
-            # ===== manual模式：获取最新价 =====
-            self.logger.info(f"📝 {stock_code}: manual模式，使用最新价")
-            current_price = self.trader.get_current_price(stock_code)
-
-            if not current_price:
-                self.logger.error(f"无法获取{stock_code}的最新价")
-                return None
-
-        self.logger.info(f"当前价格: {current_price:.2f}元")
-
-        # 3. 查询账户资金（仅trade模式需要）
+        # -------------------------
+        # 3) 查询资金/计算目标买入数量（trade 模式）
+        # -------------------------
         if target_volume is None:
             asset = self.trader.query_stock_asset(self.trader.account)
-
             if not asset:
                 self.logger.error("查询账户资金失败")
                 return None
-
-            available_cash = asset.cash
+            available_cash = float(asset.cash)
             self.logger.info(f"可用资金: {available_cash:.2f}元")
-
-            # 4. 计算全仓买入数量（不留缓冲）
-            buy_volume = self._calculate_buy_volume_full(available_cash, current_price)
         else:
-            # 手动模式：使用指定的数量
-            buy_volume = target_volume
+            available_cash = 0.0  # 手动模式用不上
 
-        if buy_volume < 100:
-            self.logger.error(
-                f"资金不足: 可买{buy_volume}股，不足1手（100股）"
-            )
+        # -------------------------
+        # 4) 在 09:30:00~09:30:20 里分片下单
+        # -------------------------
+        win_start = datetime.strptime(BUY_WINDOW_START, "%H:%M:%S").time()
+        win_end = datetime.strptime(BUY_WINDOW_END, "%H:%M:%S").time()
+
+        def _now_t() -> datetime.time:
+            return datetime.now().time()
+
+        # 若因延迟已经过了窗口，直接按当前价快速下单（但仍遵守 cap）
+        if _now_t() > win_end:
+            self.logger.warning(f"[{stock_code}] 当前已超过买入窗口 {BUY_WINDOW_END}，将直接按最新盘口尝试一次")
+
+        # 目标成交数量（先用一次 tick 估算 open/cap 价来算手数）
+        tick0 = self._get_tick(stock_code)
+        if tick0 is None:
+            self.logger.error(f"[{stock_code}] 无法获取 tick，放弃买入")
             return None
 
-        estimated_amount = buy_volume * current_price
+        open_px = _safe_float(tick0.get("open") or tick0.get("openPrice") or tick0.get("lastPrice"))
+        last_px = _safe_float(tick0.get("lastPrice"))
+        ask1 = _safe_float((tick0.get("askPrice") or [None])[0])
+        bid1 = _safe_float((tick0.get("bidPrice") or [None])[0])
 
-        self.logger.info(f"买入数量: {buy_volume}股")
-        self.logger.info(f"预计金额: {estimated_amount:.2f}元")
+        if not open_px or open_px <= 0:
+            open_px = last_px
+        if not open_px or open_px <= 0:
+            self.logger.error(f"[{stock_code}] open/last 均无效，放弃买入")
+            return None
 
-        # 仅trade模式显示剩余资金
+        # trade 模式：开盘风控（你原来的 _check_opening_gap_risk 仍保留）
         if target_volume is None:
-            remaining_cash = available_cash - estimated_amount
-            self.logger.info(f"剩余资金: {remaining_cash:.2f}元")
-
-        # 5. 执行开盘风控检查（仅trade模式）
-        if target_volume is None:
-            prev_close = self._get_prev_close(stock_code, buy_date)
-            risk_check = self._check_opening_gap_risk(
-                stock_code, buy_date, prev_close, current_price
-            )
-
-            if not risk_check['can_buy']:
-                self.logger.warning(
-                    f"未通过开盘风控 ({risk_check['reason']})，取消买入"
-                )
+            risk_check = self._check_opening_gap_risk(stock_code, buy_date, prev_close, open_px)
+            if not risk_check.get("can_buy", True):
+                self.logger.warning(f"未通过开盘风控 ({risk_check.get('reason')})，取消买入")
                 return None
 
-            self.logger.info("✅ 通过风控检查，开始计算下单价格...")
-        else:
-            self.logger.info("✅ 手动模式，跳过风控检查，开始下单...")
+        # 涨停价优先从 tick 拿（更准确），其次用 prev_close * limit_pct 推断
+        up_limit_tick = _safe_float(tick0.get("upLimitPrice") or tick0.get("upperLimit"))
+        up_limit = up_limit_tick
+        if not up_limit or up_limit <= 0:
+            limit_pct = 0.20 if (stock_code.startswith("30") or stock_code.startswith("688")) else 0.10
+            if prev_close and prev_close > 0:
+                up_limit = prev_close * (1.0 + limit_pct)
 
-        # 计算初始下单价格（基于对手价）
+        # 追价 cap（相对 open）
+        cap_price = open_px * (1.0 + BUY_SLIPPAGE_CAP_PCT)
+        if up_limit and up_limit > 0:
+            cap_price = min(cap_price, up_limit)  # cap 不能越过涨停
+
+        # 计算目标买入量
         if target_volume is None:
-            # trade模式：使用对手价 * 1.002
-            initial_order_price = self._calculate_order_price(stock_code, buy_date, prev_close, current_price)
-            if not initial_order_price:
-                self.logger.error(f"无法计算下单价格，放弃买入")
-                return None
+            ref_price_for_size = min(cap_price, max(ask1, last_px) if (ask1 and ask1 > 0) else open_px)
+            buy_volume = self._calculate_buy_volume_full(available_cash, ref_price_for_size)
         else:
-            # manual模式：使用最新价
-            initial_order_price = current_price
+            buy_volume = int(target_volume)
 
-        self.logger.info(f"初始下单价格: {initial_order_price:.2f}")
+        if buy_volume < 100:
+            self.logger.error(f"资金/数量不足: buy_volume={buy_volume} (<100)")
+            return None
 
-        # 智能重试循环（提价策略）
-        for retry in range(1, 4):  # 最多3次
-            # 计算当前重试的价格（每次提价0.1%）
-            current_order_price = initial_order_price * (1.001 ** (retry - 1))
+        self.logger.info(f"[{stock_code}] open={open_px:.2f} last={last_px:.2f} ask1={ask1:.2f} bid1={bid1:.2f} cap={cap_price:.2f} up_limit={up_limit if up_limit else float('nan'):.2f}")
+        self.logger.info(f"[{stock_code}] 计划买入数量: {buy_volume}股，分 {BUY_SLICES} 片，单片等待 {BUY_WAIT_SECONDS}s")
 
-            self.logger.info(f"[第{retry}次下单] 价格: {current_order_price:.2f}, 数量: {buy_volume}股")
+        remaining = int(buy_volume)
+        last_order_id = None
 
-            # 下单
-            order_id = self._place_buy_order(stock_code, buy_volume, current_order_price)
+        for s in range(1, BUY_SLICES + 1):
+            if remaining < 100:
+                break
 
-            if not order_id:
-                self.logger.error("下单失败")
+            # 每片数量（最后一片吃剩余）
+            if s < BUY_SLICES:
+                slice_qty = max(100, (buy_volume // BUY_SLICES) // 100 * 100)
+                slice_qty = min(slice_qty, remaining)
+            else:
+                slice_qty = remaining
+
+            tick = self._get_tick(stock_code)
+            if tick is None:
+                self.logger.warning(f"[{stock_code}] 获取 tick 失败，跳过第{s}片")
                 continue
 
-            # 等待成交（2秒）
-            filled = self._wait_for_order_fill(order_id, timeout=2)
+            open_px2 = _safe_float(tick.get("open") or tick.get("openPrice") or open_px)
+            last_px2 = _safe_float(tick.get("lastPrice") or last_px)
+            ask1_2 = _safe_float((tick.get("askPrice") or [None])[0])
+            bid1_2 = _safe_float((tick.get("bidPrice") or [None])[0])
+            if not open_px2 or open_px2 <= 0:
+                open_px2 = open_px
 
-            if filled:
-                self.logger.info(f"✅ 第{retry}次成交成功: 订单{order_id}")
-                return order_id
+            cap_price2 = open_px2 * (1.0 + BUY_SLIPPAGE_CAP_PCT)
+            if up_limit and up_limit > 0:
+                cap_price2 = min(cap_price2, up_limit)
 
-            # 未成交
-            if retry < 3:
-                self.logger.warning(f"第{retry}次未成交，撤单重试...")
-                self._cancel_order_with_retry(order_id)
+            # 窗口进度（用于急跌策略）
+            try:
+                now_dt = datetime.now()
+                start_dt = now_dt.replace(hour=win_start.hour, minute=win_start.minute, second=win_start.second, microsecond=0)
+                end_dt = now_dt.replace(hour=win_end.hour, minute=win_end.minute, second=win_end.second, microsecond=0)
+                prog = 1.0
+                if end_dt > start_dt:
+                    prog = (now_dt - start_dt).total_seconds() / max(1e-6, (end_dt - start_dt).total_seconds())
+                    prog = float(min(1.0, max(0.0, prog)))
+            except Exception:
+                prog = 1.0
+
+            # 急涨/急跌判定（相对开盘）
+            rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
+            is_fast_up = rel >= FAST_UP_TH
+            is_fast_down = rel <= FAST_DOWN_TH
+
+            # 计算本片下单价
+            order_price = None
+            if is_fast_up:
+                # 急涨：用卖一(ask1)去抢，但严格不超过 cap
+                if ask1_2 and ask1_2 > 0:
+                    order_price = min(ask1_2, cap_price2)
+                else:
+                    order_price = min(last_px2, cap_price2)
+            elif is_fast_down:
+                # 急跌：前段更被动（靠近买一），后段逐步抬价保证成交
+                if prog <= FALL_PASSIVE_RATIO:
+                    # 更被动：贴近 bid1（若 bid1 不可用则用 last）
+                    base = bid1_2 if (bid1_2 and bid1_2 > 0) else last_px2
+                    order_price = min(base, cap_price2)
+                else:
+                    # 后段：往 ask1 靠，仍不超 cap
+                    base = ask1_2 if (ask1_2 and ask1_2 > 0) else last_px2
+                    order_price = min(base, cap_price2)
             else:
-                self.logger.error(f"❌ 3次重试后仍未成交，放弃买入")
-                return None
+                # 常态：卖一为主（保证成交概率），但不超 cap
+                base = ask1_2 if (ask1_2 and ask1_2 > 0) else last_px2
+                order_price = min(base, cap_price2)
 
+            if not order_price or order_price <= 0:
+                self.logger.warning(f"[{stock_code}] 计算下单价失败，跳过第{s}片")
+                continue
+
+            # 极端保护：不允许超过 cap（再次保证）
+            order_price = min(order_price, cap_price2)
+            if up_limit and up_limit > 0:
+                order_price = min(order_price, up_limit)
+
+            self.logger.info(
+                f"[{stock_code}] 第{s}/{BUY_SLICES}片 | qty={slice_qty} | rel={rel:.2%} | "
+                f"fast_up={is_fast_up} fast_down={is_fast_down} | price={order_price:.2f} (cap={cap_price2:.2f})"
+            )
+
+            order_id = self._place_buy_order(stock_code, slice_qty, order_price)
+            last_order_id = order_id
+            if not order_id:
+                self.logger.warning(f"[{stock_code}] 第{s}片下单失败")
+                continue
+
+            # 等待成交
+            filled = self._wait_for_order_fill(order_id, timeout=BUY_WAIT_SECONDS)
+            if filled:
+                self.logger.info(f"[{stock_code}] 第{s}片成交完成: {order_id}")
+                remaining -= slice_qty
+                continue
+
+            # 未成交：撤单并进入下一片（下一片会重新取 tick/重新定价）
+            self.logger.warning(f"[{stock_code}] 第{s}片未在 {BUY_WAIT_SECONDS}s 内成交，撤单重试")
+            self._cancel_order_with_retry(order_id)
+
+            # 为避免频繁打单，稍作等待（但仍尽量保持在窗口内）
+            time.sleep(0.2)
+
+        if remaining <= 0:
+            self.logger.info(f"✅ {stock_code} 买入完成，最后订单: {last_order_id}")
+            return last_order_id
+
+        self.logger.error(f"❌ {stock_code} 买入未完成，剩余: {remaining}股（可能因 cap 限制/急涨冲出上限）")
         return None
 
     def smart_sell_full_position(self, stock_code: str,
@@ -384,74 +517,73 @@ class SmartOrderManager:
         return volume
 
     def _get_ask_price_from_xtdata(self, stock_code: str) -> Optional[float]:
+        """获取卖一价 askPrice[0]（买入对手价）。
+
+        - 优先 askPrice[0]
+        - 若 askPrice 不可用/为0：fallback 到 lastPrice
+        - 再不行：fallback 到 bidPrice[0]
+
+        备注：之前误用 bidPrice[0] 会导致开盘急涨时“永远买不到”（太被动），
+             急跌时又会“买在高点”（因为 bid1 与真实可成交价格偏离）。
         """
-        从xtdata获取对手价（买一价 bidPrice[0]）
 
-        Args:
-            stock_code: 股票代码（如 '000001.SZ'）
+        # 缓存（5秒）
+        cached = self.ask_price_cache.get(stock_code)
+        if cached is not None:
+            if (datetime.now() - cached["timestamp"]).total_seconds() < 5:
+                return cached["price"]
 
-        Returns:
-            float: 对手价，失败返回None
-        """
-        # 检查缓存
-        if stock_code in self.ask_price_cache:
-            cached_price = self.ask_price_cache[stock_code]
-            # 缓存有效期：5秒
-            if (datetime.now() - cached_price['timestamp']).total_seconds() < 5:
-                return cached_price['price']
-
-        try:
-            from xtquant import xtdata
-
-            # 获取全推tick数据
-            tick = xtdata.get_full_tick([stock_code])
-
-            if stock_code not in tick:
-                self.logger.error(f"无法获取 {stock_code} 的tick数据")
-                return None
-
-            stock_tick = tick[stock_code]
-
-            # 取买一价作为对手价
-            bid_price = stock_tick.get('bidPrice')
-
-            if bid_price and len(bid_price) > 0:
-                ask_price = bid_price[0]  # 买一价
-
-                # 如果买一价为0（跌停），使用最新价
-                if ask_price == 0 or ask_price is None:
-                    ask_price = stock_tick.get('lastPrice', 0)
-
-                if ask_price and ask_price > 0:
-                    ask_price_float = float(ask_price)
-
-                    # 缓存价格
-                    self.ask_price_cache[stock_code] = {
-                        'price': ask_price_float,
-                        'timestamp': datetime.now()
-                    }
-
-                    self.logger.info(f"✅ {stock_code}: 对手价={ask_price_float:.2f}")
-                    return ask_price_float
-
-            self.logger.error(f"{stock_code}: 无法从tick数据获取有效对手价")
+        tick = self._get_tick(stock_code)
+        if not tick:
             return None
 
+        ask_list = tick.get("askPrice")
+        bid_list = tick.get("bidPrice")
+
+        ask1 = None
+        if isinstance(ask_list, (list, tuple)) and len(ask_list) > 0:
+            ask1 = ask_list[0]
+
+        if (ask1 is None) or (ask1 == 0):
+            ask1 = tick.get("lastPrice", 0)
+
+        if ((ask1 is None) or (ask1 == 0)) and isinstance(bid_list, (list, tuple)) and len(bid_list) > 0:
+            ask1 = bid_list[0]
+
+        if ask1 is None or ask1 == 0:
+            return None
+
+        ask_price_float = float(ask1)
+        self.ask_price_cache[stock_code] = {"price": ask_price_float, "timestamp": datetime.now()}
+        return ask_price_float
+
+    def _get_tick(self, stock_code: str) -> Optional[dict]:
+        """获取单只股票 full tick（普通用户可用，只有买卖一等基础档）。
+
+        返回 tick 字典（不是 {code: tick} 的外层结构）。失败返回 None。
+        """
+        try:
+            from xtquant import xtdata
+            tick_data = xtdata.get_full_tick([stock_code])
+            if not tick_data or stock_code not in tick_data:
+                return None
+            return tick_data[stock_code]
         except Exception as e:
-            self.logger.error(f"获取对手价失败: {e}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            self.logger.warning(f"[BUY] 获取tick失败: {stock_code}, {e}")
             return None
 
     def _calculate_order_price(self, stock_code: str, buy_date: str,
                              prev_close: float, last_price: float) -> Optional[float]:
-        """
-        计算下单价格（基于对手价和涨停价）
+        """计算买入下单价格（核心约束：不超过 open*(1+BUY_SLIPPAGE_CAP_PCT)）。
 
-        逻辑：
-        1. 获取对手价（askPrice = bidPrice[0]）
-        2. 计算涨停价（up_limit = prev_close * 1.05）
-        3. 计算下单价 = min(askPrice * 1.002, up_limit)
+        逻辑（开盘窗口专用）：
+        1) 取卖一 askPrice[0] 作为“最快成交”的参考价
+        2) 计算上限价：cap_price = open * (1 + BUY_SLIPPAGE_CAP_PCT)
+        3) 计算涨停价：优先 tick.upLimitPrice，否则按板块 10%/20% 推断
+        4) 下单价 = min(ask1*(1+SMALL_PREMIUM), cap_price, up_limit)
+
+        急跌时会在 smart_buy_full_position 内把定价更偏被动（bid1）处理；
+        这里保持“通用上限钳制”。
 
         Args:
             stock_code: 股票代码
@@ -462,25 +594,32 @@ class SmartOrderManager:
         Returns:
             float: 下单价格，失败返回None
         """
-        # 1. 计算涨停价（昨日收盘价 * 1.05）
-        up_limit = prev_close * 1.05
+        tick = self._get_tick(stock_code)
+        open_price = None
+        if tick:
+            open_price = tick.get("open") or tick.get("openPrice")
+        if open_price is None or open_price == 0:
+            open_price = last_price
 
-        self.logger.info(f"{stock_code}: 昨收={prev_close:.2f}, 涨停价={up_limit:.2f}")
+        # 涨停价：优先 tick 提供，否则按板块推断
+        up_limit = None
+        if tick:
+            up_limit = tick.get("upLimitPrice") or tick.get("up_limit")
 
-        # 2. 获取对手价
-        ask_price = self._get_ask_price_from_xtdata(stock_code)
+        if up_limit is None or up_limit == 0:
+            code = str(stock_code)
+            is_20 = code.startswith("30") or code.startswith("688")
+            limit_pct = 0.20 if is_20 else 0.10
+            up_limit = prev_close * (1.0 + limit_pct)
 
-        if ask_price is None:
-            # 容错：如果无法获取对手价，使用最新价
-            self.logger.warning(f"{stock_code}: 无法获取对手价，使用最新价 {last_price:.2f}")
-            return min(last_price, up_limit)
+        cap_price = float(open_price) * (1.0 + BUY_SLIPPAGE_CAP_PCT)
 
-        # 3. 计算下单价：min(对手价 * 1.002, 涨停价)
-        order_price = min(ask_price * 1.002, up_limit)
+        ask1 = self._get_ask_price_from_xtdata(stock_code)
+        if ask1 is None:
+            ask1 = last_price
 
-        self.logger.info(f"{stock_code}: 对手价={ask_price:.2f}, 计算价={ask_price * 1.002:.2f}, 下单价={order_price:.2f}")
-
-        return float(order_price)
+        order_price = min(float(ask1) * (1.0 + BUY_SMALL_PREMIUM), cap_price, float(up_limit))
+        return float(_round_price(order_price))
 
     def _place_buy_order(self, stock_code: str, volume: int,
                         price: float) -> Optional[str]:

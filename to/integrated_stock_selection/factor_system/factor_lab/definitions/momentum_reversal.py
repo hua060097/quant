@@ -53,6 +53,48 @@ def _make_return_factor(window: int, kind: str = 'alpha') -> callable:
     return calculator
 
 
+# ==============================================================================
+# High → Close 回撤因子（盘中冲高失败强度）
+# ==============================================================================
+
+def _high_to_close_drawdown(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    当日从最高价到收盘价的回撤幅度
+
+    计算：
+        (close - high) / high
+
+    含义：
+    - 0        : 收在最高点，极强
+    - < 0      : 冲高回落
+    - 数值越小 : 回落越剧烈（卖压/失败信号）
+
+    典型应用：
+    - 炸板识别
+    - 冲高出货
+    - 回撤风险惩罚
+    """
+    required = {'high', 'close'}
+    if not required.issubset(data.columns):
+        return pd.Series(0.0, index=data.index, dtype='float64')
+
+    high = data['high'].astype('float64')
+    close = data['close'].astype('float64')
+
+    drawdown = (close - high) / (high + 1e-12)
+
+    return drawdown.replace([np.inf, -np.inf], np.nan).astype('float64')
+
+
+high_to_close_drawdown = register_factor(
+    FactorDefinition(
+        name='high_to_close_drawdown',
+        required_columns={'stock_code', 'date', 'high', 'close'},
+        lookback_days=0,
+        calculator=_high_to_close_drawdown,
+        description='当日从最高价到收盘价的回撤幅度（盘中冲高失败强度）',
+    )
+)
 
 # --- 0日 (pct_chg) ---
 pct_chg_intra_z = register_factor(
@@ -1000,6 +1042,7 @@ stable_momentum = register_factor(
 )
 
 __all__ = [
+    'high_to_close_drawdown',
     'pct_chg_intra_z',
     'pct_chg_sector_mean',
     'pct_chg_1d',

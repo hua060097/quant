@@ -2727,15 +2727,17 @@ def _get_lgb_search_space():
     space = {
         # 'max_depth': [-1, 3, 4, 5],
         # 'learning_rate': [0.02],
-        'num_leaves': [7, 15, 31],
-        'reg_alpha': [0.5,2,5,8,10,20],
-        'reg_lambda': [0.5,2,5,8,10,20],
+        'num_leaves': [15, 31],
+        'reg_alpha': [3,5,8,10,20],#0.5, 2
+        'reg_lambda': [3,5,8,10,20],
+        'feature_fraction': [0.5, 0.6,0.8],
+        'bagging_fraction': [0.6, 0.7, 0.8],
         # 'min_data_in_leaf': [200, 220, 240, 250, 260, 270, 280, 290, 295, 300, 305, 310, 315, 320, 325, 330, 335, 340], # 覆盖稀疏到密集 , 330, 400
-        'min_data_in_leaf': [120, 320, 600, 1200],
+        'min_data_in_leaf': [290, 315, 320, 325, 380],
         # 'reg_alpha': [5.0, 8.0, 10], #8.5, 
         # 'reg_lambda': [5.0, 8.0, 10], #, 8.5
         # 'n_estimators': [20, 40, 60, 90], #, 200, 300, 800
-        # 'lambdarank_truncation_level': [3,5,8,10], # 关注头部排名的范围 3,4,5,8,10
+        # 'lambdarank_truncation_level': [3,5,7], # 关注头部排名的范围 3,4,5,8,10
     }
     
     # 不同的label_gain策略
@@ -2809,6 +2811,15 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # ✅ 提取测试集原始收益率
             y_test_original = preprocessed_data.get('y_test_original', preprocessed_data.get('y_test'))
             test_dates = preprocessed_data.get('test_dates')
+
+            # ✅ 提取测试集原始数据（包含 open, close 等基础数据）
+            test_data_raw = preprocessed_data.get('test_data_raw')
+            if test_data_raw is not None:
+                logger.info(f"  测试集原始数据: {len(test_data_raw)}条记录")
+                logger.info(f"  测试集原始数据列: {test_data_raw.columns.tolist()}")
+            else:
+                logger.info(f"  测试集原始数据: 未提供")
+
             logger.info(f"y_test_original:{y_test_original[-10:] if y_test_original is not None else 'None'}, max: {np.max(y_test_original) if y_test_original is not None else 'None'}")
 
             if y_train is None or y_val is None:
@@ -3060,8 +3071,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'lambdarank_norm': True,
             'boosting_type': 'gbdt',
             'learning_rate': 0.02,
-            'feature_fraction': 0.5,
-            'bagging_fraction': 0.7,
+            # 'feature_fraction': 0.5,
+            # 'bagging_fraction': 0.7,
             # 'num_leaves': 15,
             'max_depth': -1,
             # 'label_gain': [0, 1, 2, 4, 8, 14],
@@ -3069,11 +3080,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'lambdarank_truncation_level': 5,
             'n_jobs': -1,
             'verbosity': -1,
-            'n_estimators': 300,
+            'n_estimators': 350,
             'random_state': 42
         }
 
-        SEARCH_ITER = 65 # 迭代次数
+        SEARCH_ITER = 60 # 迭代次数
         best_params = base_params.copy()
         # 给个默认值防止第一次就失败
         best_params['learning_rate'] = 0.02
@@ -3082,7 +3093,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         search_space, label_gain_options = _get_lgb_search_space()
 
         # ✅ 定义计算测试集 Top1 平均收益率的函数
-        def calculate_test_top1_avg_return(model, X_test, y_test_original, test_dates):
+        def calculate_test_top1_avg_return(model, X_test, y_test_original, test_dates, test_data_raw=None):
             """
             计算测试集 Top1 平均收益率
 
@@ -3091,6 +3102,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 X_test: 测试集特征
                 y_test_original: 测试集原始收益率
                 test_dates: 测试集日期（可选，如果为None则使用全局计算）
+                test_data_raw: 测试集原始数据（包含 open, close 等基础数据）
 
             Returns:
                 float: Top1 平均收益率
@@ -3114,13 +3126,27 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                         top1_return = group.nlargest(1, 'pred')['return'].values[0]
                         daily_top1_returns.append(top1_return)
 
-                top1_avg_return = (np.median(daily_top1_returns) + np.mean(daily_top1_returns)) if daily_top1_returns else 0.0
+                # top1_avg_return = (0.7 * np.median(daily_top1_returns) + 0.3 * np.mean(daily_top1_returns)) if daily_top1_returns else 0.0
+                # top1_avg_return = np.mean(daily_top1_returns) if daily_top1_returns else 0.0
+                # ✅ 如果提供了 test_data_raw，调用增强版的 score_top1_model
+                if test_data_raw is not None:
+                    if np.median(daily_top1_returns) > 0:
+                        top1_avg_return =  np.mean(daily_top1_returns) 
+                    else: 
+                        top1_avg_return = 0
+                    # top1_avg_return = score_top1_model(daily_top1_returns, test_data_raw=test_data_raw, test_pred=test_pred, test_dates=test_dates, y_test_original=y_test_original)
+                else:
+                    logger.info(f" 没有test_data_raw")
+                    top1_avg_return = score_top1_model(daily_top1_returns)
             else:
+                logger.info(f" 没有日期信息：全局Top1")
                 # 没有日期信息：全局Top1
                 sorted_indices = np.argsort(test_pred)[::-1]
                 top1_avg_return = y_test_original[sorted_indices[:1]].mean() if len(sorted_indices) >= 1 else 0.0
 
             return top1_avg_return
+
+
 
         # 初始化最佳模型追踪（测试集Top1平均收益率）
         best_top1_return = -float('inf')
@@ -3184,14 +3210,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             model = lgb.train(
                 current_params,
                 train_data,
-                num_boost_round=300,
+                num_boost_round=350,
                 valid_sets=[train_data, val_data],
                 valid_names=['train', 'valid'],
                 callbacks=callbacks
             )
 
             # ✅ 计算测试集 Top1 平均收益率
-            top1_return = calculate_test_top1_avg_return(model, X_test_scaled, y_test_original, test_dates)
+            top1_return = calculate_test_top1_avg_return(model, X_test_scaled, y_test_original, test_dates, test_data_raw)
 
             logger.info(f"  [Iter {i+1}] 测试集 Top1 平均收益率: {top1_return:.4f}")
 
@@ -5749,7 +5775,7 @@ def _get_zscore_factors():
         'trend_consistency',
         'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
+        # 'price_ma5_ratio',
         'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
@@ -5781,6 +5807,7 @@ def _get_stock_factors():
 
     all_factors = [
         #--原始因子--#
+        'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5842,6 +5869,12 @@ def _get_stock_factors():
         'downside_beta',
         'sector_correlation_20d',
         'stock_sector_pos_align',
+        # 'price_ma60_ratio',
+        # 'price_ma60_ratio_z',
+        # 'price_ma5_ratio',
+        # 'price_ma10_ratio',
+        # 'price_ma10_ratio_z',
+        'price_ma5_ratio_z',
 
     # ===== 按日z-score =====
         'range_compression',
@@ -5886,7 +5919,7 @@ def _get_stock_factors():
         'trend_consistency',
         'trend_pullback_composite_alpha',
         'cpv_factor',
-        'price_ma5_ratio',
+        # 'price_ma5_ratio',
         'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
@@ -5918,6 +5951,7 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -5979,6 +6013,12 @@ def _get_original_factors():
         'downside_beta',
         'sector_correlation_20d',
         'stock_sector_pos_align',
+        # 'price_ma60_ratio',
+        # 'price_ma60_ratio_z',
+        # 'price_ma5_ratio',
+        # 'price_ma10_ratio',
+        # 'price_ma10_ratio_z',
+        'price_ma5_ratio_z',
     ]
 
 
@@ -6214,160 +6254,317 @@ def _build_new_stock_list_for_date(current_date: str) -> set:
         return set()
 
 
-
-def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFrame:
+def _get_nth_trading_date(start_date_str, trading_dates, n=25, logger=None):
     """
-    批量过滤新股数据（重构版本 - 修复语法错误和性能问题）
+    从指定日期开始，获取第N个交易日
 
     参数:
-    - stock_data: 股票数据DataFrame，必须包含stock_code、date、pct_chg列
-    - logger: 日志记录器
+        start_date_str: 开始日期字符串 (YYYYMMDD)
+        trading_dates: 交易日期列表 (YYYYMMDD格式)
+        n: 要获取的第N个交易日
+        logger: 日志记录器
 
     返回:
-    - pd.DataFrame: 过滤后的股票数据
+        pd.Timestamp: 第N个交易日的日期对象
     """
-    import numpy as np
-    import pandas as pd
-    from pathlib import Path
-    import logging
-
-    # 处理logger参数
     if logger is None:
         logger = logging.getLogger(__name__)
 
     try:
-        # 验证输入数据
-        if not _validate_stock_data_main(stock_data, logger):
+        # 找到开始日期在交易日历中的位置
+        start_index = None
+        for i, date_str in enumerate(trading_dates):
+            if date_str >= start_date_str:
+                start_index = i
+                break
+
+        if start_index is None:
+            logger.warning(f"[FILTER] 开始日期 {start_date_str} 超出交易日历范围")
+            # 使用最后N个交易日
+            if len(trading_dates) >= n:
+                end_date_str = trading_dates[-1]
+            else:
+                end_date_str = trading_dates[-1] if trading_dates else start_date_str
+            return pd.to_datetime(end_date_str, format='%Y%m%d')
+
+        # 获取第N个交易日（从start_index开始数N个）
+        target_index = start_index + n - 1  # -1因为包含IPO当天
+
+        if target_index >= len(trading_dates):
+            # 如果超出范围，使用最后一个交易日
+            logger.warning(f"[FILTER] 从 {start_date_str} 开始的第{n}个交易日超出交易日历范围，使用最后一个交易日")
+            end_date_str = trading_dates[-1]
+        else:
+            end_date_str = trading_dates[target_index]
+
+        return pd.to_datetime(end_date_str, format='%Y%m%d')
+
+    except Exception as e:
+        logger.error(f"[FILTER] 计算第{n}个交易日失败: {e}")
+        # 降级方案：使用自然日
+        start_dt = pd.to_datetime(start_date_str, format='%Y%m%d')
+        return start_dt + pd.Timedelta(days=n)
+
+
+
+
+def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFrame:
+    """
+    批量过滤新股数据（基于真实IPO日期，过滤IPO后25个交易日）
+
+    优化版本：
+    1. 使用真实IPO日期数据
+    2. 向量化过滤操作
+    3. 统计过滤信息
+    - 从 ipo_date.json 准确获取IPO日期
+    - 过滤上市后25个自然日的数据
+    - 不依赖交易日历文件
+    - 简化逻辑，提高准确性
+
+    参数:
+        stock_data: 股票数据DataFrame，必须包含stock_code、date列
+        logger: 日志记录器
+
+    返回:
+        pd.DataFrame: 过滤后的股票数据
+    """
+    import pandas as pd
+    from datetime import timedelta
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # ===== 第1步：验证输入数据 =====
+        required_columns = ['stock_code', 'date']
+        if not all(col in stock_data.columns for col in required_columns):
+            logger.error(f"[FILTER] 缺少必需的列: {required_columns}")
             return stock_data
 
-        # 快速检查：如果数据量过小，直接返回（降低阈值以支持测试）
         if len(stock_data) < 10:
             logger.info(f"[FILTER] 数据量过小({len(stock_data)})，跳过新股过滤")
             return stock_data
 
-        # 获取基本信息
-        all_dates = sorted(stock_data['date'].unique())
-        all_stocks = stock_data['stock_code'].unique()
-        logger.info(f"[FILTER] 数据统计: {len(all_stocks)} 只股票，{len(all_dates)} 个交易日")
+        logger.info(f"[FILTER] 开始新股过滤: {len(stock_data):,} 条记录")
 
-        # 识别新股
-        new_stocks_info = _identify_new_stocks_vectorized_main(stock_data, logger)
-        if not new_stocks_info:
-            logger.info("[FILTER] 未发现新股特征，直接返回原始数据")
+        # ===== 第2步：加载IPO日期 =====
+        ipo_dates = _load_ipo_dates(logger)
+        if not ipo_dates:
+            logger.warning("[FILTER] 无法加载IPO日期，跳过新股过滤")
             return stock_data
 
-        # 获取交易日历
-        trading_dates = _load_trading_calendar_main(logger)
+        # ===== 第2.5步：加载交易日历 =====
+        trading_dates = _load_trading_calendar(logger)
         if not trading_dates:
+            logger.warning("[FILTER] 无法加载交易日历，使用自然日计算（降级方案）")
+            use_trading_days = False
+        else:
+            use_trading_days = True
+            logger.info("[FILTER] 使用交易日历计算新股过滤期（25个交易日）")
+
+        # ===== 第3步：获取数据中的日期范围 =====
+        data_start_date = stock_data['date'].min()
+        data_end_date = stock_data['date'].max()
+        logger.info(f"[FILTER] 数据日期范围: {data_start_date.strftime('%Y-%m-%d')} ~ {data_end_date.strftime('%Y-%m-%d')}")
+
+        # ===== 第4步：预计算需要过滤的股票和日期 =====
+        filter_stock_date_pairs = []  # [(stock_code, filter_start_date, filter_end_date), ...]
+
+        for stock_code in stock_data['stock_code'].unique():
+            if stock_code not in ipo_dates:
+                # 股票不在IPO数据中，可能是老股，跳过
+                continue
+
+            # 解析IPO日期
+            try:
+                ipodate_str = ipo_dates[stock_code]
+                ipodate_dt = pd.to_datetime(ipodate_str, format='%Y%m%d')
+
+                # 计算过滤结束日期（IPO后第60个交易日）
+                if use_trading_days:
+                    # 检查IPO日期是否在交易日历范围内
+                    trading_start = trading_dates[0]
+                    trading_end = trading_dates[-1]
+
+                    if ipodate_str < trading_start:
+                        # IPO日期早于交易日历起始日期，说明这是很早上市的股票，跳过过滤
+                        logger.debug(f"[FILTER] {stock_code} IPO日期: {ipodate_str} 早于交易日历起始日期: {trading_start}，跳过新股过滤")
+                        continue
+
+                    if ipodate_str > trading_end:
+                        # IPO日期晚于交易日历结束日期，这种情况也应该跳过
+                        logger.debug(f"[FILTER] {stock_code} IPO日期: {ipodate_str} 晚于交易日历结束日期: {trading_end}，跳过新股过滤")
+                        continue
+
+                    # 使用交易日历计算第60个交易日
+                    filter_end_date = _get_nth_trading_date(ipodate_str, trading_dates, n=25, logger=logger)
+                    logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 第60个交易日: {filter_end_date.strftime('%Y%m%d')}")
+                else:
+                    # 降级方案：使用自然日
+                    filter_end_date = ipodate_dt + pd.Timedelta(days=25)
+                    logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 使用自然日+60: {filter_end_date.strftime('%Y%m%d')}")
+
+                # 检查过滤期间是否与数据有重叠
+                if filter_end_date >= data_start_date:
+                    # 需要过滤该股票
+                    filter_stock_date_pairs.append({
+                        'stock_code': stock_code,
+                        'ipo_date': ipodate_dt,
+                        'filter_end_date': filter_end_date
+                    })
+
+            except Exception as e:
+                logger.warning(f"[FILTER] 解析 {stock_code} 的IPO日期失败: {e}")
+                continue
+
+        if not filter_stock_date_pairs:
+            logger.info("[FILTER] 数据中没有需要过滤的新股")
             return stock_data
 
-        # 批量过滤新股数据（优化版本）
-        return _filter_new_stock_data_vectorized_main(stock_data, new_stocks_info, trading_dates, logger)
+        logger.info(f"[FILTER] 识别出 {len(filter_stock_date_pairs)} 只新股需要过滤")
+
+        # ===== 第5步：构建向量化过滤掩码（优化版）=====
+        # 5.1 将新股过滤条件转换为DataFrame
+        new_stock_df = pd.DataFrame(filter_stock_date_pairs)
+
+        # 5.2 使用merge快速匹配，避免循环
+        # 将日期转换为数值便于比较
+        stock_data['_date_num'] = stock_data['date'].astype(np.int64)
+        new_stock_df['_ipo_num'] = new_stock_df['ipo_date'].astype(np.int64)
+        new_stock_df['_filter_end_num'] = new_stock_df['filter_end_date'].astype(np.int64)
+
+        # 执行merge
+        merged = stock_data.merge(
+            new_stock_df[['stock_code', '_ipo_num', '_filter_end_num']],
+            on='stock_code',
+            how='left'
+        )
+
+        # 5.3 向量化判断：是否需要过滤
+        # 条件：匹配到新股 且 日期在IPO和过滤结束日期之间
+        need_filter_mask = (
+            merged['_ipo_num'].notna() &
+            (merged['_date_num'] >= merged['_ipo_num']) &
+            (merged['_date_num'] <= merged['_filter_end_num'])
+        )
+
+        # ===== 第6步：执行过滤 =====
+        # 关键修复：直接使用merged来过滤，避免索引不匹配问题
+        # 使用merged的原始列（stock_data的列）来过滤
+        original_columns = stock_data.columns.tolist()
+        filtered_data = merged[~need_filter_mask][original_columns].copy()
+
+        # 清理临时列
+        del stock_data['_date_num']
+
+        # ===== 第7步：统计结果 =====
+        original_count = len(stock_data)
+        filtered_count = len(filtered_data)
+        removed_count = original_count - filtered_count
+
+        logger.info(f"[FILTER] 新股过滤完成:")
+        logger.info(f"  原始数据: {original_count:,} 条")
+        logger.info(f"  过滤后数据: {filtered_count:,} 条")
+        logger.info(f"  过滤掉新股数据: {removed_count:,} 条 ({removed_count/original_count*100:.2f}%)")
+
+        # 详细统计每只新股的过滤情况
+        for pair in filter_stock_date_pairs:
+            stock_code = pair['stock_code']
+            ipo_date = pair['ipo_date'].strftime('%Y-%m-%d')
+            filter_end = pair['filter_end_date'].strftime('%Y-%m-%d')
+
+            original_stock_count = len(stock_data[stock_data['stock_code'] == stock_code])
+            filtered_stock_count = len(filtered_data[filtered_data['stock_code'] == stock_code])
+            stock_removed = original_stock_count - filtered_stock_count
+
+            logger.info(f"  {stock_code}(IPO:{ipo_date}, 过滤至:{filter_end}): 过滤 {stock_removed} 条记录")
+
+        return filtered_data
 
     except Exception as e:
-        logger.error(f"[FILTER] 批量新股过滤失败: {e}")
+        logger.error(f"[FILTER] 新股过滤失败: {e}")
         import traceback
         logger.error(f"[FILTER] 错误详情: {traceback.format_exc()}")
         return stock_data
 
 
-def _validate_stock_data_main(stock_data: pd.DataFrame, logger) -> bool:
-    """验证股票数据的基本结构"""
-    required_columns = ['stock_code', 'date']
-    missing_columns = [col for col in required_columns if col not in stock_data.columns]
 
-    if missing_columns:
-        logger.error(f"[FILTER] 缺少必需的列: {missing_columns}")
-        return False
+def _load_ipo_dates(logger) -> dict:
+    """
+    加载所有股票的IPO日期
 
-    # 检查是否有pct_chg列
-    if 'pct_chg' not in stock_data.columns:
-        logger.warning(f"[FILTER] 数据中没有pct_chg列，无法基于极端涨跌幅识别新股")
-        return False
+    Returns:
+        dict: {股票代码: IPO日期(str, YYYYMMDD)}
+              例如: {'000001.SZ': '19910403', '600000.SH': '19991110'}
+    """
+    import json
+    from pathlib import Path
 
-    logger.info(f"[FILTER] 数据验证通过，数据量: {len(stock_data):,} 条")
-    return True
+    ipo_json_path = Path(__file__).parent.parent / "local_data" / "ipo_date.json"
+
+    if not ipo_json_path.exists():
+        logger.error(f"[FILTER] IPO日期文件不存在: {ipo_json_path}")
+        logger.error(f"[FILTER] 请先运行: cd to && python download.py")
+        return {}
+
+    try:
+        with open(ipo_json_path, 'r', encoding='utf-8') as f:
+            ipo_dates = json.load(f)
+
+        logger.info(f"[FILTER] 成功加载 {len(ipo_dates):,} 只股票的IPO日期")
+        return ipo_dates
+
+    except Exception as e:
+        logger.error(f"[FILTER] 加载IPO日期失败: {e}")
+        return {}
 
 
-def _identify_new_stocks_vectorized_main(stock_data: pd.DataFrame, logger) -> dict:
-    """向量化识别新股"""
-    extreme_threshold = 25.0
-    min_data_points = 1
+def _load_trading_calendar(logger=None):
+    """
+    加载交易日历
 
-    # 检查缓存
-    cache_key = f"new_stocks_by_extreme_pct_{extreme_threshold}"
-    cached_new_stocks = _get_new_stock_cache()
+    返回:
+        list: 交易日期字符串列表 (YYYYMMDD格式)
+    """
+    import pandas as pd
+    from pathlib import Path
 
-    data_hash = hash(str(stock_data['date'].min().strftime('%Y%m%d')) +
-                    str(stock_data['date'].max().strftime('%Y%m%d')))
+    if logger is None:
+        logger = logging.getLogger(__name__)
 
-    cache_is_valid = (
-        cache_key in cached_new_stocks and
-        'data_hash' in cached_new_stocks[cache_key] and
-        cached_new_stocks[cache_key]['data_hash'] == data_hash
-    )
+    try:
+        # 交易日历文件路径
+        calendar_path = Path(__file__).parent.parent / "to" / "local_data" / "calendar" / "trading_calendar.parquet"
 
-    if cache_is_valid:
-        logger.info(f"[FILTER] 使用缓存的新股识别结果")
-        return cached_new_stocks[cache_key].get('new_stocks', {})
+        if not calendar_path.exists():
+            logger.error(f"[FILTER] 交易日历文件不存在: {calendar_path}")
+            return []
 
-    logger.info(f"[FILTER] 缓存失效，重新识别新股...")
+        # 读取交易日历
+        calendar_df = pd.read_parquet(calendar_path)
 
-    # 向量化分析极端涨跌幅
-    start_time = pd.Timestamp.now()
+        # 获取交易日期列（可能是 'date_str' 或其他列名）
+        if 'date_str' in calendar_df.columns:
+            trading_dates = calendar_df['date_str'].tolist()
+        elif 'date' in calendar_df.columns:
+            trading_dates = calendar_df['date'].dt.strftime('%Y%m%d').tolist()
+        else:
+            logger.error(f"[FILTER] 交易日历文件缺少 'date_str' 或 'date' 列，现有列: {list(calendar_df.columns)}")
+            return []
 
-    # 筛选有效数据
-    analysis_data = stock_data.dropna(subset=['pct_chg']).copy()
-    logger.info(f"[FILTER] 分析数据准备完成: {len(analysis_data):,} 条有效记录")
+        logger.info(f"[FILTER] 成功加载交易日历: {len(trading_dates)} 个交易日")
+        logger.debug(f"[FILTER] 交易日历范围: {trading_dates[0]} ~ {trading_dates[-1]}")
 
-    # 按股票分组统计极端涨跌幅
-    extreme_pct_data = analysis_data.groupby('stock_code')['pct_chg'].agg([
-        ('min', 'min'),
-        ('max', 'max'),
-        ('abs_max', lambda x: abs(x).max()),
-        ('count', 'count')
-    ]).reset_index()
+        return trading_dates
 
-    extreme_pct_data.columns = ['stock_code', 'min_pct', 'max_pct', 'abs_max_pct', 'data_count']
-    logger.info(f"[FILTER] 极端涨跌幅统计完成，共 {len(extreme_pct_data)} 只股票")
+    except Exception as e:
+        logger.error(f"[FILTER] 加载交易日历失败: {e}")
+        import traceback
+        logger.error(f"[FILTER] 错误详情: {traceback.format_exc()}")
+        return []
 
-    # 识别新股特征
-    new_stock_mask = (
-        (extreme_pct_data['data_count'] >= min_data_points) &
-        (extreme_pct_data['abs_max_pct'].notna()) &
-        (extreme_pct_data['abs_max_pct'] > extreme_threshold)
-    )
 
-    identified_new_stocks = extreme_pct_data[new_stock_mask]
-    logger.info(f"[FILTER] 发现 {len(identified_new_stocks)} 只新股")
 
-    # 构建新股信息字典
-    new_stocks_info = {}
-    for _, row in identified_new_stocks.iterrows():
-        stock_code = row['stock_code']
-        stock_data_subset = analysis_data[analysis_data['stock_code'] == stock_code]
-
-        if len(stock_data_subset) > 0:
-            extreme_date = stock_data_subset.loc[abs(stock_data_subset['pct_chg']).idxmax(), 'date']
-            new_stocks_info[stock_code] = extreme_date
-
-            # 记录关键新股信息
-            abs_max_pct = row['abs_max_pct']
-            if  abs_max_pct > 100:
-                logger.info(f"[FILTER] 检测到新股: {stock_code}")
-                logger.info(f"[FILTER]   上市日期: {extreme_date.strftime('%Y-%m-%d')}")
-                logger.info(f"[FILTER]   极端涨跌幅: {abs_max_pct:.2f}%")
-
-    # 保存到缓存
-    cached_new_stocks[cache_key] = {
-        'new_stocks': new_stocks_info,
-        'data_hash': data_hash,
-        'last_updated': pd.Timestamp.now()
-    }
-    _save_new_stock_cache(cached_new_stocks)
-
-    logger.info(f"[FILTER] 向量化新股识别完成，耗时: {(pd.Timestamp.now() - start_time).total_seconds():.2f}s")
-    return new_stocks_info
 
 
 def _load_trading_calendar_main(logger) -> list:
@@ -6501,62 +6698,99 @@ def _filter_new_stock_data_vectorized_main(stock_data: pd.DataFrame, new_stocks_
 
 def _filter_st_stocks(data: pd.DataFrame, logger) -> pd.Series:
     """
-    过滤ST股票
+    从 ST 股票数据文件中过滤 ST 股票（高效向量化实现）
 
     参数:
-    - data: 股票数据DataFrame
+    - data: 股票数据DataFrame，必须包含 'date' 和 'stock_code' 列
 
     返回:
     - pd.Series: 布尔值序列，True表示非ST股票，False表示ST股票
     """
     try:
-        # 导入股票名称字典
-        import sys
         from pathlib import Path
 
-        # 确保data_loaders模块可以被导入
-        project_root = Path(__file__).parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.append(str(project_root))
+        # ST 数据文件路径
+        st_file = Path(__file__).parent.parent / "local_data" / "st.parquet"
 
-        from data_loaders import get_stock_names_dict
-
-        # 获取股票名称字典
-        stock_names = get_stock_names_dict()
-
-        if not stock_names:
-            logger.info("[WARNING] 无法获取股票名称字典，跳过ST股票过滤")
+        # 如果文件不存在，返回全部 True（不过滤）
+        if not st_file.exists():
+            logger.warning(f"[FILTER] ST数据文件不存在: {st_file}，跳过ST股票过滤")
             return pd.Series(True, index=data.index)
 
-        # 过滤ST股票
-        st_filter = pd.Series(True, index=data.index)
-        st_stocks = []
+        # 检查数据必要列
+        if 'date' not in data.columns or 'stock_code' not in data.columns:
+            logger.error(f"[FILTER] 数据缺少必要列，可用列: {data.columns.tolist()}")
+            return pd.Series(True, index=data.index)
 
-        for idx, row in data.iterrows():
-            stock_code = row['stock_code']
-            stock_name = stock_names.get(stock_code, "")
+        # 快速日期格式转换（向量化）
+        if pd.api.types.is_datetime64_any_dtype(data['date']):
+            date_str = data['date'].dt.strftime('%Y%m%d')
+        else:
+            date_str = data['date'].astype(str).str.replace('-', '').str[:8]
 
-            if "ST" in stock_name or "st" in stock_name or stock_name.endswith("退") or "上证" in stock_name or "*" in stock_name:
-                st_filter.loc[idx] = False
-                st_stocks.append(f"{stock_code}({stock_name})")
+        # 读取 ST 数据（只加载需要的列以提高性能）
+        try:
+            st_df = pd.read_parquet(st_file, columns=['trade_date', 'ts_code'])
+        except Exception as e:
+            logger.error(f"[FILTER] 读取ST数据文件失败: {e}")
+            return pd.Series(True, index=data.index)
 
-        st_count = (~st_filter).sum()
+        # 检查 ST 数据列
+        if 'trade_date' not in st_df.columns or 'ts_code' not in st_df.columns:
+            logger.error(f"[FILTER] ST数据文件缺少必要列，可用列: {st_df.columns.tolist()}")
+            return pd.Series(True, index=data.index)
+
+        # 高效过滤算法：使用 merge + 向量化操作
+        # 步骤1: 准备临时列
+        data['_temp_date'] = date_str
+
+        # 步骤2: 使用 merge 快速匹配（比循环+字典查找更快）
+        merged = data.merge(
+            st_df,
+            left_on=['_temp_date', 'stock_code'],
+            right_on=['trade_date', 'ts_code'],
+            how='left',
+            indicator=True
+        )
+
+        # 步骤3: 向量化判断：只在 ST 数据中的股票被标记为 True
+        is_st = merged['_merge'] == 'both'
+
+        # 步骤4: 创建过滤结果（True = 非ST，False = ST）
+        st_filter = ~is_st
+
+        # 步骤5: 清理临时列
+        if '_temp_date' in data.columns:
+            del data['_temp_date']
+
+        # ✅ 修复：重置 st_filter 的索引，使其与原始 data 对齐
+        # 因为 merged 的索引是 RangeIndex，而 data 可能有原始索引
+        # 我们需要创建一个与 data 索引对齐的 Series
+        st_filter_aligned = pd.Series(st_filter.values, index=data.index)
+
+        # 统计和日志
+        st_count = (~st_filter_aligned).sum()
         if st_count > 0:
+            # 获取ST股票示例（用于日志）
+            # ✅ 修复：使用 merged 而不是 data，避免索引不对齐问题
+            st_stocks_example = merged.loc[~st_filter, 'stock_code'].unique()[:5]
             logger.info(f"[FILTER] ST股票过滤: 过滤掉 {st_count} 只ST股票")
-            if len(st_stocks) <= 5:  # 如果数量不多，显示具体股票
-                logger.info(f"   ST股票: {', '.join(st_stocks)}")
-            elif len(st_stocks) > 5:
-                logger.info(f"   ST股票示例: {', '.join(st_stocks[:3])} 等{len(st_stocks)}只")
+            if len(st_stocks_example) > 0:
+                logger.info(f"   ST股票示例: {', '.join(st_stocks_example)} 等{st_count}只")
 
-        remaining_count = st_filter.sum()
-        # logger.info(f"[CHART] ST股票过滤后剩余: {remaining_count} 只非ST股票")
+        remaining_count = st_filter_aligned.sum()
+        logger.info(f"[FILTER] ST股票过滤后剩余: {remaining_count} 只非ST股票")
 
-        return st_filter
+        return st_filter_aligned
 
     except Exception as e:
-        logger.info(f"[FAIL] ST股票过滤失败: {e}")
+        logger.error(f"[FAIL] ST股票过滤失败: {e}")
+        import traceback
+        logger.error(f"[FAIL] 错误详情: {traceback.format_exc()}")
         # 出错时不过滤任何股票
         return pd.Series(True, index=data.index)
+
+
 
 def _get_trading_dates_cache():
     """获取交易日缓存"""
@@ -7828,77 +8062,535 @@ def analyze_bucket_ranges(board_data, valid_mask):
 
 
 
+# def _generate_training_labels_for_all_data(stock_data):
+#     """
+#     日频 Rank 标签（无 VWAP 版本）
+#     买入：T+1 open
+#     卖出代理：T+2 / T+3 Typical Price
+#     """
+
+#     import numpy as np
+#     import pandas as pd
+
+#     stock_data = stock_data.sort_values(
+#         ['stock_code', 'date']
+#     ).reset_index(drop=True)
+
+#     g = stock_data.groupby('stock_code')
+
+#     # ========= 1. 买入价 =========
+#     buy_price = g['open'].shift(-1)
+#     close_price = g['close'].shift(-1)
+
+#     # ========= 2. 卖出代理价 =========
+#     tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
+#     stock_data['sell'] = tp
+
+#     sell_t2 = g['sell'].shift(-2)
+#     sell_t3 = g['sell'].shift(-3)
+#     # sell_t1 = g['sell'].shift(-1)
+
+#     # 等权平均，表示“2~3 天期望卖出”
+#     # sell_price = 0.8 * sell_t2 + 0.2 * sell_t3
+#     sell_price = 0.5 * close_price + 0.4* sell_t2 + 0.1 * sell_t3
+
+#     # ========= 3. 信息收益 =========
+#     future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
+#     future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
+#     stock_data['atr_return_label'] = future_ret
+
+#     # 防止脏数据，不是风控
+#     future_ret = future_ret.clip(-0.2, 0.2)
+
+#     low_t3 = g["low"].shift(-3)  # T+1 low
+#     dd_t3 = (buy_price - low_t3) / (buy_price + 1e-12)
+#     dd_t3 = dd_t3.clip(lower=0.05)  # 只惩罚回撤大于5%
+#     low_t2 = g["low"].shift(-2)  # T+1 low
+#     dd_t2 = (buy_price - low_t2) / (buy_price + 1e-12)
+#     dd_t2 = dd_t2.clip(lower=0.05)  # 只惩罚回撤大于5%
+#     future_ret = future_ret - float(0.3) * dd_t2 - float(0.2) * dd_t3
+
+#     stock_data['future_ret'] = future_ret
+
+#     # ========= 4. 横截面 Rank → 离散 Label =========
+#     def rank_to_label(x):
+#         x = x.dropna()
+#         if len(x) < 30:
+#             return pd.Series(np.nan, index=x.index)
+
+#         pct = x.rank(pct=True, method='average')
+
+#         return pd.cut(
+#             pct,
+#             bins=[0, 0.3, 0.6, 0.8, 0.93, 0.98, 1.0],
+#             labels=[0, 1, 2, 3, 4, 5]
+#         ).astype(float)
+
+#     stock_data['relevance'] = (
+#         stock_data
+#         .groupby('date')['future_ret']
+#         .transform(rank_to_label)
+#     )
+
+#     mask_untradable = (
+#         (stock_data['is_limit_up'] == 1) |
+#         (stock_data['is_limit_down'] == 1) |
+#         (stock_data['is_zhaban'] == 1) |
+#         (stock_data['is_can_buy'] == 0) |
+#         (stock_data['amount'].fillna(0) < 10000000)
+#     )
+
+#     stock_data.loc[mask_untradable, 'relevance'] = np.nan
+
+#     return stock_data
+
+
+
+# def _generate_training_labels_for_all_data(stock_data):
+#     """
+#     日频 Rank 标签（无 VWAP 版本）
+#     信号日：T
+#     买入：T+1 open（若 T+1 开盘 跌超3% 或 涨超5% 则跳过买入）
+#     卖出代理：0.5 * (T+1 close) + 0.4 * (T+2 typical) + 0.1 * (T+3 typical)
+#     风险惩罚：对齐实盘（你在 T+2/T+3 才开始 5min 风控）
+#       - T+2 开盘 gap-down（相对买入价）
+#       - T+2/T+3 low 的穿价（相对买入价，超过5%才惩罚）
+#     """
+
+#     import numpy as np
+#     import pandas as pd
+
+#     stock_data = stock_data.sort_values(['stock_code', 'date']).reset_index(drop=True)
+#     g = stock_data.groupby('stock_code', sort=False)
+
+#     # ========= 0) 交易制度：按代码推断涨跌幅限制 =========
+#     code = stock_data['stock_code'].astype(str)
+#     is_20 = code.str.startswith('30') | code.str.startswith('688')
+#     limit = np.where(is_20, 0.20, 0.10).astype('float64')
+#     stock_data['limit_pct'] = limit
+
+#     # ========= 1) 买入价（T+1 open） =========
+#     buy_price = g['open'].shift(-1)        # T+1 open
+#     close_t0  = g['close'].shift(0)        # T close（当前行就是T）
+
+#     # ========= 1.1) 买入风控过滤：T+1 开盘相对 T 收盘的涨跌幅 =========
+#     # 你说的“开盘跌超3%、涨超5%跳过买入”，本质就是这个 gap
+#     open_gap_t1 = (buy_price - close_t0) / (close_t0 + 1e-12)
+#     stock_data['open_gap_t1'] = open_gap_t1
+
+#     mask_skip_buy = (open_gap_t1 <= -0.03) | (open_gap_t1 >= 0.05)
+
+#     # ========= 2) 卖出代理价 =========
+#     tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
+#     stock_data['tp'] = tp
+
+#     close_t1 = g['close'].shift(-1)        # T+1 close
+#     sell_t2  = g['tp'].shift(-2)           # T+2 typical
+#     sell_t3  = g['tp'].shift(-3)           # T+3 typical
+
+#     sell_price = 0.5 * close_t1 + 0.4 * sell_t2 + 0.1 * sell_t3
+
+#     # ========= 3) 原始未来收益 =========
+#     future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
+#     future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
+#     stock_data['atr_return_label'] = future_ret
+
+#     # ========= 4) 动态 clip（多日加权：建议 1.8*limit 做硬界） =========
+#     clip_hi = 1.8 * stock_data['limit_pct']
+#     future_ret = future_ret.clip(lower=-clip_hi, upper=clip_hi)
+
+#     # ========= 5) 持仓期风险惩罚（对齐你 T+2/T+3 才开始监控） =========
+#     # --- (A) T+2 开盘 gap-down（相对买入价） ---
+#     open_t2 = g['open'].shift(-2)  # T+2 open
+#     gap_t2 = (open_t2 - buy_price) / (buy_price + 1e-12)
+#     gap_down = (-gap_t2).clip(lower=0.0)
+
+#     # 只惩罚超过 3% 的 gap-down（你也可改成 5%）
+#     pen_gap = (gap_down - 0.05).clip(lower=0.0)
+#     # >8% 的部分额外惩罚（对应“快速下跌滑点更大”）
+#     pen_gap_extra = (gap_down - 0.08).clip(lower=0.0)
+
+#     # --- (B) T+2/T+3 low 穿价惩罚（超过5%才惩罚） ---
+#     low_t2 = g['low'].shift(-2)
+#     low_t3 = g['low'].shift(-3)
+
+#     dd_t2 = ((buy_price - low_t2) / (buy_price + 1e-12)).clip(lower=0.0)
+#     dd_t3 = ((buy_price - low_t3) / (buy_price + 1e-12)).clip(lower=0.0)
+
+#     pen_dd2 = (dd_t2 - 0.05).clip(lower=0.0)
+#     pen_dd3 = (dd_t3 - 0.05).clip(lower=0.0)
+
+#     # 合成惩罚（注意：不要过大，否则标签被风险项主导）
+#     future_ret = (
+#         future_ret
+#         - 0.35 * pen_gap
+#         - 0.50 * pen_gap_extra
+#         - 0.25 * pen_dd2
+#         - 0.15 * pen_dd3
+#     )
+
+#     stock_data['future_ret'] = future_ret
+
+#     # ========= 6) 横截面 Rank → 离散 Label =========
+#     def rank_to_label(x):
+#         x = x.dropna()
+#         if len(x) < 30:
+#             return pd.Series(np.nan, index=x.index)
+
+#         pct = x.rank(pct=True, method='average')
+#         return pd.cut(
+#             pct,
+#             bins=[0, 0.3, 0.6, 0.8, 0.93, 0.98, 1.0],
+#             labels=[0, 1, 2, 3, 4, 5]
+#         ).astype(float)
+
+#     stock_data['relevance'] = stock_data.groupby('date')['future_ret'].transform(rank_to_label)
+
+#     # ========= 7) 不可交易样本置 NaN（加入：买入风控 + 炸板过滤） =========
+#     mask_untradable = (
+#         mask_skip_buy |                               # ✅ 关键：与你实盘一致
+#         (stock_data.get('is_limit_up', 0) == 1) |
+#         (stock_data.get('is_limit_down', 0) == 1) |
+#         (stock_data.get('is_can_buy', 1) == 0) |
+#         (stock_data.get('is_zhaban', 0) == 1) |        # ✅ 炸板过滤
+#         (stock_data.get('amount', 0).fillna(0) < 10000000)
+#     )
+
+#     stock_data.loc[mask_untradable, 'relevance'] = np.nan
+
+#     return stock_data
+
+
 def _generate_training_labels_for_all_data(stock_data):
     """
     日频 Rank 标签（无 VWAP 版本）
-    买入：T+1 open
-    卖出代理：T+2 / T+3 Typical Price
+
+    信号日：T
+    买入：T+1 open（若 T+1 开盘相对 T 收盘：跌超3% 或 涨超5% 则跳过买入）
+    卖出代理：0.5 * (T+1 close) + 0.4 * (T+2 typical) + 0.1 * (T+3 typical)
+
+    标签字段：
+      - atr_return_label : 原始未来收益（不做惩罚/对齐），用于你参数搜索的 top1 收益统计
+      - future_ret       : 对齐实盘路径风险后的收益，用于 rank_to_label → relevance
+
+    风险惩罚（对齐实盘：你在 T+2/T+3 才开始 5min 风控）：
+      - T+2 开盘 gap-down（相对买入价）
+      - T+2/T+3 low 穿价（相对买入价，超过 -5% 才惩罚）
+
+    交易性过滤（置 NaN）：
+      - T+1 买入过滤（开盘跌超3% 或 涨超5%）
+      - T 日涨跌停、不可买、炸板、成交额太小等
     """
 
     import numpy as np
     import pandas as pd
 
-    stock_data = stock_data.sort_values(
-        ['stock_code', 'date']
-    ).reset_index(drop=True)
+    stock_data = stock_data.sort_values(["stock_code", "date"]).reset_index(drop=True)
+    g = stock_data.groupby("stock_code", sort=False)
 
-    g = stock_data.groupby('stock_code')
+    # =========================
+    # 可调超参（建议别频繁改）
+    # =========================
+    BUY_GAP_DOWN = -0.03     # T+1 open 相对 T close
+    BUY_GAP_UP   =  0.05
 
-    # ========= 1. 买入价 =========
-    buy_price = g['open'].shift(-1)
+    # 你实盘止损大致 -5%
+    STOP_DD = 0.05
 
-    # ========= 2. 卖出代理价 =========
-    tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
-    stock_data['sell'] = tp
+    # T+2 gap-down 惩罚起点（更贴近“开盘剧烈不利”）
+    PEN_GAP_START = 0.05
+    PEN_GAP_EXTRA = 0.06
 
-    sell_t2 = g['sell'].shift(-2)
-    sell_t3 = g['sell'].shift(-3)
+    # 多日加权卖出导致理论极值比单日大，这里给一个稳健硬界
+    # 10%票：clip约 ±18%；20%票：clip约 ±36%
+    CLIP_MULT = 2.0
 
-    # 等权平均，表示“2~3 天期望卖出”
-    sell_price = 0.8 * sell_t2 + 0.2 * sell_t3
+    # 是否把不可交易样本的 atr_return_label 也置 NaN（强烈建议 True，避免你参数搜索统计口径漂移）
+    MASK_ATR_FOR_UNTRADABLE = True
 
-    # ========= 3. 信息收益 =========
-    future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
-    future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
-    stock_data['atr_return_label'] = future_ret
+    # =========================
+    # 0) 涨跌幅限制：按代码推断
+    # =========================
+    code = stock_data["stock_code"].astype(str)
+    is_20 = code.str.startswith("30") | code.str.startswith("688")
+    # limit_pct = np.where(is_20, 0.20, 0.10).astype("float64")
+    limit_pct = np.where(is_20, 0.10, 0.10).astype("float64")
+    stock_data["limit_pct"] = limit_pct
 
-    # 防止脏数据，不是风控
-    future_ret = future_ret.clip(-0.2, 0.2)
+    # =========================
+    # 1) 买入价（T+1 open）+ 买入过滤
+    # =========================
+    buy_price = g["open"].shift(-1)     # T+1 open
+    close_t0  = g["close"].shift(0)     # T close
 
-    stock_data['future_ret'] = future_ret
+    open_gap_t1 = (buy_price - close_t0) / (close_t0 + 1e-12)
+    stock_data["open_gap_t1"] = open_gap_t1
 
-    # ========= 4. 横截面 Rank → 离散 Label =========
-    def rank_to_label(x):
+    # mask_skip_buy = (open_gap_t1 <= BUY_GAP_DOWN) | (open_gap_t1 >= BUY_GAP_UP)
+
+    # =========================
+    # 2) 卖出代理价：0.5*(T+1 close) + 0.4*(T+2 tp) + 0.1*(T+3 tp)
+    # =========================
+    tp = (stock_data["high"] + stock_data["low"] + stock_data["close"]) / 3.0
+    stock_data["tp"] = tp
+
+    close_t1 = g["close"].shift(-1)     # T+1 close
+    sell_t2  = g["tp"].shift(-2)        # T+2 typical
+    sell_t3  = g["tp"].shift(-3)        # T+3 typical
+    # sell_t2  = g["close"].shift(-2)        # T+2 typical
+
+    # sell_price = 0.5 * close_t1 + 0.4 * sell_t2 + 0.1 * sell_t3
+    sell_price = 0.5 * sell_t2 + 0.5 * sell_t3
+    # sell_price = sell_t2 
+
+
+    # =========================
+    # 3) 原始未来收益（用于 atr_return_label）
+    # =========================
+    future_ret_raw = (sell_price - buy_price) / (buy_price + 1e-12)
+    future_ret_raw = future_ret_raw.replace([np.inf, -np.inf], np.nan)
+    stock_data["atr_return_label"] = future_ret_raw
+
+
+    # ✅ 这个字段保持“原始未来收益”的定义，不做惩罚/不对齐
+    # stock_data["atr_return_label"] = future_ret_raw
+
+    # =========================
+    # 4) future_ret：用于 relevance 的收益（对齐实盘）
+    #    先做动态 clip（防脏数据 + 与 10/20% 制度一致）
+    # =========================
+    clip_hi = CLIP_MULT * stock_data["limit_pct"]
+    future_ret = future_ret_raw.clip(lower=-clip_hi, upper=clip_hi)
+
+    stock_data["future_ret"] = future_ret
+    
+    # =========================
+    # 6) 横截面 Rank → 离散 Label（基于 future_ret）
+    # =========================
+    def rank_to_label(x: pd.Series) -> pd.Series:
         x = x.dropna()
         if len(x) < 30:
             return pd.Series(np.nan, index=x.index)
 
-        pct = x.rank(pct=True, method='average')
-
+        pct = x.rank(pct=True, method="average")
         return pd.cut(
             pct,
             bins=[0, 0.3, 0.6, 0.8, 0.93, 0.98, 1.0],
-            labels=[0, 1, 2, 3, 4, 5]
+            labels=[0, 1, 2, 3, 4, 5],
         ).astype(float)
 
-    stock_data['relevance'] = (
-        stock_data
-        .groupby('date')['future_ret']
-        .transform(rank_to_label)
-    )
+    stock_data["relevance"] = stock_data.groupby("date")["future_ret"].transform(rank_to_label)
+
+    # =========================
+    # 7) 不可交易样本置 NaN（买入过滤 + 炸板过滤）
+    # =========================
+    # 说明：
+    # - 你这里的 is_can_buy 是“根据 T+1 的涨停时间反推到 T”，属于你策略定义的一部分，保留。
+    # - is_zhaban==1 表示 T 日炸板：你实盘会过滤，训练/回测也应该过滤。
+    amount = stock_data.get("amount", 0)
+    if hasattr(amount, "fillna"):
+        amount_val = amount.fillna(0)
+    else:
+        amount_val = amount
 
     mask_untradable = (
-        (stock_data['is_limit_up'] == 1) |
-        (stock_data['is_limit_down'] == 1) |
-        (stock_data['is_zhaban'] == 1) |
-        (stock_data['is_can_buy'] == 0) |
-        (stock_data['amount'].fillna(0) < 10000000)
+        # mask_skip_buy |
+        (stock_data.get("is_limit_up", 0) == 1) |
+        (stock_data.get("is_limit_down", 0) == 1) |
+        (stock_data.get("is_can_buy", 1) == 0) |
+        (stock_data.get("is_zhaban", 0) == 1) |
+        (amount_val < 10_000_000)
     )
 
-    stock_data.loc[mask_untradable, 'relevance'] = np.nan
+    stock_data.loc[mask_untradable, "relevance"] = np.nan
+
+    # 强烈建议：同步 mask 掉 atr_return_label，避免你参数搜索 top1 统计口径混入“实盘不会交易”的样本
+    if MASK_ATR_FOR_UNTRADABLE:
+        stock_data.loc[mask_untradable, "atr_return_label"] = np.nan
+        stock_data.loc[mask_untradable, "future_ret"] = np.nan
 
     return stock_data
 
+def score_top1_model(daily_top1_returns, test_data_raw=None, test_pred=None, test_dates=None, y_test_original=None):
+    """
+    用“贴近你回测风控”的日线 proxy 给 Top1 模型打分。
+    关键修复：允许 test_data_raw 比 test_pred/test_dates 更长，并自动对齐前 N 行。
+
+    返回：
+      score(float)  越大越好
+    """
+    import numpy as np
+    import pandas as pd
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # -------------------------
+    # A) 优先：用 test_data_raw + test_pred 做“实盘风控 proxy”
+    # -------------------------
+    if (test_data_raw is not None) and (test_pred is not None) and (test_dates is not None):
+        raw = test_data_raw
+        need_cols = {"date", "stock_code", "open", "close", "high", "low"}
+
+        if need_cols.issubset(set(raw.columns)):
+            N = len(test_pred)
+            if N >= 30:
+                # ✅ 修复点：raw 可以更长，只取与 X_test/pred 同步的前 N 行
+                if len(raw) < N:
+                    logger.warning(f"[SCORE] test_data_raw 太短: len(raw)={len(raw)} < len(pred)={N}，无法用OHLC proxy，退化打分。")
+                else:
+                    df = raw.iloc[:N].reset_index(drop=True).copy()
+
+                    # date/stock_code 标准化
+                    df["date"] = pd.to_datetime(df["date"])
+                    df["stock_code"] = df["stock_code"].astype(str)
+
+                    # pred 按行贴上去（与 X_test 同序假设）
+                    df["pred"] = np.asarray(test_pred, dtype=float)
+
+                    # （可选）用 test_dates 做一次健全性提示，但不再强制一致
+                    try:
+                        td = pd.to_datetime(pd.Series(test_dates).reset_index(drop=True).iloc[:N])
+                        match = float((df["date"].values == td.values).mean())
+                        if match < 0.90:
+                            logger.warning(
+                                f"[SCORE] date alignment ratio={match:.3f} (<0.90). "
+                                f"说明 test_data_raw 与 test_dates 可能不同源/不同序；仍继续按行对齐计算。"
+                            )
+                    except Exception:
+                        pass
+
+                    # 先按(股票,日期)排序，构造未来字段
+                    df = df.sort_values(["stock_code", "date"]).reset_index(drop=True)
+                    g = df.groupby("stock_code", sort=False)
+
+                    df["open_t1"]  = g["open"].shift(-1)
+                    df["close_t1"] = g["close"].shift(-1)
+
+                    df["tp"]    = (df["high"] + df["low"] + df["close"]) / 3.0
+                    df["tp_t2"] = g["tp"].shift(-2)
+                    df["tp_t3"] = g["tp"].shift(-3)
+
+                    df["open_t2"] = g["open"].shift(-2)
+                    df["low_t2"]  = g["low"].shift(-2)
+                    df["low_t3"]  = g["low"].shift(-3)
+
+                    # 回到信号日T：每天取 pred 最大的一只
+                    top1 = (
+                        df.sort_values(["date", "pred"], ascending=[True, False])
+                          .groupby("date", sort=False)
+                          .head(1)
+                          .reset_index(drop=True)
+                    )
+
+                    # --- 买入风控：T+1 open 相对 T close 的 gap（你回测里也会跳过买入） ---
+                    BUY_GAP_DOWN = -0.03
+                    BUY_GAP_UP   =  0.05
+
+                    close_t0 = top1["close"].to_numpy(dtype=float)
+                    buy = top1["open_t1"].to_numpy(dtype=float)
+
+                    open_gap_t1 = (buy - close_t0) / (close_t0 + 1e-12)
+                    mask_skip_buy = (open_gap_t1 <= BUY_GAP_DOWN) | (open_gap_t1 >= BUY_GAP_UP)
+
+                    # --- 卖出代理（按你标签口径；你也可以改成 sell_t2 单独一条，但先一致） ---
+                    sell = (
+                        # 0.5 * top1["close_t1"].to_numpy(dtype=float)+
+                        0.5 * top1["tp_t2"].to_numpy(dtype=float)
+                        + 0.5 * top1["tp_t3"].to_numpy(dtype=float)
+                    )
+                    future_ret_raw = (sell - buy) / (buy + 1e-12)
+
+                    # --- 风控 proxy：你说 T+2/T+3 才开始 5min 风控，所以只用这两天的穿价/开盘不利 ---
+                    open_t2 = top1["open_t2"].to_numpy(dtype=float)
+                    gap_t2 = (open_t2 - buy) / (buy + 1e-12)
+                    gap_down = np.clip(-gap_t2, 0.0, None)
+
+                    pen_gap       = np.clip(gap_down - 0.05, 0.0, None)
+                    pen_gap_extra = np.clip(gap_down - 0.08, 0.0, None)
+
+                    low_t2 = top1["low_t2"].to_numpy(dtype=float)
+                    low_t3 = top1["low_t3"].to_numpy(dtype=float)
+                    dd_t2 = np.clip((buy - low_t2) / (buy + 1e-12), 0.0, None)
+                    dd_t3 = np.clip((buy - low_t3) / (buy + 1e-12), 0.0, None)
+
+                    pen_dd2 = np.clip(dd_t2 - 0.05, 0.0, None)
+                    pen_dd3 = np.clip(dd_t3 - 0.05, 0.0, None)
+
+                    sim_ret = (
+                        future_ret_raw
+                        - 0.30 * pen_gap
+                        - 0.45 * pen_gap_extra
+                        - 0.25 * pen_dd2
+                        - 0.15 * pen_dd3
+                    )
+
+                    # 跳过买入的天：不计入分布
+                    # sim_ret = np.where(mask_skip_buy, np.nan, sim_ret)
+
+                    r = pd.Series(sim_ret).replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+                    r = r[np.isfinite(r)]
+
+                    if r.size >= 30:
+                        med = float(np.median(r))
+                        p25 = float(np.percentile(r, 25))
+                        p10 = float(np.percentile(r, 10))
+
+                        # 可达区间（按你实盘经验）
+                        REALISTIC_UP = 0.20
+                        REALISTIC_DOWN = -0.10
+                        reachable = r[(r >= REALISTIC_DOWN) & (r <= REALISTIC_UP)]
+                        reachable_mean = float(np.mean(reachable)) if reachable.size else float(np.mean(r))
+
+                        # 左尾惩罚（厚度 + p10）
+                        left_thickness = max(0.0, med - p25)
+
+                        # 额外：极左尾（例如<-6%）权重更大一点
+                        STOP_FILL = -0.06
+                        stop_rate = float(np.mean(r <= STOP_FILL))
+                        pen_stop = stop_rate * abs(STOP_FILL)
+
+                        score = (
+                            0.2 * med
+                            + 0.8 * reachable_mean
+                            - 0.05 * pen_stop
+                            - 0.05 * left_thickness
+                            - 0.05 * max(0.0, -p10)
+                        )
+                        logger.info(f"score:{score}, med:{med}, reachable_mean:{reachable_mean}, pen_stop:{pen_stop} ")
+                        return float(score)
+
+    # -------------------------
+    # B) 退化：只用 daily_top1_returns
+    # -------------------------
+    logger.info(f"退化：只用 daily_top1_returns")
+    r = np.asarray(daily_top1_returns, dtype=float)
+    r = r[np.isfinite(r)]
+    if r.size < 30:
+        return -1e9
+
+    med = float(np.median(r))
+    p25 = float(np.percentile(r, 25))
+    p10 = float(np.percentile(r, 10))
+
+    REALISTIC_UP = 0.20
+    REALISTIC_DOWN = -0.10
+    reachable = r[(r >= REALISTIC_DOWN) & (r <= REALISTIC_UP)]
+    reachable_mean = float(np.mean(reachable)) if reachable.size else float(np.mean(r))
+
+    STOP_FILL = -0.06
+    stop_rate = float(np.mean(r <= STOP_FILL))
+    pen_stop = stop_rate * abs(STOP_FILL)
+
+    left_thickness = max(0.0, med - p25)
+
+    score = (
+        0.25 * med
+        + 0.75 * reachable_mean
+        - 0.35 * pen_stop
+        - 0.20 * left_thickness
+        - 0.05 * max(0.0, -p10)
+    )
+    return float(score)
 
 
 def _extract_and_validate_labels(labeled_data, label_column='atr_return_label'):
@@ -14973,7 +15665,8 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             'val_turnover_rate': val_turnover_rate,  # 🆕 添加验证集换手率
             'val_circ_mv': val_circ_mv,  # 🆕 添加验证集流通市值
             'sample_weights': unified_sample_weights,  # 🆕 添加统一计算的样本权重
-            'val_sample_weights': unified_val_weights  # 🆕 添加验证集样本权重
+            'val_sample_weights': unified_val_weights,  # 🆕 添加验证集样本权重
+            'test_data_raw': test_data_valid #test_data  # ✅ 新增：测试集原始数据（包含 open, close 等基础数据）
         }
 
         logger.info(f"[OK] 预处理完成: 训练集{len(X_train_processed):,}样本, 验证集{len(X_val_processed):,}样本")
@@ -14983,6 +15676,11 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             logger.info(f"[OK] 样本权重已添加到预处理数据（供LightGBM使用）")
         else:
             logger.info(f"⏭️ 样本权重未计算（XGBoost排序模型使用分组权重）")
+
+        # ✅ 添加日志：test_data_raw 已添加
+        if test_data is not None:
+            logger.info(f"[OK] 测试集原始数据已添加到预处理数据: {len(test_data)}条记录")
+            logger.info(f"[OK] 测试集原始数据包含列: {test_data.columns.tolist()}")
 
         # 生成统一时间戳
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

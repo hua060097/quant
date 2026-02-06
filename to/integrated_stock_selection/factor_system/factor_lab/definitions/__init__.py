@@ -51,6 +51,7 @@ from .statistical_moments import (
     downside_beta
 )  # noqa: F401
 from .momentum_reversal import (
+    high_to_close_drawdown,
     pct_chg_intra_z,
     pct_chg_sector_mean,
     pct_chg_1d,
