@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_市场错误模拟_训练集数据clip_更改标签1.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_市场错误模拟_训练集数据clip_更改标3.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2727,22 +2727,22 @@ def _get_lgb_search_space():
     space = {
         # 'max_depth': [-1, 3, 4, 5],
         # 'learning_rate': [0.02],
-        'num_leaves': [15, 31],
-        'reg_alpha': [3,5,8,10,20],#0.5, 2
-        'reg_lambda': [3,5,8,10,20],
-        'feature_fraction': [0.5, 0.6,0.8],
-        'bagging_fraction': [0.6, 0.7, 0.8],
+        'num_leaves': [7, 9, 15],
+        'reg_alpha': [0.3,1,3,6, 8, 15,20, 25,30],#0.5, 2
+        'reg_lambda': [0.3, 1,3, 6, 8, 15,20, 25,30],
+        # 'feature_fraction': [0.5, 0.6, 0.9],
+        # 'bagging_fraction': [0.7, 0.8],
         # 'min_data_in_leaf': [200, 220, 240, 250, 260, 270, 280, 290, 295, 300, 305, 310, 315, 320, 325, 330, 335, 340], # 覆盖稀疏到密集 , 330, 400
-        'min_data_in_leaf': [290, 315, 320, 325, 380],
+        'min_data_in_leaf': [100,275, 320, 325,400,600],#560, 720, 1120
         # 'reg_alpha': [5.0, 8.0, 10], #8.5, 
         # 'reg_lambda': [5.0, 8.0, 10], #, 8.5
         # 'n_estimators': [20, 40, 60, 90], #, 200, 300, 800
-        # 'lambdarank_truncation_level': [3,5,7], # 关注头部排名的范围 3,4,5,8,10
+        'lambdarank_truncation_level': [3,5,7], # 关注头部排名的范围 3,4,5,8,10
     }
     
     # 不同的label_gain策略
     label_gain_candidates = [
-        [0, 1, 3, 7, 15, 31], 
+        # [0, 1, 3, 7, 15, 31], 
         # [0, 1, 2, 4, 7, 12],
         # [0, 1, 2, 4, 8, 20],
         [0, 1, 2, 4, 8, 14],
@@ -2811,9 +2811,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # ✅ 提取测试集原始收益率
             y_test_original = preprocessed_data.get('y_test_original', preprocessed_data.get('y_test'))
             test_dates = preprocessed_data.get('test_dates')
+            
 
             # ✅ 提取测试集原始数据（包含 open, close 等基础数据）
             test_data_raw = preprocessed_data.get('test_data_raw')
+            val_data_raw = preprocessed_data.get('val_data_raw')
             if test_data_raw is not None:
                 logger.info(f"  测试集原始数据: {len(test_data_raw)}条记录")
                 logger.info(f"  测试集原始数据列: {test_data_raw.columns.tolist()}")
@@ -3046,7 +3048,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         val_data = lgb.Dataset(**val_data_kwargs)
 
         # Early Stopping配置
-        early_stopping_rounds = 50
+        early_stopping_rounds = 40
         logger.info(f"  Early Stopping: {early_stopping_rounds} rounds")
 
         # 创建一个空字典来存储评估结果
@@ -3071,16 +3073,16 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'lambdarank_norm': True,
             'boosting_type': 'gbdt',
             'learning_rate': 0.02,
-            # 'feature_fraction': 0.5,
-            # 'bagging_fraction': 0.7,
+            'feature_fraction': 0.5,
+            'bagging_fraction': 0.7,
             # 'num_leaves': 15,
             'max_depth': -1,
             # 'label_gain': [0, 1, 2, 4, 8, 14],
             'bagging_freq': 1,
-            'lambdarank_truncation_level': 5,
+            # 'lambdarank_truncation_level': 5,
             'n_jobs': -1,
             'verbosity': -1,
-            'n_estimators': 350,
+            'n_estimators': 400,
             'random_state': 42
         }
 
@@ -3093,7 +3095,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         search_space, label_gain_options = _get_lgb_search_space()
 
         # ✅ 定义计算测试集 Top1 平均收益率的函数
-        def calculate_test_top1_avg_return(model, X_test, y_test_original, test_dates, test_data_raw=None):
+        def calculate_test_top1_avg_return(model, X_test, X_val, y_test_original, y_val_original, val_dates, test_dates, test_data_raw=None, val_data_raw=None):
             """
             计算测试集 Top1 平均收益率
 
@@ -3111,6 +3113,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
             # 预测测试集
             test_pred = model.predict(X_test, num_iteration=model.best_iteration)
+            val_pred = model.predict(X_val, num_iteration=model.best_iteration)
 
             if test_dates is not None:
                 # 有日期信息：按日期分组计算每日top1
@@ -3120,24 +3123,100 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     'return': y_test_original
                 })
 
+
+
+                df_val = pd.DataFrame({
+                    'date': val_dates,
+                    'pred': val_pred,
+                    'return': y_val_original
+                })
+
+
+                # 🆕 计算测试集每日 top1（应用涨跌停炸板过滤）
                 daily_top1_returns = []
                 for date_val, group in df.groupby('date'):
-                    if len(group) >= 1:
-                        top1_return = group.nlargest(1, 'pred')['return'].values[0]
+                    # 过滤掉当日的涨跌停、炸板股票
+                    group_filtered = group[group['return'].notna()]
+                    if len(group_filtered) >= 1:
+                        # 从过滤后的股票中取预测值 top1
+                        top1_return = group_filtered.nlargest(1, 'pred')['return'].values[0]
                         daily_top1_returns.append(top1_return)
+                    else:
+                        # 过滤后没有可交易股票，跳过该日期
+                        logger.debug(f"  [测试集跳过] {date_val}: 过滤后无可用股票（原始:{len(group)}只）")
+
+                # 🆕 计算验证集每日 top1（应用涨跌停炸板过滤）
+                val_daily_top1_returns = []
+                for date_val, group in df_val.groupby('date'):
+                    # 过滤掉当日的涨跌停、炸板股票
+                    group_filtered = group[group['return'].notna()]
+
+                    if len(group_filtered) >= 1:
+                        # 从过滤后的股票中取预测值 top1
+                        top1_return = group_filtered.nlargest(1, 'pred')['return'].values[0]
+                        val_daily_top1_returns.append(top1_return)
+                    else:
+                        # 过滤后没有可交易股票，跳过该日期
+                        logger.debug(f"  [验证集跳过] {date_val}: 过滤后无可用股票（原始:{len(group)}只）")
 
                 # top1_avg_return = (0.7 * np.median(daily_top1_returns) + 0.3 * np.mean(daily_top1_returns)) if daily_top1_returns else 0.0
                 # top1_avg_return = np.mean(daily_top1_returns) if daily_top1_returns else 0.0
-                # ✅ 如果提供了 test_data_raw，调用增强版的 score_top1_model
+
                 if test_data_raw is not None:
-                    if np.median(daily_top1_returns) > 0:
-                        top1_avg_return =  np.mean(daily_top1_returns) 
-                    else: 
+                    # ✅ 获取特征重要性
+                    importance = model.feature_importance(importance_type='gain')
+                    feature_importance_df = pd.DataFrame({
+                        'feature': feature_columns,
+                        'importance': importance
+                    }).sort_values('importance', ascending=False)
+
+                    top5_features = set(feature_importance_df.head(5)['feature'].tolist())
+
+                    # 检查 price_ma5_ratio 和 price_ma5_ratio_z 是否有一个在前5
+                    price_ma5_in_top5 = 'price_ma5_ratio' in top5_features
+                    price_ma5_z_in_top5 = 'price_ma5_ratio_z' in top5_features
+                    feature_importance_condition = price_ma5_in_top5 or price_ma5_z_in_top5
+
+                    # 检查验证集中位数
+                    val_median_condition = np.median(val_daily_top1_returns) > 0.007
+                    test_median_condition = np.median(daily_top1_returns) > 0.007
+                    from scipy import stats
+                    r1 = np.array(daily_top1_returns)
+                    r2 = np.array(val_daily_top1_returns)
+                    trimmed1 = stats.trim_mean(r1, 0.1)
+                    median1 = np.median(r1)
+                    win_rate1 = np.mean(r1 > 0)
+                    trimmed2 = stats.trim_mean(r2, 0.1)
+                    median2 = np.median(r2)
+                    win_rate2 = np.mean(r2 > 0)
+                    score1 = (
+                        0.5 * trimmed1 +
+                        0.3 * median1 +
+                        0.2 * win_rate1 * trimmed1
+                    )
+                    score2 = (
+                        0.5 * trimmed2 +
+                        0.3 * median2 +
+                        0.2 * win_rate2 * trimmed2
+                    )
+
+                    # ✅ 两个条件必须同时满足（AND关系）
+                    if True:#feature_importance_condition:  #val_median_condition and 
+                        top1_avg_return = score1 *0.6 + score2 * 0.4
+                        logger.info(f"score: {top1_avg_return}, test_top1_return: {np.mean(daily_top1_returns)}, val_top1_return: {np.mean(val_daily_top1_returns)}")
+                        logger.info(f"  [条件验证] val_median>0: {val_median_condition}, price_ma5_ratio或price_ma5_ratio_z在前5: {feature_importance_condition}")
+                    else:
                         top1_avg_return = 0
+                        logger.info(f"  [条件不满足] 返回0分")
+                        logger.info(f"    val_median>0: {val_median_condition}")
+                        logger.info(f"    price_ma5_ratio或price_ma5_ratio_z在前5: {feature_importance_condition}")
+                        if not feature_importance_condition:
+                            logger.info(f"      price_ma5_ratio排名: {feature_importance_df[feature_importance_df['feature']=='price_ma5_ratio'].index[0] if 'price_ma5_ratio' in feature_importance_df['feature'].values else 'N/A'}")
+                            logger.info(f"      price_ma5_ratio_z排名: {feature_importance_df[feature_importance_df['feature']=='price_ma5_ratio_z'].index[0] if 'price_ma5_ratio_z' in feature_importance_df['feature'].values else 'N/A'}")
                     # top1_avg_return = score_top1_model(daily_top1_returns, test_data_raw=test_data_raw, test_pred=test_pred, test_dates=test_dates, y_test_original=y_test_original)
                 else:
                     logger.info(f" 没有test_data_raw")
-                    top1_avg_return = score_top1_model(daily_top1_returns)
+                    top1_avg_return = np.mean(daily_top1_returns)
             else:
                 logger.info(f" 没有日期信息：全局Top1")
                 # 没有日期信息：全局Top1
@@ -3210,14 +3289,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             model = lgb.train(
                 current_params,
                 train_data,
-                num_boost_round=350,
+                num_boost_round=400,
                 valid_sets=[train_data, val_data],
                 valid_names=['train', 'valid'],
                 callbacks=callbacks
             )
 
             # ✅ 计算测试集 Top1 平均收益率
-            top1_return = calculate_test_top1_avg_return(model, X_test_scaled, y_test_original, test_dates, test_data_raw)
+            top1_return = calculate_test_top1_avg_return(model, X_test_scaled, X_val_scaled, y_test_original, y_val_original,  val_dates, test_dates, test_data_raw,val_data_raw)
 
             logger.info(f"  [Iter {i+1}] 测试集 Top1 平均收益率: {top1_return:.4f}")
 
@@ -5733,54 +5812,6 @@ def _get_zscore_factors():
     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
     """
     return [
-        'range_compression',
-        'body_efficiency',
-        'shadow_dominance',
-        'gap_power',
-        'overnight_return',
-        'kdj_golden_cross_strength',
-        'open_to_high_ratio',
-        'sector_concentration',
-        'sector_rank_change_5d',
-        'sector_breadth',
-        'intraday_clv',
-        'beta_60d',
-        'amihud_illiquidity',
-        'abnormal_turnover',
-        'efficiency_ratio',
-        'mass_index_reversal',
-        'price_acceleration',
-        'ma60_slope',
-        # 'price_ma60_ratio',
-        'kdj_diff_9',
-        'kdj_j_9',
-        'kdj_k_9',
-        'stable_momentum',
-        'momentum_decay',
-        'turnover_stability',
-        'money_flow_pressure',
-        'ulcer_index',
-        'max_drawdown_20d',
-        'max_rally_20d',
-        'ppo_strength',
-        'mfi_strength',
-        'relative_strength_20d',
-        'volatility_structure_alpha',
-        'price_impact',
-        'volume_structure_alpha',
-        'pct_chg_1d',
-        'pct_chg_2d',
-        'regime_aware_reversal_alpha',
-        'trend_acceleration',
-        'trend_consistency',
-        'trend_pullback_composite_alpha',
-        'cpv_factor',
-        # 'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
-        'volume_confirmed_pullback_alpha',
-        'distance_from_52w_high',
-        'distance_from_52w_low',
-        'ma_alignment_score',
     ]
 
 
@@ -5806,125 +5837,81 @@ def _get_rankpct_factors():
 def _get_stock_factors():
 
     all_factors = [
-        #--原始因子--#
-        'high_to_close_drawdown',
-        'market_trend_strength',
-        'market_liquidity_change',
-        'market_sentiment_ad',
-        'market_volatility_context',
-        'pct_chg_sector_mean',
-        'return_10d_sector_mean',
-        'return_20d_sector_mean',
-        'return_3d_sector_mean',
-        'return_5d_sector_mean',
-        'sector_momentum_consistency',
-        'sector_momentum_dispersion_rank',
-        'sector_momentum_interaction',
-        'value_growth_rotation',
-        'size_rotation_strength',
-        'sector_dispersion',
-        'sector_relative_volatility',
-        'sector_volatility_5d',
-        'sw_circ_mv_rank_intra_sector',
-        'ma_convergence_score',
-        'pct_chg_intra_z',
-        'return_10d_intra_z',
-        'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
-        'intra_sector_momentum_rank',
-        'sector_trend_gated_momentum_intra_z',
-        'sector_rotation_breakout_intra_z',
-        'sector_leader_capture_rank',
-        'sector_strong_leader_alpha',
-        'sector_liquidity_gated_turnover_z',
-        'sector_weak_reversal_alpha',
-        'sector_momentum_accel_rank',
-        'sector_turnover_change_5d_20d',
-        'sector_hhi_change',
-        'sector_relative_strength_vs_market',
-        'mkt_sector_dispersion',
-        'sector_mkt_corr_20d',
-        'intra_sector_breadth',
-        'market_vols_adaptive_iv',
-        'market_trend_adaptive_beta',
+        'distance_from_52w_high',
+        'price_acceleration',
+
+        'body_efficiency',
+        'shadow_dominance',
+        'range_compression',
+
         'sector_excess_intra_rank',
-        'sector_vols_divergence_alpha',
-        'sector_turnover_surge_pv_alpha',
-        'sector_dispersion_leader_alpha',
-        'vortex_trend',
-        'intraday_reversal',
+
+        'spectral_entropy_20d',
+        'wavelet_highfreq_energy_20d',
+
+        'overnight_return',
+        'price_impact',
+
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
         'limit_sustain_alpha',
-        'market_emotion_resonance_alpha',
-        'resistance_distance',
-        'support_distance',
-        'coskewness',
-        'kurtosis_20d',
-        'skewness_20d',
-        'alpha_001',
-        'alpha_002',
-        'alpha_017',
-        'downside_beta',
-        'sector_correlation_20d',
-        'stock_sector_pos_align',
-        # 'price_ma60_ratio',
-        # 'price_ma60_ratio_z',
-        # 'price_ma5_ratio',
-        # 'price_ma10_ratio',
-        # 'price_ma10_ratio_z',
-        'price_ma5_ratio_z',
 
-    # ===== 按日z-score =====
-        'range_compression',
-        'body_efficiency',
-        'shadow_dominance',
-        'gap_power',
-        'overnight_return',
-        'kdj_golden_cross_strength',
-        'open_to_high_ratio',
-        'sector_concentration',
-        'sector_rank_change_5d',
-        'sector_breadth',
-        'intraday_clv',
-        'beta_60d',
-        'amihud_illiquidity',
-        'abnormal_turnover',
-        'efficiency_ratio',
-        'mass_index_reversal',
-        'price_acceleration',
-        'ma60_slope',
-        # 'price_ma60_ratio',
-        'kdj_diff_9',
-        'kdj_j_9',
-        'kdj_k_9',
-        'stable_momentum',
-        'momentum_decay',
         'turnover_stability',
         'money_flow_pressure',
+        'amihud_illiquidity',
+
+        'relative_strength_20d',
+        'beta_60d',
+
+        'mrk_emotion_x_pullback_quality',
+        'mrk_breadth_x_relstrength_5d',
+        'mrk_volreg_x_lowvol_trend_20d',
+        'mrk_emotion_x_intraday_failure',
+
+        'mkt_sector_dispersion',
+        'sector_mkt_corr_20d',
+        'intra_sector_breadth',
+
+        'high_to_close_drawdown',
+        'intraday_clv',
+        'stable_momentum',
+        'trend_pullback_composite_alpha',
+        'volume_confirmed_pullback_alpha',
+        'cpv_factor',
+
+        'price_ma5_ratio_z'
+        'ma_alignment_score',
+        'ma60_slope',
+
+        'efficiency_ratio',
         'ulcer_index',
         'max_drawdown_20d',
-        'max_rally_20d',
-        'ppo_strength',
-        'mfi_strength',
-        'relative_strength_20d',
-        'volatility_structure_alpha',
-        'price_impact',
-        'volume_structure_alpha',
-        'pct_chg_1d',
-        'pct_chg_2d',
-        'regime_aware_reversal_alpha',
-        'trend_acceleration',
-        'trend_consistency',
-        'trend_pullback_composite_alpha',
-        'cpv_factor',
-        # 'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
-        'volume_confirmed_pullback_alpha',
-        'distance_from_52w_high',
-        'distance_from_52w_low',
-        'ma_alignment_score',
+
+        'sector_strong_leader_alpha',
+        'sector_weak_reversal_alpha',
+        'sector_leader_capture_rank',
+        'sector_rotation_breakout_intra_z',
+        'sector_trend_gated_momentum_intra_z',
+
+        'intra_sector_momentum_rank',
+        'sector_dispersion',
+        'sector_momentum_consistency',
+        'sw_circ_mv_rank_intra_sector',
+
+        'sector_emotion_heat_level_20d',
+        'sector_emotion_heat_accel_3d',
+        'sector_divergence_risk',
+        'sector_drawdown_from_peak_10d',
+        'breakout_z',
+
+        'sw_wv_trend_gate_intra_momentum',
+        'sw_wv_burst_gate_intra_leader',
+        'sw_wv_energy_gate_intra_lowvol',
+
+        'support_distance',
+        'resistance_distance',
+        'alpha_002',
+        'alpha_017'
 
 
     # ===== 按行业z-score =====
@@ -5951,6 +5938,33 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # 'mkt_adv_dec',
+        # 'mkt_limit_balance',
+        # 'mkt_limit_up_ratio',
+        # 'mkt_limit_down_ratio',
+        # 'mkt_zhaban_ratio',
+        # 'mkt_emotion_heat',
+        # 'mkt_emotion_heat_dom_period_32d',
+        # 'mkt_emotion_heat_dom_strength_32d',
+        # 'mkt_emotion_heat_spec_entropy_32d',
+        # 'mkt_emotion_heat_hf_energy_ratio_32d',
+        # 'mkt_adv_dec_ma3',
+        # 'mkt_limit_balance_ma3',
+        # 'mkt_emotion_heat_ma3',
+        # 'mkt_adv_dec_delta3',
+        # 'mkt_limit_balance_delta3',
+        # 'mkt_emotion_heat_delta3',
+        'mkt_adv_dec_z10',
+        'mkt_limit_balance_z10',
+        'mkt_emotion_heat_z10',
+
+
+        'leader_acceleration_score',
+        'vol_price_explosion_score',
+        'dragon_resonance_score',
+        'ma5_ratio_acceleration',
+        'sector_rank_stability_3d',
+        'ma5_ratio_risk_penalty'
         'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
@@ -5974,8 +5988,8 @@ def _get_original_factors():
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
+        # 'return_3d_intra_z',
+        # 'return_5d_intra_z',
         'intra_sector_momentum_rank',
         'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
@@ -5987,16 +6001,16 @@ def _get_original_factors():
         'sector_turnover_change_5d_20d',
         'sector_hhi_change',
         'sector_relative_strength_vs_market',
-        'mkt_sector_dispersion',
-        'sector_mkt_corr_20d',
-        'intra_sector_breadth',
-        'market_vols_adaptive_iv',
-        'market_trend_adaptive_beta',
-        'sector_excess_intra_rank',
+        # 'mkt_sector_dispersion',
+        # 'sector_mkt_corr_20d',
+        # 'intra_sector_breadth',
+        # 'market_vols_adaptive_iv',
+        # 'market_trend_adaptive_beta',
+        # 'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
         'sector_turnover_surge_pv_alpha',
         'sector_dispersion_leader_alpha',
-        'vortex_trend',
+        # 'vortex_trend',
         'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
@@ -6007,15 +6021,15 @@ def _get_original_factors():
         'coskewness',
         'kurtosis_20d',
         'skewness_20d',
-        'alpha_001',
-        'alpha_002',
-        'alpha_017',
+        # 'alpha_001',
+        # 'alpha_002',
+        # 'alpha_017',
         'downside_beta',
         'sector_correlation_20d',
-        'stock_sector_pos_align',
+        # 'stock_sector_pos_align',
         # 'price_ma60_ratio',
         # 'price_ma60_ratio_z',
-        # 'price_ma5_ratio',
+        'price_ma5_ratio',
         # 'price_ma10_ratio',
         # 'price_ma10_ratio_z',
         'price_ma5_ratio_z',
@@ -7242,27 +7256,27 @@ def run_generate_factors_mode(args):
             st_filtered_count = 0
 
         # 3. 过滤新股（使用新的_filter_new_stocks_batch函数，放到循环之外）
-        # if has_date_column:
-        #     print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
-        #     try:
-        #         # 使用新的批量处理函数，一次性处理整个stock_data
-        #         original_stock_count = len(stock_data)
-        #         stock_data = _filter_new_stocks_batch(stock_data, logger)
-        #         final_count = len(stock_data)
-        #         total_new_filtered = original_stock_count - final_count
+        if has_date_column:
+            print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
+            try:
+                # 使用新的批量处理函数，一次性处理整个stock_data
+                original_stock_count = len(stock_data)
+                stock_data = _filter_new_stocks_batch(stock_data, logger)
+                final_count = len(stock_data)
+                total_new_filtered = original_stock_count - final_count
 
-        #         if total_new_filtered > 0:
-        #             print(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
-        #         else:
-        #             print(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
+                if total_new_filtered > 0:
+                    print(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
+                else:
+                    print(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
 
-        #     except Exception as e:
-        #         print(f"⚠️  批量新股过滤失败: {e}")
-        #         logger.error(f"批量新股过滤失败: {e}")
-        #         final_count = len(stock_data)
-        # else:
-        #     print("⚠️  警告：缺少date列，跳过新股过滤")
-        #     final_count = len(stock_data)
+            except Exception as e:
+                print(f"⚠️  批量新股过滤失败: {e}")
+                logger.error(f"批量新股过滤失败: {e}")
+                final_count = len(stock_data)
+        else:
+            print("⚠️  警告：缺少date列，跳过新股过滤")
+            final_count = len(stock_data)
 
         # 最终过滤统计
         total_filtered = original_count# - final_count
@@ -8314,7 +8328,7 @@ def _generate_training_labels_for_all_data(stock_data):
     code = stock_data["stock_code"].astype(str)
     is_20 = code.str.startswith("30") | code.str.startswith("688")
     # limit_pct = np.where(is_20, 0.20, 0.10).astype("float64")
-    limit_pct = np.where(is_20, 0.10, 0.10).astype("float64")
+    limit_pct = np.where(is_20, 0.20, 0.10).astype("float64")
     stock_data["limit_pct"] = limit_pct
 
     # =========================
@@ -8340,8 +8354,8 @@ def _generate_training_labels_for_all_data(stock_data):
     # sell_t2  = g["close"].shift(-2)        # T+2 typical
 
     # sell_price = 0.5 * close_t1 + 0.4 * sell_t2 + 0.1 * sell_t3
-    sell_price = 0.5 * sell_t2 + 0.5 * sell_t3
-    # sell_price = sell_t2 
+    # sell_price = 0.5 * sell_t2 + 0.5 * sell_t3
+    sell_price = sell_t2 
 
 
     # =========================
@@ -8398,8 +8412,8 @@ def _generate_training_labels_for_all_data(stock_data):
         (stock_data.get("is_limit_up", 0) == 1) |
         (stock_data.get("is_limit_down", 0) == 1) |
         (stock_data.get("is_can_buy", 1) == 0) |
-        (stock_data.get("is_zhaban", 0) == 1) |
-        (amount_val < 10_000_000)
+        (stock_data.get("is_zhaban", 0) == 1)# |
+        # (amount_val < 10_000_000)
     )
 
     stock_data.loc[mask_untradable, "relevance"] = np.nan
@@ -8410,187 +8424,6 @@ def _generate_training_labels_for_all_data(stock_data):
         stock_data.loc[mask_untradable, "future_ret"] = np.nan
 
     return stock_data
-
-def score_top1_model(daily_top1_returns, test_data_raw=None, test_pred=None, test_dates=None, y_test_original=None):
-    """
-    用“贴近你回测风控”的日线 proxy 给 Top1 模型打分。
-    关键修复：允许 test_data_raw 比 test_pred/test_dates 更长，并自动对齐前 N 行。
-
-    返回：
-      score(float)  越大越好
-    """
-    import numpy as np
-    import pandas as pd
-    import logging
-    logger = logging.getLogger(__name__)
-
-    # -------------------------
-    # A) 优先：用 test_data_raw + test_pred 做“实盘风控 proxy”
-    # -------------------------
-    if (test_data_raw is not None) and (test_pred is not None) and (test_dates is not None):
-        raw = test_data_raw
-        need_cols = {"date", "stock_code", "open", "close", "high", "low"}
-
-        if need_cols.issubset(set(raw.columns)):
-            N = len(test_pred)
-            if N >= 30:
-                # ✅ 修复点：raw 可以更长，只取与 X_test/pred 同步的前 N 行
-                if len(raw) < N:
-                    logger.warning(f"[SCORE] test_data_raw 太短: len(raw)={len(raw)} < len(pred)={N}，无法用OHLC proxy，退化打分。")
-                else:
-                    df = raw.iloc[:N].reset_index(drop=True).copy()
-
-                    # date/stock_code 标准化
-                    df["date"] = pd.to_datetime(df["date"])
-                    df["stock_code"] = df["stock_code"].astype(str)
-
-                    # pred 按行贴上去（与 X_test 同序假设）
-                    df["pred"] = np.asarray(test_pred, dtype=float)
-
-                    # （可选）用 test_dates 做一次健全性提示，但不再强制一致
-                    try:
-                        td = pd.to_datetime(pd.Series(test_dates).reset_index(drop=True).iloc[:N])
-                        match = float((df["date"].values == td.values).mean())
-                        if match < 0.90:
-                            logger.warning(
-                                f"[SCORE] date alignment ratio={match:.3f} (<0.90). "
-                                f"说明 test_data_raw 与 test_dates 可能不同源/不同序；仍继续按行对齐计算。"
-                            )
-                    except Exception:
-                        pass
-
-                    # 先按(股票,日期)排序，构造未来字段
-                    df = df.sort_values(["stock_code", "date"]).reset_index(drop=True)
-                    g = df.groupby("stock_code", sort=False)
-
-                    df["open_t1"]  = g["open"].shift(-1)
-                    df["close_t1"] = g["close"].shift(-1)
-
-                    df["tp"]    = (df["high"] + df["low"] + df["close"]) / 3.0
-                    df["tp_t2"] = g["tp"].shift(-2)
-                    df["tp_t3"] = g["tp"].shift(-3)
-
-                    df["open_t2"] = g["open"].shift(-2)
-                    df["low_t2"]  = g["low"].shift(-2)
-                    df["low_t3"]  = g["low"].shift(-3)
-
-                    # 回到信号日T：每天取 pred 最大的一只
-                    top1 = (
-                        df.sort_values(["date", "pred"], ascending=[True, False])
-                          .groupby("date", sort=False)
-                          .head(1)
-                          .reset_index(drop=True)
-                    )
-
-                    # --- 买入风控：T+1 open 相对 T close 的 gap（你回测里也会跳过买入） ---
-                    BUY_GAP_DOWN = -0.03
-                    BUY_GAP_UP   =  0.05
-
-                    close_t0 = top1["close"].to_numpy(dtype=float)
-                    buy = top1["open_t1"].to_numpy(dtype=float)
-
-                    open_gap_t1 = (buy - close_t0) / (close_t0 + 1e-12)
-                    mask_skip_buy = (open_gap_t1 <= BUY_GAP_DOWN) | (open_gap_t1 >= BUY_GAP_UP)
-
-                    # --- 卖出代理（按你标签口径；你也可以改成 sell_t2 单独一条，但先一致） ---
-                    sell = (
-                        # 0.5 * top1["close_t1"].to_numpy(dtype=float)+
-                        0.5 * top1["tp_t2"].to_numpy(dtype=float)
-                        + 0.5 * top1["tp_t3"].to_numpy(dtype=float)
-                    )
-                    future_ret_raw = (sell - buy) / (buy + 1e-12)
-
-                    # --- 风控 proxy：你说 T+2/T+3 才开始 5min 风控，所以只用这两天的穿价/开盘不利 ---
-                    open_t2 = top1["open_t2"].to_numpy(dtype=float)
-                    gap_t2 = (open_t2 - buy) / (buy + 1e-12)
-                    gap_down = np.clip(-gap_t2, 0.0, None)
-
-                    pen_gap       = np.clip(gap_down - 0.05, 0.0, None)
-                    pen_gap_extra = np.clip(gap_down - 0.08, 0.0, None)
-
-                    low_t2 = top1["low_t2"].to_numpy(dtype=float)
-                    low_t3 = top1["low_t3"].to_numpy(dtype=float)
-                    dd_t2 = np.clip((buy - low_t2) / (buy + 1e-12), 0.0, None)
-                    dd_t3 = np.clip((buy - low_t3) / (buy + 1e-12), 0.0, None)
-
-                    pen_dd2 = np.clip(dd_t2 - 0.05, 0.0, None)
-                    pen_dd3 = np.clip(dd_t3 - 0.05, 0.0, None)
-
-                    sim_ret = (
-                        future_ret_raw
-                        - 0.30 * pen_gap
-                        - 0.45 * pen_gap_extra
-                        - 0.25 * pen_dd2
-                        - 0.15 * pen_dd3
-                    )
-
-                    # 跳过买入的天：不计入分布
-                    # sim_ret = np.where(mask_skip_buy, np.nan, sim_ret)
-
-                    r = pd.Series(sim_ret).replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-                    r = r[np.isfinite(r)]
-
-                    if r.size >= 30:
-                        med = float(np.median(r))
-                        p25 = float(np.percentile(r, 25))
-                        p10 = float(np.percentile(r, 10))
-
-                        # 可达区间（按你实盘经验）
-                        REALISTIC_UP = 0.20
-                        REALISTIC_DOWN = -0.10
-                        reachable = r[(r >= REALISTIC_DOWN) & (r <= REALISTIC_UP)]
-                        reachable_mean = float(np.mean(reachable)) if reachable.size else float(np.mean(r))
-
-                        # 左尾惩罚（厚度 + p10）
-                        left_thickness = max(0.0, med - p25)
-
-                        # 额外：极左尾（例如<-6%）权重更大一点
-                        STOP_FILL = -0.06
-                        stop_rate = float(np.mean(r <= STOP_FILL))
-                        pen_stop = stop_rate * abs(STOP_FILL)
-
-                        score = (
-                            0.2 * med
-                            + 0.8 * reachable_mean
-                            - 0.05 * pen_stop
-                            - 0.05 * left_thickness
-                            - 0.05 * max(0.0, -p10)
-                        )
-                        logger.info(f"score:{score}, med:{med}, reachable_mean:{reachable_mean}, pen_stop:{pen_stop} ")
-                        return float(score)
-
-    # -------------------------
-    # B) 退化：只用 daily_top1_returns
-    # -------------------------
-    logger.info(f"退化：只用 daily_top1_returns")
-    r = np.asarray(daily_top1_returns, dtype=float)
-    r = r[np.isfinite(r)]
-    if r.size < 30:
-        return -1e9
-
-    med = float(np.median(r))
-    p25 = float(np.percentile(r, 25))
-    p10 = float(np.percentile(r, 10))
-
-    REALISTIC_UP = 0.20
-    REALISTIC_DOWN = -0.10
-    reachable = r[(r >= REALISTIC_DOWN) & (r <= REALISTIC_UP)]
-    reachable_mean = float(np.mean(reachable)) if reachable.size else float(np.mean(r))
-
-    STOP_FILL = -0.06
-    stop_rate = float(np.mean(r <= STOP_FILL))
-    pen_stop = stop_rate * abs(STOP_FILL)
-
-    left_thickness = max(0.0, med - p25)
-
-    score = (
-        0.25 * med
-        + 0.75 * reachable_mean
-        - 0.35 * pen_stop
-        - 0.20 * left_thickness
-        - 0.05 * max(0.0, -p10)
-    )
-    return float(score)
 
 
 def _extract_and_validate_labels(labeled_data, label_column='atr_return_label'):
@@ -14042,11 +13875,11 @@ def run_test_model_walkforward_mode(args):
             {
                 'name': 'Window 3',
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
-                'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
-                'val_start': '2025-03-06',     # 验证集开始
-                'val_end': '2025-05-27',       # 验证集结束 (3个月)
-                'test_start': '2025-06-05',    # 测试集开始
-                'test_end': '2026-02-02'       # 测试集结束 (3个月)2025-12-16
+                'train_end': '2024-12-26',     # 训练集结束 (约21个月，再增加3个月)
+                'val_start': '2024-12-30',     # 验证集开始
+                'val_end': '2025-08-15',       # 验证集结束 (3个月)
+                'test_start': '2025-08-21',    # 测试集开始
+                'test_end': '2025-11-21'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15666,7 +15499,8 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             'val_circ_mv': val_circ_mv,  # 🆕 添加验证集流通市值
             'sample_weights': unified_sample_weights,  # 🆕 添加统一计算的样本权重
             'val_sample_weights': unified_val_weights,  # 🆕 添加验证集样本权重
-            'test_data_raw': test_data_valid #test_data  # ✅ 新增：测试集原始数据（包含 open, close 等基础数据）
+            'test_data_raw': test_data_valid, #test_data  # ✅ 新增：测试集原始数据（包含 open, close 等基础数据）
+            'val_data_raw':val_data_valid
         }
 
         logger.info(f"[OK] 预处理完成: 训练集{len(X_train_processed):,}样本, 验证集{len(X_val_processed):,}样本")

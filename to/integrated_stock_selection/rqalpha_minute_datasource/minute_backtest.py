@@ -21,7 +21,7 @@ import time
 import os
 
 # 导入优化策略架构
-from .strategy_backtest import OptimizedBacktester, run_optimized_backtest
+from .strategy_backtest_lead_fusion_rank_binary_v2 import OptimizedBacktester, run_optimized_backtest
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,1292 @@
+### DEBUG SNIPPETS (first failures)
+
+================================================================================
+iter=1 seg=1
+[window3-search-iter1-seg1] [REFRESH] 开始选股回测...
+2026-02-23 12:48:25 - __main__ - INFO - ============================================================
+2026-02-23 12:48:25 - __main__ - WARNING - [WARNING] 回测数据缺少必要列: ['price_ema20_ratio', 'price_ema50_ratio', 'ema20_ema50_ratio', 'ema50_slope', 'log_price_regression_slope', 'log_price_regression_r2', 'adx_14', 'drawdown_from_20d_high_pct', 'drawdown_atr_ratio', 'atr20', 'negative_days_5d', 'large_red_candle_5d', 'distance_to_support_atr', 'bollinger_percent_b', 'rsi_14']
+2026-02-23 12:48:25 - __main__ - INFO - 为缺失的特征字段设置默认值...
+2026-02-23 12:48:25 - __main__ - INFO -   price_ema20_ratio: 设置默认值 1.0
+2026-02-23 12:48:25 - __main__ - INFO -   price_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:48:25 - __main__ - INFO -   ema20_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:48:25 - __main__ - INFO -   ema50_slope: 设置默认值 0.0
+2026-02-23 12:48:25 - __main__ - INFO -   log_price_regression_slope: 设置默认值 0.0
+2026-02-23 12:48:25 - __main__ - INFO -   log_price_regression_r2: 设置默认值 0.0
+2026-02-23 12:48:25 - __main__ - INFO -   adx_14: 设置默认值 10.0
+2026-02-23 12:48:25 - __main__ - INFO -   drawdown_from_20d_high_pct: 设置默认值 0.0
+2026-02-23 12:48:25 - __main__ - INFO -   drawdown_atr_ratio: 设置默认值 0.0
+2026-02-23 12:48:25 - __main__ - INFO -   atr20: 设置默认值 0.5
+2026-02-23 12:48:25 - __main__ - INFO -   negative_days_5d: 设置默认值 1
+2026-02-23 12:48:25 - __main__ - INFO -   large_red_candle_5d: 设置默认值 1
+2026-02-23 12:48:25 - __main__ - INFO -   distance_to_support_atr: 设置默认值 0.5
+2026-02-23 12:48:25 - __main__ - INFO -   bollinger_percent_b: 设置默认值 0.5
+2026-02-23 12:48:25 - __main__ - INFO -   rsi_14: 设置默认值 50.0
+2026-02-23 12:48:25 - __main__ - INFO - 
+[window3-search-iter1-seg1] [SEARCH] 回测数据字段检查
+2026-02-23 12:48:25 - __main__ - INFO - 总行数: 238083
+2026-02-23 12:48:25 - __main__ - INFO - 总列数: 115
+2026-02-23 12:48:25 - __main__ - INFO -   date: 缺失0(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   stock_code: 缺失0(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   volume: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   is_can_buy: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   pct_chg: 缺失0(0.00%), 为06498(2.73%)
+2026-02-23 12:48:25 - __main__ - INFO -   open: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   high: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   low: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   close: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   atr14: 缺失0(0.00%), 为0238083(100.00%)
+2026-02-23 12:48:25 - __main__ - INFO - 
+[window3-search-iter1-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 开始新股过滤: 238,083 条记录
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+
+================================================================================
+iter=1 seg=1
+[window3-search-iter1-seg1] [SEARCH] 回测数据字段检查
+2026-02-23 12:48:25 - __main__ - INFO - 总行数: 238083
+2026-02-23 12:48:25 - __main__ - INFO - 总列数: 115
+2026-02-23 12:48:25 - __main__ - INFO -   date: 缺失0(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   stock_code: 缺失0(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   volume: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   is_can_buy: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   pct_chg: 缺失0(0.00%), 为06498(2.73%)
+2026-02-23 12:48:25 - __main__ - INFO -   open: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   high: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   low: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   close: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:48:25 - __main__ - INFO -   atr14: 缺失0(0.00%), 为0238083(100.00%)
+2026-02-23 12:48:25 - __main__ - INFO - 
+[window3-search-iter1-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 开始新股过滤: 238,083 条记录
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 数据日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+
+================================================================================
+iter=1 seg=1
+[window3-search-iter1-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 开始新股过滤: 238,083 条记录
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 数据日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301500.SZ IPO日期: 20230921, 第60个交易日: 20231102
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301498.SZ IPO日期: 20230816, 第60个交易日: 20230919
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301489.SZ IPO日期: 20231024, 第60个交易日: 20231127
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301488.SZ IPO日期: 20230704, 第60个交易日: 20230807
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301487.SZ IPO日期: 20230809, 第60个交易日: 20230912
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301486.SZ IPO日期: 20230707, 第60个交易日: 20230810
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301469.SZ IPO日期: 20230822, 第60个交易日: 20230925
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301499.SZ IPO日期: 20230721, 第60个交易日: 20230824
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301550.SZ IPO日期: 20230915, 第60个交易日: 20231027
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301548.SZ IPO日期: 20230920, 第60个交易日: 20231101
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 开始新股过滤: 238,083 条记录
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 数据日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301500.SZ IPO日期: 20230921, 第60个交易日: 20231102
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301498.SZ IPO日期: 20230816, 第60个交易日: 20230919
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301489.SZ IPO日期: 20231024, 第60个交易日: 20231127
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301488.SZ IPO日期: 20230704, 第60个交易日: 20230807
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301487.SZ IPO日期: 20230809, 第60个交易日: 20230912
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301486.SZ IPO日期: 20230707, 第60个交易日: 20230810
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301469.SZ IPO日期: 20230822, 第60个交易日: 20230925
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301499.SZ IPO日期: 20230721, 第60个交易日: 20230824
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301550.SZ IPO日期: 20230915, 第60个交易日: 20231027
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301548.SZ IPO日期: 20230920, 第60个交易日: 20231101
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301539.SZ IPO日期: 20240415, 第60个交易日: 20240522
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 开始新股过滤: 238,083 条记录
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:48:26 - __main__ - INFO - [FILTER] 数据日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301500.SZ IPO日期: 20230921, 第60个交易日: 20231102
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301498.SZ IPO日期: 20230816, 第60个交易日: 20230919
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301489.SZ IPO日期: 20231024, 第60个交易日: 20231127
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301488.SZ IPO日期: 20230704, 第60个交易日: 20230807
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301487.SZ IPO日期: 20230809, 第60个交易日: 20230912
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301486.SZ IPO日期: 20230707, 第60个交易日: 20230810
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301469.SZ IPO日期: 20230822, 第60个交易日: 20230925
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301499.SZ IPO日期: 20230721, 第60个交易日: 20230824
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301550.SZ IPO日期: 20230915, 第60个交易日: 20231027
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301548.SZ IPO日期: 20230920, 第60个交易日: 20231101
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301539.SZ IPO日期: 20240415, 第60个交易日: 20240522
+2026-02-23 12:48:27 - __main__ - INFO - [FILTER] 301538.SZ IPO日期: 20240320, 第60个交易日: 20240425
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量新股过滤完成: 238083 -> 237604 (过滤掉 479 条新股期间数据)
+2026-02-23 12:48:31 - __main__ - INFO - 
+[window3-search-iter1-seg1] [DATE] 回测期间: 2025-02-10 到 2025-04-21
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 1801 只ST股票
+2026-02-23 12:48:34 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 600303.SH, 600375.SH 等1801只
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 235803 只非ST股票
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+
+================================================================================
+iter=1 seg=1
+[window3-search-iter1-seg1] [DATE] 回测期间: 2025-02-10 到 2025-04-21
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 1801 只ST股票
+2026-02-23 12:48:34 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 600303.SH, 600375.SH 等1801只
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 235803 只非ST股票
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 1801 只ST股票
+2026-02-23 12:48:34 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 600303.SH, 600375.SH 等1801只
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 235803 只非ST股票
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 1801 只ST股票
+2026-02-23 12:48:34 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 600303.SH, 600375.SH 等1801只
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 235803 只非ST股票
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 1801 只ST股票
+2026-02-23 12:48:34 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 600303.SH, 600375.SH 等1801只
+2026-02-23 12:48:34 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 235803 只非ST股票
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 002520.SZ: 预测收益=0.1510, 收盘价=7.12
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 002526.SZ: 预测收益=0.1428, 收盘价=4.35
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300382.SZ: 预测收益=0.1395, 收盘价=13.32
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300753.SZ: 预测收益=0.1176, 收盘价=22.34
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 002520.SZ: 预测收益=0.1510, 收盘价=7.12
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 002526.SZ: 预测收益=0.1428, 收盘价=4.35
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300382.SZ: 预测收益=0.1395, 收盘价=13.32
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300753.SZ: 预测收益=0.1176, 收盘价=22.34
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 300480.SZ: 预测收益=0.1148, 收盘价=15.31
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 002520.SZ: 预测收益=0.1510, 收盘价=7.12
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 002526.SZ: 预测收益=0.1428, 收盘价=4.35
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300382.SZ: 预测收益=0.1395, 收盘价=13.32
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300753.SZ: 预测收益=0.1176, 收盘价=22.34
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 300480.SZ: 预测收益=0.1148, 收盘价=15.31
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 💾 2025-02-10 保存Top-5股票: 5只
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (235803, 116)
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 002520.SZ: 预测收益=0.1510, 收盘价=7.12
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 002526.SZ: 预测收益=0.1428, 收盘价=4.35
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300382.SZ: 预测收益=0.1395, 收盘价=13.32
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300753.SZ: 预测收益=0.1176, 收盘价=22.34
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 300480.SZ: 预测收益=0.1148, 收盘价=15.31
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 💾 2025-02-10 保存Top-5股票: 5只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-11: 日线数据 4755 条记录
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:48:35 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-02-10 ~ 2025-04-21
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:48:35 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-10: 日线数据 4740 条记录
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=2.83, predicted_return=-0.160947559756288
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-10 过滤统计:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4740只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-02-10 Top-5候选股票:
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 002520.SZ: 预测收益=0.1510, 收盘价=7.12
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 002526.SZ: 预测收益=0.1428, 收盘价=4.35
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300382.SZ: 预测收益=0.1395, 收盘价=13.32
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300753.SZ: 预测收益=0.1176, 收盘价=22.34
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 300480.SZ: 预测收益=0.1148, 收盘价=15.31
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 💾 2025-02-10 保存Top-5股票: 5只
+2026-02-23 12:48:36 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-02-11: 日线数据 4755 条记录
+2026-02-23 12:48:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-02-11 过滤统计:
+2026-02-23 12:48:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4755只
+2026-02-23 12:48:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:48:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+
+================================================================================
+iter=1 seg=1
+2026-02-23 12:49:32 - __main__ - INFO - ✅ [window3-search-iter1-seg1] 5分钟级别回测成功完成，返回结果
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [REFRESH] 开始选股回测...
+2026-02-23 12:49:33 - __main__ - INFO - ============================================================
+2026-02-23 12:49:33 - __main__ - WARNING - [WARNING] 回测数据缺少必要列: ['price_ema20_ratio', 'price_ema50_ratio', 'ema20_ema50_ratio', 'ema50_slope', 'log_price_regression_slope', 'log_price_regression_r2', 'adx_14', 'drawdown_from_20d_high_pct', 'drawdown_atr_ratio', 'atr20', 'negative_days_5d', 'large_red_candle_5d', 'distance_to_support_atr', 'bollinger_percent_b', 'rsi_14']
+2026-02-23 12:49:33 - __main__ - INFO - 为缺失的特征字段设置默认值...
+2026-02-23 12:49:33 - __main__ - INFO -   price_ema20_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   price_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   ema20_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   ema50_slope: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   log_price_regression_slope: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   log_price_regression_r2: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   adx_14: 设置默认值 10.0
+2026-02-23 12:49:33 - __main__ - INFO -   drawdown_from_20d_high_pct: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   drawdown_atr_ratio: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   atr20: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   negative_days_5d: 设置默认值 1
+2026-02-23 12:49:33 - __main__ - INFO -   large_red_candle_5d: 设置默认值 1
+2026-02-23 12:49:33 - __main__ - INFO -   distance_to_support_atr: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   bollinger_percent_b: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   rsi_14: 设置默认值 50.0
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [SEARCH] 回测数据字段检查
+2026-02-23 12:49:33 - __main__ - INFO - 总行数: 242533
+2026-02-23 12:49:33 - __main__ - INFO - 总列数: 115
+2026-02-23 12:49:33 - __main__ - INFO -   date: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   stock_code: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   volume: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   is_can_buy: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   pct_chg: 缺失0(0.00%), 为07567(3.12%)
+2026-02-23 12:49:33 - __main__ - INFO -   open: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   high: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   low: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   close: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   atr14: 缺失0(0.00%), 为0242533(100.00%)
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+
+================================================================================
+iter=1 seg=2
+[window3-search-iter1-seg2] [REFRESH] 开始选股回测...
+2026-02-23 12:49:33 - __main__ - INFO - ============================================================
+2026-02-23 12:49:33 - __main__ - WARNING - [WARNING] 回测数据缺少必要列: ['price_ema20_ratio', 'price_ema50_ratio', 'ema20_ema50_ratio', 'ema50_slope', 'log_price_regression_slope', 'log_price_regression_r2', 'adx_14', 'drawdown_from_20d_high_pct', 'drawdown_atr_ratio', 'atr20', 'negative_days_5d', 'large_red_candle_5d', 'distance_to_support_atr', 'bollinger_percent_b', 'rsi_14']
+2026-02-23 12:49:33 - __main__ - INFO - 为缺失的特征字段设置默认值...
+2026-02-23 12:49:33 - __main__ - INFO -   price_ema20_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   price_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   ema20_ema50_ratio: 设置默认值 1.0
+2026-02-23 12:49:33 - __main__ - INFO -   ema50_slope: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   log_price_regression_slope: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   log_price_regression_r2: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   adx_14: 设置默认值 10.0
+2026-02-23 12:49:33 - __main__ - INFO -   drawdown_from_20d_high_pct: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   drawdown_atr_ratio: 设置默认值 0.0
+2026-02-23 12:49:33 - __main__ - INFO -   atr20: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   negative_days_5d: 设置默认值 1
+2026-02-23 12:49:33 - __main__ - INFO -   large_red_candle_5d: 设置默认值 1
+2026-02-23 12:49:33 - __main__ - INFO -   distance_to_support_atr: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   bollinger_percent_b: 设置默认值 0.5
+2026-02-23 12:49:33 - __main__ - INFO -   rsi_14: 设置默认值 50.0
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [SEARCH] 回测数据字段检查
+2026-02-23 12:49:33 - __main__ - INFO - 总行数: 242533
+2026-02-23 12:49:33 - __main__ - INFO - 总列数: 115
+2026-02-23 12:49:33 - __main__ - INFO -   date: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   stock_code: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   volume: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   is_can_buy: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   pct_chg: 缺失0(0.00%), 为07567(3.12%)
+2026-02-23 12:49:33 - __main__ - INFO -   open: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   high: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   low: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   close: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   atr14: 缺失0(0.00%), 为0242533(100.00%)
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+
+================================================================================
+iter=1 seg=2
+[window3-search-iter1-seg2] [SEARCH] 回测数据字段检查
+2026-02-23 12:49:33 - __main__ - INFO - 总行数: 242533
+2026-02-23 12:49:33 - __main__ - INFO - 总列数: 115
+2026-02-23 12:49:33 - __main__ - INFO -   date: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   stock_code: 缺失0(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   volume: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   is_can_buy: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   pct_chg: 缺失0(0.00%), 为07567(3.12%)
+2026-02-23 12:49:33 - __main__ - INFO -   open: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   high: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   low: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   close: 缺失0(0.00%), 为00(0.00%)
+2026-02-23 12:49:33 - __main__ - INFO -   atr14: 缺失0(0.00%), 为0242533(100.00%)
+2026-02-23 12:49:33 - __main__ - INFO - 
+[window3-search-iter1-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 数据日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301518.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301517.SZ IPO日期: 20231017, 第60个交易日: 20231120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301516.SZ IPO日期: 20231208, 第60个交易日: 20240112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+
+================================================================================
+iter=1 seg=2
+[window3-search-iter1-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 数据日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301518.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301517.SZ IPO日期: 20231017, 第60个交易日: 20231120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301516.SZ IPO日期: 20231208, 第60个交易日: 20240112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301519.SZ IPO日期: 20230727, 第60个交易日: 20230830
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301501.SZ IPO日期: 20250319, 第60个交易日: 20250423
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301520.SZ IPO日期: 20230925, 第60个交易日: 20231106
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301522.SZ IPO日期: 20241016, 第60个交易日: 20241119
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301525.SZ IPO日期: 20230830, 第60个交易日: 20231011
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301557.SZ IPO日期: 20250304, 第60个交易日: 20250408
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301556.SZ IPO日期: 20241017, 第60个交易日: 20241120
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 数据日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301518.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301517.SZ IPO日期: 20231017, 第60个交易日: 20231120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301516.SZ IPO日期: 20231208, 第60个交易日: 20240112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301519.SZ IPO日期: 20230727, 第60个交易日: 20230830
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301501.SZ IPO日期: 20250319, 第60个交易日: 20250423
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301520.SZ IPO日期: 20230925, 第60个交易日: 20231106
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301522.SZ IPO日期: 20241016, 第60个交易日: 20241119
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301525.SZ IPO日期: 20230830, 第60个交易日: 20231011
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301557.SZ IPO日期: 20250304, 第60个交易日: 20250408
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301556.SZ IPO日期: 20241017, 第60个交易日: 20241120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301555.SZ IPO日期: 20231031, 第60个交易日: 20231204
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 开始新股过滤: 242,533 条记录
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载 5,183 只股票的IPO日期
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 成功加载交易日历: 778 个交易日
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 使用交易日历计算新股过滤期（25个交易日）
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 数据日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 603004.SH IPO日期: 20231227, 第60个交易日: 20240131
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 600925.SH IPO日期: 20230329, 第60个交易日: 20230508
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601136.SH IPO日期: 20221222, 第60个交易日: 20230202
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601083.SH IPO日期: 20231205, 第60个交易日: 20240109
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601065.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601061.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601059.SH IPO日期: 20230201, 第60个交易日: 20230307
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601033.SH IPO日期: 20240118, 第60个交易日: 20240229
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601022.SH IPO日期: 20221208, 第60个交易日: 20230112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601096.SH IPO日期: 20231222, 第60个交易日: 20240126
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601133.SH IPO日期: 20230410, 第60个交易日: 20230517
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 601121.SH IPO日期: 20230310, 第60个交易日: 20230414
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301518.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301517.SZ IPO日期: 20231017, 第60个交易日: 20231120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301516.SZ IPO日期: 20231208, 第60个交易日: 20240112
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301515.SZ IPO日期: 20230725, 第60个交易日: 20230828
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301512.SZ IPO日期: 20230720, 第60个交易日: 20230823
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301511.SZ IPO日期: 20230817, 第60个交易日: 20230920
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301519.SZ IPO日期: 20230727, 第60个交易日: 20230830
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301510.SZ IPO日期: 20230815, 第60个交易日: 20230918
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301508.SZ IPO日期: 20231201, 第60个交易日: 20240105
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301507.SZ IPO日期: 20230905, 第60个交易日: 20231017
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301505.SZ IPO日期: 20230719, 第60个交易日: 20230822
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301503.SZ IPO日期: 20230717, 第60个交易日: 20230818
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301502.SZ IPO日期: 20240202, 第60个交易日: 20240315
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301501.SZ IPO日期: 20250319, 第60个交易日: 20250423
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301509.SZ IPO日期: 20230803, 第60个交易日: 20230906
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301520.SZ IPO日期: 20230925, 第60个交易日: 20231106
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301522.SZ IPO日期: 20241016, 第60个交易日: 20241119
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301525.SZ IPO日期: 20230830, 第60个交易日: 20231011
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301557.SZ IPO日期: 20250304, 第60个交易日: 20250408
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301556.SZ IPO日期: 20241017, 第60个交易日: 20241120
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301555.SZ IPO日期: 20231031, 第60个交易日: 20231204
+2026-02-23 12:49:33 - __main__ - INFO - [FILTER] 301552.SZ IPO日期: 20240722, 第60个交易日: 20240823
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量新股过滤完成: 242533 -> 242327 (过滤掉 206 条新股期间数据)
+2026-02-23 12:49:35 - __main__ - INFO - 
+[window3-search-iter1-seg2] [DATE] 回测期间: 2025-04-22 到 2025-07-04
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 791 只ST股票
+2026-02-23 12:49:37 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 603023.SH, 688282.SH 等791只
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 241536 只非ST股票
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+
+================================================================================
+iter=1 seg=2
+[window3-search-iter1-seg2] [DATE] 回测期间: 2025-04-22 到 2025-07-04
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 791 只ST股票
+2026-02-23 12:49:37 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 603023.SH, 688282.SH 等791只
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 241536 只非ST股票
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 791 只ST股票
+2026-02-23 12:49:37 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 603023.SH, 688282.SH 等791只
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 241536 只非ST股票
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 791 只ST股票
+2026-02-23 12:49:37 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 603023.SH, 688282.SH 等791只
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 241536 只非ST股票
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤: 过滤掉 791 只ST股票
+2026-02-23 12:49:37 - __main__ - INFO -    ST股票示例: 600715.SH, 600671.SH, 600287.SH, 603023.SH, 688282.SH 等791只
+2026-02-23 12:49:37 - __main__ - INFO - [FILTER] ST股票过滤后剩余: 241536 只非ST股票
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-04-22 Top-5候选股票:
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-04-22 Top-5候选股票:
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 300221.SZ: 预测收益=0.2224, 收盘价=8.49
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 301566.SZ: 预测收益=0.2222, 收盘价=16.08
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300322.SZ: 预测收益=0.1855, 收盘价=13.79
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300616.SZ: 预测收益=0.1729, 收盘价=12.05
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-04-22 Top-5候选股票:
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 300221.SZ: 预测收益=0.2224, 收盘价=8.49
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 301566.SZ: 预测收益=0.2222, 收盘价=16.08
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300322.SZ: 预测收益=0.1855, 收盘价=13.79
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300616.SZ: 预测收益=0.1729, 收盘价=12.05
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 603042.SH: 预测收益=0.1454, 收盘价=14.13
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-04-22 Top-5候选股票:
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 300221.SZ: 预测收益=0.2224, 收盘价=8.49
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 301566.SZ: 预测收益=0.2222, 收盘价=16.08
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300322.SZ: 预测收益=0.1855, 收盘价=13.79
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300616.SZ: 预测收益=0.1729, 收盘价=12.05
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 603042.SH: 预测收益=0.1454, 收盘价=14.13
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 💾 2025-04-22 保存Top-5股票: 5只
+
+================================================================================
+iter=1 seg=2
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 初始化5分钟级别选股回测系统（兼容模式 - 使用优化引擎）
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   数据维度: (241536, 116)
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO -   字段数量: 116
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 使用优化引擎运行5分钟回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 使用优化版5分钟回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 🚀 启动Strategy-Based架构的优化回测
+2026-02-23 12:49:37 - rqalpha_minute_datasource.minute_backtest - INFO - 📊 选股数量: [1], 持仓时间: 3天
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔄 启动优化版回测系统
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 交易日期范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始运行 1 个策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 标准化日期格式: pandas Timestamp -> datetime.date
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 成功加载申万行业映射: 5466只股票
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 初始化策略: Top-1, 初始资金: 1,000,000
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🚀 开始回测 Top-1 策略
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    时间范围: 2025-04-22 ~ 2025-07-04
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总交易日: 50
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 交易日期已按时间排序
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 开始智能分析候选股票...
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-22: 日线数据 4765 条记录
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - ✅ 603778.SH通过过滤: is_limit_up=0, is_limit_down=0, is_zhaban=0, pct_chg=-0.34, predicted_return=-0.17832221959448236
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🔍 2025-04-22 过滤统计:
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    总候选: 4765只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    可买入过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    交易所过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    ST股过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    价格过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    流动性过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    涨跌停过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    炸板过滤: 0只
+2026-02-23 12:49:37 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    通过过滤: 4765只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 🏆 2025-04-22 Top-5候选股票:
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    1. 300221.SZ: 预测收益=0.2224, 收盘价=8.49
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    2. 301566.SZ: 预测收益=0.2222, 收盘价=16.08
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    3. 300322.SZ: 预测收益=0.1855, 收盘价=13.79
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    4. 300616.SZ: 预测收益=0.1729, 收盘价=12.05
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO -    5. 603042.SH: 预测收益=0.1454, 收盘价=14.13
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 💾 2025-04-22 保存Top-5股票: 5只
+2026-02-23 12:49:38 - rqalpha_minute_datasource.strategy_backtest_lead_z - INFO - 📅 2025-04-23: 日线数据 4770 条记录
+

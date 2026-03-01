@@ -125,7 +125,7 @@ class FactorPipeline:
                 series = definition.run(working, ctx)
                 
                 # 统一转为 float64 并赋予正确的 name
-                computed[name] = pd.Series(series, name=name, index=working.index).astype('float64')
+                computed[name] = pd.Series(series, name=name, index=working.index).astype('float32')
                 
             except Exception as e:
                 logger.error(f"❌ 因子 {name} 计算失败: {e}")
@@ -200,7 +200,16 @@ class FactorPipeline:
         
         # 1. 基础清洗：Inf -> NaN
         for name, series in computed.items():
-            processed[name] = series.replace([np.inf, -np.inf], np.nan)
+            # processed[name] = series.replace([np.inf, -np.inf], np.nan)
+            s = series.replace([np.inf, -np.inf], np.nan)
+
+            # 2. 最终兜底填充
+            s = s.fillna(0.0)
+
+            # 3. 强制 float32
+            s = s.astype('float32')
+
+            processed[name] = s
 
         # 2. 归一化
         normalized = {}
@@ -215,9 +224,9 @@ class FactorPipeline:
                 continue
                 
             # 默认逻辑：全部做稳健 Z-Score + 智能裁剪
-            normalized[name] = self._zscore_normalize_with_clipping(
-                series, data, enable_intelligent_clipping
-            )
+            # normalized[name] = self._zscore_normalize_with_clipping(
+            #     series, data, enable_intelligent_clipping
+            # )
 
         return normalized, {}
 
@@ -268,9 +277,9 @@ class FactorPipeline:
         # 保留 NaN，只对有效值裁剪
         if enable_clip:
             # 放宽到 6.0，保护龙头股的极端收益
-            return zscore.clip(-6.0, 6.0).astype('float64')
+            return zscore.clip(-6.0, 6.0).astype('float32')
         else:
-            return zscore.astype('float64')
+            return zscore.astype('float32')
 
 
 def _prepare_optional_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:

@@ -370,7 +370,7 @@ def run_trade_mode(args):
                 logger.info(f"  买入价格: {entry_price:.2f}元")
                 logger.info(f"  买入日期: {entry_date}")
                 logger.info(f"  持仓天数: {holding_days}天")
-                logger.info(f"  风控规则: 累计下跌5% OR 连续3根阴线")
+                logger.info(f"  风控规则: 累计下跌5% OR 连续{StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD}根阴线")
                 logger.info(f"  尾盘卖出: 否")
                 logger.info("")
 
@@ -406,7 +406,7 @@ def run_trade_mode(args):
                 logger.info(f"  买入价格: {entry_price:.2f}元")
                 logger.info(f"  买入日期: {entry_date}")
                 logger.info(f"  持仓天数: {holding_days}天")
-                logger.info(f"  风控规则: 累计下跌5% OR 连续3根阴线")
+                logger.info(f"  风控规则: 累计下跌5% OR 连续{StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD}根阴线")
                 logger.info(f"  尾盘卖出: 14:55")
                 logger.info("")
 

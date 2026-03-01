@@ -20,7 +20,7 @@ import time
 import os
 
 # 导入优化策略架构
-from .strategy_backtest import OptimizedStrategyBacktest
+from .strategy_backtest_原始错误 import OptimizedStrategyBacktest
 
 logger = logging.getLogger(__name__)
 

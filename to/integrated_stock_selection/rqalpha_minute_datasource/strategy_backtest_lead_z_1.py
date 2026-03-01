@@ -27,6 +27,49 @@ class StrategyType(Enum):
     TOP_3 = 3
     TOP_5 = 5
 
+
+class RiskControlStrategy:
+    """风控策略类型"""
+    CONSECUTIVE_BEARISH = "consecutive_bearish"  # 连续阴线策略
+    DAILY_MA5_BREAK = "daily_ma5_break"  # 日线MA5跌破策略
+    T1_LOW_BREAK_WITH_HIGH_DRAWDOWN = "t1_low_break_with_high_drawdown"  # 🆕 T+1最低价跌破+高位回撤策略
+
+
+class RiskControlConfig:
+    """风控配置"""
+    # 风控策略选择（默认使用日线MA5跌破策略）
+    # STRATEGY = RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN
+    STRATEGY = RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN
+
+    # 日线MA5跌破策略参数
+    MA5_CONSECUTIVE_BREAKS = 2  # 连续跌破MA5的次数（连续N个5分钟收盘价低于MA5）
+
+    # 连续阴线策略参数（保持原有逻辑）
+    CONSECUTIVE_BEARISH_COUNT = 3  # 连续阴线数量
+
+    # 🆕 T+1最低价跌破策略参数
+    T1_LOW_CONSECUTIVE_BREAKS = 2  # 连续跌破T+1日最低价的次数（亏损状态下使用）
+
+
+class EntryRiskControlStrategy:
+    """开盘风控策略类型"""
+    GAP_BASED = "gap_based"  # 基于涨跌幅的风控（原有逻辑）
+    MA5_BASED = "ma5_based"  # 基于MA5的风控（新增逻辑）
+
+
+class EntryRiskControlConfig:
+    """开盘风控配置"""
+    # 开盘风控策略选择（默认使用MA5风控）
+    STRATEGY = EntryRiskControlStrategy.GAP_BASED
+
+    # MA5风控参数
+    MA5_MAX_UP_THRESHOLD = 0.05  # 高开超MA5 3%禁止买入
+    MA5_MAX_DOWN_THRESHOLD = -0.03  # 低开超MA5 3%禁止买入
+
+    # 涨跌幅风控参数（保持原有逻辑）
+    GAP_MAX_DOWN_THRESHOLD = -0.03  # 跌空超过3%禁止买入
+    GAP_MAX_UP_THRESHOLD = 0.05  # 高开超过5%禁止买入
+
 @dataclass
 class StrategyConfig:
     """策略配置类"""
@@ -45,7 +88,23 @@ class StrategyConfig:
     #       - stop_loss_threshold = 0.00   : 收益为负（0%）就卖出（激进风控）
     #       - stop_loss_threshold = 0.01   : 收益低于1%就卖出（要求正收益）
     #       - stop_loss_threshold = -0.10  : 跌幅超过10%才卖出（宽松风控）
-    stop_loss_threshold: float = -0.00  # 默认-5%，保持向后兼容
+    stop_loss_threshold: float = -0.08  # 默认-5%，保持向后兼容
+
+    # 🆕 风控策略配置
+    risk_control_strategy: str = RiskControlConfig.STRATEGY  # 风控策略选择
+    risk_control_ma5_consecutive_breaks: int = RiskControlConfig.MA5_CONSECUTIVE_BREAKS  # MA5连续跌破次数
+    risk_control_t1_low_consecutive_breaks: int = RiskControlConfig.T1_LOW_CONSECUTIVE_BREAKS  # 🆕 T+1最低价连续跌破次数
+
+    # 🆕 开盘风控策略配置
+    entry_risk_control_strategy: str = EntryRiskControlConfig.STRATEGY  # 开盘风控策略选择
+    entry_risk_ma5_up_threshold: float = EntryRiskControlConfig.MA5_MAX_UP_THRESHOLD  # MA5高开阈值
+    entry_risk_ma5_down_threshold: float = EntryRiskControlConfig.MA5_MAX_DOWN_THRESHOLD  # MA5低开阈值
+    entry_risk_up_threshold: float = EntryRiskControlConfig.GAP_MAX_UP_THRESHOLD  # MA5高开阈值
+    entry_risk_down_threshold: float = EntryRiskControlConfig.GAP_MAX_DOWN_THRESHOLD  # MA5低开阈值
+
+    # 🆕 高位回撤风控参数（用于MA5跌破策略）
+    high_return_threshold: float = 0.04  # 最高浮盈阈值（4%），触发后开始监控回撤
+    high_drawdown_threshold: float = -0.03  # 从最高点回撤阈值（-3%），超过则卖出
 
 @dataclass
 class Position:
@@ -63,11 +122,18 @@ class Position:
     entry_reason: str = "normal"
     exit_reason: str = ""
 
+    # 🆕 跟踪买入后的最高价和最高浮盈（用于高位回撤风控）
+    highest_price_since_buy: float = 0.0  # 买入后的最高价格
+    highest_return_since_buy: float = -999.0  # 买入后的最高浮盈（相对买入价）
+    t1_day_lowest_price: float = 0.0  # 🆕 T+1日（买入日）的最低价（从日线数据获取）
+
 class BacktestStrategy:
     """单个策略的回测类 - 完全独立，避免状态干扰"""
 
     def __init__(self, config: StrategyConfig, prediction_data: pd.DataFrame, minute_data_path: str):
         self.config = config
+        # lead_z 历史（用于鲁棒 z-score），只使用过去数据，避免 look-ahead
+        self._lead_history: list[float] = []
         self.minute_data_path = minute_data_path
 
         # 标准化预测数据的日期格式 - 统一为datetime.date
@@ -100,6 +166,9 @@ class BacktestStrategy:
         self.daily_returns: List[float] = [0.0]
         self.trading_dates_list: List[datetime.date] = []  # 保存交易日期列表，用于绘图
         self.skipped_buy_attempts: List[Dict] = []  # 保存被跳过的买入尝试（开盘风控等），用于绘图
+
+        # 仓位控制状态机（NORMAL: 正常模式 limit=0.0, DEFENSIVE: 防御模式 limit=0.01）
+        self.position_control_state = "NORMAL"  # 初始状态为正常模式
 
         # 数据缓存
         self.minute_data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -489,177 +558,368 @@ class BacktestStrategy:
             logger.error(f"获取{stock_code}在{date_str}的5分钟数据失败: {e}")
             return pd.DataFrame()
 
+    def _calculate_daily_ma5_at_open(self, stock_code: str, buy_date: datetime.date,
+                                     buy_open: float) -> Optional[float]:
+        """
+        计算买入日开盘时的日线MA5（前4天日线close + 买入日开盘价）
+
+        Args:
+            stock_code: 股票代码
+            buy_date: 买入日期
+            buy_open: 买入日开盘价
+
+        Returns:
+            MA5值，如果前4天数据不足返回None
+
+        Note:
+            MA5 = (前4天日线close之和 + 买入日开盘价) / 5
+
+        Example:
+            买入日: 2026-01-10, 开盘价: 10.5
+            前4天日线close: [10.2, 10.3, 10.1, 10.4]
+            MA5 = (10.2 + 10.3 + 10.1 + 10.4 + 10.5) / 5 = 10.3
+        """
+        # 获取前4个交易日的日线close
+        daily_closes = self._get_daily_closes_before(stock_code, buy_date, 4)
+
+        # 检查数据是否充足
+        if len(daily_closes) < 4:
+            logger.info(f"⚠️ {stock_code} 在{buy_date}前不足4个交易日数据")
+            # return None
+
+        # 计算MA5：前4天日线 + 买入日开盘
+        ma5 = (sum(daily_closes) + buy_open) / 5.0
+
+        logger.info(f"📊 {stock_code} 买入日开盘MA5计算:")
+        logger.info(f"   前4天日线close: {daily_closes}")
+        logger.info(f"   买入日开盘价: {buy_open}")
+        logger.info(f"   MA5: {ma5:.4f}")
+
+        return ma5
+
     def check_entry_signal(self, stock_code: str, buy_date: datetime.date,
                           prev_close: Optional[float], buy_open: float) -> Dict[str, Any]:
         """
-        开盘风控检查
+        开盘风控检查 - 支持配置化策略选择
 
-        风控检查：跳空风控
+        支持两种策略：
+        1. GAP_BASED: 基于涨跌幅的风控（原有逻辑）
+        2. MA5_BASED: 基于MA5的风控（新增逻辑）
         """
         logger.info(f"🔎 {stock_code} 开盘风控检查: buy_date={buy_date}, prev_close={prev_close}, buy_open={buy_open}")
+        logger.info(f"📋 开盘风控策略: {self.config.entry_risk_control_strategy}")
 
-        # 原有风控：跳空检查
-        if prev_close is None:
-            logger.info(f"✅ {stock_code}: 无前日数据，允许买入")
-            return {'can_buy': True, 'reason': '无前日数据'}
+        # ===== 根据配置选择策略 =====
+        if self.config.entry_risk_control_strategy == EntryRiskControlStrategy.GAP_BASED:
+            # ===== 原有策略: 基于涨跌幅的风控 =====
+            if prev_close is None:
+                logger.info(f"✅ {stock_code}: 无前日数据，允许买入")
+                return {'can_buy': True, 'reason': '无前日数据'}
 
-        gap_ratio = (buy_open - prev_close) / prev_close
-        logger.info(f"📊 {stock_code}: 跳空计算 (buy_open={buy_open} - prev_close={prev_close}) / prev_close = {gap_ratio:.4f} ({gap_ratio:.2%})")
+            gap_ratio = (buy_open - prev_close) / prev_close
+            logger.info(f"📊 {stock_code}: 跳空计算 (buy_open={buy_open} - prev_close={prev_close}) / prev_close = {gap_ratio:.4f} ({gap_ratio:.2%})")
 
-        # 风控条件2: 跌空超过3%
-        if gap_ratio < -0.03:
-            logger.info(f"🚫 {stock_code}: 跌空超过3% ({gap_ratio:.2%})，禁止买入")
+            # 风控条件1: 跌空超过3%
+            if gap_ratio < self.config.entry_risk_down_threshold:  # 使用-0.03
+                logger.info(f"🚫 {stock_code}: 跌空超过3% ({gap_ratio:.2%})，禁止买入")
+                return {
+                    'can_buy': False,
+                    'reason': f'开盘跳空{-gap_ratio:.2%}',
+                    'gap_ratio': gap_ratio,
+                    'skip_category': '开盘风控'
+                }
+
+            # 风控条件2: 高开超过5%
+            elif gap_ratio > self.config.entry_risk_up_threshold:  # 使用0.05
+                logger.info(f"🚫 {stock_code}: 高开超过5% ({gap_ratio:.2%})，禁止买入")
+                return {
+                    'can_buy': False,
+                    'reason': f'开盘跳空{gap_ratio:.2%}',
+                    'gap_ratio': gap_ratio,
+                    'skip_category': '开盘风控'
+                }
+
+            logger.info(f"✅ {stock_code}: 通过所有风控检查，跳空{gap_ratio:.2%}在范围内")
+            return {'can_buy': True, 'reason': '通过风控', 'gap_ratio': gap_ratio}
+
+        elif self.config.entry_risk_control_strategy == EntryRiskControlStrategy.MA5_BASED:
+            # ===== 🆕 新策略: 基于MA5的风控 =====
+            # 计算MA5（前4天日线close + 买入日开盘价）
+            ma5 = self._calculate_daily_ma5_at_open(stock_code, buy_date, buy_open)
+
+            if ma5 is None:
+                # 无法计算MA5，使用涨跌幅风控作为后备
+                logger.warning(f"⚠️ {stock_code}: 无法计算MA5，使用涨跌幅风控作为后备")
+                if prev_close is None:
+                    logger.info(f"✅ {stock_code}: 无前日数据，允许买入")
+                    return {'can_buy': True, 'reason': '无前日数据'}
+
+                gap_ratio = (buy_open - prev_close) / prev_close
+                # 简单涨跌幅风控
+                if abs(gap_ratio) > 0.10:  # 跌幅或涨幅超10%才跳过
+                    logger.info(f"🚫 {stock_code}: 跳空超10% ({gap_ratio:.2%})，禁止买入")
+                    return {
+                        'can_buy': False,
+                        'reason': f'跳空超10%',
+                        'gap_ratio': gap_ratio,
+                        'skip_category': '开盘风控'
+                    }
+
+                return {'can_buy': True, 'reason': '后备涨跌幅风控通过', 'gap_ratio': gap_ratio}
+
+            # 计算开盘价相对于MA5的涨跌幅
+            ma5_gap_ratio = (buy_open - ma5) / ma5
+            gap_ratio = (buy_open - prev_close) / prev_close
+            logger.info(f"📊 {stock_code}: MA5跳空计算 (buy_open={buy_open} - MA5={ma5}) / MA5 = {ma5_gap_ratio:.4f} ({ma5_gap_ratio:.2%})")
+
+            # 获取阈值
+            down_threshold = self.config.entry_risk_ma5_down_threshold  # 默认-0.03
+            up_threshold = self.config.entry_risk_ma5_up_threshold  # 默认0.03
+
+            # 风控条件1: 低开超MA5 3%
+            if ma5_gap_ratio < down_threshold:
+                logger.info(f"🚫 {stock_code}: 低开超MA5 {abs(down_threshold):.0%} ({ma5_gap_ratio:.2%})，禁止买入")
+                logger.info(f"   MA5: {ma5:.4f}, 开盘价: {buy_open:.4f}, 低开: {ma5_gap_ratio:.2%}")
+                return {
+                    'can_buy': False,
+                    'reason': f'低开超MA5{abs(down_threshold):.0%}',
+                    'gap_ratio': ma5_gap_ratio,
+                    'skip_category': '开盘MA5风控',
+                    'ma5_value': ma5  # 记录MA5值
+                }
+
+            # 风控条件2: 高开超MA5 3%
+            elif gap_ratio > up_threshold:#ma5_gap_ratio > up_threshold:
+                logger.info(f"🚫 {stock_code}: 高开超MA5 {up_threshold:.0%} ({ma5_gap_ratio:.2%})，禁止买入")
+                logger.info(f"   MA5: {ma5:.4f}, 开盘价: {buy_open:.4f}, 高开: {ma5_gap_ratio:.2%}")
+                return {
+                    'can_buy': False,
+                    'reason': f'高开超MA5{up_threshold:.0%}',
+                    'gap_ratio': ma5_gap_ratio,
+                    'skip_category': '开盘MA5风控',
+                    'ma5_value': ma5  # 记录MA5值
+                }
+
+            logger.info(f"✅ {stock_code}: 通过所有风控检查，MA5跳空{ma5_gap_ratio:.2%}在范围内")
             return {
-                'can_buy': False,
-                'reason': f'开盘跳空{-gap_ratio:.2%}',
-                'gap_ratio': gap_ratio,
-                'skip_category': '开盘风控'
+                'can_buy': True,
+                'reason': '通过MA5风控',
+                'gap_ratio': ma5_gap_ratio,
+                'ma5_value': ma5  # 记录MA5值
             }
 
-        # 风控条件3: 高开超过5%
-        elif gap_ratio > 0.05:
-            logger.info(f"🚫 {stock_code}: 高开超过5% ({gap_ratio:.2%})，禁止买入")
-            return {
-                'can_buy': False,
-                'reason': f'开盘跳空{gap_ratio:.2%}',
-                'gap_ratio': gap_ratio,
-                'skip_category': '开盘风控'
-            }
+    def _get_daily_closes_before(self, stock_code: str, date: datetime.date, n: int) -> List[float]:
+        """
+        获取指定日期前N个交易日的日线close价格
 
-        logger.info(f"✅ {stock_code}: 通过所有风控检查，跳空{gap_ratio:.2%}在范围内")
-        return {'can_buy': True, 'reason': '通过风控', 'gap_ratio': gap_ratio}
+        Args:
+            stock_code: 股票代码
+            date: 基准日期
+            n: 需要获取的天数
+
+        Returns:
+            前N个交易日的close价格列表（按时间正序排列）
+            如果数据不足，返回尽可能多的数据
+
+        Example:
+            如果 date=2026-01-10, n=4
+            返回: [10.2, 10.3, 10.1, 10.4]  # 2026-01-06, 01-07, 01-08, 01-09的close
+        """
+        # 获取所有交易日期（已排序）
+        all_dates = sorted(self.prediction_data['date'].unique())
+
+        # 找到基准日期在交易日列表中的位置
+        try:
+            date_index = all_dates.index(date)
+        except ValueError:
+            # 如果基准日期不在交易日列表中，找最近的前一个交易日
+            earlier_dates = [d for d in all_dates if d < date]
+            if not earlier_dates:
+                return []
+            date = earlier_dates[-1]
+            date_index = all_dates.index(date)
+
+        # 获取前N个交易日
+        start_index = max(0, date_index - n)
+        target_dates = all_dates[start_index:date_index]
+
+        # 获取这些日期的close价格
+        closes = []
+        for target_date in target_dates:
+            daily_data = self.prediction_data[
+                (self.prediction_data['date'] == target_date) &
+                (self.prediction_data['stock_code'] == stock_code)
+            ]
+            if not daily_data.empty:
+                closes.append(daily_data.iloc[0]['close'])
+            else:
+                logger.warning(f"⚠️ {stock_code} 在 {target_date} 无日线数据")
+
+        logger.info(f"📊 {stock_code} 在{date}前{n}天的日线close: {closes}")
+        return closes
+
+    def _get_daily_low(self, stock_code: str, date: datetime.date) -> Optional[float]:
+        """
+        获取指定日期的日线最低价（用于T+1最低价跌破策略）
+
+        Args:
+            stock_code: 股票代码
+            date: 指定日期（买入日/T+1日）
+
+        Returns:
+            指定日期的日线最低价，如果数据不存在返回None
+
+        Example:
+            如果 date=2026-01-10
+            返回: 10.1  # 2026-01-10当天的最低价
+        """
+        try:
+            # 从prediction_data中获取指定日期的日线数据
+            daily_data = self.prediction_data[
+                (self.prediction_data['date'] == date) &
+                (self.prediction_data['stock_code'] == stock_code)
+            ]
+
+            if daily_data.empty:
+                logger.warning(f"⚠️ {stock_code} 在 {date} 无日线数据")
+                return None
+
+            daily_low = daily_data.iloc[0]['close']
+            logger.info(f"📊 {stock_code} 在{date}的日线最低价: {daily_low:.4f}")
+            return daily_low
+
+        except Exception as e:
+            logger.error(f"❌ 获取{stock_code}在{date}的日线最低价失败: {e}")
+            return None
+
+    def _calculate_daily_ma5_realtime(self, stock_code: str, current_date: datetime.date,
+                                      current_5min_close: float) -> Optional[float]:
+        """
+        实时计算日线MA5（前4天日线close + 当前5分钟close）
+
+        Args:
+            stock_code: 股票代码
+            current_date: 当前日期
+            current_5min_close: 当前5分钟K线的close价格
+
+        Returns:
+            MA5值，如果前4天数据不足返回None
+
+        Note:
+            MA5 = (前4天日线close之和 + 当前5分钟close) / 5
+
+        Example:
+            当前日期: 2026-01-10, 5分钟close: 10.5
+            前4天日线close: [10.2, 10.3, 10.1, 10.4]
+            MA5 = (10.2 + 10.3 + 10.1 + 10.4 + 10.5) / 5 = 10.3
+        """
+        # 获取前4个交易日的日线close
+        daily_closes = self._get_daily_closes_before(stock_code, current_date, 4)
+
+        # 检查数据是否充足
+        if len(daily_closes) < 4:
+            logger.info(f"⚠️ {stock_code} 在{current_date}前不足4个交易日数据")
+            # return None
+
+        # 计算MA5：前4天日线 + 当前5分钟
+        ma5 = (sum(daily_closes) + current_5min_close) / 5.0
+
+        logger.info(f"📊 {stock_code} 日线MA5计算:")
+        logger.info(f"   前4天日线close: {daily_closes}")
+        logger.info(f"   当前5分钟close: {current_5min_close}")
+        logger.info(f"   MA5: {ma5:.4f}")
+
+        return ma5
 
     def check_position_risk(self, position: Position, current_date: datetime.date, trading_dates: List[datetime.date]) -> Dict[str, Any]:
-        """持仓风控检查 - 使用交易日期列表，避免非交易日"""
+        """【终极游资版风控】：只设硬止损和冲高回落止盈，拒绝一切微操！"""
         logger.info(f"🛡️ 开始风控检查: {position.stock_code}, 买入日: {position.buy_date}, 当前日: {current_date}")
 
-        # 确保trading_dates按时间顺序排列
         trading_dates = sorted(trading_dates)
 
         try:
-            # 找到买入日在交易日期列表中的索引
             buy_date_index = trading_dates.index(position.buy_date)
             current_date_index = trading_dates.index(current_date)
-            logger.debug(f"   买入日索引: {buy_date_index}, 当前日索引: {current_date_index}")
         except ValueError as e:
             logger.error(f"❌ 日期索引查找失败: {e}")
             return {'should_exit': False, 'reason': '日期索引错误'}
 
-        # 检查是否到了T+2（买入日的下1个交易日）
+        # 检查是否到了T+2（买入日的下1个交易日才能卖出）
         if current_date_index <= buy_date_index:
             days_to_wait = (buy_date_index + 1) - current_date_index
             logger.info(f"⏸️ {position.stock_code}: 未到T+2，还需等待{days_to_wait}个交易日")
             return {'should_exit': False, 'reason': f'未到T+2(还需{days_to_wait}日)'}
 
-        # 确定风控检查范围：T+2交易日（买入日的下1个交易日）~ min(T+holding_days交易日, 当前日)
-        start_index = buy_date_index + 1  # T+2交易日（买入日的下一个交易日）
-        end_index = min(
-            buy_date_index + self.config.holding_days,  # T+holding_days交易日
-            current_date_index + 1  # 当前日（包含）
-        )
-
-        # 获取风控检查的实际日期范围
-        risk_check_dates = trading_dates[start_index:end_index]
-        logger.info(f"📊 {position.stock_code} 风控检查范围: {risk_check_dates[0]} ~ {risk_check_dates[-1]} ({len(risk_check_dates)}个交易日)")
-
-        # 获取所有风控检查日内的5分钟数据
-        minute_data_list = []
-        logger.info(f"📊 收集{position.stock_code}在{len(risk_check_dates)}个交易日内的5分钟数据进行风控检查...")
-
-        for check_date in risk_check_dates:
-            day_data = self.get_stock_data(position.stock_code, check_date)
-            if not day_data.empty:
-                logger.debug(f"   {check_date}: 获取到{len(day_data)}条5分钟数据")
-                for _, row in day_data.iterrows():
-                    minute_data_list.append(row.to_dict())
-            else:
-                logger.warning(f"   ⚠️ {check_date}: 无5分钟数据")
-
-        logger.info(f"📈 {position.stock_code}: 风控检查范围内总共收集到{len(minute_data_list)}条5分钟数据")
-
-        if len(minute_data_list) < 3:
-            logger.info(f"⚠️ {position.stock_code}: 数据不足({len(minute_data_list)}条)，跳过阴线检查")
+        # 获取当天所有的 5 分钟 K 线
+        day_data = self.get_stock_data(position.stock_code, current_date)
+        if day_data.empty:
+            logger.warning(f"⚠️ {position.stock_code} 无 {current_date} 的分钟数据")
             return {'should_exit': False, 'reason': '数据不足'}
 
-        # 统一时间序列风控检查 - 实现"先满足先触发"原则
-        logger.debug(f"🛡️ 开始统一风控检查（使用止损阈值: {self.config.stop_loss_threshold:.2%}）...")
+        # 初始化状态，如果缺失则初始化
+        if not hasattr(position, 'highest_price_since_buy'):
+            position.highest_price_since_buy = position.buy_price
+        if not hasattr(position, 'highest_return_since_buy'):
+            position.highest_return_since_buy = 0.0
 
-        # 按时间顺序逐个K线检查，实现先满足先触发
-        for i, minute_data in enumerate(minute_data_list):
-            close_price = minute_data['close']
-            current_datetime = minute_data['datetime']
+        HARD_STOP_LOSS = -0.08  # 绝对硬止损
 
-            # 1. 检查累计下跌/收益低于阈值（基于买入价，使用收盘价）
-            decline_ratio = (close_price - position.buy_price) / position.buy_price
-            if decline_ratio <= self.config.stop_loss_threshold:  # 使用配置的止损阈值
-                # 处理不同的datetime格式
-                if isinstance(current_datetime, str):
-                    exit_time = datetime.fromisoformat(current_datetime)
-                elif hasattr(current_datetime, 'to_pydatetime'):  # pandas Timestamp
-                    exit_time = current_datetime.to_pydatetime()
-                elif isinstance(current_datetime, datetime):
-                    exit_time = current_datetime
-                else:
-                    exit_time = datetime.now()
+        for i, row in day_data.iterrows():
+            close_price = row['close']
+            high_price = row['high']
+            
+            # 处理时间格式
+            current_time = row.get('datetime', current_date)
+            if isinstance(current_time, str):
+                current_time = datetime.fromisoformat(current_time)
+            elif hasattr(current_time, 'to_pydatetime'):
+                current_time = current_time.to_pydatetime()
 
-                # 动态生成阈值描述
-                threshold_desc = f"{self.config.stop_loss_threshold:.2%}"
-                if self.config.stop_loss_threshold == 0.0:
-                    threshold_desc = "0% (盈亏平衡)"
-                elif self.config.stop_loss_threshold > 0:
-                    threshold_desc = f"{self.config.stop_loss_threshold:.2%} (要求正收益)"
+            # 1. 计算当前收益，并更新历史最高价（用于移动止盈）
+            current_return = (close_price - position.buy_price) / position.buy_price
+            
+            if high_price > position.highest_price_since_buy:
+                position.highest_price_since_buy = high_price
+                position.highest_return_since_buy = (high_price - position.buy_price) / position.buy_price
 
-                logger.info(f"🚨 {position.stock_code}: 在第{i+1}根K线触发止损!")
-                logger.debug(f"   止损K线: 时间={current_datetime}, 开盘={minute_data['open']:.4f}, 收盘={close_price:.4f}")
-                logger.debug(f"   买入价: {position.buy_price:.4f}, 收盘价: {close_price:.4f}, 收益: {decline_ratio:.2%}")
-                logger.debug(f"   止损阈值: {threshold_desc}")
-
+            # ---------------------------------------------------------
+            # ⚔️ 规则一：绝对止损线（保底防核按钮）-8%
+            # ---------------------------------------------------------
+            if current_return <= HARD_STOP_LOSS:
+                logger.info(f"🚨 {position.stock_code} 击穿 {HARD_STOP_LOSS*100}% 绝对止损线，断臂求生！(当前时间:{current_time})")
                 return {
                     'should_exit': True,
-                    'reason': f'累计收益低于{threshold_desc}',
-                    'exit_price': close_price,  # 使用收盘价成交
-                    'exit_time': exit_time,
-                    'decline_ratio': decline_ratio,
-                    'stop_loss_threshold': self.config.stop_loss_threshold,  # 记录使用的阈值
+                    'reason': f'触发{HARD_STOP_LOSS*100}%硬止损',
+                    'exit_price': close_price,
+                    'exit_time': current_time,
                 }
 
-            # 2. 检查连续3根阴线（需要至少3根K线）
-            if i >= 2:  # 至少有3根K线可以检查连续性
-                # 获取最近的3根K线：第i-2, i-1, i根
-                candle_1 = minute_data_list[i - 2]
-                candle_2 = minute_data_list[i - 1]
-                candle_3 = minute_data
-
-                # 检查这3根K线是否都是阴线
-                is_red_1 = candle_1['close'] < candle_1['open']
-                is_red_2 = candle_2['close'] < candle_2['open']
-                is_red_3 = candle_3['close'] < candle_3['open']
-
-                if is_red_1 and is_red_2 and is_red_3:
-                    # 发现连续3根阴线，触发风控
-                    logger.info(f"🚨 {position.stock_code}: 在第{i-1}-{i+1}根K线发现连续3根阴线!")
-                    logger.debug(f"   阴线1: 时间={candle_1['datetime']}, 开盘={candle_1['open']:.4f}, 收盘={candle_1['close']:.4f}")
-                    logger.debug(f"   阴线2: 时间={candle_2['datetime']}, 开盘={candle_2['open']:.4f}, 收盘={candle_2['close']:.4f}")
-                    logger.debug(f"   阴线3: 时间={candle_3['datetime']}, 开盘={candle_3['open']:.4f}, 收盘={candle_3['close']:.4f}")
-
-                    # 处理不同的datetime格式
-                    if isinstance(current_datetime, str):
-                        exit_time = datetime.fromisoformat(current_datetime)
-                    elif hasattr(current_datetime, 'to_pydatetime'):  # pandas Timestamp
-                        exit_time = current_datetime.to_pydatetime()
-                    elif isinstance(current_datetime, datetime):
-                        exit_time = current_datetime
-                    else:
-                        exit_time = datetime.now()
-
+            # ---------------------------------------------------------
+            # ⚔️ 规则二：移动止盈（让利润奔跑，一旦回头立刻收割）
+            # ---------------------------------------------------------
+            max_profit = position.highest_return_since_buy
+            
+            # 如果浮盈曾经达到过 +5%（激活止盈网络）
+            if max_profit >= 0.05:
+                # 计算从最高点的回撤幅度
+                drawdown_from_peak = (position.highest_price_since_buy - close_price) / position.highest_price_since_buy
+                
+                # 动态回撤容忍度：赚得越多，容忍度可以稍微大一点，但绝不让大肉变亏损
+                # 利润在 5%~10% 之间，回撤 3% 止盈
+                # 利润大于 10%，回撤 4% 止盈
+                tolerance = 0.04 if max_profit >= 0.10 else 0.03
+                
+                if drawdown_from_peak >= tolerance:
+                    logger.info(f"💰 {position.stock_code} 触发移动止盈！最高曾赚 {max_profit*100:.2f}%，回落 {drawdown_from_peak*100:.2f}%，锁定利润！")
                     return {
                         'should_exit': True,
-                        'reason': '连续3根阴线',
-                        'exit_price': candle_3['close'],
-                        'exit_time': exit_time
+                        'reason': f'移动止盈(最高{max_profit*100:.1f}%,回撤{drawdown_from_peak*100:.1f}%)',
+                        'exit_price': close_price,
+                        'exit_time': current_time,
                     }
 
-        logger.info(f"✅ {position.stock_code}: 未发现风控信号（止损阈值: {self.config.stop_loss_threshold:.2%} 或 连续3根阴线）")
+        # 如果熬过了盘中所有考验都没有卖，继续持有
+        logger.info(f"✅ {position.stock_code}: 今日无风控信号触发，继续格局持有。当前收益: {current_return*100:.2f}%, 最高曾赚: {position.highest_return_since_buy*100:.2f}%")
         return {'should_exit': False, 'reason': '无风控信号'}
 
     def select_top_k_stocks(self, filtered_df: pd.DataFrame, k: int) -> pd.DataFrame:
@@ -697,8 +957,242 @@ class BacktestStrategy:
             logger.error(f"❌ 买入日期 {start_date} 不在交易日期列表中")
             return None
 
+    def _is_last_trade_stop_loss(self) -> bool:
+        """
+        检查上一次交易是否触发5%止损
+
+        Returns:
+            True: 上次交易止损（≤ -5%）
+            False: 上次交易未止损，或无历史交易
+        """
+        if not self.trades:
+            return False
+
+        last_trade = self.trades[-1]
+        actual_return = last_trade.get('actual_return', 0.0)
+
+        # 方式1: 检查收益率是否 ≤ -5%（使用配置的止损阈值）
+        if actual_return <= self.config.stop_loss_threshold:
+            logger.info(f"🛡️ [止损检测] 上次交易触发{self.config.stop_loss_threshold*100:.1f}%止损: "
+                       f"{last_trade['stock_code']}, return={actual_return:.4f}")
+            return True
+
+        # 方式2: 检查退出原因是否包含"止损"字样
+        exit_reason = last_trade.get('exit_reason', '')
+        if '止损' in exit_reason or 'stop_loss' in exit_reason.lower():
+            logger.info(f"🛡️ [止损检测] 上次交易触发止损(原因): {last_trade['stock_code']}, reason={exit_reason}")
+            return True
+
+        return False
+
+
+    def _has_consecutive_losses(self, n: int) -> bool:
+        """
+        检查是否连续N次交易都是负收益
+
+        Args:
+            n: 连续次数
+
+        Returns:
+            True: 最近连续N次都是亏损
+            False: 不足N次，或有盈利
+        """
+        if len(self.trades) < n:
+            return False
+
+        # 获取最近N次交易
+        recent_trades = self.trades[-n:]
+
+        # 检查是否都是负收益
+        all_losses = all((trade.get('actual_return', 0.0) < 0 and trade.get('actual_return') > self.config.stop_loss_threshold) for trade in recent_trades)
+
+        if all_losses:
+            returns = [trade.get('actual_return', 0.0) for trade in recent_trades]
+            logger.info(f"📉 [连续亏损] 检测到连续{n}次亏损: {[f'{r*100:.2f}%' for r in returns]}")
+
+        return all_losses
+
+
+    def _has_consecutive_profits(self, n: int) -> bool:
+        """
+        检查是否连续N次交易都盈利
+
+        Args:
+            n: 连续次数
+
+        Returns:
+            True: 最近连续N次都是盈利
+            False: 不足N次，或有亏损
+        """
+        if len(self.trades) < n:
+            return False
+
+        # 获取最近N次交易
+        recent_trades = self.trades[-n:]
+
+        # 检查是否都盈利（actual_return > 0）
+        all_profits = all(trade.get('actual_return', 0.0) > 0 for trade in recent_trades)
+
+        if all_profits:
+            returns = [trade.get('actual_return', 0.0) for trade in recent_trades]
+            logger.info(f"📈 [连续盈利] 检测到连续{n}次盈利: {[f'{r*100:.2f}%' for r in returns]}")
+
+        return all_profits
+
+
+    def _get_position_limit_by_trade_history(self) -> float:
+        """根据最近交易结果动态调整 lead_z 的过滤阈值。
+
+        状态机（用来做简易的“风控/降频”）：
+          - NORMAL: 默认阈值较宽（更容易开仓）
+          - DEFENSIVE1: 小幅收紧
+          - DEFENSIVE: 大幅收紧（连续亏损后）
+
+        触发逻辑：
+          - 若上一笔交易触发 stop_loss -> 进入 DEFENSIVE1
+          - 若连续亏损 >= 3 -> 进入 DEFENSIVE
+          - 若在 DEFENSIVE/DEFENSIVE1 且连续盈利 >= 2 -> 回到 NORMAL
+
+        返回值：
+          - NORMAL     -> -0.4
+          - DEFENSIVE1 ->  0.0
+          - DEFENSIVE  ->  0.3
+        """
+        # 默认值
+        base_normal = -0.4
+        base_defensive1 = 0.0
+        base_defensive = 0.3
+
+        try:
+            trade_history = getattr(self, "trade_history", []) or []
+            if len(trade_history) == 0:
+                return base_normal
+
+            last_trade = trade_history[-1]
+            last_reason = str(last_trade.get("exit_reason", "")).lower()
+
+            # 连亏/连盈统计（从末尾往前数）
+            consecutive_losses = 0
+            consecutive_profits = 0
+            for t in reversed(trade_history):
+                ret = float(t.get("return_pct", 0.0))
+                if ret <= 0:
+                    consecutive_losses += 1
+                    consecutive_profits = 0
+                else:
+                    consecutive_profits += 1
+                    consecutive_losses = 0
+                if consecutive_losses >= 3 or consecutive_profits >= 2:
+                    break
+
+            current_state = getattr(self, "position_control_state", "NORMAL")
+
+            # 状态迁移
+            if "stop_loss" in last_reason:
+                current_state = "DEFENSIVE1"
+            if consecutive_losses >= 3:
+                current_state = "DEFENSIVE"
+            if current_state in ("DEFENSIVE", "DEFENSIVE1") and consecutive_profits >= 2:
+                current_state = "NORMAL"
+
+            self.position_control_state = current_state
+
+            # 阈值输出
+            if current_state == "DEFENSIVE":
+                limit = base_defensive
+            elif current_state == "DEFENSIVE1":
+                limit = base_defensive1
+            else:
+                limit = base_normal
+
+            logger.info(
+                f"📊 [仓位控制/lead_z] 状态={current_state}, 连亏={consecutive_losses}, 连赢={consecutive_profits}, z_limit={limit:.2f}"
+            )
+            return float(limit)
+        except Exception as e:
+            logger.warning(f"⚠️ 仓位控制状态机异常，使用默认阈值 {base_normal:.2f}: {e}")
+            return float(base_normal)
+
+
+    def _position_pct_by_lead(self, lead_z: float, trade_date: Optional[datetime.date] = None) -> float:
+        """根据 lead_z（topK 内相对优势的鲁棒 z-score）给出仓位比例。
+
+        lead_z 计算（使用过去 rolling_window 的历史 lead_raw，不含当天，避免 look-ahead）：
+            lead_raw = top1_score - mean(topK_scores)
+            med = median(hist)
+            mad = median(|hist - med|)
+            lead_z = (lead_raw - med) / (1.4826 * mad + eps)
+
+        仓位/过滤规则（与历史交易结果联动）：
+            - 通过历史交易结果得到动态阈值 z_limit（默认 -0.4；防御模式更严格为 0.0）
+            - 若 lead_z < z_limit：跳过（0%）
+            - 否则：全仓（100%）
+
+        说明：
+            你之前用 lead_raw 的固定阈值容易受模型尺度漂移影响；lead_z 通过滚动 robust 标准化减敏。
+        """
+        try:
+            z = float(lead_z)
+        except Exception:
+            return 0.0
+
+        # z_limit = float(self._get_position_limit_by_trade_history())
+        z_limit = -0.4
+
+        # if z < z_limit:
+        #     return 0.0
+        return 1.0
+
+    def _robust_mad(self, values: list[float]) -> float:
+        """MAD = median(|x - median(x)|). values 需为非空。"""
+        if not values:
+            return 0.0
+        import numpy as np
+        arr = np.asarray(values, dtype=float)
+        med = float(np.median(arr))
+        mad = float(np.median(np.abs(arr - med)))
+        return mad
+
+    def _calc_lead_z(self, lead_raw: float, rolling_window: int = 60, eps: float = 1e-9) -> float:
+        """用历史 lead_raw（不含当前 lead_raw）计算鲁棒 z-score。"""
+        try:
+            x = float(lead_raw)
+        except Exception:
+            return 0.0
+
+        hist = getattr(self, "_lead_history", [])
+        if not hist:
+            return 0.0
+
+        # 只取最近 rolling_window
+        h = [float(v) for v in hist[-int(rolling_window):] if v is not None]
+        # if len(h) < 10:
+        if len(h) < 1:
+            return 0.0
+
+        import numpy as np
+        arr = np.asarray(h, dtype=float)
+        med = float(np.median(arr))
+        mad = float(np.median(np.abs(arr - med)))
+        denom = 1.4826 * mad + float(eps)
+        return (x - med) / denom
+
+    def _update_lead_history(self, lead_raw: float, rolling_window: int = 60) -> None:
+        """更新 lead_raw 历史（滚动窗口）。"""
+        try:
+            x = float(lead_raw)
+        except Exception:
+            return
+        if not hasattr(self, "_lead_history"):
+            self._lead_history = []
+        self._lead_history.append(x)
+        # trim
+        if len(self._lead_history) > int(rolling_window) * 2:
+            # 保留更长一点，避免频繁 slice
+            self._lead_history = self._lead_history[-int(rolling_window) * 2:]
+
     def execute_buy(self, stock_code: str, buy_date: datetime.date,
-                    predicted_return: float, trading_dates: List[datetime.date]) -> Optional[Position]:
+                    predicted_return: float, trading_dates: List[datetime.date], position_pct: float) -> Optional[Position]:
         """执行买入操作"""
         logger.info(f"🛒 准备买入 {stock_code}, 预测收益: {predicted_return:.4f}")
 
@@ -741,7 +1235,13 @@ class BacktestStrategy:
         # stock_count=3: 买入排名第3的股票，全仓
         # stock_count=5: 买入排名第5的股票，全仓
         # 每个策略每天只买入1只股票，所以应该用全部可用现金
-        position_amount = self.cash
+        position_pct = float(position_pct)
+        position_pct = max(0.0, min(1.0, position_pct))
+
+        asset_cash = self.cash  # 或你当前现金变量
+        use_cash = asset_cash * position_pct
+        position_amount = use_cash
+        # position_amount = self.cash
         logger.info(f"📊 Top-{self.config.stock_count}策略: 全仓买入排名第{self.config.stock_count}的股票，使用全部现金 {self.cash:.2f}")
         quantity = int(position_amount / buy_price / 100) * 100  # 整手
         actual_cost = buy_price * quantity
@@ -782,15 +1282,25 @@ class BacktestStrategy:
         except (ValueError, Exception):
             logger.info(f"📅 持仓计划: 买入日={buy_date}, 到期日={holding_end_date} (配置: {self.config.holding_days}天)")
 
+        # 🆕 获取T+1日（买入日）的最低价（用于T+1最低价跌破策略）
+        t1_day_lowest_price = 0.0
+        if self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
+            t1_day_lowest_price = self._get_daily_low(stock_code, buy_date)
+            if t1_day_lowest_price is None:
+                logger.warning(f"⚠️ 无法获取{stock_code}在买入日{buy_date}的最低价，使用0.0")
+                t1_day_lowest_price = 0.0
+
         # 创建持仓记录
         position = Position(
             stock_code=stock_code,
             buy_date=buy_date,
             buy_datetime=buy_datetime,
             buy_price=buy_price,
+            highest_price_since_buy=buy_price,
             quantity=quantity,
             predicted_return=predicted_return,
-            holding_end_date=holding_end_date
+            holding_end_date=holding_end_date,
+            t1_day_lowest_price=t1_day_lowest_price  # 🆕 记录T+1日最低价
         )
 
         self.current_holdings[stock_code] = position
@@ -930,17 +1440,16 @@ class BacktestStrategy:
                     prev_day = self._get_previous_trading_day(trade_date, trading_dates)
                     if prev_day:
                         logger.info(f"🔄 [空仓重置] T日重置: {self.current_t_date} → {prev_day}")
-                        logger.info(f"📅 [空仓重置] 当前日{trade_date}作为T+1日，次日可买入")
+                        logger.info(f"📅 [空仓重置] 当前日{trade_date}作为T+1日，允许立即买入")
 
                         self.current_t_date = prev_day
                         self.last_position_end_date = prev_day  # 记录重置日期
 
-                        # 返回False，因为当日需要预测数据，次日才能买入
-                        return {
-                            'should_buy': False,
-                            'reason': f'空仓重置T日为{prev_day}，{trade_date}为T+1日（次日买入）',
-                            'prediction_date': prev_day  # 使用前一日作为预测日
-                        }
+                        # ✅ 修复bug：不要直接返回False
+                        # 此时 days_since_t = trade_date - prev_day = 1，正好是T+1日
+                        # 让代码继续执行到line 969-981的T+1判断逻辑，允许立即买入
+                        logger.info(f"✅ [空仓重置] T日已重置为{prev_day}，当前日{trade_date}是T+1日，继续执行买入判断")
+                        # 不返回，继续执行后续的T+1判断逻辑
 
             # 正常运行：按照用户指定的正确逻辑
             # "当前轮次的T+holding_days日，在T+holding_days日结束时，把该日当作下一轮的T日"
@@ -1219,6 +1728,12 @@ class BacktestStrategy:
                 logger.info(f"🎯 处理Top-{self.config.stock_count}策略: 买入排名第{target_rank}的股票")
                 stock = target_stock
                 stock_code = stock['stock_code']
+                
+                # 【大师强化】极值二分类概率过滤：概率 < 0.6 直接空仓！
+                pred_score = float(stock['predicted_return'])
+                # if pred_score < 0.50:
+                #     logger.info(f"🚫 {stock_code} 虽然排第{target_rank}，但预测概率为 {pred_score:.4f} < 0.60，放弃买入，今日空仓！")
+                #     continue
 
                 # 正确的T+1风控检查：使用T日收盘价 vs T+1日开盘价
                 logger.info(f"📅 {stock_code} T+1买入逻辑: T日={prediction_date}(预测日), T+1日={trade_date}(执行日)")
@@ -1264,8 +1779,27 @@ class BacktestStrategy:
                     logger.info(f"🚦 {stock_code} 买入信号: {entry_check['can_buy']}, 原因: {entry_check['reason']}")
 
                     if entry_check['can_buy']:
+                        scores = pd.to_numeric(selected_stocks["predicted_return"], errors="coerce").to_numpy(dtype=float)
+                        scores = scores[np.isfinite(scores)]  # 去掉 NaN/inf
+
+                        if scores.size == 0:
+                            topk_mean = float(stock["predicted_return"])
+                        else:
+                            topk_mean = float(scores.mean())
+                        lead_raw = float(stock['predicted_return']) - float(topk_mean)
+                        lead_z = self._calc_lead_z(lead_raw, rolling_window=60, eps=1e-9)
+                        # 更新历史（在做完当日决策后再纳入分布；这里更新不影响 lead_z（已用过去数据）
+                        self._update_lead_history(lead_raw, rolling_window=60)
+                        position_pct = self._position_pct_by_lead(lead_z, prediction_date)
+
+                        if position_pct <= 0.0:
+                            logger.info(f"🚫 {stock_code} 触发预测强度过滤: lead_z={lead_z:.2f} (limit={self._get_position_limit_by_trade_history():.2f})，跳过买入")
+                            continue
+                        else:
+                            logger.info(f"✅ {stock_code} 预测强度通过: lead_z={lead_z:.2f} -> 仓位 {position_pct:.0%}")
+
                         position = self.execute_buy(
-                            stock_code, trade_date, stock['predicted_return'], trading_dates  # 修复：应该是trade_date，不是next_date
+                            stock_code, trade_date, stock['predicted_return'], trading_dates, position_pct=position_pct  # trade_date 是执行日
                         )
                         if position:
                             self.positions.append(position)
@@ -1384,6 +1918,17 @@ class BacktestStrategy:
             else:
                 logger.info(f"      买入风控 (开盘): 无触发")
 
+            # 🆕 MA5开盘风控统计
+            ma5_gap_down = summary_stats.get('ma5_gap_down_skipped', 0)
+            ma5_gap_up = summary_stats.get('ma5_gap_up_skipped', 0)
+
+            if ma5_gap_down > 0 or ma5_gap_up > 0:
+                logger.info(f"      买入风控 (开盘-MA5): {ma5_gap_down + ma5_gap_up}次")
+                if ma5_gap_down > 0:
+                    logger.info(f"        - 低开超MA5 3%: {ma5_gap_down}次")
+                if ma5_gap_up > 0:
+                    logger.info(f"        - 高开超MA5 3%: {ma5_gap_up}次")
+
             # 卖出风控统计
             risk_details = summary_stats.get('risk_control_details', {})
             risk_exits = risk_details.get('total_risk_exits', 0)
@@ -1394,11 +1939,20 @@ class BacktestStrategy:
 
                 cumulative = risk_details.get('cumulative_decline_exits', 0)
                 consecutive = risk_details.get('consecutive_decline_exits', 0)
+                ma5_break = risk_details.get('ma5_break_exits', 0)  # 🆕 获取MA5跌破次数
+                t1_low_break = risk_details.get('t1_low_break_exits', 0)  # 🆕 获取T+1最低价跌破次数
+                profit_bearish = risk_details.get('profit_bearish_exits', 0)  # 🆕 获取盈利状态连续阴线次数
 
                 if cumulative > 0:
                     logger.info(f"        - 累计收益低于阈值: {cumulative}次")
                 if consecutive > 0:
                     logger.info(f"        - 连续3根阴线: {consecutive}次")
+                if ma5_break > 0:  # 🆕 显示MA5跌破统计
+                    logger.info(f"        - 日线MA5跌破: {ma5_break}次")
+                if t1_low_break > 0:  # 🆕 显示T+1最低价跌破统计
+                    logger.info(f"        - T+1最低价跌破: {t1_low_break}次")
+                if profit_bearish > 0:  # 🆕 显示盈利状态连续阴线统计
+                    logger.info(f"        - 盈利状态连续阴线: {profit_bearish}次")
 
                 risk_rate = risk_details.get('risk_exit_rate', 0)
                 logger.info(f"        风控退出率: {risk_rate:.1%}")
@@ -1471,9 +2025,14 @@ class BacktestStrategy:
             'skipped_positions': len(self.skipped_buy_attempts),  # 总跳过次数
             'gap_down_3_skipped': 0,  # 跌空超过3%
             'gap_up_5_skipped': 0,  # 高开超过5%
-            'optimization_version': 'v2.0_gap_control',  # 标识版本
+            # 🆕 添加MA5风控统计
+            'ma5_gap_down_skipped': 0,  # 低开超MA5 3%
+            'ma5_gap_up_skipped': 0,  # 高开超MA5 3%
+            'entry_risk_strategy': self.config.entry_risk_control_strategy,  # 🆕 记录使用的策略
+            'optimization_version': 'v3.0_ma5_entry_control',  # 🆕 版本号更新
             'risk_control': {
-                'gap_control': True  # 启用跳空风控
+                'gap_control': True,
+                'ma5_control': True  # 🆕 MA5风控启用
             }
         }
 
@@ -1483,10 +2042,18 @@ class BacktestStrategy:
 
             if skip_category == '开盘风控':
                 gap_ratio = skip_record.get('gap_ratio', 0)
-                if gap_ratio < -0.03:
+                if gap_ratio < self.config.entry_risk_down_threshold:
                     stats['gap_down_3_skipped'] += 1
-                elif gap_ratio > 0.05:
+                elif gap_ratio > self.config.entry_risk_up_threshold:
                     stats['gap_up_5_skipped'] += 1
+
+            # 🆕 MA5风控统计
+            elif skip_category == '开盘MA5风控':
+                ma5_gap_ratio = skip_record.get('gap_ratio', 0)
+                if ma5_gap_ratio < 0:
+                    stats['ma5_gap_down_skipped'] += 1
+                elif ma5_gap_ratio > 0:
+                    stats['ma5_gap_up_skipped'] += 1
 
         # 持仓风控详情统计
         risk_exits = [t for t in self.trades if '风控' in t.get('exit_reason', '')]
@@ -1508,10 +2075,24 @@ class BacktestStrategy:
         # 统计各类风控退出次数（使用动态阈值描述）
         cumulative_decline_exits = len([t for t in risk_exits if f'累计收益低于{threshold_desc}' in t.get('exit_reason', '')])
         consecutive_decline_exits = len([t for t in risk_exits if '连续3根阴线' in t.get('exit_reason', '')])
+        # 🆕 统计MA5跌破退出次数
+        ma5_break_exits = len([t for t in risk_exits if '日线MA5' in t.get('exit_reason', '')])
+        # 🆕 统计T+1最低价跌破退出次数
+        t1_low_break_exits = len([t for t in risk_exits if 'T+1最低价' in t.get('exit_reason', '')])
+        # 🆕 统计盈利状态连续阴线退出次数
+        profit_bearish_exits = len([t for t in risk_exits if '盈利状态下连续' in t.get('exit_reason', '') and '阴线' in t.get('exit_reason', '')])
 
         # 🔍 调试：打印统计结果
         logger.info(f"🔍 [风控统计调试] 使用阈值: {threshold_desc}")
-        logger.info(f"🔍 [风控统计调试] 累计收益低于阈值: {cumulative_decline_exits}次, 连续3根阴线: {consecutive_decline_exits}次")
+        logger.info(f"🔍 [风控统计调试] 风控策略: {self.config.risk_control_strategy}")
+        logger.info(f"🔍 [风控统计调试] 累计收益低于阈值: {cumulative_decline_exits}次")
+        if self.config.risk_control_strategy == RiskControlStrategy.CONSECUTIVE_BEARISH:
+            logger.info(f"🔍 [风控统计调试] 连续3根阴线: {consecutive_decline_exits}次")
+        elif self.config.risk_control_strategy == RiskControlStrategy.DAILY_MA5_BREAK:
+            logger.info(f"🔍 [风控统计调试] 日线MA5跌破: {ma5_break_exits}次")
+        elif self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
+            logger.info(f"🔍 [风控统计调试] T+1最低价跌破: {t1_low_break_exits}次")
+            logger.info(f"🔍 [风控统计调试] 盈利状态连续阴线: {profit_bearish_exits}次")
 
         stats['risk_control_details'] = {
             'total_risk_exits': len(risk_exits),
@@ -1519,6 +2100,9 @@ class BacktestStrategy:
             'stop_loss_threshold_desc': threshold_desc,  # 🆕 阈值描述
             'cumulative_decline_exits': cumulative_decline_exits,
             'consecutive_decline_exits': consecutive_decline_exits,
+            'ma5_break_exits': ma5_break_exits,  # 🆕 MA5跌破退出次数
+            't1_low_break_exits': t1_low_break_exits,  # 🆕 T+1最低价跌破退出次数
+            'profit_bearish_exits': profit_bearish_exits,  # 🆕 盈利状态连续阴线退出次数
             'normal_exits': len(normal_exits),
             'risk_exit_rate': len(risk_exits) / len(self.trades) if self.trades else 0,
             'avg_risk_exit_return': np.mean([t['actual_return'] for t in risk_exits]) if risk_exits else 0,

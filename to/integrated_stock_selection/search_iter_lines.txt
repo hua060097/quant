@@ -1,0 +1,200 @@
+[window3-search-iter1-seg1] [REFRESH] 开始选股回测...
+[window3-search-iter1-seg1] [SEARCH] 回测数据字段检查
+[window3-search-iter1-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:48:26 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 批量新股过滤完成: 238083 -> 237604 (过滤掉 479 条新股期间数据)
+[window3-search-iter1-seg1] [DATE] 回测期间: 2025-02-10 到 2025-04-21
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:48:31 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:48:34 - __main__ - INFO - [window3-search-iter1-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:48:35 - __main__ - INFO - [window3-search-iter1-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] [OK] 5分钟级别回测完成
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 23
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 3
+2026-02-23 12:49:32 - __main__ - INFO - [window3-search-iter1-seg1] 📊 Top1策略数据检查: 交易记录=23, 被跳过买入=3
+2026-02-23 12:49:32 - __main__ - INFO - ✅ [window3-search-iter1-seg1] 5分钟级别回测成功完成，返回结果
+[window3-search-iter1-seg2] [REFRESH] 开始选股回测...
+[window3-search-iter1-seg2] [SEARCH] 回测数据字段检查
+[window3-search-iter1-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:49:33 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 批量新股过滤完成: 242533 -> 242327 (过滤掉 206 条新股期间数据)
+[window3-search-iter1-seg2] [DATE] 回测期间: 2025-04-22 到 2025-07-04
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:49:35 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:49:37 - __main__ - INFO - [window3-search-iter1-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] [OK] 5分钟级别回测完成
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 22
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 1
+2026-02-23 12:50:24 - __main__ - INFO - [window3-search-iter1-seg2] 📊 Top1策略数据检查: 交易记录=22, 被跳过买入=1
+2026-02-23 12:50:24 - __main__ - INFO - ✅ [window3-search-iter1-seg2] 5分钟级别回测成功完成，返回结果
+[window3-search-iter1-seg3] [REFRESH] 开始选股回测...
+[window3-search-iter1-seg3] [SEARCH] 回测数据字段检查
+[window3-search-iter1-seg3] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:50:25 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] 批量北交所过滤完成: 242805 -> 242805 (过滤掉 0 只北交所股票)
+2026-02-23 12:50:25 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] 开始批量新股过滤...
+2026-02-23 12:50:26 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] 批量新股过滤完成: 242805 -> 242805 (过滤掉 0 条新股期间数据)
+[window3-search-iter1-seg3] [DATE] 回测期间: 2025-07-07 到 2025-09-12
+2026-02-23 12:50:26 - __main__ - INFO - [window3-search-iter1-seg3] [DATE] 交易日数量: 50天
+2026-02-23 12:50:26 - __main__ - INFO - [window3-search-iter1-seg3] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:50:26 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:50:27 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] ST股过滤: 242805 -> 242781 (过滤掉 24)
+2026-02-23 12:50:27 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] NaN过滤: 242781 -> 242781 (过滤掉 0)
+2026-02-23 12:50:27 - __main__ - INFO - [window3-search-iter1-seg3] [FILTER] 测试集过滤完成: 242805 -> 242781 (总过滤率 0.0%)
+2026-02-23 12:50:27 - __main__ - INFO - [window3-search-iter1-seg3] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:50:27 - __main__ - INFO - [window3-search-iter1-seg3] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] [OK] 5分钟级别回测完成
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 21
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 4
+2026-02-23 12:51:07 - __main__ - INFO - [window3-search-iter1-seg3] 📊 Top1策略数据检查: 交易记录=21, 被跳过买入=4
+2026-02-23 12:51:07 - __main__ - INFO - ✅ [window3-search-iter1-seg3] 5分钟级别回测成功完成，返回结果
+[window3-search-iter2-seg1] [REFRESH] 开始选股回测...
+[window3-search-iter2-seg1] [SEARCH] 回测数据字段检查
+[window3-search-iter2-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:51:19 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:51:19 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:51:20 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] 批量新股过滤完成: 238083 -> 237604 (过滤掉 479 条新股期间数据)
+[window3-search-iter2-seg1] [DATE] 回测期间: 2025-02-10 到 2025-04-21
+2026-02-23 12:51:20 - __main__ - INFO - [window3-search-iter2-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:51:20 - __main__ - INFO - [window3-search-iter2-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:51:20 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:51:22 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:51:22 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:51:22 - __main__ - INFO - [window3-search-iter2-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:51:22 - __main__ - INFO - [window3-search-iter2-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:51:22 - __main__ - INFO - [window3-search-iter2-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] [OK] 5分钟级别回测完成
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 22
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 3
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg1] 📊 Top1策略数据检查: 交易记录=22, 被跳过买入=3
+2026-02-23 12:52:00 - __main__ - INFO - ✅ [window3-search-iter2-seg1] 5分钟级别回测成功完成，返回结果
+[window3-search-iter2-seg2] [REFRESH] 开始选股回测...
+[window3-search-iter2-seg2] [SEARCH] 回测数据字段检查
+[window3-search-iter2-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:52:00 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:52:02 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] 批量新股过滤完成: 242533 -> 242327 (过滤掉 206 条新股期间数据)
+[window3-search-iter2-seg2] [DATE] 回测期间: 2025-04-22 到 2025-07-04
+2026-02-23 12:52:02 - __main__ - INFO - [window3-search-iter2-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:52:02 - __main__ - INFO - [window3-search-iter2-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:52:02 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:52:03 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:52:03 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:52:03 - __main__ - INFO - [window3-search-iter2-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:52:03 - __main__ - INFO - [window3-search-iter2-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:52:03 - __main__ - INFO - [window3-search-iter2-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] [OK] 5分钟级别回测完成
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 24
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: N/A
+2026-02-23 12:52:40 - __main__ - INFO - [window3-search-iter2-seg2] 📊 Top1策略数据检查: 交易记录=24, 被跳过买入=0
+2026-02-23 12:52:40 - __main__ - INFO - ✅ [window3-search-iter2-seg2] 5分钟级别回测成功完成，返回结果
+[window3-search-iter2-seg3] [REFRESH] 开始选股回测...
+[window3-search-iter2-seg3] [SEARCH] 回测数据字段检查
+[window3-search-iter2-seg3] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:52:41 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] 批量北交所过滤完成: 242805 -> 242805 (过滤掉 0 只北交所股票)
+2026-02-23 12:52:41 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] 开始批量新股过滤...
+2026-02-23 12:52:42 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] 批量新股过滤完成: 242805 -> 242805 (过滤掉 0 条新股期间数据)
+[window3-search-iter2-seg3] [DATE] 回测期间: 2025-07-07 到 2025-09-12
+2026-02-23 12:52:42 - __main__ - INFO - [window3-search-iter2-seg3] [DATE] 交易日数量: 50天
+2026-02-23 12:52:42 - __main__ - INFO - [window3-search-iter2-seg3] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:52:42 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:52:44 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] ST股过滤: 242805 -> 242781 (过滤掉 24)
+2026-02-23 12:52:44 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] NaN过滤: 242781 -> 242781 (过滤掉 0)
+2026-02-23 12:52:44 - __main__ - INFO - [window3-search-iter2-seg3] [FILTER] 测试集过滤完成: 242805 -> 242781 (总过滤率 0.0%)
+2026-02-23 12:52:44 - __main__ - INFO - [window3-search-iter2-seg3] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:52:44 - __main__ - INFO - [window3-search-iter2-seg3] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] [OK] 5分钟级别回测完成
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 23
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 1
+2026-02-23 12:53:23 - __main__ - INFO - [window3-search-iter2-seg3] 📊 Top1策略数据检查: 交易记录=23, 被跳过买入=1
+2026-02-23 12:53:23 - __main__ - INFO - ✅ [window3-search-iter2-seg3] 5分钟级别回测成功完成，返回结果
+[window3-search-iter3-seg1] [REFRESH] 开始选股回测...
+[window3-search-iter3-seg1] [SEARCH] 回测数据字段检查
+[window3-search-iter3-seg1] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:53:36 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] 批量北交所过滤完成: 238083 -> 238083 (过滤掉 0 只北交所股票)
+2026-02-23 12:53:36 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] 开始批量新股过滤...
+2026-02-23 12:53:38 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] 批量新股过滤完成: 238083 -> 237604 (过滤掉 479 条新股期间数据)
+[window3-search-iter3-seg1] [DATE] 回测期间: 2025-02-10 到 2025-04-21
+2026-02-23 12:53:38 - __main__ - INFO - [window3-search-iter3-seg1] [DATE] 交易日数量: 50天
+2026-02-23 12:53:38 - __main__ - INFO - [window3-search-iter3-seg1] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:53:38 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:53:39 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] ST股过滤: 237604 -> 235803 (过滤掉 1801)
+2026-02-23 12:53:40 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] NaN过滤: 235803 -> 235803 (过滤掉 0)
+2026-02-23 12:53:40 - __main__ - INFO - [window3-search-iter3-seg1] [FILTER] 测试集过滤完成: 237604 -> 235803 (总过滤率 0.8%)
+2026-02-23 12:53:40 - __main__ - INFO - [window3-search-iter3-seg1] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:53:40 - __main__ - INFO - [window3-search-iter3-seg1] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] [OK] 5分钟级别回测完成
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 18
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 8
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg1] 📊 Top1策略数据检查: 交易记录=18, 被跳过买入=8
+2026-02-23 12:54:17 - __main__ - INFO - ✅ [window3-search-iter3-seg1] 5分钟级别回测成功完成，返回结果
+[window3-search-iter3-seg2] [REFRESH] 开始选股回测...
+[window3-search-iter3-seg2] [SEARCH] 回测数据字段检查
+[window3-search-iter3-seg2] [FILTER] 开始批量北交所过滤...
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] 批量北交所过滤完成: 242533 -> 242533 (过滤掉 0 只北交所股票)
+2026-02-23 12:54:17 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] 开始批量新股过滤...
+2026-02-23 12:54:19 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] 批量新股过滤完成: 242533 -> 242327 (过滤掉 206 条新股期间数据)
+[window3-search-iter3-seg2] [DATE] 回测期间: 2025-04-22 到 2025-07-04
+2026-02-23 12:54:19 - __main__ - INFO - [window3-search-iter3-seg2] [DATE] 交易日数量: 50天
+2026-02-23 12:54:19 - __main__ - INFO - [window3-search-iter3-seg2] ⏰ 检测到分钟级别回测，先应用测试集过滤再调用5分钟回测系统...
+2026-02-23 12:54:19 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] 开始应用测试集通用过滤逻辑...
+2026-02-23 12:54:20 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] ST股过滤: 242327 -> 241536 (过滤掉 791)
+2026-02-23 12:54:20 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] NaN过滤: 241536 -> 241536 (过滤掉 0)
+2026-02-23 12:54:20 - __main__ - INFO - [window3-search-iter3-seg2] [FILTER] 测试集过滤完成: 242327 -> 241536 (总过滤率 0.3%)
+2026-02-23 12:54:20 - __main__ - INFO - [window3-search-iter3-seg2] ⏰ 初始化5分钟级别选股回测系统...
+2026-02-23 12:54:20 - __main__ - INFO - [window3-search-iter3-seg2] [TARGET] 开始5分钟级别回测，持仓时间: 3天
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] [OK] 5分钟级别回测完成
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 📈 开始生成Top5策略个股交易曲线...
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-1] result类型: <class 'dict'>
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-1] result的键: [1]
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-2] top1_result类型: <class 'dict'>
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-2] top1_result的键: ['strategy_config', 'initial_capital', 'final_value', 'total_return', 'annual_return', 'max_drawdown', 'sharpe_ratio', 'total_trades', 'win_rate', 'avg_return', 'trades', 'daily_portfolio_values', 'daily_returns', 'trading_dates', 'skipped_buy_attempts', 'final_positions', 'summary_stats']
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-2] trades存在: True, 类型: <class 'list'>, 长度: 20
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 🔍 [DEBUG-2] skipped_buy_attempts存在: True, 类型: <class 'list'>, 长度: 8
+2026-02-23 12:54:58 - __main__ - INFO - [window3-search-iter3-seg2] 📊 Top1策略数据检查: 交易记录=20, 被跳过买入=8
+2026-02-23 12:54:58 - __main__ - INFO - ✅ [window3-search-iter3-seg2] 5分钟级别回测成功完成，返回结果

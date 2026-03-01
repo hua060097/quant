@@ -69,7 +69,7 @@ def _setup_xtquant_path():
 _setup_xtquant_path()
 
 from .config import XtQuantConfig, TradingConfig, MarketTimeConfig, PathConfig
-from .order_manager import SmartOrderManager, LiveTradingCallback
+from .order_manager_原始 import SmartOrderManager, LiveTradingCallback
 
 
 class XtQuantTrader:
@@ -703,7 +703,7 @@ class TradingScheduler:
             from datetime import datetime, timedelta
 
             # Tushare token
-            TS_TOKEN = "022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000"
+            TS_TOKEN = "022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c100qq"
 
             self.logger.info("正在从tushare获取交易日历...")
 

@@ -7516,6 +7516,7 @@ def _generate_training_labels_for_all_data(stock_data):
     )
 
     stock_data.loc[mask_untradable, 'relevance'] = np.nan
+    stock_data.loc[mask_untradable, 'atr_return_label'] = np.nan
 
     return stock_data
 
@@ -13101,8 +13102,8 @@ def run_test_model_walkforward_mode(args):
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
                 'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
                 'val_start': '2025-03-06',     # 验证集开始
-                'val_end': '2025-05-27',       # 验证集结束 (3个月)
-                'test_start': '2025-06-05',    # 测试集开始
+                'val_end': '2025-07-09',       # 验证集结束 (3个月)
+                'test_start': '2025-07-14',    # 测试集开始
                 'test_end': '2026-01-23'       # 测试集结束 (3个月)2025-12-16
             }
         ]

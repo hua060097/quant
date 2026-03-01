@@ -5,7 +5,7 @@
 1. 订阅5分钟K线数据
 2. 实时监控持仓
 3. 累计下跌风控（5%）
-4. 连续阴线风控（3根阴线）
+4. 连续阴线风控（4根阴线）
 5. 自动卖出
 """
 
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .config import PathConfig
+from .config import PathConfig, StopLossConfig
 
 
 class PositionMonitor5Min:
@@ -27,7 +27,7 @@ class PositionMonitor5Min:
 
     风控规则：
     1. 累计下跌风控：累计下跌 > 5%（相对于买入价）→ 立即卖出
-    2. 连续阴线风控：T+2日开始，出现3根连续的5分钟K线阴线 → 立即卖出
+    2. 连续阴线风控：T+2日开始，出现4根连续的5分钟K线阴线 → 立即卖出
     """
 
     def __init__(self, trader, scheduler):
@@ -266,11 +266,12 @@ class PositionMonitor5Min:
            - 阈值从配置读取（StopLossConfig.MAX_STOP_LOSS_PCT）
            - 使用每根K线的收盘价检查
            - 从第一根5分钟K线（9:35）开始检查
-        2. 连续阴线风控：连续3根5分钟K线阴线（同一天内）→ 立即卖出
+        2. 连续阴线风控：连续4根5分钟K线阴线（同一天内）→ 立即卖出
+           - 阈值从配置读取（StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD）
 
         执行时机：
         - 从T+2日开始检查
-        - 从第一根5分钟K线开始检查（不要求3根K线）
+        - 从第一根5分钟K线开始检查（不要求4根K线）
         - 按时间顺序逐个K线检查
 
         Args:
@@ -356,7 +357,7 @@ class PositionMonitor5Min:
                     self._execute_sell_5m(stock_code, position, position['exit_reason'])
                     return
 
-                # ===== 风控条件2: 连续3根阴线（需要至少3根K线）=====
+                # ===== 风控条件2: 连续4根阴线（需要至少4根K线）=====
                 # 判断是否为阴线：收盘价 < 开盘价
                 is_bearish = close_price < open_price
 
@@ -368,10 +369,11 @@ class PositionMonitor5Min:
                         self.logger.info(f"📈 {stock_code}: 检测到阳线，重置连续阴线计数（从{position['consecutive_bearish']}重置为0）")
                         position['consecutive_bearish'] = 0
 
-                # 风控条件3: 连续阴线风控（同一天内3根）
-                if position['consecutive_bearish'] >= 3:
+                # 风控条件2: 连续阴线风控（同一天内）
+                threshold = StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD
+                if position['consecutive_bearish'] >= threshold:
                     self.logger.warning(f"🚨 {stock_code}: 触发连续阴线风控!")
-                    self.logger.warning(f"  连续阴线: {position['consecutive_bearish']}根")
+                    self.logger.warning(f"  连续阴线: {position['consecutive_bearish']}根（阈值: {threshold}根）")
                     self.logger.warning(f"  日期: {kline_date}")
 
                     # 标记退出

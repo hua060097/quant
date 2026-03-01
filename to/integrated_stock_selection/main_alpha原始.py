@@ -631,8 +631,8 @@ TRADING_COST_RATE = 0.0008  # 交易成本率（0.08%）
 # 时间切分配置（train_model和test_model模式共用）
 # [TARGET] 纯预测选股的时间切分策略
 TRAIN_END_DATE = "2025-02-01"  # 训练数据截止日期（不包含此日期）
-TEST_START_DATE = "2025-02-01"  # 测试数据开始日期（包含此日期）
-TEST_END_DATE = "2025-10-21"    # 测试数据结束日期（包含此日期）
+TEST_START_DATE = "2025-06-05"  # 测试数据开始日期（包含此日期）
+TEST_END_DATE = "2026-02-03"    # 测试数据结束日期（包含此日期）
 
 FACTOR_LAB_STORE_PATH = (Path(__file__).resolve().parent / "factor_lab_data" / "factors.parquet")
 
@@ -740,7 +740,7 @@ def parse_arguments():
 
     parser.add_argument(
         '--mode',
-        choices=['generate_factors', 'test_factors', 'train_model', 'test_model', 'test_model_walkforward', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis'],
+        choices=['generate_factors', 'test_factors', 'train_model', 'test_model', 'test_model_walkforward', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis', 'analyze_pred_buckets'],
         default='generate_factors',
         help='运行模式 (默认: generate_factors)'
     )
@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘1.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘21_20251215_lead_z.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3182,33 +3182,33 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 'return': y_test_original
             })
 
-            # 合并基础数据
-            if test_data_raw is not None:
-                # 确保 test_data_raw 有 date 列
-                if 'date' not in test_data_raw.columns:
-                    logger.warning("[SCORE] test_data_raw 缺少 date 列，无法合并基础数据")
-                    return {'error': 'missing_date_column'}
-
-                # 选择需要的列
-                basic_cols = ['date', 'stock_code', 'open', 'close', 'high', 'low', 'volume']
+            # 合并基础数据（使用索引对齐，避免笛卡尔积）
+            if test_data_raw is not None and len(test_data_raw) > 0:
+                # 选择需要的列（排除 date，因为 df 已经有了）
+                basic_cols = ['stock_code', 'open', 'close', 'high', 'low', 'volume']
                 available_cols = [col for col in basic_cols if col in test_data_raw.columns]
 
-                if 'stock_code' not in available_cols:
-                    logger.warning("[SCORE] test_data_raw 缺少 stock_code 列")
-                    return {'error': 'missing_stock_code_column'}
-
-                # 合并数据
-                df_merged = df.merge(
-                    test_data_raw[available_cols],
-                    on='date',
-                    how='left'
-                )
-
-                logger.info(f"[SCORE] 合并后数据: {len(df_merged)}条记录")
+                logger.info(f"[SCORE] 原始数据: {len(test_data_raw)}条, 预测数据: {len(df)}条")
                 logger.info(f"[SCORE] 可用基础数据列: {available_cols}")
+
+                # 创建结果 DataFrame（复制 df 作为基础）
+                df_merged = df.copy()
+
+                # 通过索引对齐直接添加列（避免 merge 产生笛卡尔积）
+                test_data_raw_aligned = test_data_raw.reset_index(drop=True)
+
+                for col in available_cols:
+                    if col in test_data_raw_aligned.columns:
+                        # 使用索引对齐，处理长度不匹配的情况
+                        col_values = test_data_raw_aligned[col].values[:len(df_merged)]
+                        df_merged[col] = col_values
+                        logger.debug(f"[SCORE] 已添加列: {col}")
+
+                logger.info(f"[SCORE] 索引对齐完成: {len(df_merged)}条记录（避免内存溢出）")
             else:
                 logger.warning("[SCORE] 未提供 test_data_raw，仅使用预测和收益率数据")
                 df_merged = df
+                available_cols = []
 
             # 每日Top1股票分析
             daily_top1_analysis = []
@@ -5906,6 +5906,8 @@ def _get_zscore_factors():
     ]
 
 
+
+
 def _get_rankpct_factors():
     """
     返回需要 rankpct 归一化的因子列表（映射到 [-1, 1]，抗极端值）
@@ -5929,6 +5931,26 @@ def _get_stock_factors():
 
     all_factors = [
         #--原始因子--#
+        # 'mkt_adv_dec',
+        # 'mkt_limit_balance',
+        # 'mkt_limit_up_ratio',
+        # 'mkt_limit_down_ratio',
+        # 'mkt_zhaban_ratio',
+        # 'mkt_emotion_heat',
+        # 'mkt_emotion_heat_dom_period_32d',
+        # 'mkt_emotion_heat_dom_strength_32d',
+        # 'mkt_emotion_heat_spec_entropy_32d',
+        # 'mkt_emotion_heat_hf_energy_ratio_32d',
+        # 'mkt_adv_dec_ma3',
+        # 'mkt_limit_balance_ma3',
+        # 'mkt_emotion_heat_ma3',
+        # 'mkt_adv_dec_delta3',
+        # 'mkt_limit_balance_delta3',
+        # 'mkt_emotion_heat_delta3',
+        'mkt_adv_dec_z10',
+        'mkt_limit_balance_z10',
+        'mkt_emotion_heat_z10',
+
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -6066,6 +6088,26 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # 'mkt_adv_dec',
+        # 'mkt_limit_balance',
+        # 'mkt_limit_up_ratio',
+        # 'mkt_limit_down_ratio',
+        # 'mkt_zhaban_ratio',
+        # 'mkt_emotion_heat',
+        # 'mkt_emotion_heat_dom_period_32d',
+        # 'mkt_emotion_heat_dom_strength_32d',
+        # 'mkt_emotion_heat_spec_entropy_32d',
+        # 'mkt_emotion_heat_hf_energy_ratio_32d',
+        # 'mkt_adv_dec_ma3',
+        # 'mkt_limit_balance_ma3',
+        # 'mkt_emotion_heat_ma3',
+        # 'mkt_adv_dec_delta3',
+        # 'mkt_limit_balance_delta3',
+        # 'mkt_emotion_heat_delta3',
+        'mkt_adv_dec_z10',
+        'mkt_limit_balance_z10',
+        'mkt_emotion_heat_z10',
+
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -9879,6 +9921,271 @@ def _run_stock_selection_backtest(
         # 在调用5分钟回测之前，先应用测试集过滤逻辑
         backtest_data = apply_test_set_filters(backtest_data, logger, window_prefix)
 
+        # 🆕 Top-1股票价格统计（在调用5分钟回测之前执行）
+        logger.info(f"\n{'='*60}")
+        logger.info(f"{window_prefix}[CHART] 开始Top-1股票价格走势统计...")
+        logger.info(f"{'='*60}")
+
+        # 确定预测字段名称
+        if 'predicted_return_atr_raw' in backtest_data.columns:
+            pred_column = 'predicted_return_atr_raw'
+        elif 'predicted_return' in backtest_data.columns:
+            pred_column = 'predicted_return'
+        else:
+            logger.warning(f"{window_prefix}[WARNING] 无法找到预测字段，跳过Top-1统计")
+            # 继续执行5分钟回测
+            return _run_minute_level_backtest(
+                backtest_data=backtest_data,
+                stock_counts=stock_counts,
+                window_name=window_name,
+                holding_days=holding_days
+            )
+
+        # # 收集Top-1股票的价格数据
+        # top1_price_details = []
+        # all_dates = sorted(backtest_data['date'].unique())
+
+        # # 只统计到倒数第三天，确保能获取T+1、T+2、T+3的数据
+        # for i, date in enumerate(all_dates[:-3]):
+        #     # T日：选股日
+        #     t_date = date
+
+        #     # 获取T日的所有股票数据
+        #     t_data = backtest_data[backtest_data['date'] == t_date].copy()
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 🆕 应用与实际回测相同的过滤逻辑
+        #     # 1. ST股票过滤
+        #     st_filter = _filter_st_stocks(t_data, logger)
+        #     t_data = t_data[st_filter].copy()
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 2. 过滤T日涨停股票（无法买入）
+        #     if 'is_limit_up' in t_data.columns:
+        #         t_data = t_data[t_data['is_limit_up'] != 1].copy()
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 3. 过滤T日跌停股票（风险高,无风控时应避免）
+        #     if 'is_limit_down' in t_data.columns:
+        #         t_data = t_data[t_data['is_limit_down'] != 1].copy()
+
+        #     # 3. 过滤T日跌停股票（风险高,无风控时应避免）
+        #     if 'is_zhaban' in t_data.columns:
+        #         t_data = t_data[t_data['is_zhaban'] != 1].copy()
+
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 4. 流动性过滤（成交额 < 1000万视为流动性不足）
+        #     if 'amount' in t_data.columns:
+        #         liquidity_threshold = 10_000_000  # 1000万
+        #         t_data = t_data[t_data['amount'] >= liquidity_threshold].copy()
+        #     elif 'volume' in t_data.columns:
+        #         # 如果没有amount字段,使用volume字段
+        #         volume_threshold = 10_000  # 100万股
+        #         t_data = t_data[t_data['volume'] >= volume_threshold].copy()
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 5. 过滤NaN预测值
+        #     t_data = t_data[~t_data[pred_column].isna()]
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 6. 过滤可买入股票
+        #     if 'is_can_buy' in t_data.columns:
+        #         t_data = t_data[t_data['is_can_buy'] == 1].copy()
+
+        #     if t_data.empty:
+        #         continue
+
+        #     # 从过滤后的数据中取Top-1
+        #     t_data_sorted = t_data.sort_values(pred_column, ascending=False)
+        #     top1_stock = t_data_sorted.iloc[0]
+
+        #     stock_code = top1_stock['stock_code']
+
+        #     # 获取价格数据
+        #     def get_price_data(target_date):
+        #         """获取指定日期的价格数据"""
+        #         price_data = backtest_data[
+        #             (backtest_data['stock_code'] == stock_code) &
+        #             (backtest_data['date'] == target_date)
+        #         ]
+        #         if not price_data.empty:
+        #             return price_data.iloc[0]
+        #         return None
+
+        #     # T日数据
+        #     t_price_data = get_price_data(t_date)
+        #     if t_price_data is None:
+        #         continue
+
+        #     t_open = t_price_data['open']
+        #     t_close = t_price_data['close']
+        #     t_intraday = (t_close - t_open) / t_open * 100  # T日日内涨跌幅
+
+        #     # T+1日数据
+        #     if i + 1 < len(all_dates):
+        #         t1_date = all_dates[i + 1]
+        #         t1_price_data = get_price_data(t1_date)
+        #         if t1_price_data is not None:
+        #             t1_open = t1_price_data['open']
+        #             t1_close = t1_price_data['close']
+        #             t1_gap = (t1_open - t_close) / t_close * 100  # T+1开盘相对T日收盘
+        #             t1_intraday = (t1_close - t1_open) / t1_open * 100  # T+1日内
+
+        #             # 🆕 计算T+1开盘价相对于MA5的价格距离
+        #             # MA5 = (前4天close + T+1开盘价) / 5
+        #             ma5_sum = 0.0
+        #             ma5_count = 0
+
+        #             # 获取前4个交易日的close价格（T-3, T-2, T-1, T）
+        #             for day_offset in range(4, 0, -1):  # 4, 3, 2, 1
+        #                 if i - day_offset >= 0:
+        #                     prev_date = all_dates[i - day_offset]
+        #                     prev_price_data = get_price_data(prev_date)
+        #                     if prev_price_data is not None:
+        #                         ma5_sum += prev_price_data['close']
+        #                         ma5_count += 1
+
+        #             # 加上T+1开盘价
+        #             ma5_sum += t1_open
+        #             ma5_count += 1
+
+        #             # 计算MA5和价格距离
+        #             if ma5_count == 5:  # 确保有完整的5天数据
+        #                 ma5 = ma5_sum / 5.0
+        #                 t1_open_to_ma5_pct = (t1_open - ma5) / ma5 * 100
+        #             else:
+        #                 ma5 = None
+        #                 t1_open_to_ma5_pct = None
+        #         else:
+        #             t1_open = t1_close = t1_gap = t1_intraday = None
+        #             ma5 = None
+        #             t1_open_to_ma5_pct = None
+        #     else:
+        #         t1_open = t1_close = t1_gap = t1_intraday = None
+        #         ma5 = None
+        #         t1_open_to_ma5_pct = None
+
+        #     # T+2日数据
+        #     if i + 2 < len(all_dates):
+        #         t2_date = all_dates[i + 2]
+        #         t2_price_data = get_price_data(t2_date)
+        #         if t2_price_data is not None:
+        #             t2_open = t2_price_data['open']
+        #             t2_close = t2_price_data['close']
+        #             t2_intraday = (t2_close - t2_open) / t2_open * 100  # T+2日内
+        #         else:
+        #             t2_intraday = None
+        #     else:
+        #         t2_intraday = None
+
+        #     # T+3日数据
+        #     if i + 3 < len(all_dates):
+        #         t3_date = all_dates[i + 3]
+        #         t3_price_data = get_price_data(t3_date)
+        #         if t3_price_data is not None:
+        #             t3_open = t3_price_data['open']
+        #             t3_close = t3_price_data['close']
+        #             t3_intraday = (t3_close - t3_open) / t3_open * 100  # T+3日内
+        #         else:
+        #             t3_intraday = None
+        #     else:
+        #         t3_intraday = None
+
+        #     # 存储详细数据
+        #     detail = {
+        #         'stock_code': stock_code,
+        #         't_date': t_date.strftime('%Y-%m-%d'),
+        #         't1_date': t1_date.strftime('%Y-%m-%d') if t1_open else None,
+        #         't2_date': t2_date.strftime('%Y-%m-%d') if 't2_date' in locals() and t2_intraday is not None else None,
+        #         't3_date': t3_date.strftime('%Y-%m-%d') if 't3_date' in locals() and t3_intraday is not None else None,
+        #         't_open': float(t_open),
+        #         't_close': float(t_close),
+        #         't_intraday_pct': float(t_intraday),  # T日日内涨跌幅
+        #         't1_open': float(t1_open) if t1_open is not None else None,
+        #         't1_close': float(t1_close) if t1_close is not None else None,
+        #         't1_open_to_t_close_pct': float(t1_gap) if t1_gap is not None else None,
+        #         't1_intraday_pct': float(t1_intraday) if t1_intraday is not None else None,
+        #         't1_ma5': float(ma5) if ma5 is not None else None,  # T+1开盘时的MA5
+        #         't1_open_to_ma5_pct': float(t1_open_to_ma5_pct) if t1_open_to_ma5_pct is not None else None,  # T+1开盘相对MA5的距离
+        #         't2_intraday_pct': float(t2_intraday) if t2_intraday is not None else None,
+        #         't3_intraday_pct': float(t3_intraday) if t3_intraday is not None else None,
+        #         'predicted_return': float(top1_stock[pred_column])
+        #     }
+        #     top1_price_details.append(detail)
+
+        # # 保存详细数据到JSON文件
+        # if len(top1_price_details) > 0:
+        #     import json
+        #     from pathlib import Path
+
+        #     # 创建输出目录
+        #     output_dir = Path(__file__).parent.parent / 'results' / 'top1_price_stats'
+        #     output_dir.mkdir(parents=True, exist_ok=True)
+
+        #     # 生成文件名（包含窗口信息和时间戳）
+        #     timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+        #     window_suffix = f"_{window_name}" if window_name else ""
+        #     json_filename = output_dir / f'top1_price_details{window_suffix}_{timestamp}.json'
+
+        #     # 保存JSON文件
+        #     with open(json_filename, 'w', encoding='utf-8') as f:
+        #         json.dump(top1_price_details, f, ensure_ascii=False, indent=2)
+
+        #     logger.info(f"{window_prefix}[OK] Top-1价格详细数据已保存到: {json_filename}")
+        #     logger.info(f"  总样本数: {len(top1_price_details)} 个股票")
+
+        #     # 打印统计信息
+        #     logger.info(f"\n{window_prefix}[CHART] Top-1股票价格走势统计:")
+
+        #     # 定义统计项
+        #     stat_items = [
+        #         ('T日日内涨跌幅', 't_intraday_pct'),
+        #         ('T+1开盘相对T日收盘', 't1_open_to_t_close_pct'),
+        #         ('T+1开盘相对MA5', 't1_open_to_ma5_pct'),
+        #         ('T+1日内涨跌幅', 't1_intraday_pct'),
+        #         ('T+2日内涨跌幅', 't2_intraday_pct'),
+        #         ('T+3日内涨跌幅', 't3_intraday_pct')
+        #     ]
+
+        #     for stat_name, stat_key in stat_items:
+        #         # 过滤None值
+        #         data = [d[stat_key] for d in top1_price_details if d[stat_key] is not None]
+
+        #         if len(data) > 0:
+        #             mean_val = np.mean(data)
+        #             median_val = np.median(data)
+        #             min_val = np.min(data)
+        #             max_val = np.max(data)
+        #             std_val = np.std(data)
+
+        #             logger.info(f"\n  {stat_name}:")
+        #             logger.info(f"    样本数: {len(data)}")
+        #             logger.info(f"    平均值: {mean_val:.2f}%")
+        #             logger.info(f"    中位数: {median_val:.2f}%")
+        #             logger.info(f"    标准差: {std_val:.2f}%")
+        #             logger.info(f"    最小值: {min_val:.2f}%")
+        #             logger.info(f"    最大值: {max_val:.2f}%")
+        #         else:
+        #             logger.info(f"\n  {stat_name}: 无数据")
+
+        #     logger.info(f"{'='*60}\n")
+
+
+
+
         return _run_minute_level_backtest(
             backtest_data=backtest_data,
             stock_counts=stock_counts,
@@ -12334,6 +12641,7 @@ def run_market_state_test_mode(args):
     return True
 
 
+
 def run_interaction_analysis_mode(args):
     """运行交互特征全面分析模式
 
@@ -13500,9 +13808,9 @@ def run_test_model_walkforward_mode(args):
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
                 'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
                 'val_start': '2025-03-06',     # 验证集开始
-                'val_end': '2025-05-27',       # 验证集结束 (3个月)
-                'test_start': '2025-06-05',    # 测试集开始
-                'test_end': '2026-02-02'       # 测试集结束 (3个月)2025-12-16
+                'val_end': '2025-05-13',       # 验证集结束 (3个月) 2025-05-27
+                'test_start': '2025-05-18',    # 测试集开始
+                'test_end': '2026-10-30'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15569,6 +15877,9 @@ def _backtest_on_window(test_data, model_result, window, args):
         # 按日期分组，每天取top5预测值
         top_k_stats = {1: [], 2: [], 3: [], 5: []}
 
+        # 🆕 新增：保存每日 top1~top5 详细信息
+        daily_top_details = {}  # 格式: {20250601: {top1: {pred: ..., real_return: ...}, top2: {...}, ...}}
+
         # 确保test_data_with_pred包含必要的列
         if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
             # 按日期分组计算topk
@@ -15579,12 +15890,24 @@ def _backtest_on_window(test_data, model_result, window, args):
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
 
+                    # 🆕 过滤掉当日的涨跌停、炸板股票
+                    date_sorted_filtered = date_sorted[
+                        (date_sorted['is_limit_up'] != 1) &
+                        (date_sorted['is_limit_down'] != 1) &
+                        (date_sorted['is_zhaban'] != 1)
+                    ]
+
+                    if len(date_sorted_filtered) < 5:
+                        # 过滤后股票不足5个，跳过该日期
+                        continue
+
                     # 计算各topk的真实收益 - 收集所有真实收益值而不是每日统计值
                     # 🆕 修改：topk表示"第k名"而不是"前k名"
                     for k in [1, 2, 3, 5]:
                         # 🔧 修改：取第k名的股票，而不是前k名的股票
                         # 例如k=3表示取排名第3的股票（只有1只），而不是前3名的股票（3只）
-                        top_k_data = date_sorted.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
+                        # 🆕 使用过滤后的数据
+                        top_k_data = date_sorted_filtered.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
                         if len(top_k_data) > 0:
                             # 收集该日期第k名股票的真实收益值，过滤掉NaN值
                             # 使用 atr_return_label（即 raw_future_ret）代替 future_return_2d
@@ -15592,6 +15915,45 @@ def _backtest_on_window(test_data, model_result, window, args):
                             real_returns = top_k_data['atr_return_label'].values
                             valid_returns = real_returns[~np.isnan(real_returns)]  # 过滤NaN值
                             top_k_stats[k].extend(valid_returns)  # 只存储有效收益值
+
+                    # 🆕 收集每日 top1~top5 详细信息
+                    date_str = date.strftime('%Y%m%d')
+                    daily_top_details[date_str] = {}
+
+                    for k in [1, 2, 3, 4, 5]:
+                        if len(date_sorted_filtered) >= k:
+                            top_k_stock = date_sorted_filtered.iloc[k-1:k]
+                            if len(top_k_stock) > 0:
+                                pred_value = float(top_k_stock['predicted_return'].values[0])
+                                real_return_value = float(top_k_stock['atr_return_label'].values[0])
+
+                                # 处理 NaN 值
+                                if np.isnan(pred_value):
+                                    pred_value = None
+                                if np.isnan(real_return_value):
+                                    real_return_value = None
+
+                                daily_top_details[date_str][f'top{k}'] = {
+                                    'pred': pred_value,
+                                    'real_return': real_return_value
+                                }
+
+            # 🆕 保存每日 top1~top5 详细信息到 JSON
+            if daily_top_details:
+                import json
+                from datetime import datetime
+
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                window_name = window['name'].replace(' ', '_').replace('/', '_')
+                json_filename = f"results/daily_top5_details_{window_name}_{timestamp}.json"
+
+                try:
+                    with open(json_filename, 'w', encoding='utf-8') as f:
+                        json.dump(daily_top_details, f, indent=2, ensure_ascii=False)
+                    logger.info(f"[JSON] 已保存每日 top1~top5 详细信息到: {json_filename}")
+                    logger.info(f"[JSON] 共保存 {len(daily_top_details)} 个交易日的数据")
+                except Exception as e:
+                    logger.error(f"[JSON] 保存失败: {e}")
 
             # 统计并输出结果 - 对收集的所有真实收益值进行统计
             for k in [1, 2, 3, 5]:
@@ -16042,6 +16404,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                 test_data, _ = test_labeled_result
             else:
                 test_data = test_labeled_result
+
+            test_data = test_data.dropna(subset=['relevance'])
 
             logger.info(f"   [OK] 标签生成完成")
             logger.info(f"   训练集有效样本: {train_data['atr_return_label'].notna().sum():,}/{len(train_data):,} ,最小值：{train_data['atr_return_label'].min():.6f}最大值：{train_data['atr_return_label'].max():.6f}")
