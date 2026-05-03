@@ -1,0 +1,260 @@
+                overall_penalty += 3.0 * abs(overall_dd + 0.14) / 0.05
+            if overall_margin12_rel < 0.010:
+                overall_penalty += 3.5 * (0.010 - overall_margin12_rel) / 0.010
+            if overall_gap_top1_top5_mean_rel < 0.018:
+                overall_penalty += 3.0 * (0.018 - overall_gap_top1_top5_mean_rel) / 0.018
+            if overall_top5_pred_std_rel < 0.010:
+                overall_penalty += 2.2 * (0.010 - overall_top5_pred_std_rel) / 0.010
+
+            if positive_segments < 2:
+                overall_penalty += 2.0 * (2 - positive_segments)
+            if weak_tail_segments >= 2:
+                overall_penalty += 1.5 * (weak_tail_segments - 1)
+
+            segment_floor_penalty = 0.0
+            if min_seg_mean < 0:
+                segment_floor_penalty += 10.0 * abs(min_seg_mean) / 0.01
+            elif min_seg_mean < 0.01:
+                segment_floor_penalty += 5.5 * (0.01 - min_seg_mean) / 0.01
+
+            if min_seg_win < 0.52:
+                segment_floor_penalty += 4.0 * (0.52 - min_seg_win) / 0.05
+
+            if min_seg_q10 < -0.06:
+                segment_floor_penalty += 4.5 * abs(min_seg_q10 + 0.06) / 0.02
+
+            train_panel = None
+            train_stats = None
+            try:
+                train_panel = _calc_daily_rank_panel(
+                    model,
+                    X_train_scaled,
+                    y_train_original_sorted,
+                    train_dates,
+                    None,
+                    rank_position=1
+                )
+                train_stats = _calc_panel_stats(train_panel)
+                train_top3_panel = _calc_daily_rank_panel(
+                    model,
+                    X_train_scaled,
+                    y_train_original_sorted,
+                    train_dates,
+                    None,
+                    rank_position=3
+                )
+                train_top5_panel = _calc_daily_rank_panel(
+                    model,
+                    X_train_scaled,
+                    y_train_original_sorted,
+                    train_dates,
+                    None,
+                    rank_position=5
+                )
+                train_top3_stats = _calc_panel_stats(train_top3_panel)
+                train_top5_stats = _calc_panel_stats(train_top5_panel)
+            except Exception:
+                train_stats = None
+                train_top3_stats = None
+                train_top5_stats = None
+
+            overfit_penalty = 0.0
+            if train_stats is not None:
+                train_mean = train_stats['mean_return']
+                train_win = train_stats['win_rate']
+                train_q10 = train_stats['q10']
+                train_margin12_rel = train_stats.get('mean_margin12_rel', 0.0)
+                train_gap_top1_top5_mean_rel = train_stats.get('mean_gap_top1_top5_mean_rel', 0.0)
+                train_top5_pred_std_rel = train_stats.get('mean_top5_pred_std_rel', 0.0)
+
+                if overall_mean > 1e-6:
+                    mean_ratio = train_mean / max(overall_mean, 1e-6)
+                    if mean_ratio > 2.2:
+                        overfit_penalty += 2.5 * (mean_ratio - 2.2)
+                elif train_mean > 0:
+                    overfit_penalty += 6.0
+
+                win_gap = train_win - overall_win
+                if win_gap > 0.12:
+                    overfit_penalty += 10.0 * (win_gap - 0.12)
+
+                q10_gap = train_q10 - overall_q10
+                if q10_gap > 0.03:
+                    overfit_penalty += 8.0 * (q10_gap - 0.03)
+                if overall_margin12_rel > 1e-6:
+                    margin_ratio = train_margin12_rel / max(overall_margin12_rel, 1e-6)
+                    if margin_ratio > 2.4:
+                        overfit_penalty += 3.0 * (margin_ratio - 2.4)
+                if overall_gap_top1_top5_mean_rel > 1e-6:
+                    gap_ratio = train_gap_top1_top5_mean_rel / max(overall_gap_top1_top5_mean_rel, 1e-6)
+                    if gap_ratio > 2.4:
+                        overfit_penalty += 3.0 * (gap_ratio - 2.4)
+                if overall_top5_pred_std_rel > 1e-6:
+                    std_ratio = train_top5_pred_std_rel / max(overall_top5_pred_std_rel, 1e-6)
+                    if std_ratio > 2.4:
+                        overfit_penalty += 2.0 * (std_ratio - 2.4)
+
+            head_penalty = 0.0
+            if top3_stats is not None:
+                top1_top3_gap = overall_mean - top3_stats['mean_return']
+                if top1_top3_gap < 0:
+                    head_penalty += 14.0 * abs(top1_top3_gap) / 0.01
+                elif top1_top3_gap < 0.006:
+                    head_penalty += 4.5 * (0.006 - top1_top3_gap) / 0.006
+            if top5_stats is not None:
+                top1_top5_gap = overall_mean - top5_stats['mean_return']
+                if top1_top5_gap < 0:
+                    head_penalty += 8.0 * abs(top1_top5_gap) / 0.01
+                elif top1_top5_gap < 0.0035:
+                    head_penalty += 2.8 * (0.0035 - top1_top5_gap) / 0.0035
+
+            if train_stats is not None and train_top3_stats is not None and top3_stats is not None:
+                train_gap13 = train_stats['mean_return'] - train_top3_stats['mean_return']
+                val_gap13 = overall_mean - top3_stats['mean_return']
+                if val_gap13 > 1e-6:
+                    gap13_ratio = train_gap13 / max(val_gap13, 1e-6)
+                    if gap13_ratio > 1.6:
+                        head_penalty += 5.0 * (gap13_ratio - 1.6)
+                elif train_gap13 > 0.002:
+                    head_penalty += 4.0
+            if train_stats is not None and train_top5_stats is not None and top5_stats is not None:
+                train_gap15 = train_stats['mean_return'] - train_top5_stats['mean_return']
+                val_gap15 = overall_mean - top5_stats['mean_return']
+                if val_gap15 > 1e-6:
+                    gap15_ratio = train_gap15 / max(val_gap15, 1e-6)
+                    if gap15_ratio > 1.8:
+                        head_penalty += 3.8 * (gap15_ratio - 1.8)
+                elif train_gap15 > 0.0015:
+                    head_penalty += 2.8
+
+            candidate_quality_bonus = 0.0
+            if top3_stats is not None:
+                candidate_quality_bonus += 140.0 * top3_stats['mean_return']
+                candidate_quality_bonus += 60.0 * (top3_stats['win_rate'] - 0.5)
+            if top5_stats is not None:
+                candidate_quality_bonus += 90.0 * top5_stats['mean_return']
+                candidate_quality_bonus += 40.0 * (top5_stats['win_rate'] - 0.5)
+
+            overall_score = overall_base_score - overall_penalty + candidate_quality_bonus
+            final_score = (
+                0.20 * overall_score +
+                0.20 * score_mean +
+                0.45 * weakest_score -
+                0.85 * score_std -
+                overfit_penalty -
+                1.10 * head_penalty -
+                segment_floor_penalty
+            )
+
+            return final_score, {
+                'reject_reason': None,
+                'segments': segment_metrics,
+                'score_mean': score_mean,
+                'score_std': score_std,
+                'segment_floor_penalty': segment_floor_penalty,
+                'min_seg_mean': min_seg_mean,
+                'min_seg_win': min_seg_win,
+                'min_seg_q10': min_seg_q10,
+                'overfit_penalty': overfit_penalty,
+                'head_penalty': head_penalty,
+                'candidate_quality_bonus': candidate_quality_bonus,
+                'train_panel': train_stats,
+                'top3_panel': top3_stats,
+                'top5_panel': top5_stats,
+                'overall': {
+                    'mean_return': overall_mean,
+                    'median_return': overall_median,
+                    'win_rate': overall_win,
+                    'q25': overall_q25,
+                    'q10': overall_q10,
+                    'max_drawdown': overall_dd,
+                    'mean_margin12_rel': overall_margin12_rel,
+                    'mean_gap_top1_top5_mean_rel': overall_gap_top1_top5_mean_rel,
+                    'mean_top5_pred_std_rel': overall_top5_pred_std_rel,
+                    'mean_top5_pred_range_rel': overall_top5_pred_range_rel,
+                    'positive_segments': positive_segments,
+                    'weak_tail_segments': weak_tail_segments,
+                    'penalty': overall_penalty,
+                    'score': overall_score
+                },
+                'final_score': final_score
+            }
+
+        def _clone_lgb_model(model_to_clone):
+            return pickle.loads(pickle.dumps(model_to_clone))
+
+        def _candidate_structure_signature(params):
+            return (
+                params.get('learning_rate'),
+                params.get('num_leaves'),
+                params.get('reg_alpha'),
+                params.get('reg_lambda'),
+                params.get('min_data_in_leaf'),
+                params.get('feature_fraction'),
+                params.get('bagging_fraction'),
+                params.get('n_estimators'),
+                params.get('lambdarank_truncation_level'),
+                tuple(params.get('label_gain', []))
+            )
+
+        def _register_top_candidate(candidate_bucket, candidate_info, top_n=10, max_per_signature=2):
+            candidate_bucket.append(candidate_info)
+            candidate_bucket.sort(key=lambda x: x['final_score'], reverse=True)
+            filtered_bucket = []
+            signature_counts = {}
+            for item in candidate_bucket:
+                sig = _candidate_structure_signature(item['params'])
+                if signature_counts.get(sig, 0) >= max_per_signature:
+                    continue
+                filtered_bucket.append(item)
+                signature_counts[sig] = signature_counts.get(sig, 0) + 1
+            candidate_bucket[:] = filtered_bucket
+            del candidate_bucket[top_n:]
+
+        # 初始化最佳模型追踪（验证集三段稳定性评分）
+        best_top1_return = -float('inf')
+        best_model = None
+        best_params_found = None
+        best_iteration_found = None
+        best_score_diagnostics = None
+        top_candidate_models = []
+
+        # ✅ 优化：记录已搜索的参数，避免重复
+        searched_params = set()  # 存储已搜索的参数组合的哈希值
+        duplicate_count = 0  # 记录重复次数
+
+        model = None
+
+        for i in range(SEARCH_ITER):
+            # ✅ 优化：采样参数时避免重复
+            max_retry = 10  # 最多重试 10 次
+            for retry in range(max_retry):
+                # 采样参数
+                current_params = base_params.copy()
+
+                # ✅ 特殊处理：reg_alpha 和 reg_lambda 必须选择相同的值
+                # reg_value = random.choice(search_space['reg_alpha'])
+                # current_params['reg_alpha'] = reg_value
+                # current_params['reg_lambda'] = reg_value
+
+                # 采样其他参数（跳过 reg_alpha 和 reg_lambda，因为已经处理过了）
+                for key, choices in search_space.items():
+                    # if key in ['reg_alpha', 'reg_lambda']:
+                    #     continue  # 跳过，已经处理
+                    current_params[key] = random.choice(choices)
+
+                current_params['label_gain'] = tuple(random.choice(label_gain_options))  # 转为 tuple 以便哈希
+
+                # ✅ 生成参数的唯一标识（用于检查重复）
+                # 将参数转换为可哈希的元组
+                params_tuple = tuple(sorted((k, str(v)) for k, v in current_params.items()))
+
+                if params_tuple not in searched_params:
+                    # 这是一个新的参数组合
+                    searched_params.add(params_tuple)
+                    logger.info(f"这是一个新的组合")
+                    break
+                else:
+                    logger.info(f"重复了，重新采样")
+                    # 重复了，重新采样
+                    if retry == max_retry - 1:

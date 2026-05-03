@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘32_20251215_lead_z.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘34_20251215_lead_z.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -1408,33 +1408,22 @@ def _get_market_state(market_data: pd.DataFrame, lookback: int = 20, logger=None
 
 def _calculate_professional_sample_weights(
     y_train: np.ndarray,
-    imbalance_ratio: float,
     logger,
-    boundary_distances: np.ndarray = None,
-    is_regression: bool = False,
-    y_train_original: np.ndarray = None,
-    train_dates: np.ndarray = None,
-    time_decay_half_life: float = 365.0,
-    reference_date: str = None,
     turnover_rate: np.ndarray = None,
     circ_mv: np.ndarray = None,
-    label_rank: np.ndarray = None,
-    label_boost_beta: float = 0.1,
-    w_min: float = 0.8,
-    w_max: float = 1.2
+    is_monster: np.ndarray = None
 ) -> np.ndarray:
     """
-    稳健样本权重计算 (修复版)
-    - 在 log1p 前先填充/替换 NaN/Inf/<=0
-    - 使用 per-field winsorize (1%-99%)
-    - 在 log 空间合成，限制最终范围 [w_min, w_max]
-    - 返回已中位数归一化的样本权重
+    简化版样本权重计算
+    - 基于 is_monster 字段设置权重：is_monster==1 权重为5，is_monster==0 权重为1
+    - 可选：基于 turnover_rate 和 circ_mv 进行微调（如果提供）
+    - 返回样本权重数组
     """
     import numpy as np
     import pandas as pd
 
     try:
-        logger.info("样本权重计算 (修复版) 开始")
+        logger.info("样本权重计算 (简化版) 开始")
         n = len(y_train)
         logger.info(f"  总样本数: {n}")
 
@@ -1443,145 +1432,76 @@ def _calculate_professional_sample_weights(
         logger.info(f"  min={np.nanmin(y_train):.6f}, max={np.nanmax(y_train):.6f}, mean={np.nanmean(y_train):.6f}, std={np.nanstd(y_train):.6f}")
         logger.info(f"  NaN count in labels: {int(np.isnan(y_train).sum())}, Inf count: {int(np.isinf(y_train).sum())}")
 
-        # ---------- 检查输入 ----------
-        if turnover_rate is None or circ_mv is None:
-            logger.warning("[WARNING] turnover_rate or circ_mv is None -> 返回均匀权重")
-            return np.ones(n)
+        # ---------- 基于 is_monster 设置权重 ----------
+        # is_monster == 1: 权重为 5.0（优质样本）
+        # is_monster == 0 或 None: 权重为 1.0（普通样本）
+        monster_weight_multiplier = np.ones(n)  # 默认全部为1.0
 
-        turnover = np.asarray(turnover_rate, dtype=float).copy()
-        mcap = np.asarray(circ_mv, dtype=float).copy()
+        if is_monster is not None:
+            is_monster_arr = np.asarray(is_monster, dtype=float).copy()
 
-        # ---------- 1) 预处理：替换 Inf/NaN/<=0 ----------
-        # 记录问题数量
-        n_inf_turn = np.isinf(turnover).sum()
-        n_nan_turn = np.isnan(turnover).sum()
-        n_le0_turn = np.sum(~np.isnan(turnover) & (turnover <= 0))
-        logger.info(f"换手率预检: finite={np.isfinite(turnover).sum()}/{len(turnover)}, Inf={n_inf_turn}, NaN={n_nan_turn}, <=0={n_le0_turn}")
+            # 统计 is_monster 分布
+            monster_count = int(np.sum(is_monster_arr == 1.0))
+            normal_count = int(np.sum(is_monster_arr == 0.0))
+            other_count = len(is_monster_arr) - monster_count - normal_count
 
-        n_inf_mc = np.isinf(mcap).sum()
-        n_nan_mc = np.isnan(mcap).sum()
-        n_le0_mc = np.sum(~np.isnan(mcap) & (mcap <= 0))
-        logger.info(f"市值预检: finite={np.isfinite(mcap).sum()}/{len(mcap)}, Inf={n_inf_mc}, NaN={n_nan_mc}, <=0={n_le0_mc}")
+            logger.info(f"[is_monster] 统计:")
+            logger.info(f"  is_monster==1 (优质样本): {monster_count} ({monster_count/n*100:.2f}%)")
+            logger.info(f"  is_monster==0 (普通样本): {normal_count} ({normal_count/n*100:.2f}%)")
+            if other_count > 0:
+                logger.warning(f"  is_monster 其他值: {other_count} (将视为普通样本)")
 
-        # 替换策略：
-        # - 对于 turnover: 使用正值部分的 1st percentile 作为 floor 填充非正/NaN/Inf
-        # - 对于 mcap: 使用正值部分的 1st percentile 填充非正/NaN/Inf
-        pos_turn = turnover[np.isfinite(turnover) & (turnover > 0)]
-        pos_mcap = mcap[np.isfinite(mcap) & (mcap > 0)]
+            # 设置权重乘数
+            monster_mask = (is_monster_arr == 1.0)
+            monster_weight_multiplier[monster_mask] = 5.0  # 优质样本权重为5
+            # 其他样本（包括 is_monster==0）保持权重为1.0
 
-        if pos_turn.size == 0:
-            turn_floor = 1e-6
+            logger.info(f"[is_monster] 权重乘数设置:")
+            logger.info(f"  优质样本权重乘数: 5.0")
+            logger.info(f"  普通样本权重乘数: 1.0")
+            logger.info(f"  权重乘数统计: min={monster_weight_multiplier.min():.1f}, max={monster_weight_multiplier.max():.1f}")
         else:
-            turn_floor = max(np.nanpercentile(pos_turn, 1), 1e-6)
+            logger.info("[is_monster] 未提供 is_monster 字段，所有样本使用统一权重乘数 1.0")
 
-        if pos_mcap.size == 0:
-            mcap_floor = 1.0
-        else:
-            mcap_floor = max(np.nanpercentile(pos_mcap, 1), 1.0)
+        # ---------- 可选：基于 turnover_rate 和 circ_mv 进行微调 ----------
+        w_final = monster_weight_multiplier.copy()
 
-        # 替换：把非正/NaN/Inf -> floor
-        bad_turn_mask = ~np.isfinite(turnover) | (turnover <= 0)
-        replaced_turn = int(bad_turn_mask.sum())
-        turnover[bad_turn_mask] = turn_floor
+        # if turnover_rate is not None and circ_mv is not None:
+        #     logger.info("[可选] 基于 turnover_rate 和 circ_mv 进行微调")
 
-        bad_mcap_mask = ~np.isfinite(mcap) | (mcap <= 0)
-        replaced_mcap = int(bad_mcap_mask.sum())
-        mcap[bad_mcap_mask] = mcap_floor
+        #     turnover = np.asarray(turnover_rate, dtype=float).copy()
+        #     mcap = np.asarray(circ_mv, dtype=float).copy()
 
-        logger.info(f"已替换换手率 {replaced_turn} 个无效值 -> {turn_floor:.6g}")
-        logger.info(f"已替换市值 {replaced_mcap} 个无效值 -> {mcap_floor:.6g}")
+        #     # 简单处理：将无效值替换为0
+        #     turnover = np.nan_to_num(turnover, nan=0.0, posinf=0.0, neginf=0.0)
+        #     mcap = np.nan_to_num(mcap, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # ---------- 2) log 缩放 + per-field winsorize (1%-99%) ----------
-        t_log = np.log1p(turnover)  # >=0
-        m_log = np.log1p(mcap)
+        #     # 标准化到 [0.9, 1.1] 范围的微调因子
+        #     if len(turnover) == n and len(mcap) == n:
+        #         # 计算标准化换手率和市值
+        #         turn_norm = (turnover - np.mean(turnover)) / (np.std(turnover) + 1e-12)
+        #         mcap_norm = (mcap - np.mean(mcap)) / (np.std(mcap) + 1e-12)
 
-        # winsorize in log space
-        lo_t, hi_t = np.nanpercentile(t_log, [1, 99])
-        lo_m, hi_m = np.nanpercentile(m_log, [1, 99])
-        t_log_clipped = np.clip(t_log, lo_t, hi_t)
-        m_log_clipped = np.clip(m_log, lo_m, hi_m)
+        #         # 组合微调因子（权重较小）
+        #         adjustment_factor = 1.0 + 0.05 * turn_norm + 0.05 * mcap_norm
+        #         adjustment_factor = np.clip(adjustment_factor, 0.9, 1.1)
 
-        logger.info(f"t_log percentiles(1,99): {lo_t:.6f}, {hi_t:.6f}; m_log percentiles(1,99): {lo_m:.6f}, {hi_m:.6f}")
+        #         # 应用微调
+        #         w_final = w_final * adjustment_factor
 
-        # 标准化到接近 1 的尺度（用中位数）
-        t_med = np.nanmedian(t_log_clipped) + 1e-12
-        m_med = np.nanmedian(m_log_clipped) + 1e-12
-        t_w = t_log_clipped / t_med
-        m_w = m_log_clipped / m_med
-
-        # ---------- 3) 合成权重（在 log 空间做幂次混合，避免乘法爆炸） ----------
-        alpha = 0.6
-        # 防止取 log(0)：确保正数
-        t_w_safe = np.clip(t_w, 1e-6, None)
-        m_w_safe = np.clip(m_w, 1e-6, None)
-        log_base = alpha * np.log(t_w_safe) + (1 - alpha) * np.log(m_w_safe)
-        w_base = np.exp(log_base)
-        w_base = np.ones_like(w_base)
-
-        logger.info(f"基础权重 (w_base) 统计: min={np.nanmin(w_base):.4f}, max={np.nanmax(w_base):.4f}, mean={np.nanmean(w_base):.4f}, NaN={int(np.isnan(w_base).sum())}")
-
-        # ---------- 4) 时间衰减（弱化） ----------
-        # 处理 train_dates
-        if train_dates is None:
-            decay = np.ones(n)
-            logger.warning("[WARNING] train_dates 为 None, 跳过时间衰减")
-        else:
-            dates = pd.to_datetime(pd.Series(train_dates))
-            recent = dates.max()
-            age_days = (recent - dates).dt.days.values
-            age_days = np.clip(age_days, 0, None)
-            decay_raw = np.exp(-np.log(2) * age_days / float(time_decay_half_life))
-            # 将 decay 映射成靠近 1 的微调因子，避免过度放大/缩小
-            decay = 1.0 + 0.15 * (decay_raw - np.mean(decay_raw))
-            # 保证 finite
-            decay = np.nan_to_num(decay, nan=1.0, posinf=1.0, neginf=1.0)
-
-        w_time = w_base * decay
-        w_final = w_time
-        logger.info(f"time adjusted weight 统计: min={np.nanmin(w_time):.4f}, max={np.nanmax(w_time):.4f}, mean={np.nanmean(w_time):.4f}, NaN={int(np.isnan(w_time).sum())}")
-
-        # ---------- 5) relevance 增强（有限制） ----------
-        # if label_rank is not None:
-        #     rel = np.asarray(label_rank, dtype=float)
-        #     # 把 rel 缺失当 0
-        #     rel = np.where(~np.isfinite(rel), 0.0, rel)
-        #     r_factor = 1.0 + float(label_boost_beta) * rel
-        #     # 强制上下限，例如 [0.85, 1.3]
-        #     r_factor = np.clip(r_factor, 0.85, 1.3)
-        #     w_rel = w_time * r_factor
-        #     logger.info(f"relevance factor 统计: min={np.nananmin(r_factor):.4f}, max={np.nananmax(r_factor):.4f}, mean={np.nananmean(r_factor):.4f}")
+        #         logger.info(f"微调后权重统计: min={np.nanmin(w_final):.4f}, max={np.nanmax(w_final):.4f}, mean={np.nanmean(w_final):.4f}")
+        #     else:
+        #         logger.warning("[WARNING] turnover_rate 或 circ_mv 长度不匹配，跳过微调")
         # else:
-        #     w_rel = w_time
-        #     logger.info("no relevance provided -> skip relevance boost")
+        #     logger.info("[可选] 未提供 turnover_rate 和 circ_mv，跳过微调")
 
-        # ---------- 6) 全局 winsorize + clip 到 [w_min, w_max] ----------
-        # w_rel = np.nanan_to_num(w_rel, nan=1.0, posinf=w_max, neginf=w_min)
-        # w_clip = np.clip(w_rel, w_min, w_max)
+        # ---------- 最终统计 ----------
+        logger.info("最终权重统计:")
+        logger.info(f"  min={float(np.nanmin(w_final)):.4f}, max={float(np.nanmax(w_final)):.4f}, mean={float(np.nanmean(w_final)):.4f}, median={float(np.median(w_final)):.4f}")
 
-        # # ---------- 7) 归一化（中位数归一化） ----------
-        # med = float(np.median(w_clip))
-        # if not np.isfinite(med) or med <= 0:
-        #     med = float(np.nananmean(w_clip))
-        #     logger.warning(f"权重中位数异常, 用均值替代: {med:.6f}")
+        # 确保无 NaN/Inf
+        w_final = np.nan_to_num(w_final, nan=1.0, posinf=5.0, neginf=1.0)
 
-        # w_final = w_clip / (med + 1e-12)
-
-        # # 最后保证无 NaN/Inf
-        # if np.any(~np.isfinite(w_final)):
-        #     bad = int(np.sum(~np.isfinite(w_final)))
-        #     logger.warning(f"最终权重存在 {bad} 个无效值, 用 1.0 替换")
-        #     w_final = np.nanan_to_num(w_final, nan=1.0, posinf=w_max, neginf=w_min)
-
-        # # ---------- 诊断日志 ----------
-        # logger.info("最终权重统计:")
-        # logger.info(f"  min={float(np.nananmin(w_final)):.4f}, max={float(np.nananmax(w_final)):.4f}, mean={float(np.nananmean(w_final)):.4f}, median={float(np.median(w_final)):.4f}")
-        # # 集中度
-        # w_sorted = np.sort(w_final)[::-1]
-        # total = np.sum(w_final)
-        # n_samples = len(w_final)
-        # k1 = max(1, int(n_samples * 0.01))
-        # top1_share = np.sum(w_sorted[:k1]) / (total + 1e-12)
-        # logger.info(f"  Top1% weight share: {top1_share*100:.2f}%")
         return w_final
 
     except Exception as e:
@@ -1590,7 +1510,7 @@ def _calculate_professional_sample_weights(
         logger.error(traceback.format_exc())
         logger.warning("返回均匀权重作为后备")
         return np.ones(len(y_train) if y_train is not None else 100)
-
+    
 
 def _calculate_precision_at_k(y_true, y_scores, k_values=[1, 3, 5, 10]):
     """
@@ -2415,7 +2335,7 @@ def _get_lgb_search_space():
     space = {
         # 'max_depth': [-1, 3, 4, 5],
         # 'learning_rate': [0.02],
-        'num_leaves': [7, 15, 31],
+        'num_leaves': [7, 15],
         'reg_alpha': [0.5,2,5,8,10,20],
         'reg_lambda': [0.5,2,5,8,10,20],
         # 'min_data_in_leaf': [200, 220, 240, 250, 260, 270, 280, 290, 295, 300, 305, 310, 315, 320, 325, 330, 335, 340], # 覆盖稀疏到密集 , 330, 400
@@ -2423,17 +2343,19 @@ def _get_lgb_search_space():
         # 'reg_alpha': [5.0, 8.0, 10], #8.5, 
         # 'reg_lambda': [5.0, 8.0, 10], #, 8.5
         # 'n_estimators': [20, 40, 60, 90], #, 200, 300, 800
-        # 'lambdarank_truncation_level': [3,5,8,10], # 关注头部排名的范围 3,4,5,8,10
+        'lambdarank_truncation_level': [8,10], # 关注头部排名的范围 3,4,5,8,10
     }
     
     # 不同的label_gain策略
     label_gain_candidates = [
-        [0, 1, 3, 7, 15, 31], 
+        [0,1,2,3,4,5],
+        [0,1,2,3,5,8]
+        # [0, 1, 3, 7, 15, 31], 
         # [0, 1, 2, 4, 7, 12],
         # [0, 1, 2, 4, 8, 20],
-        [0, 1, 2, 4, 8, 14],
+        # [0, 1, 2, 4, 8, 14],
         # [0, 1, 2, 4, 8, 15],
-        [0, 1, 2, 4, 8, 16],
+        # [0, 1, 2, 4, 8, 16],
         # [0, 1, 2, 4, 8, 17]  # 标准2次方
         # [i for i in range(31)] # 线性
     ]
@@ -2568,7 +2490,6 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 if not _validate_data_order(val_dates, y_val_atr, y_val, "LightGBM验证集"):
                     logger.error("[FAIL] LightGBM验证集数据顺序验证失败,程序终止")
                     raise ValueError("LightGBM验证集数据顺序混乱,无法继续训练")
-        label_gain_mixed = [i for i in range(1001)]
 
         # # 对 Top 50 的标签（即标签值 950 以上）应用更高的权重（例如 5倍权重）
         # for i in range(980, 1001):
@@ -2695,10 +2616,10 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         val_dates = val_dates[idx_val]
         X_val_scaled = X_val_scaled[idx_val]
         y_val = y_val[idx_val]
-        val_sample_weights = val_sample_weights[idx_val]
+        # val_sample_weights = val_sample_weights[idx_val]
 
-        sample_weights = np.ones_like(y_train)
-        val_sample_weights = np.ones_like(y_val)
+        # sample_weights = np.ones_like(y_train)
+        # val_sample_weights = np.ones_like(y_val)
 
 
 
@@ -2753,7 +2674,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         base_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [1, 3],
+            'ndcg_eval_at': [3,5],
             'lambdarank_norm': True,
             'boosting_type': 'gbdt',
             'learning_rate': 0.02,
@@ -2770,7 +2691,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'random_state': 42
         }
 
-        SEARCH_ITER = 65 # 迭代次数
+        SEARCH_ITER = 30 # 迭代次数
         best_params = base_params.copy()
         # 给个默认值防止第一次就失败
         best_params['learning_rate'] = 0.02
@@ -3959,30 +3880,7 @@ def _train_ml_model(raw_data, labels, feature_columns, winsorization_thresholds=
         # [强化] 从preprocessed_data获取统一计算的样本权重
         sample_weights = preprocessed_data.get('sample_weights') if preprocessed_data is not None else None
 
-        if sample_weights is None:
-            # 如果preprocessed_data中没有权重,则重新计算（兼容旧代码）
-            logger.warning("[WARNING] preprocessed_data中缺少sample_weights,将重新计算")
-            train_relevance = preprocessed_data.get('train_relevance') if preprocessed_data is not None else None
-            sample_weights = _calculate_professional_sample_weights(
-                y_train_split,
-                imbalance_ratio=1.0,
-                logger=logger,
-                boundary_distances=None,
-                is_regression=True,
-                y_train_original=y_train_split_original,
-                train_dates=train_dates,
-                time_decay_half_life=180.0,
-                turnover_rate=train_turnover_rate if 'train_turnover_rate' in locals() else None,
-                circ_mv=train_circ_mv if 'train_circ_mv' in locals() else None,
-                label_rank=train_relevance,
-                label_boost_beta=0.15,
-                w_min=0.2,
-                w_max=5.0
-            )
-        else:
-            logger.info("[OK] 使用preprocessed_data中的统一样本权重")
-            logger.info(f"   权重范围: [{sample_weights.min():.4f}, {sample_weights.max():.4f}]")
-            logger.info(f"   权重均值: {sample_weights.mean():.4f}")
+     
 
         # [强化] 排序模型：确保relevance标签是numpy数组
         if not isinstance(y_train_split, np.ndarray):
@@ -5599,9 +5497,9 @@ def _get_stock_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
 
         'market_trend_strength',
         'market_liquidity_change',
@@ -5758,9 +5656,9 @@ def _get_original_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
 
         'market_trend_strength',
         'market_liquidity_change',
@@ -6589,8 +6487,6 @@ def main():
         # success = run_train_model_mode(args,train_end_date='2024-06-01', is_regression=True)  # [强化] 启用成本感知回归模式
         success = run_train_model_mode(args,None, is_regression=True)
     #python main.py --mode test_model --models lightgbm    
-    elif args.mode == 'test_model':
-        success = run_test_model_mode(args)
     # python main.py --mode test_model_walkforward --window 1,3
     #python main.py --mode test_model --models lightgbm --optimize_thresholds 用来搜索最优atr止盈止损阈值
     #python main.py --mode test_model_walkforward --window 3 --models lightgbm --optimize_thresholds
@@ -7689,9 +7585,15 @@ def _generate_training_labels_for_all_data(stock_data):
     ).reset_index(drop=True)
 
     g = stock_data.groupby('stock_code')
+    low_t1 = g["low"].shift(-1)
+    low_t2 = g["low"].shift(-2)
+    low_t3 = g["low"].shift(-3)
 
     # ========= 1. 买入价 =========
     buy_price = g['open'].shift(-1)
+
+    min_low = np.minimum(low_t1.fillna(np.inf), np.minimum(low_t2.fillna(np.inf), low_t3.fillna(np.inf)))
+   
 
     # ========= 2. 卖出代理价 =========
     tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
@@ -7702,14 +7604,18 @@ def _generate_training_labels_for_all_data(stock_data):
 
     # 等权平均，表示“2~3 天期望卖出”
     sell_price = 0.8 * sell_t2 + 0.2 * sell_t3
-
+    min_low_return = (min_low - buy_price) / (buy_price + 1e-12)
+   
     # ========= 3. 信息收益 =========
     future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
     future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
+    is_monster = np.where((future_ret >= 0.10) & (min_low_return >= -0.05), 1.0, 0.0)
+
     stock_data['atr_return_label'] = future_ret
+    stock_data['is_monster'] = is_monster
 
     # 防止脏数据，不是风控
-    future_ret = future_ret.clip(-0.2, 0.2)
+    future_ret = future_ret.clip(-0.12, 0.12)
 
     stock_data['future_ret'] = future_ret
 
@@ -8610,25 +8516,25 @@ def run_train_model_mode(args, train_end_date=None, is_regression=True, use_xgbo
             unified_sample_weights = None
             if use_lightgbm:
                 logger.info("[WRENCH] 计算样本权重（供LightGBM使用）...")
-                unified_sample_weights = _calculate_professional_sample_weights(
-                    train_relevance_for_ensemble,  # 使用relevance标签
-                    imbalance_ratio=1.0,
-                    logger=logger,
-                    boundary_distances=None,
-                    is_regression=True,
-                    y_train_original=None,
-                    train_dates=train_dates_for_ensemble,
-                    time_decay_half_life=180.0,  # 统一使用180天
-                    turnover_rate=train_turnover_rate_for_ensemble,
-                    circ_mv=train_circ_mv_for_ensemble,
-                    label_rank=train_relevance_for_ensemble,  # relevance值(0-3)
-                    label_boost_beta=0.15,  # 统一使用0.15
-                    w_min=0.2,
-                    w_max=5.0
-                )
-                logger.info(f"[OK] 样本权重计算完成（供LightGBM使用）")
-                logger.info(f"   权重范围: [{unified_sample_weights.min():.4f}, {unified_sample_weights.max():.4f}]")
-                logger.info(f"   权重均值: {unified_sample_weights.mean():.4f}")
+                # unified_sample_weights = _calculate_professional_sample_weights(
+                #     train_relevance_for_ensemble,  # 使用relevance标签
+                #     imbalance_ratio=1.0,
+                #     logger=logger,
+                #     boundary_distances=None,
+                #     is_regression=True,
+                #     y_train_original=None,
+                #     train_dates=train_dates_for_ensemble,
+                #     time_decay_half_life=180.0,  # 统一使用180天
+                #     turnover_rate=train_turnover_rate_for_ensemble,
+                #     circ_mv=train_circ_mv_for_ensemble,
+                #     label_rank=train_relevance_for_ensemble,  # relevance值(0-3)
+                #     label_boost_beta=0.15,  # 统一使用0.15
+                #     w_min=0.2,
+                #     w_max=5.0
+                # )
+                # logger.info(f"[OK] 样本权重计算完成（供LightGBM使用）")
+                # logger.info(f"   权重范围: [{unified_sample_weights.min():.4f}, {unified_sample_weights.max():.4f}]")
+                # logger.info(f"   权重均值: {unified_sample_weights.mean():.4f}")
             else:
                 logger.info("⏭️ 跳过样本权重计算（XGBoost排序模型使用分组权重）")
 
@@ -10399,881 +10305,6 @@ def _run_stock_selection_backtest(
             'window_name': window_name
         }
     }
-
-
-def run_test_model_mode(args):
-    """
-    运行模型测试模式：训练模型->预测->选股->回测的纯预测流程
-
-    Args:
-        args: 命令行参数
-    """
-    logger = logging.getLogger(__name__)
-    print(f"[CHART] 运行模式: 模型预测选股")
-    logger.info("=" * 60)
-    logger.info(f"开始纯预测选股流程（无标签验证）")
-    logger.info("=" * 60)
-
-    try:
-        import pandas as pd
-        import numpy as np
-        import pickle
-        import json
-        from pathlib import Path
-        from datetime import datetime
-
-        # [TARGET] 1. 使用全局时间切分配置
-        train_end_date = TRAIN_END_DATE
-        test_start_date = pd.to_datetime(TEST_START_DATE)
-        test_end_date = pd.to_datetime(TEST_END_DATE)
-
-        logger.info("🗓️ 纯预测选股的时间切分策略（使用全局配置）:")
-        logger.info(f"  训练数据: 2023-06-01 到 {train_end_date}")
-        logger.info(f"  预测数据: {test_start_date.strftime('%Y-%m-%d')} 到 {test_end_date.strftime('%Y-%m-%d')}")
-        logger.info("[WARNING] 重要：模型将仅使用训练期数据训练，对测试期进行纯预测")
-
-        # [强化] 解析模型选择参数
-        models_str = getattr(args, 'models', 'lightgbm')
-        selected_models = [m.strip().lower() for m in models_str.split(',')]
-
-        use_lightgbm = 'lightgbm' in selected_models
-
-        if not use_lightgbm:
-            logger.error("[FAIL] 必须选择LightGBM模型")
-            return False
-
-        logger.info(f"[强化] 模型选择: {', '.join(selected_models)}")
-        logger.info(f"   LightGBM: {'[OK]'}")
-
-        # 2. 训练模型或跳过训练
-        if getattr(args, 'skip_train', False):
-            # 🆕 跳过训练，直接加载最新模型
-            logger.info("\n⏭️ 步骤1: 跳过训练，直接加载最新模型...")
-            logger.info("=" * 50)
-        else:
-            # 训练新模型
-            logger.info("\n[REFRESH] 步骤1: 训练仅使用训练期数据的模型（使用优化后的配置）...")
-            logger.info("[强化] 优化配置：智能标签变换 + 增强模型复杂度 + 交易导向评估")
-            logger.info("=" * 50)
-
-            # 调用训练模式，使用优化后的配置：启用回归模式和模型选择
-            train_success = run_train_model_mode(
-                args,
-                train_end_date=train_end_date,
-                is_regression=True,
-                use_lightgbm=use_lightgbm  # [强化] 根据命令行参数决定
-            )
-
-            if not train_success:
-                logger.error("训练期专用模型训练失败")
-                return False
-
-            logger.info("[OK] 训练期专用模型训练完成")
-            logger.info("=" * 50)
-
-        # 3. 加载完整因子数据用于预测（包含标签生成字段用于回测验证）
-        logger.info("\n[REFRESH] 步骤2: 加载完整因子数据进行预测...")
-        factor_data = _load_factor_cache_data(include_label_generation_features=True)
-
-        if factor_data is None:
-            logger.error("因子数据加载失败")
-            return False
-
-        logger.info(f"完整数据加载成功: {len(factor_data)} 条记录, {len(factor_data.columns)} 个字段")
-        logger.info(f"数据日期范围: {factor_data['date'].min()} 到 {factor_data['date'].max()}")
-
-        # 🆕 加载市场数据（用于市场状态判断）
-        logger.info("\n[REFRESH] 加载市场数据（用于市场状态自适应）...")
-        try:
-            from data_loader import IntegratedDataLoader
-            loader = IntegratedDataLoader()
-            start_date_str = factor_data['date'].min().strftime('%Y%m%d')
-            end_date_str = factor_data['date'].max().strftime('%Y%m%d')
-            _, _, market_data = loader.load_all_data(start_date_str, end_date_str, extend_history_days=20)
-
-            if market_data is None or market_data.empty:
-                logger.warning("[WARNING] 市场数据加载失败，将使用默认震荡市状态")
-                market_data = None
-            else:
-                # 确保date列是datetime类型
-                if 'date' in market_data.columns:
-                    market_data['date'] = pd.to_datetime(market_data['date'])
-                logger.info(f"[OK] 市场数据加载成功: {len(market_data)}条记录")
-        except Exception as e:
-            logger.warning(f"[WARNING] 市场数据加载失败: {e}，将使用默认震荡市状态")
-            market_data = None
-
-        # 3.5. 跳过交互特征计算，直接使用基础特征
-        logger.info("[REFRESH] 使用基础特征进行预测...")
-
-        # 4. 提取预测数据（确保与训练数据无重叠）
-        logger.info("\n✂️ 步骤3: 提取纯预测数据...")
-        logger.info("=" * 60)
-        logger.info("[SEARCH] 数据集划分验证:")
-        logger.info(f"  [CHART] 完整数据: {len(factor_data):,} 条记录")
-        logger.info(f"     [DATE] 日期范围: {factor_data['date'].min().strftime('%Y-%m-%d')} 至 {factor_data['date'].max().strftime('%Y-%m-%d')}")
-        logger.info(f"  [TARGET] 训练截止日期: {train_end_date} (不包含)")
-        logger.info(f"  [TARGET] 测试开始日期: {test_start_date.strftime('%Y-%m-%d')} (包含)")
-        logger.info(f"  [TARGET] 测试结束日期: {test_end_date.strftime('%Y-%m-%d')} (包含)")
-
-        prediction_data = factor_data[factor_data['date'] >= test_start_date].copy()
-
-        logger.info(f"  [CHART] 测试集: {len(prediction_data):,} 条记录")
-        logger.info(f"     [DATE] 日期范围: {prediction_data['date'].min().strftime('%Y-%m-%d')} 至 {prediction_data['date'].max().strftime('%Y-%m-%d')}")
-
-        # [强化] 验证训练集和测试集无重叠
-        train_data_count = len(factor_data[factor_data['date'] < pd.to_datetime(train_end_date)])
-        overlap_count = len(factor_data[(factor_data['date'] >= test_start_date) & (factor_data['date'] < pd.to_datetime(train_end_date))])
-
-        if overlap_count > 0:
-            logger.error(f"[FAIL] 数据泄露警告: 训练集和测试集有{overlap_count:,}条重叠记录!")
-        else:
-            logger.info(f"  [OK] 数据集无重叠: 训练集{train_data_count:,}条 < {train_end_date} <= 测试集{len(prediction_data):,}条")
-        logger.info("=" * 60)
-
-        if len(prediction_data) == 0:
-            logger.error("预测数据为空，请检查日期范围设置")
-            return False
-
-        # 5. 加载刚训练好的模型和参数
-        logger.info("\n📦 步骤4: 加载刚训练的专用模型...")
-
-        results_dir = Path("results")
-        if not results_dir.exists():
-            logger.error("results目录不存在")
-            return False
-
-        # [强化] 查找最新的模型文件（根据用户选择）
-        latest_xgb_file = None
-        latest_lgb_file = None
-        model_timestamp = None
-
-
-        # 查找LightGBM模型
-        if use_lightgbm:
-            logger.info("[SEARCH] 查找LightGBM模型（排除walkforward模式的window模型）...")
-            lgb_files = list(results_dir.glob("lightgbm_model_*.pkl"))
-            # [WRENCH] 修复：排除window开头的模型（walkforward模式专用）
-            lgb_files = [f for f in lgb_files if not f.stem.startswith("lightgbm_model_window")]
-
-            if model_timestamp is not None:
-                # 如果已有XGBoost时间戳,查找相同时间戳的LightGBM模型
-                logger.info(f"   查找相同时间戳的LightGBM模型(时间戳: {model_timestamp})...")
-                lgb_pattern = f"lightgbm_model_{model_timestamp}.pkl"
-                lgb_file = results_dir / lgb_pattern
-
-                if lgb_file.exists():
-                    latest_lgb_file = lgb_file
-                    logger.info(f"[OK] 找到LightGBM模型: {latest_lgb_file.name}")
-                else:
-                    logger.warning(f"[WARNING] 未找到相同时间戳的LightGBM模型")
-                    logger.warning("   将仅使用XGBoost模型")
-                    use_lightgbm = False  # 降级为单模型
-            elif lgb_files:
-                # 如果没有XGBoost时间戳,查找最新的LightGBM模型
-                latest_lgb_file = max(lgb_files, key=lambda f: f.stem)
-                logger.info(f"[OK] 找到最新LightGBM模型: {latest_lgb_file.name}")
-            else:
-                logger.warning("[WARNING] 未找到LightGBM模型文件")
-                  
-
-        # [强化] 收集要加载的模型文件
-        latest_models = []
-        if latest_xgb_file is not None:
-            latest_models.append(latest_xgb_file)
-        if latest_lgb_file is not None:
-            latest_models.append(latest_lgb_file)
-
-        if not latest_models:
-            logger.error("[FAIL] 未找到任何可用的模型文件")
-            return False
-
-        logger.info(f"📁 将加载{len(latest_models)}个模型:")
-        for f in latest_models:
-            logger.info(f"  - {f.name}")
-
-        # [强化] 加载所有模型
-        models = []
-        scalers = []
-        model_types = []  # 记录模型类型
-        model_performances = []  # 记录模型性能(用于权重计算)
-        feature_names = None
-        winsorization_thresholds = None  # [强化] Winsorization阈值(从XGBoost加载)
-        label_stats = None  # [WRENCH] 修复：在循环外初始化
-        industry_mapping = None  # [SW行业编码] 行业映射信息
-
-        for model_file in latest_models:
-            with open(model_file, 'rb') as f:
-                model_data = pickle.load(f)
-
-            models.append(model_data['model'])
-            scalers.append(model_data['scaler'])
-            model_types.append(model_data.get('model_type', 'xgboost'))  # 获取模型类型
-
-            # [强化] 获取验证集性能(用于权重计算) - 使用RankIC而非MSE
-            performance = model_data.get('performance', {})
-            # [强化] 排序模型使用RankIC作为权重计算指标
-            rank_ic = performance.get('rank_ic')
-            model_performances.append(rank_ic)
-
-            if feature_names is None:
-                feature_names = model_data['feature_names']
-
-            model_type = model_data.get('model_type', 'xgboost')
-
-            # [强化] 从XGBoost模型加载Winsorization阈值(集成学习共享预处理参数)
-            if winsorization_thresholds is None and model_type == 'xgboost':
-                winsorization_thresholds = model_data.get('winsorization_thresholds', None)
-
-            # [WRENCH] 修复：从XGBoost模型加载标签统计量
-            if label_stats is None and model_type == 'xgboost':
-                label_stats = model_data.get('label_stats', None)
-
-            # [SW行业编码] 只从LightGBM模型加载行业映射信息（XGBoost不需要）
-            if industry_mapping is None and model_type == 'lightgbm' and 'industry_mapping' in model_data:
-                industry_mapping = model_data['industry_mapping']
-                logger.info(f"  [SW行业编码] 从LightGBM模型加载行业映射信息: 特征名='{industry_mapping.get('industry_feature_name', 'industry_sw_code')}'")
-            logger.info(f"  [OK] 加载{model_type.upper()}模型: {model_file.name}")
-            if rank_ic is not None:
-                logger.info(f"     验证集RankIC: {rank_ic:.4f}")
-            else:
-                logger.warning(f"     [WARNING] 未找到验证集RankIC信息")
-
-        # [强化] 检查标签统计量是否加载成功
-        if label_stats:
-            logger.info(f"[OK] 加载标签统计量: μ={label_stats['mean']:.6f}, σ={label_stats['std']:.6f}")
-        else:
-            logger.warning("[WARNING] 未找到标签统计量，可能影响回归预测的反标准化")
-
-        logger.info(f"[OK] 模型加载成功: {len(models)}个模型，特征数量: {len(feature_names)}")
-
-        # [强化] 计算集成学习权重(基于验证集RankIC) - 排序模型专用
-        model_weights = None
-        if len(models) > 1:
-            logger.info("\n[CHART] 计算集成学习权重(基于验证集RankIC)...")
-            logger.info("   理由: 排序模型的目标是排序准确性,RankIC是最佳评估指标")
-
-            # 检查是否所有模型都有RankIC
-            if all(rank_ic is not None for rank_ic in model_performances):
-                # [强化] 权重 = |RankIC| (归一化)
-                # 使用绝对值,因为负相关也有价值(可以反向使用)
-                weights = np.array([abs(rank_ic) for rank_ic in model_performances])
-                model_weights = weights / weights.sum()
-
-                logger.info("[OK] 模型权重:")
-                for i, (model_type, weight, rank_ic) in enumerate(zip(model_types, model_weights, model_performances)):
-                    logger.info(f"  模型{i+1}({model_type.upper()}): 权重={weight:.4f}, RankIC={rank_ic:.4f}")
-            else:
-                logger.warning("[WARNING] 部分模型缺少RankIC信息,使用等权重")
-                model_weights = np.ones(len(models)) / len(models)
-                for i, model_type in enumerate(model_types):
-                    logger.info(f"  模型{i+1}({model_type.upper()}): 权重={model_weights[i]:.4f}")
-        else:
-            logger.info("[OK] 单模型模式,无需计算权重")
-
-
-        # 6. 准备预测数据特征
-        logger.info("\n[WRENCH] 步骤5: 准备预测数据特征...")
-
-        # 识别特征列（使用与训练时完全相同的简化逻辑）
-        prediction_feature_columns = _get_ml_feature_columns_simple(prediction_data)
-        logger.info(f"预测数据识别到 {len(prediction_feature_columns)} 个特征")
-
-        # 特征一致性检查（修复逻辑错误）
-        logger.info(f"[CHART] 特征分析:")
-        logger.info(f"   训练时特征数: {len(feature_names)}个（包含PCA特征）")
-        logger.info(f"   预测数据特征: {len(prediction_feature_columns)}个（原始特征）")
-
-        # 检查预测数据中是否包含足够的特征来生成PCA
-        # 注意：这里不需要与训练时的特征做严格对比，因为PCA会处理特征对齐
-        logger.info(f"[OK] 预测数据包含 {len(prediction_feature_columns)} 个原始特征，将用于PCA处理")
-
-        logger.info(f"[CHART] 预测数据统计:")
-        logger.info(f"  预测样本总数: {len(prediction_data):,}个")
-        logger.info(f"  预测日期范围: {prediction_data['date'].min()} 到 {prediction_data['date'].max()}")
-        logger.info(f"  预测股票数量: {prediction_data['stock_code'].nunique()}只")
-
-        # 7. 测试集数据预处理（使用训练时的Winsorization阈值）
-        logger.info("\n⚙️ 步骤6: 测试集数据预处理（使用训练时参数）...")
-
-        # [强化] 使用从XGBoost模型加载的Winsorization阈值(集成学习共享预处理参数)
-        if winsorization_thresholds:
-            logger.info(f"[OK] 使用XGBoost模型的Winsorization阈值: {len(winsorization_thresholds)}个特征")
-        else:
-            logger.warning("[WARNING] 未找到训练时的Winsorization阈值，将跳过缩尾处理")
-
-        # [SW行业编码] 检查是否需要为测试集添加行业特征（仅限LightGBM模型）
-        prediction_data_with_industry = prediction_data.copy()
-        industry_feature_added = False
-
-        if industry_mapping is not None and use_lightgbm:
-            industry_feature_name = industry_mapping.get('industry_feature_name', 'industry_sw_code')
-            stock_to_industry_name = industry_mapping.get('stock_to_industry_name', {})
-            industry_name_to_code = industry_mapping.get('industry_name_to_code', {})
-
-            # 检查行业特征名是否在特征列中
-            if industry_feature_name in prediction_feature_columns:
-                # 检查预测数据是否有股票代码列
-                if 'stock_code' in prediction_data.columns and stock_to_industry_name and industry_name_to_code:
-                    logger.info(f"[SW行业编码] 为预测数据添加行业特征: {industry_feature_name}")
-
-                    # 将股票代码映射到行业名称，再映射到行业编码
-                    pred_stock_codes = prediction_data['stock_code'].values
-                    pred_industry_names = [stock_to_industry_name.get(code, '未知') for code in pred_stock_codes]
-                    pred_industry_codes = [industry_name_to_code.get(name, -1) for name in pred_industry_names]
-
-                    # 将行业编码添加到预测数据中
-                    prediction_data_with_industry[industry_feature_name] = pred_industry_codes
-
-                    # 统计行业分布
-                    unique_codes = set(code for code in pred_industry_codes if code != -1)
-                    unknown_count = pred_industry_codes.count(-1)
-                    logger.info(f"  预测数据行业编码统计: {len(unique_codes)}个行业类别，{unknown_count}个未知行业")
-
-                    industry_feature_added = True
-                    # 将行业特征名添加到特征列列表中
-                    if industry_feature_name not in prediction_feature_columns:
-                        prediction_feature_columns.append(industry_feature_name)
-                        logger.info(f"[SW行业编码] 已将行业特征 '{industry_feature_name}' 添加到特征列列表")
-                else:
-                    # LightGBM训练时有行业特征，但预测数据无法添加
-                    logger.warning(f"[WARNING] LightGBM训练时有行业特征'{industry_feature_name}'，但预测数据无法添加")
-                    logger.warning(f"  将从特征列中移除行业特征，但模型性能可能受影响")
-
-                    # 从特征列中移除行业特征名
-                    prediction_feature_columns = [col for col in prediction_feature_columns if col != industry_feature_name]
-                    logger.warning(f"  更新后的特征列: {len(prediction_feature_columns)}个特征")
-
-                    if 'stock_code' not in prediction_data.columns:
-                        logger.warning(f"  预测数据缺少'stock_code'列")
-                    if not stock_to_industry_name:
-                        logger.warning(f"  行业映射中缺少股票代码到行业名称的映射")
-                    if not industry_name_to_code:
-                        logger.warning(f"  行业映射中缺少行业名称到编码的映射")
-            else:
-                # LightGBM训练时没有添加行业特征（尽管有industry_mapping）
-                logger.info(f"⏭️ 特征列中不包含行业特征'{industry_feature_name}'，跳过预测数据行业特征添加")
-        elif industry_mapping is not None and not use_lightgbm:
-            logger.info(f"⏭️ 非LightGBM模型模式，跳过SW行业特征添加")
-        else:
-            logger.info("⏭️ 模型结果中无行业映射信息，跳过预测数据行业特征添加")
-
-        # [SW行业编码] 准备用于特征对齐的特征列表
-        # 如果行业特征添加失败，需要从特征列表中移除行业特征名
-        filtered_feature_names = feature_names.copy()  # 创建副本用于过滤
-        removed_industry_features = []
-
-        if industry_mapping is not None and use_lightgbm:
-            industry_feature_name = industry_mapping.get('industry_feature_name', 'industry_sw_code')
-            # 检查行业特征是否在feature_names中但不在prediction_feature_columns中（添加失败）
-            if (industry_feature_name in filtered_feature_names and
-                industry_feature_name not in prediction_feature_columns):
-                filtered_feature_names = [f for f in filtered_feature_names if f != industry_feature_name]
-                removed_industry_features.append(industry_feature_name)
-                logger.warning(f"[SW行业编码] 从对齐特征列表中移除行业特征 '{industry_feature_name}'")
-
-        logger.info(f"[SW行业编码] 特征对齐将使用 {len(filtered_feature_names)} 个特征（原始: {len(feature_names)}）")
-        if removed_industry_features:
-            logger.warning(f"  移除的行业特征: {removed_industry_features}")
-
-        # 保存原始数据的索引，以便后续对齐预测结果
-        original_prediction_data = prediction_data.copy()
-        original_indices = prediction_data.index.copy()
-
-        # 使用_prepare_feature_data进行测试集预处理
-        X_pred_processed, available_features, _ = _prepare_feature_data(
-            prediction_data_with_industry, prediction_feature_columns,
-            apply_winsorization=bool(winsorization_thresholds),
-            winsorization_thresholds=winsorization_thresholds,
-            data_type="测试集"
-        )
-
-        if X_pred_processed is None:
-            logger.error("测试集数据预处理失败")
-            return False
-
-        logger.info(f"[OK] 测试集预处理完成: {X_pred_processed.shape}")
-        logger.info(f"原始数据长度: {len(original_prediction_data)}, 预处理后长度: {len(X_pred_processed)}")
-        logger.info("[OK] 确保测试集与训练时使用相同的数据预处理流程")
-
-        # 使用预处理后的数据
-        X_pred = X_pred_processed
-
-        # 先将预测数据转换为DataFrame以便处理
-        X_pred_df = pd.DataFrame(X_pred, columns=available_features)
-        logger.info(f"[CHART] 预测数据准备完成: {X_pred_df.shape}")
-
-        # 7. 预测阶段特征对齐（使用基础特征）
-        logger.info("\n[WRENCH] 步骤7: 预测阶段特征对齐...")
-
-        # 8. 特征对齐处理（使用训练时的基础特征集）
-        logger.info("\n[WRENCH] 步骤8: 特征对齐处理（使用基础特征集）...")
-        feature_desc = "基础特征集（股票因子）"
-
-        aligned_features = []
-        aligned_data = []
-        for feature in filtered_feature_names:
-            if feature in X_pred_df.columns:
-                aligned_features.append(feature)
-                aligned_data.append(X_pred_df[feature].values)
-            else:
-                logger.warning(f"   [WARNING] 特征 {feature} 在预测数据中不存在，用0填充")
-                aligned_features.append(feature)
-                aligned_data.append(np.zeros(len(X_pred_df)))
-
-        if aligned_data:
-            X_pred = np.column_stack(aligned_data)
-            available_features = aligned_features
-            logger.info(f"[OK] 特征对齐完成: {X_pred.shape}")
-            logger.info(f"[OK] 使用 {feature_desc}: {len(available_features)} 个特征")
-            logger.info(f"[OK] 特征数量匹配: 预测特征数={len(available_features)}, 训练特征数={len(filtered_feature_names)}")
-        else:
-            logger.error("[FAIL] 特征对齐失败")
-            return False
-
-        # [强化] 9. 特征标准化（集成学习：延迟到预测循环中）
-        logger.info("\n[WRENCH] 步骤9: 准备未标准化的特征数据（集成学习模式）...")
-
-        # [OK] 最终特征（未标准化，将在集成预测循环中由每个模型的scaler进行标准化）
-        X_pred_final = X_pred
-
-        logger.info(f"[OK] 最终特征准备完成: {X_pred_final.shape[1]} 个特征，{X_pred_final.shape[0]} 个样本")
-        logger.info(f"[WARNING] 注意：特征未标准化，将在集成预测循环中由每个模型的scaler进行标准化")
-
-        # [强化] 10. Pseudo-Huber回归模型预测
-        logger.info("\n🔮 步骤10: 进行Pseudo-Huber回归模型预测...")
-
-        try:
-            # [强化] 集成学习：对每个模型进行预测
-            predictions = []
-            for i, (model, scaler, model_type) in enumerate(zip(models, scalers, model_types)):
-                logger.info(f"\n🔮 模型{i+1}({model_type.upper()})预测...")
-
-                # [WRENCH] 修复：不再使用StandardScaler，直接使用Winsorization后的特征
-                # 因子在计算时已经进行了时间序列标准化（如zscore、rank）
-                X_pred_scaled = X_pred_final
-
-                # [强化] 根据模型类型进行预测
-                if model_type == 'lightgbm':
-                    # LightGBM模型：直接预测
-                    y_pred_raw = model.predict(X_pred_scaled, num_iteration=model.best_iteration)
-                    logger.info(f"  [OK] 使用LightGBM模型预测")
-                elif hasattr(model, 'predict') and hasattr(model, 'get_score'):
-                    # XGBoost Booster对象：需要创建DMatrix
-                    import xgboost as xgb
-                    dtest = xgb.DMatrix(X_pred_scaled)
-                    y_pred_raw = model.predict(dtest)
-                    logger.info(f"  [OK] 使用XGBoost Booster对象预测")
-                else:
-                    # XGBoost XGBRegressor对象：直接预测
-                    y_pred_raw = model.predict(X_pred_scaled)
-                    logger.info(f"  [OK] 使用XGBoost XGBRegressor对象预测")
-
-                # [强化] 直接使用原始ATR预测值，无需逆变换
-                y_pred = y_pred_raw
-                logger.info(f"  [OK] 直接使用原始ATR预测值")
-
-                predictions.append(y_pred)
-                logger.info(f"  [OK] 模型{i+1}({model_type.upper()})预测完成: [{y_pred.min():.3f}, {y_pred.max():.3f}] ATR")
-
-            # [强化] 集成预测：专业的集成策略(基于验证集MSE的加权平均)
-            predictions = np.array(predictions)
-            n_models = len(predictions)
-
-            logger.info(f"\n[OK] 集成预测完成")
-            logger.info(f"  模型数量: {n_models}")
-
-            # 检查模型数量
-            if n_models == 1:
-                logger.info(f"  [OK] 单模型模式,直接使用预测结果")
-                mean_pred = predictions[0]
-                weighted_mean_pred = predictions[0]
-                std_pred = np.zeros_like(mean_pred)
-                median_pred = mean_pred
-                min_pred = mean_pred
-                max_pred = mean_pred
-            else:
-                # 🆕 专业的集成统计
-                # 1. 简单均值预测
-                mean_pred = np.mean(predictions, axis=0)
-
-                # 2. [强化] 基于验证集MSE的加权平均(使用之前计算的model_weights)
-                if model_weights is not None:
-                    # 加权平均
-                    weighted_mean_pred = np.zeros_like(predictions[0])
-                    for i, weight in enumerate(model_weights):
-                        weighted_mean_pred += weight * predictions[i]
-
-                    logger.info(f"  [OK] 使用基于MSE的加权平均")
-                else:
-                    # 使用简单均值
-                    weighted_mean_pred = mean_pred
-                    logger.info(f"  [OK] 使用简单均值")
-
-                # 3. 标准差(模型间不确定性)
-                std_pred = np.std(predictions, axis=0, ddof=1)  # 使用无偏估计
-
-                # 4. 中位数预测(鲁棒性更好,对异常值不敏感)
-                median_pred = np.median(predictions, axis=0)
-
-                # 5. 最小/最大预测(预测范围)
-                min_pred = np.min(predictions, axis=0)
-                max_pred = np.max(predictions, axis=0)
-
-                # 统计信息
-                logger.info(f"  简单均值范围: [{mean_pred.min():.3f}, {mean_pred.max():.3f}] ATR")
-                logger.info(f"  加权均值范围: [{weighted_mean_pred.min():.3f}, {weighted_mean_pred.max():.3f}] ATR")
-                logger.info(f"  中位数范围: [{median_pred.min():.3f}, {median_pred.max():.3f}] ATR")
-                logger.info(f"  标准差范围: [{std_pred.min():.3f}, {std_pred.max():.3f}] ATR")
-                logger.info(f"  标准差均值: {std_pred.mean():.3f} ATR (模型间不确定性)")
-                logger.info(f"  预测范围: [{min_pred.min():.3f}, {max_pred.max():.3f}] ATR")
-
-                # 检查模型一致性
-                avg_spread = (max_pred - min_pred).mean()
-                logger.info(f"  平均预测跨度: {avg_spread:.3f} ATR (模型间差异)")
-
-                if avg_spread > 2.0:
-                    logger.warning(f"  [WARNING] 模型间差异较大(>{2.0} ATR),可能需要检查模型训练")
-
-            # [强化] 最终预测值：直接使用加权均值（不做风险调整）
-            # 理由：
-            # 1. 风险调整会导致高预测值被过度惩罚
-            # 2. 置信度过滤已经基于std_pred进行了不确定性控制
-            # 3. 避免双重惩罚（风险调整 + 置信度过滤）
-            y_pred_return = weighted_mean_pred
-
-            logger.info(f"\n[OK] 最终预测值（基于MSE加权均值，无风险调整）")
-            logger.info(f"  使用加权均值预测（基于验证集MSE）")
-            logger.info(f"  预测范围: [{y_pred_return.min():.3f}, {y_pred_return.max():.3f}] ATR")
-            logger.info(f"  [CHART] 最终预测值统计: [{y_pred_return.min():.3f}, {y_pred_return.max():.3f}] ATR")
-            if n_models > 1:
-                logger.info(f"  [CHART] 不确定性控制: 通过置信度过滤（基于std_pred）实现")
-
-        except Exception as e:
-            logger.error(f"[FAIL] 模型预测失败: {e}")
-            import traceback
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            return False
-
-        # 8. 处理预测结果
-        logger.info("\n[CHART] 步骤11: 处理预测结果...")
-
-        if len(y_pred_return) > len(original_prediction_data):
-            logger.error(f"预测结果长度({len(y_pred_return)})大于原始数据长度({len(original_prediction_data)})")
-            return False
-
-        # 创建预测结果DataFrame
-        prediction_data_with_proba = original_prediction_data.iloc[:len(y_pred_return)].copy()
-        prediction_data_with_proba['predicted_return'] = y_pred_return  # 风险调整分数(基于加权均值)
-        prediction_data_with_proba['mean_pred'] = mean_pred  # [强化] 集成学习：简单均值预测
-        prediction_data_with_proba['weighted_mean_pred'] = weighted_mean_pred  # [强化] 集成学习：加权均值预测(基于MSE)
-        prediction_data_with_proba['median_pred'] = median_pred if n_models > 1 else mean_pred  # [强化] 集成学习：中位数预测
-        prediction_data_with_proba['std_pred'] = std_pred  # [强化] 集成学习：标准差（不确定性）
-        prediction_data_with_proba['predicted_return_atr_raw'] = y_pred_return  # [强化] 修复：添加ATR原始预测字段
-        prediction_data_with_proba['y_pred_proba'] = y_pred_return  # 兼容下游逻辑
-
-        positive_count = (y_pred_return > 0).sum()
-        logger.info(f"[OK] 预测结果处理完成: {len(prediction_data_with_proba)} 个样本")
-        logger.info(f"[CHART] 预测分布: 正值{positive_count}个({positive_count/len(y_pred_return)*100:.1f}%), "
-                   f"负值{len(y_pred_return)-positive_count}个")
-        if n_models > 1:
-            logger.info(f"[CHART] 不确定性统计: 平均std={std_pred.mean():.3f}, 最大std={std_pred.max():.3f}")
-        else:
-            logger.info(f"[CHART] 单模型预测,无不确定性统计")
-
-
-        # 9. [强化] 置信度过滤（简化版：基于预测方差 + 市场状态自适应）
-        logger.info("\n[TARGET] 步骤12: 置信度过滤（基于预测方差 + 市场状态自适应）...")
-        logger.info("=" * 60)
-
-        try:
-            # 🆕 市场状态判断
-            market_state = _get_market_state(market_data, lookback=20, logger=logger)
-
-            # 🆕 根据市场状态调整置信度阈值分位数
-            if market_state == 'bull':
-                confidence_percentile = 70  # 牛市：降低阈值，多选股
-                logger.info(f"🐂 牛市状态：降低置信度要求（{confidence_percentile}%分位数）")
-            elif market_state == 'bear':
-                confidence_percentile = 85  # 熊市：提高阈值，少选股
-                logger.info(f"🐻 熊市状态：提高置信度要求（{confidence_percentile}%分位数）")
-            else:
-                confidence_percentile = 75  # 震荡市：中等阈值
-                logger.info(f"[CHART] 震荡市状态：中等置信度要求（{confidence_percentile}%分位数）")
-
-            # [强化] 简化方案：使用模型预测的标准差作为置信度指标
-            # - std小 -> 模型预测一致 -> 高置信度
-            # - std大 -> 模型预测分歧 -> 低置信度
-
-            logger.info(f"\n[CHART] 使用已计算的预测标准差作为置信度指标...")
-
-            # 使用已经计算好的std_pred（模型间不确定性）
-            pred_std = prediction_data_with_proba['std_pred'].values
-
-            # 🆕 根据市场状态动态调整阈值
-            threshold = np.percentile(pred_std, confidence_percentile)
-
-            # 应用置信度过滤
-            high_confidence_mask = pred_std < threshold
-
-            logger.info(f"  预测标准差统计: μ={pred_std.mean():.6f}, σ={pred_std.std():.6f}")
-            logger.info(f"  标准差范围: [{pred_std.min():.6f}, {pred_std.max():.6f}]")
-            logger.info(f"  [OK] 置信度阈值({confidence_percentile}%分位数): {threshold:.6f}")
-
-            logger.info(f"\n[CHART] 置信度过滤结果:")
-            logger.info(f"  总样本数: {len(pred_std):,}")
-            logger.info(f"  高置信度样本: {high_confidence_mask.sum():,} ({high_confidence_mask.sum()/len(pred_std)*100:.1f}%)")
-            logger.info(f"  低置信度样本: {(~high_confidence_mask).sum():,} ({(~high_confidence_mask).sum()/len(pred_std)*100:.1f}%)")
-
-            # 添加置信度字段到预测结果
-            prediction_data_with_proba['high_confidence'] = high_confidence_mask
-
-            # 统计每日的置信度分布
-            daily_confidence = prediction_data_with_proba.groupby('date').agg({
-                'high_confidence': ['sum', 'count']
-            }).reset_index()
-            daily_confidence.columns = ['date', 'high_conf_count', 'total_count']
-            daily_confidence['high_conf_ratio'] = daily_confidence['high_conf_count'] / daily_confidence['total_count']
-
-            logger.info(f"\n[CHART] 每日置信度分布:")
-            logger.info(f"  平均高置信度比例: {daily_confidence['high_conf_ratio'].mean()*100:.1f}%")
-            logger.info(f"  最低高置信度比例: {daily_confidence['high_conf_ratio'].min()*100:.1f}% (日期: {daily_confidence.loc[daily_confidence['high_conf_ratio'].idxmin(), 'date']})")
-            logger.info(f"  最高高置信度比例: {daily_confidence['high_conf_ratio'].max()*100:.1f}% (日期: {daily_confidence.loc[daily_confidence['high_conf_ratio'].idxmax(), 'date']})")
-
-            logger.info(f"\n[OK] 置信度过滤完成")
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.warning(f"[WARNING] 置信度过滤失败: {e}")
-            logger.warning("将继续使用全部预测结果")
-            import traceback
-            logger.warning(f"详细错误: {traceback.format_exc()}")
-
-            # 添加默认置信度字段
-            prediction_data_with_proba['high_confidence'] = True
-
-        # 10. 保存预测结果
-        logger.info("\n[SAVE] 步骤13: 保存预测结果...")
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        prediction_results = prediction_data_with_proba[['date', 'stock_code', 'predicted_return', 'y_pred_proba', 'std_pred', 'high_confidence']].copy()
-        prediction_file = results_dir / f"pure_predictions_{timestamp}.csv"
-        prediction_results.to_csv(prediction_file, index=False, encoding='utf-8')
-        logger.info(f"[OK] 预测结果已保存: {prediction_file} ({len(prediction_results)} 条记录)")
-
-        # 11. 选股回测系统 - 调用统一回测函数
-        logger.info("\n[REFRESH] 步骤14: 开始选股回测...")
-        logger.info("=" * 60)
-
-        # [OK] 调用统一的选股回测函数
-        backtest_result = _run_stock_selection_backtest(
-            backtest_data=prediction_data_with_proba,
-            stock_counts=[1, 2, 3, 5],  # Top-1/2/3/5选股
-            window_name="test_model",
-            market_data=None,  # test_model暂不使用市场状态
-            frequency='minute'  # 默认日线回测，保持向后兼容
-        )
-
-        # 🔍 添加调试日志：检查回测结果
-        logger.debug(f"🔍 [DEBUG] 回测结果检查:")
-        logger.debug(f"  - backtest_result类型: {type(backtest_result)}")
-        logger.debug(f"  - 是否为None: {backtest_result is None}")
-        if backtest_result is not None:
-            logger.debug(f"  - backtest_result键: {list(backtest_result.keys())}")
-            logger.debug(f"  - backtest_results存在: {'backtest_results' in backtest_result}")
-            if 'backtest_results' in backtest_result:
-                logger.debug(f"  - backtest_results内容: {backtest_result['backtest_results']}")
-
-        if backtest_result is None or not backtest_result.get('backtest_results'):
-            logger.error("[FAIL] 选股回测失败")
-            return False
-
-        # 提取回测结果
-        backtest_results = backtest_result['backtest_results']
-        detailed_trades = backtest_result['detailed_trades']
-        summary_stats = backtest_result['summary_stats']
-
-        # 12. 保存回测结果
-        logger.info("\n[SAVE] 步骤15: 保存回测结果...")
-
-        # 保存回测指标汇总
-        trading_dates = sorted(prediction_data_with_proba['date'].unique())
-        backtest_summary = {
-            "timestamp": timestamp,
-            "backtest_period": {
-                "start_date": trading_dates[0].strftime("%Y-%m-%d"),
-                "end_date": trading_dates[-1].strftime("%Y-%m-%d"),
-                "trading_days": len(trading_dates) - 1
-            },
-            "strategy_results": {}
-        }
-
-
-        # [强化] 输出置信度过滤统计
-        if 'high_confidence' in prediction_data_with_proba.columns:
-            logger.info("\n[CHART] 置信度过滤统计:")
-            logger.info("=" * 60)
-
-            total_samples = len(prediction_data_with_proba)
-            high_conf_samples = prediction_data_with_proba['high_confidence'].sum()
-            low_conf_samples = total_samples - high_conf_samples
-
-            logger.info(f"  总样本数: {total_samples:,}")
-            logger.info(f"  高置信度样本: {high_conf_samples:,} ({high_conf_samples/total_samples*100:.1f}%)")
-            logger.info(f"  低置信度样本: {low_conf_samples:,} ({low_conf_samples/total_samples*100:.1f}%)")
-
-            # 统计每日置信度分布
-            daily_stats = prediction_data_with_proba.groupby('date').agg({
-                'high_confidence': ['sum', 'count']
-            }).reset_index()
-            daily_stats.columns = ['date', 'high_conf', 'total']
-            daily_stats['ratio'] = daily_stats['high_conf'] / daily_stats['total']
-
-            logger.info(f"\n  每日置信度分布:")
-            logger.info(f"    平均高置信度比例: {daily_stats['ratio'].mean()*100:.1f}%")
-            logger.info(f"    最低高置信度比例: {daily_stats['ratio'].min()*100:.1f}% (日期: {daily_stats.loc[daily_stats['ratio'].idxmin(), 'date'].strftime('%Y-%m-%d')})")
-            logger.info(f"    最高高置信度比例: {daily_stats['ratio'].max()*100:.1f}% (日期: {daily_stats.loc[daily_stats['ratio'].idxmax(), 'date'].strftime('%Y-%m-%d')})")
-
-            # 统计k-NN距离分布
-            if 'knn_distance' in prediction_data_with_proba.columns:
-                knn_dist = prediction_data_with_proba['knn_distance'].dropna()
-                if len(knn_dist) > 0:
-                    logger.info(f"\n  k-NN距离分布:")
-                    logger.info(f"    均值: {knn_dist.mean():.4f}")
-                    logger.info(f"    标准差: {knn_dist.std():.4f}")
-                    logger.info(f"    范围: [{knn_dist.min():.4f}, {knn_dist.max():.4f}]")
-                    logger.info(f"    分位数: 25%={knn_dist.quantile(0.25):.4f}, 50%={knn_dist.quantile(0.50):.4f}, 75%={knn_dist.quantile(0.75):.4f}, 90%={knn_dist.quantile(0.90):.4f}")
-
-            logger.info("=" * 60)
-
-        # 输出对比结果
-        logger.info("\n[CHART] “唯一口径”选股策略回测结果对比:")
-        logger.info("=" * 150)
-        logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
-        logger.info("=" * 150)
-
-
-        stock_counts = [1, 2, 3, 5]  # Top-1/2/3/5选股
-        for stock_count in stock_counts:
-            if stock_count in backtest_results:
-                result = backtest_results[stock_count]
-                backtest_summary["strategy_results"][f"{stock_count}stocks"] = result
-
-                # 显示持仓天数和交易次数
-                holding_days = result.get('holding_days', 0)
-                total_trades = result.get('total_trades', 0)
-                trades_desc = f"{total_trades:>6d}"
-
-                logger.info(f"Top-{stock_count:<5} {result['total_return_gross']:>8.2%}  "
-                           f"{result['total_return']:>13.2%}  "
-                           f"{result['annual_return']:>8.2%}  {result['max_drawdown']:>8.2%}  "
-                           f"{result['win_rate']:>6.2%}  "
-                           f"{result['profit_loss_ratio']:>6.2f}  "
-                           f"{holding_days:>10d}{trades_desc}")
-
-        logger.info("=" * 150)
-
-        # 保存回测汇总报告
-        backtest_report_file = results_dir / f"backtest_summary_{timestamp}.json"
-        with open(backtest_report_file, 'w', encoding='utf-8') as f:
-            json.dump(backtest_summary, f, ensure_ascii=False, indent=2, default=str)
-
-        logger.info(f"[OK] 回测汇总报告已保存: {backtest_report_file}")
-
-        # 保存详细交易记录
-        for stock_count in stock_counts:
-            if stock_count in detailed_trades:
-                trades_df = pd.DataFrame(detailed_trades[stock_count])
-                trades_file = results_dir / f"detailed_trades_{stock_count}stocks_{timestamp}.csv"
-                trades_df.to_csv(trades_file, index=False, encoding='utf-8')
-                logger.info(f"[OK] {stock_count}只股票交易记录已保存: {trades_file}")
-
-        # 🎨 生成收益走势图
-        logger.info("\n[CHART] 生成收益走势图...")
-        try:
-            import matplotlib.pyplot as plt
-            import matplotlib.dates as mdates
-            from matplotlib import rcParams
-
-            # 设置中文字体
-            rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
-            rcParams['axes.unicode_minus'] = False
-
-            # 创建图表
-            fig, ax = plt.subplots(figsize=(14, 8))
-
-            # 为每个策略绘制收益曲线
-            colors = {1: '#FF6B6B', 2: '#4ECDC4', 3: '#45B7D1', 5: '#96CEB4'}
-            linestyles = {1: '-', 2: '--', 3: '-.', 5: ':'}
-
-            for stock_count in stock_counts:
-                if stock_count in backtest_results:
-                    result = backtest_results[stock_count]
-
-                    # 获取日期和累计收益
-                    dates = result.get('dates', [])
-                    portfolio_values = result.get('portfolio_values', [])
-
-                    if len(dates) > 0 and len(portfolio_values) > 0:
-                        # 转换为百分比收益
-                        returns_pct = [(v - 1.0) * 100 for v in portfolio_values]
-
-                        # 转换日期格式
-                        dates_formatted = [pd.to_datetime(d) for d in dates]
-
-                        # 绘制曲线
-                        ax.plot(dates_formatted, returns_pct,
-                               label=f'Top-{stock_count}',
-                               color=colors.get(stock_count, '#95A5A6'),
-                               linestyle=linestyles.get(stock_count, '-'),
-                               linewidth=2.5 if stock_count == 1 else 2.0,
-                               alpha=0.9)
-
-            # 设置图表样式
-            ax.set_xlabel('日期', fontsize=12, fontweight='bold')
-            ax.set_ylabel('累计收益率 (%)', fontsize=12, fontweight='bold')
-            ax.set_title('不同选股策略收益走势对比', fontsize=14, fontweight='bold', pad=20)
-
-            # 添加网格
-            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-
-            # 添加零线
-            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
-
-            # 设置图例
-            ax.legend(loc='upper left', fontsize=11, framealpha=0.9, shadow=True)
-
-            # 格式化x轴日期
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            ax.xaxis.set_major_locator(mdates.MonthLocator())
-            plt.xticks(rotation=45, ha='right')
-
-            # 调整布局
-            plt.tight_layout()
-
-            # 保存图表
-            chart_file = results_dir / f"return_curves_{timestamp}.png"
-            plt.savefig(chart_file, dpi=300, bbox_inches='tight')
-            logger.info(f"[OK] 收益走势图已保存: {chart_file}")
-
-            plt.close()
-
-        except Exception as e:
-            logger.warning(f"[WARNING] 生成收益走势图失败: {e}")
-
-        logger.info("=" * 60)
-        logger.info("[CELEBRATE] Pseudo-Huber回归选股回测完成！")
-        logger.info("[CHART] 已完成1只、2只、3只、5只股票的选股策略对比")
-        logger.info("[OK] 样本外验证：模型从未见过测试期数据")
-        logger.info("=" * 60)
-
-        return True
-
-    except Exception as e:
-        logger.error(f"[FAIL] 模型测试模式失败: {e}")
-        import traceback
-        logger.error(f"详细错误: {traceback.format_exc()}")
-        return False
 
 
 def run_factor_correlation_mode(args):
@@ -13434,14 +12465,14 @@ def run_test_model_walkforward_mode(args):
             {
                 'name': 'Window 3',
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
-                'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
-                'val_start': '2025-03-06',     # 验证集开始
-                'val_end': '2025-05-13',       # 验证集结束 (3个月) 2025-05-27
+                'train_end': '2025-06-01',     # 训练集结束 (约21个月，再增加3个月)
+                'val_start': '2025-06-06',     # 验证集开始
+                'val_end': '2025-09-27',       # 验证集结束 (3个月) 2025-05-27
                 # 'test_start': '2025-05-18',    # 测试集开始
                 # 'test_end': '2026-10-30'       # 测试集结束 (3个月)2025-12-16
                 # 'test_start': '2025-10-30',    # 测试集开始
                 # 'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
-                'test_start': '2025-06-05',    # 测试集开始
+                'test_start': '2025-10-06',    # 测试集开始
                 'test_end': '2025-12-26'       # 测试集结束 (3个月)2025-12-16
             }
         ]
@@ -14782,6 +13813,23 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
         else:
             logger.warning("[WARNING] 验证数据中未包含circ_mv列，验证集将使用均匀权重")
 
+        # 🆕 提取 is_monster 字段（用于权重增强）
+        train_is_monster = None
+        val_is_monster = None
+        if 'is_monster' in train_data_valid.columns:
+            train_is_monster = train_data_valid['is_monster'].values[:len(X_train_processed)]
+            monster_count = int(np.sum(train_is_monster == 1.0))
+            logger.info(f"[OK] 提取训练集 is_monster 字段（优质样本数: {monster_count}）")
+        else:
+            logger.warning("[WARNING] 训练数据中未包含is_monster列，所有样本将使用统一权重")
+
+        if 'is_monster' in val_data_valid.columns:
+            val_is_monster = val_data_valid['is_monster'].values[:len(X_val_processed)]
+            monster_count = int(np.sum(val_is_monster == 1.0))
+            logger.info(f"[OK] 提取验证集 is_monster 字段（优质样本数: {monster_count}）")
+        else:
+            logger.warning("[WARNING] 验证数据中未包含is_monster列，所有样本将使用统一权重")
+
         # [强化] 条件计算样本权重（仅LightGBM需要）
         unified_sample_weights = None
         unified_val_weights = None
@@ -14790,29 +13838,13 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             train_relevance_array = train_relevance.values if hasattr(train_relevance, 'values') else train_relevance
             val_relevance_array = val_relevance.values if hasattr(val_relevance, 'values') else val_relevance
 
-            # [WRENCH] 修复: 使用训练集最新日期作为时间衰减基准（Walk-Forward模式）
-            reference_date = None
-            if train_dates is not None and len(train_dates) > 0:
-                reference_date = pd.to_datetime(train_dates).max()
-                logger.info(f"   时间衰减基准日期: {reference_date.strftime('%Y-%m-%d')} (训练集最新日期)")
-
             # 计算训练集权重
             unified_sample_weights = _calculate_professional_sample_weights(
                 train_relevance_array,  # 使用relevance标签
-                imbalance_ratio=1.0,
                 logger=logger,
-                boundary_distances=None,
-                is_regression=True,
-                y_train_original=None,
-                train_dates=train_dates,
-                time_decay_half_life=180.0,  # 统一使用180天
-                reference_date=reference_date,  # [WRENCH] 修复: 使用训练集最新日期
                 turnover_rate=train_turnover_rate,
                 circ_mv=train_circ_mv,
-                label_rank=train_relevance_array,  # relevance值(0-3)
-                label_boost_beta=0.15,  # 统一使用0.15
-                w_min=0.8,
-                w_max=1.2
+                is_monster=train_is_monster  # 🆕 传递 is_monster
             )
             logger.info(f"[OK] 训练集样本权重计算完成")
             logger.info(f"   权重范围: [{unified_sample_weights.min():.4f}, {unified_sample_weights.max():.4f}]")
@@ -14821,20 +13853,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             # 计算验证集权重（使用相同的参数）
             unified_val_weights = _calculate_professional_sample_weights(
                 val_relevance_array,  # 使用relevance标签
-                imbalance_ratio=1.0,
                 logger=logger,
-                boundary_distances=None,
-                is_regression=True,
-                y_train_original=None,
-                train_dates=val_dates,  # 验证集使用自己的日期
-                time_decay_half_life=180.0,  # 统一使用180天
-                reference_date=reference_date,  # 使用训练集最新日期作为基准
                 turnover_rate=val_turnover_rate,
                 circ_mv=val_circ_mv,
-                label_rank=val_relevance_array,  # relevance值(0-3)
-                label_boost_beta=0.15,  # 统一使用0.15
-                w_min=0.8,
-                w_max=1.2
+                is_monster=val_is_monster  # 🆕 传递 is_monster
             )
             logger.info(f"[OK] 验证集样本权重计算完成")
             logger.info(f"   权重范围: [{unified_val_weights.min():.4f}, {unified_val_weights.max():.4f}]")
@@ -15264,8 +14286,8 @@ def _backtest_on_window(test_data, model_result, window, args):
                     daily_top_details[date_str] = {}
 
                     for k in [1, 2, 3, 4, 5]:
-                        if len(date_sorted_filtered) >= k:
-                            top_k_stock = date_sorted_filtered.iloc[k-1:k]
+                        if len(date_sorted) >= k:
+                            top_k_stock = date_sorted.iloc[k-1:k]
                             if len(top_k_stock) > 0:
                                 pred_value = float(top_k_stock['predicted_return'].values[0])
                                 real_return_value = float(top_k_stock['atr_return_label'].values[0])
@@ -15286,8 +14308,8 @@ def _backtest_on_window(test_data, model_result, window, args):
                                 if 'p_cls' in top_k_stock.columns:
                                     try:
                                         _p_cls_val = float(top_k_stock['p_cls'].values[0])
-                                        if 'p_cls' in date_sorted_filtered.columns:
-                                            _arr = date_sorted_filtered['p_cls'].astype(float).values
+                                        if 'p_cls' in date_sorted.columns:
+                                            _arr = date_sorted['p_cls'].astype(float).values
                                             _arr = _arr[~np.isnan(_arr)]
                                             if len(_arr) > 1:
                                                 _p_cls_pct = float((np.sum(_arr <= _p_cls_val) - 1) / (len(_arr) - 1))
@@ -16027,8 +15049,10 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # 查找当前窗口的LightGBM模型
         lgb_pattern = f"lightgbm_model_window3_20260107_033514.pkl"
         # lgb_pattern1 = f"lightgbm_model_window3_20260301_130248.pkl"
-        lgb_pattern1 = f"lightgbm_model_window3_20260301_171655.pkl"
+        # lgb_pattern1 = f"lightgbm_model_window3_20260301_171655.pkl"
+        lgb_pattern1 = f"lightgbm_model_window3_20290301_171655.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260303_022150.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None

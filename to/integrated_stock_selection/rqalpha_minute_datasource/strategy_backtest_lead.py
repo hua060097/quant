@@ -38,7 +38,7 @@ class RiskControlStrategy:
 class RiskControlConfig:
     """风控配置"""
     # 风控策略选择（默认使用日线MA5跌破策略）
-    STRATEGY = RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN
+    STRATEGY = RiskControlStrategy.CONSECUTIVE_BEARISH
 
     # 日线MA5跌破策略参数
     MA5_CONSECUTIVE_BREAKS = 2  # 连续跌破MA5的次数（连续N个5分钟收盘价低于MA5）
@@ -87,7 +87,7 @@ class StrategyConfig:
     #       - stop_loss_threshold = 0.00   : 收益为负（0%）就卖出（激进风控）
     #       - stop_loss_threshold = 0.01   : 收益低于1%就卖出（要求正收益）
     #       - stop_loss_threshold = -0.10  : 跌幅超过10%才卖出（宽松风控）
-    stop_loss_threshold: float = -0.05  # 默认-5%，保持向后兼容
+    stop_loss_threshold: float = -0.03  # 默认-5%，保持向后兼容
 
     # 🆕 风控策略配置
     risk_control_strategy: str = RiskControlConfig.STRATEGY  # 风控策略选择
@@ -221,9 +221,9 @@ class BacktestStrategy:
                 stock_code = stock['stock_code']
 
                 # 修复流动性过滤逻辑
-                if stock['is_can_buy'] != 1:
-                    filtering_stats['is_can_buy_filtered'] += 1
-                    continue
+                # if stock['is_can_buy'] != 1:
+                #     filtering_stats['is_can_buy_filtered'] += 1
+                #     continue
                 if stock_code.startswith(('8', '4')):  # 北交所
                     filtering_stats['exchange_filtered'] += 1
                     continue
@@ -258,7 +258,7 @@ class BacktestStrategy:
             # 记录过滤统计信息
             logger.info(f"🔍 {date} 过滤统计:")
             logger.info(f"   总候选: {filtering_stats['total']}只")
-            logger.info(f"   可买入过滤: {filtering_stats['is_can_buy_filtered']}只")
+            # logger.info(f"   可买入过滤: {filtering_stats['is_can_buy_filtered']}只")
             logger.info(f"   交易所过滤: {filtering_stats['exchange_filtered']}只")
             logger.info(f"   ST股过滤: {filtering_stats['st_filtered']}只")
             logger.info(f"   价格过滤: {filtering_stats['price_filtered']}只")

@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_lg128_生成所有精准clip因子.log',
+        'stock_selection_test_mode_walkforward_排序模型_因子生成04162241.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -6889,30 +6889,30 @@ def run_generate_factors_mode(args):
             st_filtered_count = 0
 
         # 3. 过滤新股（使用新的_filter_new_stocks_batch函数，放到循环之外）
-        # if has_date_column:
-        #     print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
-        #     try:
-        #         # 使用新的批量处理函数，一次性处理整个stock_data
-        #         original_stock_count = len(stock_data)
-        #         stock_data = _filter_new_stocks_batch(stock_data, logger)
-        #         final_count = len(stock_data)
-        #         total_new_filtered = original_stock_count - final_count
+        if has_date_column:
+            print("🔍 开始新股过滤（基于stock_data第一个日期识别新股）...")
+            try:
+                # 使用新的批量处理函数，一次性处理整个stock_data
+                original_stock_count = len(stock_data)
+                stock_data = _filter_new_stocks_batch(stock_data, logger)
+                final_count = len(stock_data)
+                total_new_filtered = original_stock_count - final_count
 
-        #         if total_new_filtered > 0:
-        #             print(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
-        #         else:
-        #             print(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
+                if total_new_filtered > 0:
+                    logger.info(f"   🚫 批量新股过滤完成: {original_stock_count} -> {final_count} (过滤掉 {total_new_filtered} 条新股期间数据)")
+                else:
+                    logger.info(f"   ✅ 批量新股过滤完成: 无新股，保留全部 {original_stock_count} 条数据")
 
-        #     except Exception as e:
-        #         print(f"⚠️  批量新股过滤失败: {e}")
-        #         logger.error(f"批量新股过滤失败: {e}")
-        #         final_count = len(stock_data)
-        # else:
-        #     print("⚠️  警告：缺少date列，跳过新股过滤")
-        #     final_count = len(stock_data)
+            except Exception as e:
+                print(f"⚠️  批量新股过滤失败: {e}")
+                logger.error(f"批量新股过滤失败: {e}")
+                final_count = len(stock_data)
+        else:
+            print("⚠️  警告：缺少date列，跳过新股过滤")
+            final_count = len(stock_data)
 
         # 最终过滤统计
-        total_filtered = original_count# - final_count
+        total_filtered = original_count - final_count
         new_filtered_count = total_filtered - bj_filtered_count - st_filtered_count
         if total_filtered > 0:
             logger.info(f"🎯 股票过滤总结: 原始 {original_count} -> 最终  (过滤掉 {total_filtered} 只)")
@@ -13233,7 +13233,7 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-06',     # 验证集开始
                 'val_end': '2025-05-27',       # 验证集结束 (3个月)
                 'test_start': '2025-06-05',    # 测试集开始
-                'test_end': '2025-12-26'       # 测试集结束 (3个月)2025-12-16
+                'test_end': '2025-10-30'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -14975,126 +14975,6 @@ def _backtest_on_window(test_data, model_result, window, args):
         industry_feature_added = False
         industry_mapping = None  # 初始化行业映射变量，避免UnboundLocalError
 
-        # # [修复] 尝试从多个来源获取行业映射信息
-        # if 'industry_mapping' in model_result and model_result['industry_mapping'] is not None:
-        #     industry_mapping = model_result['industry_mapping']
-        #     logger.info("[SW行业编码] 从模型结果中加载行业映射信息")
-        # else:
-        #     # [修复] 如果模型没有保存行业映射，尝试加载标准化映射
-        #     try:
-        #         industry_mapping = get_sw_mapping_for_model()
-        #         if industry_mapping:
-        #             logger.info("[SW行业编码] 从标准化文件中加载行业映射信息")
-        #         else:
-        #             logger.warning("[SW行业编码] 无法获取行业映射信息")
-        #     except Exception as e:
-        #         logger.warning(f"[SW行业编码] 加载标准化映射失败: {e}")
-        #         industry_mapping = None
-
-        # # 如果成功获取了行业映射信息，尝试添加行业特征
-        # if industry_mapping is not None:
-        #     industry_feature_name = industry_mapping.get('industry_feature_name', 'industry_sw_code')
-        #     stock_to_industry_name = industry_mapping.get('stock_to_industry_name', {})
-        #     industry_name_to_code = industry_mapping.get('industry_name_to_code', {})
-
-        #     # [SW编码检查] 检查行业映射中SW编码20的信息
-        #     logger.info("[SW编码检查] 测试集行业映射中SW行业编码20信息检查...")
-        #     sw_code_20_industries_in_mapping = [industry for industry, code in industry_name_to_code.items() if code == 20]
-        #     logger.info(f"[SW编码检查] 行业映射中编码20的行业: {sw_code_20_industries_in_mapping}")
-
-        #     sw_code_20_stocks_in_mapping = [stock for stock, industry in stock_to_industry_name.items()
-        #                                   if industry_name_to_code.get(industry) == 20]
-        #     logger.info(f"[SW编码检查] 行业映射中编码20的股票数: {len(sw_code_20_stocks_in_mapping)}")
-
-        #     if sw_code_20_stocks_in_mapping:
-        #         logger.info(f"[SW编码检查] 行业映射中编码20的股票示例: {sw_code_20_stocks_in_mapping[:10]}")
-        #     else:
-        #         logger.warning("[SW编码检查] 警告：行业映射中完全没有SW行业编码20的股票！")
-        #         logger.warning("[SW编码检查] 这将导致测试集无法获取SW行业编码20的特征")
-
-        #     # 检查行业特征名是否在特征列中
-        #     if industry_feature_name in feature_columns:
-        #         # 检查测试集是否有股票代码列
-        #         if 'stock_code' in test_data.columns and stock_to_industry_name and industry_name_to_code:
-        #             logger.info(f"[SW行业编码] 为测试集添加行业特征: {industry_feature_name}")
-
-        #             # 将股票代码映射到行业名称，再映射到行业编码
-        #             test_stock_codes = test_data['stock_code'].values
-        #             test_industry_names = [stock_to_industry_name.get(code, '未知') for code in test_stock_codes]
-        #             test_industry_codes = [industry_name_to_code.get(name, -1) for name in test_industry_names]
-
-        #             # [大师级修正] 强制转换为 float32 类型，防止 Object/String 污染
-        #             try:
-        #                 test_industry_codes_array = np.array(test_industry_codes, dtype=np.float32)
-        #                 test_data_with_industry[industry_feature_name] = test_industry_codes_array
-        #                 logger.info(f"[SW行业编码] 测试集行业编码类型转换成功")
-        #                 logger.info(f"  测试集行业特征类型: {test_industry_codes_array.dtype}")
-        #                 logger.info(f"  测试集行业特征范围: {test_industry_codes_array.min():.0f} ~ {test_industry_codes_array.max():.0f}")
-        #             except Exception as e:
-        #                 logger.error(f"[SW行业编码] 测试集行业编码转换失败: {e}")
-        #                 logger.error(f"测试集行业编码示例: {test_industry_codes[:10]}")
-        #                 raise e
-
-        #             # 统计行业分布
-        #             unique_codes = set(code for code in test_industry_codes if code != -1)
-        #             unknown_count = test_industry_codes.count(-1)
-        #             logger.info(f"  测试集行业编码统计: {len(unique_codes)}个行业类别，{unknown_count}个未知行业")
-
-        #             # [SW编码检查] 最终测试集中SW行业编码20的数量检查
-        #             sw_code_20_count_in_test = np.sum(test_industry_codes_array == 20)
-        #             logger.info(f"[SW编码检查] 最终测试集中SW行业编码20的数量: {sw_code_20_count_in_test}")
-
-        #             if sw_code_20_count_in_test == 0:
-        #                 logger.error("[SW编码检查] 严重问题：最终测试集中完全没有SW行业编码20的数据！")
-        #                 logger.error("[SW编码检查] 这将导致模型预测时无法识别SW行业编码20的股票")
-
-        #                 # 详细分析原因
-        #                 if 20 not in unique_codes:
-        #                     logger.error("[SW编码检查] 错误原因：测试集行业编码中没有包含编号20")
-        #                 if unknown_count > 0:
-        #                     logger.warning(f"[SW编码检查] 可能原因：有{unknown_count}个股票被标记为未知行业(-1)")
-
-        #                 # 检查原始映射中是否有编码20
-        #                 if 20 in industry_name_to_code.values():
-        #                     error_industry = [name for name, code in industry_name_to_code.items() if code == 20][0]
-        #                     logger.error(f"[SW编码检查] 矛盾：映射中存在编码20({error_industry})，但测试集中没有对应股票")
-
-        #             elif sw_code_20_count_in_test < 10:
-        #                 logger.warning(f"[SW编码检查] 警告：最终测试集中SW行业编码20的股票数量较少: {sw_code_20_count_in_test}个")
-        #                 logger.warning("[SW编码检查] 这可能影响模型对SW行业编码20股票的预测准确性")
-        #             else:
-        #                 logger.info(f"[SW编码检查] 最终测试集中SW行业编码20的股票数量正常: {sw_code_20_count_in_test}个")
-
-        #             industry_feature_added = True
-        #         else:
-        #             # 训练时有行业特征，但测试集无法添加
-        #             logger.warning(f"[WARNING] 训练时有行业特征'{industry_feature_name}'，但测试集无法添加")
-        #             logger.warning(f"  将从特征列中移除行业特征，但模型性能可能受影响")
-
-        #             # 从特征列中移除行业特征名
-        #             feature_columns = [col for col in feature_columns if col != industry_feature_name]
-        #             logger.warning(f"  更新后的特征列: {len(feature_columns)}个特征")
-
-        #             if 'stock_code' not in test_data.columns:
-        #                 logger.warning(f"  测试集缺少'stock_code'列")
-        #             if not stock_to_industry_name:
-        #                 logger.warning(f"  行业映射中缺少股票代码到行业名称的映射")
-        #             if not industry_name_to_code:
-        #                 logger.warning(f"  行业映射中缺少行业名称到编码的映射")
-        #     else:
-        #         # 训练时没有添加行业特征（尽管有industry_mapping）
-        #         logger.info(f"⏭️ 特征列中不包含行业特征'{industry_feature_name}'，跳过测试集行业特征添加")
-        # else:
-        #     logger.info("⏭️ 模型结果中无行业映射信息，跳过测试集行业特征添加")
-
-        # # [SW行业编码] 额外检查：如果行业特征在feature_columns中但不在test_data_with_industry中，则移除
-        # if industry_mapping is not None:
-        #     industry_feature_name = industry_mapping.get('industry_feature_name', 'industry_sw_code')
-        #     if industry_feature_name in feature_columns and industry_feature_name not in test_data_with_industry.columns:
-        #         logger.warning(f"[SW行业编码] 行业特征 '{industry_feature_name}' 在特征列中但不在测试集数据中，将从特征列中移除")
-        #         feature_columns = [col for col in feature_columns if col != industry_feature_name]
-        #         logger.warning(f"  更新后的特征列: {len(feature_columns)}个特征")
-
         # 验证测试集是否包含所有必需特征（在添加行业特征后）
         missing_features = [f for f in feature_columns if f not in test_data_with_industry.columns]
         if missing_features:
@@ -15266,7 +15146,7 @@ def _backtest_on_window(test_data, model_result, window, args):
         logger.info(f"[CHART] [{window['name']}] Top5预测值真实收益分布:")
 
         # 按日期分组，每天取top5预测值
-        top_k_stats = {1: [], 2: [], 3: [], 5: []}
+        top_k_stats = {1: [], 2: [], 3: [], 4: [], 5: []}
 
         # 确保test_data_with_pred包含必要的列
         if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
@@ -15278,12 +15158,23 @@ def _backtest_on_window(test_data, model_result, window, args):
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
 
+                    # 🆕 过滤掉当日的涨跌停、炸板股票
+                    date_sorted_filtered = date_sorted[
+                        (date_sorted['is_limit_up'] != 1) &
+                        (date_sorted['is_limit_down'] != 1) &
+                        (date_sorted['is_zhaban'] != 1)
+                    ]
+
+                    if len(date_sorted_filtered) < 5:
+                        # 过滤后股票不足5个，跳过该日期
+                        continue
+
                     # 计算各topk的真实收益 - 收集所有真实收益值而不是每日统计值
                     # 🆕 修改：topk表示"第k名"而不是"前k名"
-                    for k in [1, 2, 3, 5]:
+                    for k in [1, 2, 3, 4, 5]:
                         # 🔧 修改：取第k名的股票，而不是前k名的股票
                         # 例如k=3表示取排名第3的股票（只有1只），而不是前3名的股票（3只）
-                        top_k_data = date_sorted.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
+                        top_k_data = date_sorted_filtered.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
                         if len(top_k_data) > 0:
                             # 收集该日期第k名股票的真实收益值，过滤掉NaN值
                             # 使用 atr_return_label（即 raw_future_ret）代替 future_return_2d
@@ -15293,7 +15184,7 @@ def _backtest_on_window(test_data, model_result, window, args):
                             top_k_stats[k].extend(valid_returns)  # 只存储有效收益值
 
             # 统计并输出结果 - 对收集的所有真实收益值进行统计
-            for k in [1, 2, 3, 5]:
+            for k in [1, 2, 3, 4, 5]:
                 if len(top_k_stats[k]) > 0:
                     all_returns = top_k_stats[k]  # 所有Top-K股票的真实收益值
 
@@ -15316,6 +15207,218 @@ def _backtest_on_window(test_data, model_result, window, args):
                     logger.info(f"  Top-{k}: 无足够数据")
         else:
             logger.warning(f"[WARNING] 缺少必要列进行Top5统计: {test_data_with_pred.columns.tolist()}")
+
+        # 🆕 新增：每日 Top1 vs Top2-5 收益差距分析
+        logger.info(f"\n[ANALYSIS] [{window['name']}] 每日 Top1 vs Top2-5 收益差距分析")
+        logger.info(f"{'='*80}")
+
+        # 数据结构：按日期存储每天的 top1~top5 收益
+        # {date_str: {1: return1, 2: return2, 3: return3, 4: return4, 5: return5}}
+        daily_top_returns = {}
+
+        if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
+            for date in test_data_with_pred['date'].unique():
+                date_data = test_data_with_pred[test_data_with_pred['date'] == date]
+
+                if len(date_data) >= 5:
+                    # 按预测值降序排列
+                    date_sorted = date_data.sort_values('predicted_return', ascending=False)
+
+                    # 过滤掉涨跌停、炸板股票
+                    date_sorted_filtered = date_sorted[
+                        (date_sorted['is_limit_up'] != 1) &
+                        (date_sorted['is_limit_down'] != 1) &
+                        (date_sorted['is_zhaban'] != 1)
+                    ]
+
+                    if len(date_sorted_filtered) < 5:
+                        continue
+
+                    # 获取日期字符串
+                    if hasattr(date, 'strftime'):
+                        date_str = date.strftime('%Y-%m-%d')
+                    else:
+                        date_str = str(date)
+
+                    # 收集 top1~top5 的收益
+                    daily_returns = {}
+                    for k in [1, 2, 3, 4, 5]:
+                        top_k_data = date_sorted_filtered.iloc[k-1:k]
+                        if len(top_k_data) > 0:
+                            real_returns = top_k_data['atr_return_label'].values
+                            valid_returns = real_returns[~np.isnan(real_returns)]
+                            if len(valid_returns) > 0:
+                                daily_returns[k] = valid_returns[0]
+
+                    # 只有当所有5个排名都有有效收益时才记录
+                    if len(daily_returns) == 5:
+                        daily_top_returns[date_str] = daily_returns
+
+            # 计算每日收益差距：top1 - mean(top2, top3, top4, top5)
+            if len(daily_top_returns) > 0:
+                daily_gaps = []
+                daily_top1_returns = []  # 🆕 每日top1收益
+                daily_top2_returns = []  # 🆕 每日top2收益
+                dates = []
+
+                for date_str in sorted(daily_top_returns.keys()):
+                    returns = daily_top_returns[date_str]
+                    top1_return = returns[1]
+                    top2_return = returns[2]  # 🆕 提取top2收益
+                    top2_5_mean = np.mean([returns[2], returns[3], returns[4], returns[5]])
+                    gap = top1_return - top2_5_mean
+
+                    dates.append(date_str)
+                    daily_gaps.append(gap)
+                    daily_top1_returns.append(top1_return)  # 🆕 记录top1收益
+                    daily_top2_returns.append(top2_return)  # 🆕 记录top2收益
+
+                # 🆕 使用滚动窗口计算统计量
+                W = 30  # 滚动窗口大小
+
+                # 转换为 pandas Series 以便使用 rolling 函数
+                import pandas as pd
+                gap_series = pd.Series(daily_gaps)
+                top1_series = pd.Series(daily_top1_returns)  # 🆕 top1收益序列
+                top2_series = pd.Series(daily_top2_returns)  # 🆕 top2收益序列
+
+                # 计算滚动均值和滚动标准差
+                rolling_mean = gap_series.rolling(window=W, min_periods=1).mean()
+                rolling_std = gap_series.rolling(window=W, min_periods=1).std()
+
+                # 🆕 计算top1和top2的滚动收益
+                rolling_top1 = top1_series.rolling(window=W, min_periods=1).mean()
+                rolling_top2 = top2_series.rolling(window=W, min_periods=1).mean()
+
+                # 计算Z值（避免除零）
+                Z = rolling_mean / (rolling_std + 1e-8)
+
+                # 绘制五条曲线
+                if len(dates) > 0:
+                    import matplotlib.pyplot as plt
+                    from matplotlib.dates import date2num, DateFormatter
+                    from datetime import datetime
+
+                    # 转换日期字符串为 datetime 对象
+                    date_objects = [datetime.strptime(d, '%Y-%m-%d') for d in dates]
+
+                    # 创建图表
+                    fig, ax1 = plt.figure(figsize=(16, 8)), plt.gca()
+
+                    # 绘制滚动均值（蓝色实线）
+                    line1 = ax1.plot(date_objects, rolling_mean, linewidth=2, color='blue', alpha=0.8, label=f'Gap Rolling Mean (W={W})')
+
+                    # 绘制滚动标准差（绿色实线）
+                    line2 = ax1.plot(date_objects, rolling_std, linewidth=2, color='green', alpha=0.8, label=f'Gap Rolling Std (W={W})')
+
+                    # 🆕 绘制rolling top1收益（橙色虚线）
+                    line4 = ax1.plot(date_objects, rolling_top1, linewidth=2, color='orange', alpha=0.8, linestyle='--', label=f'Top1 Rolling Return (W={W})')
+
+                    # 🆕 绘制rolling top2收益（紫色虚线）
+                    line5 = ax1.plot(date_objects, rolling_top2, linewidth=2, color='purple', alpha=0.8, linestyle='--', label=f'Top2 Rolling Return (W={W})')
+
+                    # 绘制Z值（红色，使用右侧y轴）
+                    ax2 = ax1.twinx()
+                    line3 = ax2.plot(date_objects, Z, linewidth=2, color='red', alpha=0.8, label=f'Z-Score (W={W})')
+
+                    # 添加零线（Z=0）
+                    ax2.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+
+                    # 添加标题和标签
+                    ax1.set_title(f'Rolling Statistics: Top1 vs Top2-5 Performance Gap\nWindow: {window["name"]} ({window["test_start"]} ~ {window["test_end"]})',
+                                 fontsize=14, fontweight='bold')
+                    ax1.set_xlabel('Date', fontsize=12)
+                    ax1.set_ylabel('Rolling Mean / Std / Returns', fontsize=12, color='black')
+                    ax2.set_ylabel('Z-Score', fontsize=12, color='red')
+
+                    # 设置y轴颜色
+                    ax1.tick_params(axis='y', labelcolor='black')
+                    ax2.tick_params(axis='y', labelcolor='red')
+
+                    # 格式化x轴日期
+                    ax1.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+                    ax1.xaxis.set_major_locator(plt.MaxNLocator(nbins=20))  # 最多显示20个日期标签
+                    fig.autofmt_xdate()  # 自动旋转日期标签
+
+                    # 添加网格
+                    ax1.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+
+                    # 合并图例（来自两个y轴）
+                    lines = line1 + line2 + line4 + line5 + line3
+                    labels = [l.get_label() for l in lines]
+                    ax1.legend(lines, labels, loc='best', fontsize=9)
+
+                    # 添加统计信息文本框
+                    gap_mean = np.mean(daily_gaps)
+                    gap_std = np.std(daily_gaps)
+                    gap_median = np.median(daily_gaps)
+                    positive_days = sum(1 for g in daily_gaps if g > 0)
+                    positive_ratio = positive_days / len(daily_gaps) * 100
+
+                    # Z值统计
+                    Z_mean = Z.mean()
+                    Z_std = Z.std()
+                    Z_max = Z.max()
+                    Z_min = Z.min()
+
+                    # 🆕 Top1和Top2收益统计
+                    top1_mean = np.mean(daily_top1_returns)
+                    top2_mean = np.mean(daily_top2_returns)
+
+                    stats_text = f'Gap Statistics:\n'
+                    stats_text += f'Mean: {gap_mean:.4f}\n'
+                    stats_text += f'Median: {gap_median:.4f}\n'
+                    stats_text += f'Std: {gap_std:.4f}\n'
+                    stats_text += f'Positive Days: {positive_days}/{len(daily_gaps)} ({positive_ratio:.1f}%)\n\n'
+                    stats_text += f'Return Statistics:\n'
+                    stats_text += f'Top1 Mean: {top1_mean:.4f}\n'
+                    stats_text += f'Top2 Mean: {top2_mean:.4f}\n\n'
+                    stats_text += f'Z-Score Statistics:\n'
+                    stats_text += f'Mean: {Z_mean:.4f}\n'
+                    stats_text += f'Std: {Z_std:.4f}\n'
+                    stats_text += f'Max: {Z_max:.4f}\n'
+                    stats_text += f'Min: {Z_min:.4f}'
+
+                    ax1.text(0.02, 0.98, stats_text,
+                            transform=ax1.transAxes,
+                            fontsize=8,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+                    plt.tight_layout()
+
+                    # 保存图表
+                    import os
+                    os.makedirs('results', exist_ok=True)
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f'results/top1_vs_top2to5_rolling_stats_{window["name"]}_{timestamp}.png'
+                    plt.savefig(filename, dpi=150, bbox_inches='tight')
+                    plt.close()
+
+                    logger.info(f"  [OK] 滚动统计曲线已保存至: {filename}")
+
+                    # 输出统计信息
+                    logger.info(f"  收益差距统计 (基于 {len(daily_gaps)} 个交易日):")
+                    logger.info(f"    均值: {gap_mean:.4f}")
+                    logger.info(f"    中位数: {gap_median:.4f}")
+                    logger.info(f"    标准差: {gap_std:.4f}")
+                    logger.info(f"    最小值: {np.min(daily_gaps):.4f}")
+                    logger.info(f"    最大值: {np.max(daily_gaps):.4f}")
+                    logger.info(f"    正差距天数: {positive_days} ({positive_ratio:.1f}%)")
+                    logger.info(f"  收益统计:")
+                    logger.info(f"    Top1平均收益: {top1_mean:.4f}")
+                    logger.info(f"    Top2平均收益: {top2_mean:.4f}")
+                    logger.info(f"  Z值统计:")
+                    logger.info(f"    均值: {Z_mean:.4f}")
+                    logger.info(f"    标准差: {Z_std:.4f}")
+                    logger.info(f"    最大值: {Z_max:.4f}")
+                    logger.info(f"    最小值: {Z_min:.4f}")
+            else:
+                logger.warning(f"  [WARNING] 无有效日期数据进行收益差距分析")
+        else:
+            logger.warning(f"  [WARNING] 缺少必要列进行收益差距分析")
+
+        logger.info(f"{'='*80}\n")
 
         # 🆕 新增：完整稳健统计评估 - 测试集（与验证集格式一致）
         if top_k_stats[1]:  # 如果有数据才进行稳健评估

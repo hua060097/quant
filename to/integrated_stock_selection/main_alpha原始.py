@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘21_20251215_lead_z.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_因子生成20260322.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -5947,10 +5947,10 @@ def _get_stock_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
-
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
+        'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -6104,10 +6104,11 @@ def _get_original_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
 
+        'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -13809,8 +13810,8 @@ def run_test_model_walkforward_mode(args):
                 'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
                 'val_start': '2025-03-06',     # 验证集开始
                 'val_end': '2025-05-13',       # 验证集结束 (3个月) 2025-05-27
-                'test_start': '2025-05-18',    # 测试集开始
-                'test_end': '2026-10-30'       # 测试集结束 (3个月)2025-12-16
+                'test_start': '2025-06-05',    # 测试集开始
+                'test_end': '2026-03-02'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15997,7 +15998,7 @@ def _backtest_on_window(test_data, model_result, window, args):
         # 调用统一选股回测函数
         backtest_result = _run_stock_selection_backtest(
             backtest_data=test_data_with_pred,
-            stock_counts=[1],  # Top-1/2/3/5选股
+            stock_counts=[2],  # Top-1/2/3/5选股
             window_name=window['name'],
             market_data=None,  # Walk-Forward暂不使用市场状态
             frequency='minute'  # 默认日线回测，保持向后兼容
@@ -16553,6 +16554,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260313_023555.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 

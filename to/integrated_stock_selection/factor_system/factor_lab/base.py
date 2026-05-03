@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Set, Iterable, Any
+from typing import Callable, Dict, Optional, Set, Iterable, Any, Literal
 
 import pandas as pd
 
 
 Calculator = Callable[[pd.DataFrame, "FactorContext"], pd.Series]
+TargetCalculator = Callable[[pd.DataFrame, pd.Index, "FactorContext"], pd.Series]
+CalculationScope = Literal[
+    "full_history",
+    "target_cross_section",
+    "target_with_history_window",
+    "daily_broadcast",
+    "stateful_history",
+]
 
 
 @dataclass(slots=True)
@@ -38,8 +46,11 @@ class FactorDefinition:
     required_columns: Set[str] = field(default_factory=set)
     optional_columns: Set[str] = field(default_factory=set)
     lookback_days: int = 0
+    warmup_days: int = 0
     requires_market_data: bool = False
     requires_sector_data: bool = False
+    calculation_scope: CalculationScope = "full_history"
+    target_calculator: Optional[TargetCalculator] = None
     description: str = ""
 
     def run(self, data: pd.DataFrame, context: Optional[FactorContext] = None) -> pd.Series:
@@ -48,6 +59,24 @@ class FactorDefinition:
         if missing:
             raise ValueError(f"因子{self.name}缺少必要列: {sorted(missing)}")
         return self.calculator(data, ctx)
+
+    def run_target(
+        self,
+        data: pd.DataFrame,
+        target_index: pd.Index,
+        context: Optional[FactorContext] = None,
+    ) -> pd.Series:
+        ctx = context or FactorContext()
+        missing = self.required_columns.difference(data.columns)
+        if missing:
+            raise ValueError(f"因子{self.name}缺少必要列: {sorted(missing)}")
+
+        if self.target_calculator is not None:
+            return self.target_calculator(data, target_index, ctx)
+
+        series = self.calculator(data, ctx)
+        full_series = pd.Series(series, index=data.index, name=self.name)
+        return full_series.loc[target_index]
 
     def dependencies(self) -> Iterable[str]:
         # 兼容旧接口，占位

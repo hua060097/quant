@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子_标签5_4.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子_标签5_5.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -5730,13 +5730,15 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
         new_stock_df = pd.DataFrame(filter_stock_date_pairs)
 
         # 5.2 使用merge快速匹配，避免循环
+        # 重置索引后再merge，避免后续布尔过滤出现索引错位
+        work_df = stock_data.reset_index(drop=True).copy()
         # 将日期转换为数值便于比较
-        stock_data['_date_num'] = stock_data['date'].astype(np.int64)
+        work_df['_date_num'] = work_df['date'].astype(np.int64)
         new_stock_df['_ipo_num'] = new_stock_df['ipo_date'].astype(np.int64)
         new_stock_df['_filter_end_num'] = new_stock_df['filter_end_date'].astype(np.int64)
 
         # 执行merge
-        merged = stock_data.merge(
+        merged = work_df.merge(
             new_stock_df[['stock_code', '_ipo_num', '_filter_end_num']],
             on='stock_code',
             how='left'
@@ -5752,12 +5754,9 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
 
         # ===== 第6步：执行过滤 =====
         # 关键修复：直接使用merged来过滤，避免索引不匹配问题
-        # 使用merged的原始列（stock_data的列）来过滤
+        # 使用merged的原始列（work_df的列）来过滤
         original_columns = stock_data.columns.tolist()
-        filtered_data = merged[~need_filter_mask][original_columns].copy()
-
-        # 清理临时列
-        del stock_data['_date_num']
+        filtered_data = merged.loc[~need_filter_mask, original_columns].copy()
 
         # ===== 第7步：统计结果 =====
         original_count = len(stock_data)
@@ -13314,7 +13313,7 @@ def run_test_model_walkforward_mode(args):
                 # 'test_start': '2025-09-19',    # 测试集开始2025-08-21 2025-11-21
                 # 'test_end': '2025-11-21'       # 测试集结束 (3个月)2025-12-16
                 'test_start': '2025-09-22',    # 测试集开始2025-08-21 2025-11-21
-                'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
+                'test_end': '2026-03-02'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15625,6 +15624,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260301_130248.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260222_012258.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260222_024746.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))

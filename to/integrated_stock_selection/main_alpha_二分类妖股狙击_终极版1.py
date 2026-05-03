@@ -2730,7 +2730,7 @@ def _get_lgb_search_space():
         'bagging_fraction': [0.6, 0.8, 1.0],
         'reg_alpha': [0, 1, 5, 10],
         'reg_lambda': [0, 1, 5, 10],
-        'scale_pos_weight': [15, 30, 45, 60] # 处理正负样本不平衡
+        'scale_pos_weight': [15, 30, 45, 60, 65] # 处理正负样本不平衡
     }
     # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
@@ -2838,7 +2838,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'random_state': 42
         }
 
-        SEARCH_ITER = 45
+        SEARCH_ITER = 20
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None

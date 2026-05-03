@@ -1,6 +1,9 @@
 """因子数据存储管理。"""
 from __future__ import annotations
 
+import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -209,7 +212,6 @@ class FactorDatasetStore:
             # 保存合并后的数据
             self.save_raw(combined)
             logger.debug(f"[增量合并] 保存成功 - 文件大小: {self.raw_path.stat().st_size / (1024*1024):.2f} MB")
-
         except Exception as e:
             logger.error(f"[增量合并] 合并失败: {e}")
             logger.error(f"[增量合并] 错误类型: {type(e)}")
@@ -224,6 +226,19 @@ class FactorDatasetStore:
         if self.raw_exists():
             import logging
             logger = logging.getLogger(__name__)
+            keep_raw = os.environ.get("KEEP_FACTOR_RAW", "").strip().lower()
+            if keep_raw in {"1", "true", "yes", "y"}:
+                logger.info(f"🧪 保留临时文件用于调试: {self.raw_path}")
+                return
+            snapshot_raw = os.environ.get("SNAPSHOT_FACTOR_RAW", "").strip().lower()
+            if snapshot_raw in {"1", "true", "yes", "y"}:
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                snapshot_path = self.raw_path.with_name(f"{self.raw_path.stem}_{stamp}{self.raw_path.suffix}")
+                try:
+                    shutil.copy2(self.raw_path, snapshot_path)
+                    logger.info(f"📸 临时文件快照已保存: {snapshot_path}")
+                except Exception as exc:
+                    logger.warning(f"临时文件快照保存失败: {exc}")
             logger.info(f"🗑️ 清理临时文件: {self.raw_path}")
             self.raw_path.unlink()
 

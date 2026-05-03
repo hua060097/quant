@@ -1,0 +1,192 @@
+
+================================================================================
+daily_gate_stats_Window_3_gateN3_20260316_120854.json | first_half | days=87
+================================================================================
+
+排序Top1
+------
+count: 87
+mean_real_return: 3.18%
+median_real_return: 3.22%
+win_rate: 67.82%
+cum_return: 1203.24%
+max_drawdown: -16.34%
+mean_predicted_return: 16.66%
+mean_rank_pct_all: 1.000000
+mean_p_cls: 0.684527
+
+排序TopN(日均篮子收益)
+--------------
+days: 87
+mean_daily_return: 2.43%
+median_daily_return: 2.24%
+win_rate: 73.56%
+cum_return: 653.78%
+max_drawdown: -10.47%
+mean_predicted_return: 16.24%
+mean_rank_pct_all: 0.999890
+mean_p_cls: 0.685100
+
+分类Top1
+------
+count: 87
+mean_real_return: 1.95%
+median_real_return: 0.61%
+win_rate: 55.17%
+cum_return: 336.49%
+max_drawdown: -36.27%
+mean_predicted_return: 5.24%
+mean_rank_pct_all: 0.957710
+mean_p_cls: 0.773068
+
+分类TopN(日均篮子收益)
+--------------
+days: 87
+mean_daily_return: 1.67%
+median_daily_return: 0.80%
+win_rate: 58.62%
+cum_return: 274.59%
+max_drawdown: -40.81%
+mean_predicted_return: 5.51%
+mean_rank_pct_all: 0.960794
+mean_p_cls: 0.771119
+
+分类TopN+排序Top1
+-------------
+count: 87
+mean_real_return: 2.09%
+median_real_return: 1.15%
+win_rate: 55.17%
+cum_return: 390.79%
+max_drawdown: -37.38%
+mean_predicted_return: 7.96%
+mean_rank_pct_all: 0.974361
+mean_p_cls: 0.770401
+
+================================================================================
+daily_gate_stats_Window_3_gateN3_20260316_120854.json | second_half | days=88
+================================================================================
+
+排序Top1
+------
+count: 88
+mean_real_return: 1.30%
+median_real_return: -0.36%
+win_rate: 48.86%
+cum_return: 126.32%
+max_drawdown: -49.07%
+mean_predicted_return: 17.02%
+mean_rank_pct_all: 1.000000
+mean_p_cls: 0.723696
+
+排序TopN(日均篮子收益)
+--------------
+days: 88
+mean_daily_return: 1.03%
+median_daily_return: 0.84%
+win_rate: 53.41%
+cum_return: 119.92%
+max_drawdown: -20.80%
+mean_predicted_return: 16.06%
+mean_rank_pct_all: 0.999793
+mean_p_cls: 0.713068
+
+分类Top1
+------
+count: 88
+mean_real_return: 2.09%
+median_real_return: 0.75%
+win_rate: 54.55%
+cum_return: 345.75%
+max_drawdown: -38.41%
+mean_predicted_return: 4.87%
+mean_rank_pct_all: 0.963937
+mean_p_cls: 0.786975
+
+分类TopN(日均篮子收益)
+--------------
+days: 88
+mean_daily_return: 2.14%
+median_daily_return: 1.88%
+win_rate: 62.50%
+cum_return: 465.58%
+max_drawdown: -27.94%
+mean_predicted_return: 5.55%
+mean_rank_pct_all: 0.966776
+mean_p_cls: 0.783660
+
+分类TopN+排序Top1
+-------------
+count: 88
+mean_real_return: 2.48%
+median_real_return: 1.39%
+win_rate: 60.23%
+cum_return: 508.32%
+max_drawdown: -43.38%
+mean_predicted_return: 8.97%
+mean_rank_pct_all: 0.981480
+mean_p_cls: 0.783096
+
+================================================================================
+daily_gate_stats_Window_3_gateN3_20260316_120854.json | full_period | days=175
+================================================================================
+
+排序Top1
+------
+count: 175
+mean_real_return: 2.23%
+median_real_return: 1.56%
+win_rate: 58.29%
+cum_return: 2849.55%
+max_drawdown: -49.07%
+mean_predicted_return: 16.84%
+mean_rank_pct_all: 1.000000
+mean_p_cls: 0.704223
+
+排序TopN(日均篮子收益)
+--------------
+days: 175
+mean_daily_return: 1.73%
+median_daily_return: 1.51%
+win_rate: 63.43%
+cum_return: 1557.71%
+max_drawdown: -20.80%
+mean_predicted_return: 16.15%
+mean_rank_pct_all: 0.999841
+mean_p_cls: 0.699164
+
+分类Top1
+------
+count: 175
+mean_real_return: 2.02%
+median_real_return: 0.61%
+win_rate: 54.86%
+cum_return: 1845.64%
+max_drawdown: -38.41%
+mean_predicted_return: 5.05%
+mean_rank_pct_all: 0.960842
+mean_p_cls: 0.780061
+
+分类TopN(日均篮子收益)
+--------------
+days: 175
+mean_daily_return: 1.91%
+median_daily_return: 1.14%
+win_rate: 60.57%
+cum_return: 2018.60%
+max_drawdown: -40.81%
+mean_predicted_return: 5.53%
+mean_rank_pct_all: 0.963802
+mean_p_cls: 0.777425
+
+分类TopN+排序Top1
+-------------
+count: 175
+mean_real_return: 2.29%
+median_real_return: 1.31%
+win_rate: 57.71%
+cum_return: 2885.56%
+max_drawdown: -43.38%
+mean_predicted_return: 8.47%
+mean_rank_pct_all: 0.977941
+mean_p_cls: 0.776785

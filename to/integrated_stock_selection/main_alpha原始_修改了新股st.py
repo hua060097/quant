@@ -16558,8 +16558,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         xgb_files = list(results_dir.glob(xgb_pattern))
 
         # 查找当前窗口的LightGBM模型
-        # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
+        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None

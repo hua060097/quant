@@ -1,10 +1,11 @@
 """
 实盘交易系统主程序
 
-支持两种模式:
+支持多种模式:
 1. 选股模式: python main.py --mode select --date 20250109 --num_stocks 3
 2. 交易模式: python main.py --mode trade --date 20250109 --total_amount 30000 --num_stocks 3
 3. 手动模式: python main.py --mode manual --operation buy --stock 600000.SH --amount 50000
+4. 同步模式: python main.py --mode sync --date 20260422
 """
 
 import sys
@@ -14,6 +15,7 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, Optional
 
 # 添加必要的路径到sys.path
 def _setup_import_paths():
@@ -42,7 +44,7 @@ def _setup_import_paths():
 # 执行路径设置
 _setup_import_paths()
 
-from live_trading.config import PathConfig, StopLossConfig
+from live_trading.config import PathConfig, StopLossConfig, StrategyConfig
 from live_trading.model_loader import ModelLoader
 from live_trading.stock_selector import StockSelector
 
@@ -160,6 +162,297 @@ def load_factor_data(date: str):
         return None
 
 
+def _load_daily_gate_factor_history():
+    import pandas as pd
+
+    factor_store_path = PathConfig.PROJECT_ROOT / 'factor_lab_data' / 'factors.parquet'
+    if not factor_store_path.exists():
+        raise FileNotFoundError(f"因子数据文件不存在: {factor_store_path}")
+
+    factor_names = ['mkt_ma5_followthrough_v3', 'market_60d_new_high_ratio']
+    df = pd.read_parquet(factor_store_path, columns=['date', *factor_names])
+    df['date'] = pd.to_datetime(df['date'])
+    return df.groupby('date', as_index=False)[factor_names].first().sort_values('date').reset_index(drop=True)
+
+
+def _build_select_scheme_choices(select_date: str, factor_data, selected_stocks: list[dict]) -> dict:
+    import pandas as pd
+
+    if factor_data is None or factor_data.empty or len(selected_stocks) < 2:
+        return {}
+
+    current_date = pd.to_datetime(select_date)
+    current_row = factor_data.iloc[0]
+    mkt_value = float(current_row.get('mkt_ma5_followthrough_v3')) if pd.notna(current_row.get('mkt_ma5_followthrough_v3')) else None
+    nh_value = float(current_row.get('market_60d_new_high_ratio')) if pd.notna(current_row.get('market_60d_new_high_ratio')) else None
+
+    if mkt_value is None:
+        return {}
+
+    hist = _load_daily_gate_factor_history()
+    train_mask = (
+        (hist['date'] >= pd.Timestamp(StrategyConfig.Q40_TRAIN_START))
+        & (hist['date'] <= pd.Timestamp(StrategyConfig.Q40_TRAIN_END))
+    )
+
+    train_mkt = hist.loc[train_mask, 'mkt_ma5_followthrough_v3'].dropna()
+    train_nh = hist.loc[train_mask, 'market_60d_new_high_ratio'].dropna()
+    if train_mkt.empty:
+        return {}
+
+    mkt_q40 = float(train_mkt.quantile(0.4))
+    mkt_q30 = float(train_mkt.quantile(0.3))
+    nh_q70 = float(train_nh.quantile(0.7)) if not train_nh.empty else None
+
+    hist_before_today = hist.loc[hist['date'] < current_date, 'mkt_ma5_followthrough_v3'].dropna()
+    if len(hist_before_today) >= 20:
+        mkt_exp_q30 = float(hist_before_today.quantile(0.3))
+    else:
+        mkt_exp_q30 = mkt_q30
+
+    top1 = selected_stocks[0]
+    top2 = selected_stocks[1]
+    top1_code = top1.get('code')
+    top2_code = top2.get('code')
+
+    reg_choice = None
+    reg_pct_threshold = 0.98
+    reg_raw_threshold = 0.40
+    if 'severe_abnormal_pressure_10d' in factor_data.columns and top1_code is not None:
+        reg_panel = factor_data[['stock_code', 'severe_abnormal_pressure_10d']].copy()
+        reg_panel['severe_abnormal_pressure_10d'] = pd.to_numeric(
+            reg_panel['severe_abnormal_pressure_10d'], errors='coerce'
+        )
+        reg_panel = reg_panel.dropna(subset=['severe_abnormal_pressure_10d'])
+        if not reg_panel.empty:
+            reg_panel['reg_pct_rank'] = reg_panel['severe_abnormal_pressure_10d'].rank(
+                pct=True, method='average'
+            )
+            reg_map = dict(zip(reg_panel['stock_code'], reg_panel['reg_pct_rank']))
+            top1_reg_pct = reg_map.get(top1_code)
+            top2_reg_pct = reg_map.get(top2_code)
+            if top1_reg_pct is not None:
+                reg_choice = {
+                    'top1_reg_raw': float(reg_panel.loc[reg_panel['stock_code'] == top1_code, 'severe_abnormal_pressure_10d'].iloc[0]),
+                    'top2_reg_raw': float(reg_panel.loc[reg_panel['stock_code'] == top2_code, 'severe_abnormal_pressure_10d'].iloc[0]) if top2_code in set(reg_panel['stock_code']) else None,
+                    'top1_reg_pct': float(top1_reg_pct),
+                    'top2_reg_pct': float(top2_reg_pct) if top2_reg_pct is not None else None,
+                }
+
+    top_factor_choice = None
+    if {'cpv_factor', 'high_to_close_drawdown'}.issubset(set(factor_data.columns)):
+        top_factor_panel = factor_data[['stock_code', 'cpv_factor', 'high_to_close_drawdown']].copy()
+        top_factor_panel['cpv_factor'] = pd.to_numeric(top_factor_panel['cpv_factor'], errors='coerce')
+        top_factor_panel['high_to_close_drawdown'] = pd.to_numeric(top_factor_panel['high_to_close_drawdown'], errors='coerce')
+        top_factor_panel = top_factor_panel.dropna(subset=['cpv_factor', 'high_to_close_drawdown'])
+        if not top_factor_panel.empty:
+            factor_map = top_factor_panel.set_index('stock_code')[['cpv_factor', 'high_to_close_drawdown']].to_dict('index')
+            top1_factor = factor_map.get(top1_code)
+            top2_factor = factor_map.get(top2_code)
+            if top1_factor is not None:
+                top_factor_choice = {
+                    'top1_cpv': float(top1_factor['cpv_factor']),
+                    'top1_h2c': float(top1_factor['high_to_close_drawdown']),
+                    'top2_cpv': float(top2_factor['cpv_factor']) if top2_factor is not None else None,
+                    'top2_h2c': float(top2_factor['high_to_close_drawdown']) if top2_factor is not None else None,
+                }
+
+    def _make_choice(
+        name: str,
+        choose_top1: bool | None,
+        threshold: float | None,
+        signal_value: float | None,
+        extra: dict | None = None,
+    ):
+        if choose_top1 is None:
+            chosen = None
+        else:
+            chosen = top1 if choose_top1 else top2
+        payload = {
+            'name': name,
+            'chosen_rank': int(chosen.get('rank', 1 if choose_top1 else 2)) if chosen else 0,
+            'selected_code': chosen.get('code') if chosen else None,
+            'threshold': threshold,
+            'signal_value': signal_value,
+            'chosen_by_top1': bool(choose_top1) if choose_top1 is not None else False,
+            'action': 'buy' if chosen is not None else 'cash',
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    choices = {
+        'mkt_q40': _make_choice(
+            name='mkt_ma5_followthrough_v3_q40',
+            choose_top1=mkt_value >= mkt_q40,
+            threshold=mkt_q40,
+            signal_value=mkt_value,
+        ),
+        'mkt_exp_q30_shift1': _make_choice(
+            name='mkt_ma5_followthrough_v3_expanding_q30_shift1',
+            choose_top1=mkt_value >= mkt_exp_q30,
+            threshold=mkt_exp_q30,
+            signal_value=mkt_value,
+        ),
+    }
+
+    if reg_choice is not None:
+        reg_raw_choose_top1 = (mkt_value >= mkt_exp_q30) and (reg_choice['top1_reg_raw'] < reg_raw_threshold)
+        choices['mkt_exp_q30_reg10_raw_0p40_to_top2'] = _make_choice(
+            name='mkt_exp_q30_reg10_raw_0.40_to_top2',
+            choose_top1=reg_raw_choose_top1,
+            threshold=mkt_exp_q30,
+            signal_value=mkt_value,
+            extra={
+                'second_factor_name': 'top1_severe_abnormal_pressure_10d',
+                'second_threshold': reg_raw_threshold,
+                'second_signal_value': reg_choice['top1_reg_raw'],
+                'top2_second_signal_value': reg_choice.get('top2_reg_raw'),
+            },
+        )
+
+        reg_choose_top1 = (mkt_value >= mkt_exp_q30) and (reg_choice['top1_reg_pct'] < reg_pct_threshold)
+        if mkt_value < mkt_exp_q30:
+            reg_choose_top1 = False
+        choices['mkt_exp_q30_top1_hi98_to_top2'] = _make_choice(
+            name='mkt_exp_q30_top1_hi98_to_top2',
+            choose_top1=reg_choose_top1,
+            threshold=mkt_exp_q30,
+            signal_value=mkt_value,
+            extra={
+                'second_factor_name': 'top1_severe_abnormal_pressure_10d_pct_rank',
+                'second_threshold': reg_pct_threshold,
+                'second_signal_value': reg_choice['top1_reg_pct'],
+                'top2_second_signal_value': reg_choice.get('top2_reg_pct'),
+            },
+        )
+
+        reg_pct_state_threshold = 0.95 if mkt_value >= mkt_exp_q30 else 0.85
+        pct_state_choose_top1 = reg_choice['top1_reg_pct'] < reg_pct_state_threshold
+        choices['switch_reg_pct_mktstate_hi95_lo85'] = _make_choice(
+            name='switch_reg_pct_mktstate_hi95_lo85',
+            choose_top1=pct_state_choose_top1,
+            threshold=reg_pct_state_threshold,
+            signal_value=reg_choice['top1_reg_pct'],
+            extra={
+                'state_factor_name': 'mkt_ma5_followthrough_v3_expanding_q30_shift1',
+                'state_threshold': mkt_exp_q30,
+                'state_signal_value': mkt_value,
+                'second_factor_name': 'selected_severe_abnormal_pressure_10d_pct_rank',
+                'second_threshold': reg_pct_state_threshold,
+                'second_signal_value': reg_choice['top1_reg_pct'] if pct_state_choose_top1 else reg_choice.get('top2_reg_pct'),
+                'top1_second_signal_value': reg_choice['top1_reg_pct'],
+                'top2_second_signal_value': reg_choice.get('top2_reg_pct'),
+            },
+        )
+
+        if top_factor_choice is not None:
+            selected_cpv = top_factor_choice['top1_cpv'] if pct_state_choose_top1 else top_factor_choice.get('top2_cpv')
+            selected_h2c = top_factor_choice['top1_h2c'] if pct_state_choose_top1 else top_factor_choice.get('top2_h2c')
+            veto_triggered = (
+                selected_cpv is not None and selected_h2c is not None
+                and selected_cpv >= 1.5
+                and selected_h2c <= -0.015
+            )
+            choices['switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto'] = _make_choice(
+                name='switch_reg_pct_mktstate_hi95_lo85_plus_cpv1.5_h2c-0.015_veto',
+                choose_top1=(None if veto_triggered else pct_state_choose_top1),
+                threshold=reg_pct_state_threshold,
+                signal_value=reg_choice['top1_reg_pct'],
+                extra={
+                    'state_factor_name': 'mkt_ma5_followthrough_v3_expanding_q30_shift1',
+                    'state_threshold': mkt_exp_q30,
+                    'state_signal_value': mkt_value,
+                    'second_factor_name': 'selected_severe_abnormal_pressure_10d_pct_rank',
+                    'second_threshold': reg_pct_state_threshold,
+                    'second_signal_value': reg_choice['top1_reg_pct'] if pct_state_choose_top1 else reg_choice.get('top2_reg_pct'),
+                    'top1_second_signal_value': reg_choice['top1_reg_pct'],
+                    'top2_second_signal_value': reg_choice.get('top2_reg_pct'),
+                    'veto_factor_name': 'selected_cpv_factor_and_high_to_close_drawdown',
+                    'veto_cpv_threshold': 1.5,
+                    'veto_h2c_threshold': -0.015,
+                    'veto_cpv_value': selected_cpv,
+                    'veto_h2c_value': selected_h2c,
+                    'veto_triggered': veto_triggered,
+                    'action': 'cash' if veto_triggered else 'buy',
+                },
+            )
+
+    if nh_value is not None and nh_q70 is not None:
+        dual_choose_top1 = (mkt_value >= mkt_q40) and (nh_value >= nh_q70)
+        choices['dual_gate'] = _make_choice(
+            name='mkt_q40_plus_new_high_ratio_q70',
+            choose_top1=dual_choose_top1,
+            threshold=mkt_q40,
+            signal_value=mkt_value,
+            extra={
+                'second_factor_name': 'market_60d_new_high_ratio',
+                'second_threshold': nh_q70,
+                'second_signal_value': nh_value,
+            },
+        )
+
+    return choices
+
+
+def _persist_select_scheme_choices(select_date: str, result: dict, scheme_choices: dict) -> None:
+    if not result or not scheme_choices:
+        return
+
+    preferred_key = (
+        'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto'
+        if scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto')
+        else (
+            'switch_reg_pct_mktstate_hi95_lo85'
+            if scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85')
+            else (
+                'mkt_exp_q30_reg10_raw_0p40_to_top2'
+                if scheme_choices.get('mkt_exp_q30_reg10_raw_0p40_to_top2')
+                else (
+                    'mkt_exp_q30_top1_hi98_to_top2'
+                    if scheme_choices.get('mkt_exp_q30_top1_hi98_to_top2')
+                    else ('mkt_exp_q30_shift1' if scheme_choices.get('mkt_exp_q30_shift1') else 'mkt_q40')
+                )
+            )
+        )
+    )
+    preferred_info = scheme_choices.get(preferred_key)
+    if not preferred_info:
+        return
+
+    for stock in result.get('stocks', []):
+        stock['q40_selected'] = stock.get('code') == preferred_info.get('selected_code')
+
+    result['gates'] = scheme_choices
+    result['preferred_gate'] = preferred_key
+    # 兼容现有 trade 模式：继续复用 q40 字段，但实际写入当前首选方案
+    result['q40'] = {
+        'enabled': True,
+        'chosen_rank': preferred_info.get('chosen_rank', 1),
+        'threshold': preferred_info.get('threshold'),
+        'signal_value': preferred_info.get('signal_value'),
+        'selected_code': preferred_info.get('selected_code'),
+        'scheme_name': preferred_info.get('name'),
+        'action': preferred_info.get('action', 'buy'),
+        'second_factor_name': preferred_info.get('second_factor_name'),
+        'second_threshold': preferred_info.get('second_threshold'),
+        'second_signal_value': preferred_info.get('second_signal_value'),
+        'veto_factor_name': preferred_info.get('veto_factor_name'),
+        'veto_cpv_threshold': preferred_info.get('veto_cpv_threshold'),
+        'veto_h2c_threshold': preferred_info.get('veto_h2c_threshold'),
+        'veto_cpv_value': preferred_info.get('veto_cpv_value'),
+        'veto_h2c_value': preferred_info.get('veto_h2c_value'),
+        'veto_triggered': preferred_info.get('veto_triggered', False),
+        'state_threshold': preferred_info.get('state_threshold'),
+        'state_signal_value': preferred_info.get('state_signal_value'),
+    }
+
+    selections = _load_selections()
+    selections[select_date] = result
+    with open(PathConfig.STOCK_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(selections, f, ensure_ascii=False, indent=2)
+
+
 def run_select_mode(args):
     """
     运行选股模式（使用LightGBM单模型，与main.py pred_stocks逻辑一致）
@@ -204,6 +497,122 @@ def run_select_mode(args):
     logger.info("=" * 60)
 
     if result['stocks']:
+        extra_scheme_choices = {}
+        try:
+            extra_scheme_choices = _build_select_scheme_choices(args.date, factor_data, result['stocks'])
+        except Exception as e:
+            logger.warning(f"计算扩展开关方案失败: {e}")
+
+        if extra_scheme_choices:
+            try:
+                _persist_select_scheme_choices(args.date, result, extra_scheme_choices)
+            except Exception as e:
+                logger.warning(f"写入多方案选股结果失败: {e}")
+
+            def _fmt_optional(value, precision=6):
+                if value is None:
+                    return "NA"
+                try:
+                    return f"{float(value):.{precision}f}"
+                except Exception:
+                    return str(value)
+
+            def _format_market_state(info):
+                state_value = info.get('state_signal_value')
+                state_threshold = info.get('state_threshold')
+                if state_value is None or state_threshold is None:
+                    return None
+                try:
+                    weak_env = float(state_value) < float(state_threshold)
+                    relation = "<" if weak_env else ">="
+                    env_name = "弱环境" if weak_env else "强/非弱环境"
+                    state_factor = info.get('state_factor_name') or 'market_state'
+                    return (
+                        f"市场环境={env_name}"
+                        f"({state_factor}: {_fmt_optional(state_value)} {relation} q30={_fmt_optional(state_threshold)})"
+                    )
+                except Exception:
+                    return (
+                        f"市场环境=NA"
+                        f"(state_value={_fmt_optional(state_value)}, state_threshold={_fmt_optional(state_threshold)})"
+                    )
+
+            def _format_scheme_message(info, indent="  "):
+                action = info.get('action', 'buy')
+                chosen_rank = info.get('chosen_rank', 1)
+                target_text = f"Top{chosen_rank}" if action != 'cash' else "CASH"
+                name = info.get('name', 'unknown')
+
+                is_reg_pct_switch = name.startswith('switch_reg_pct_mktstate_hi95_lo85')
+                if is_reg_pct_switch:
+                    threshold = info.get('second_threshold', info.get('threshold'))
+                    top1_reg = info.get('top1_second_signal_value', info.get('signal_value'))
+                    top2_reg = info.get('top2_second_signal_value')
+                    selected_reg = info.get('second_signal_value')
+                    switch_relation = ">=" if (
+                        top1_reg is not None and threshold is not None and float(top1_reg) >= float(threshold)
+                    ) else "<"
+                    switch_text = "切Top2" if chosen_rank == 2 and action != 'cash' else ("空仓" if action == 'cash' else "保持Top1")
+                    parts = [
+                        f"{indent}{name}: {target_text}",
+                    ]
+                    market_desc = _format_market_state(info)
+                    if market_desc:
+                        parts.append(market_desc)
+                    parts.extend([
+                        f"Top1监管pct={_fmt_optional(top1_reg)} {switch_relation} 切换阈值={_fmt_optional(threshold)} -> {switch_text}",
+                        f"选中票监管pct={_fmt_optional(selected_reg)}",
+                    ])
+                    if top2_reg is not None:
+                        parts.append(f"Top2监管pct={_fmt_optional(top2_reg)}")
+                    if info.get('veto_cpv_value') is not None or info.get('veto_h2c_value') is not None:
+                        parts.append(
+                            "veto条件="
+                            f"cpv({_fmt_optional(info.get('veto_cpv_value'))} >= {_fmt_optional(info.get('veto_cpv_threshold'))})"
+                            " 且 "
+                            f"h2c({_fmt_optional(info.get('veto_h2c_value'))} <= {_fmt_optional(info.get('veto_h2c_threshold'))})"
+                            f", veto_triggered={bool(info.get('veto_triggered'))}"
+                        )
+                    return ", ".join(parts)
+
+                parts = [
+                    f"{indent}{name}: {target_text}",
+                    f"阈值={_fmt_optional(info.get('threshold'))}" if info.get('threshold') is not None else None,
+                    f"当日值={_fmt_optional(info.get('signal_value'))}" if info.get('signal_value') is not None else None,
+                ]
+                market_desc = _format_market_state(info)
+                if market_desc:
+                    parts.append(market_desc)
+                if info.get('second_threshold') is not None:
+                    parts.append(f"次因子阈值={_fmt_optional(info.get('second_threshold'))}")
+                if info.get('second_signal_value') is not None:
+                    parts.append(f"次因子当日值={_fmt_optional(info.get('second_signal_value'))}")
+                if info.get('top2_second_signal_value') is not None:
+                    parts.append(f"top2次因子值={_fmt_optional(info.get('top2_second_signal_value'))}")
+                if info.get('veto_triggered'):
+                    parts.append("veto_triggered=True")
+                return ", ".join([p for p in parts if p])
+
+            preferred_key = result.get('preferred_gate') or 'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto'
+            preferred_info = extra_scheme_choices.get(preferred_key) or {}
+            if preferred_info:
+                logger.info("默认策略选择: " + _format_scheme_message(preferred_info, indent=""))
+
+            logger.info("其他开关方案选择:")
+            scheme_order = [
+                'mkt_q40',
+                'mkt_exp_q30_shift1',
+                'mkt_exp_q30_reg10_raw_0p40_to_top2',
+                'mkt_exp_q30_top1_hi98_to_top2',
+                'switch_reg_pct_mktstate_hi95_lo85',
+                'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto',
+                'dual_gate',
+            ]
+            for scheme_key in scheme_order:
+                info = extra_scheme_choices.get(scheme_key)
+                if not info:
+                    continue
+                logger.info(_format_scheme_message(info))
         # 加载SW行业映射用于显示
         try:
             import json
@@ -217,19 +626,64 @@ def run_select_mode(args):
                     sw_sector_data = json.load(f)
                 stock_to_industry = sw_sector_data
 
-                logger.info(f"{'排名':<4} {'股票代码':<12} {'预测值(ATR)':<15} {'SW行业':<20}")
+                scheme_code_map = {}
+                for scheme_key, info in extra_scheme_choices.items():
+                    code = info.get('selected_code')
+                    if code:
+                        scheme_code_map.setdefault(code, []).append(scheme_key)
+
+                logger.info(f"{'排名':<4} {'股票代码':<12} {'预测值(ATR)':<15} {'SW行业':<20} {'Q40':<6} {'EXPQ30':<8} {'REG040':<8} {'REG98':<8} {'PCT':<6} {'PCTV':<6} {'DUAL':<6}")
                 logger.info("-" * 60)
                 for stock in result['stocks']:
                     industry = stock_to_industry.get(stock['code'], '未知')
-                    logger.info(f"{stock['rank']:<4} {stock['code']:<12} {stock['score']:<15.3f} {industry:<20}")
+                    q40_tag = 'Y' if stock.get('q40_selected') else ''
+                    exp_tag = 'Y' if 'mkt_exp_q30_shift1' in scheme_code_map.get(stock['code'], []) else ''
+                    reg040_tag = 'Y' if 'mkt_exp_q30_reg10_raw_0p40_to_top2' in scheme_code_map.get(stock['code'], []) else ''
+                    reg_tag = 'Y' if 'mkt_exp_q30_top1_hi98_to_top2' in scheme_code_map.get(stock['code'], []) else ''
+                    pct_tag = 'Y' if 'switch_reg_pct_mktstate_hi95_lo85' in scheme_code_map.get(stock['code'], []) else ''
+                    pctv_tag = 'Y' if 'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto' in scheme_code_map.get(stock['code'], []) else ''
+                    dual_tag = 'Y' if 'dual_gate' in scheme_code_map.get(stock['code'], []) else ''
+                    logger.info(f"{stock['rank']:<4} {stock['code']:<12} {stock['score']:<15.3f} {industry:<20} {q40_tag:<6} {exp_tag:<8} {reg040_tag:<8} {reg_tag:<8} {pct_tag:<6} {pctv_tag:<6} {dual_tag:<6}")
             else:
                 logger.warning(f"SW行业映射文件不存在: {sw_sector_file}")
                 for stock in result['stocks']:
-                    logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}")
+                    markers = []
+                    if stock.get('q40_selected'):
+                        markers.append('Q40')
+                    if extra_scheme_choices.get('mkt_exp_q30_shift1', {}).get('selected_code') == stock.get('code'):
+                        markers.append('EXPQ30')
+                    if extra_scheme_choices.get('mkt_exp_q30_reg10_raw_0p40_to_top2', {}).get('selected_code') == stock.get('code'):
+                        markers.append('REG040')
+                    if extra_scheme_choices.get('mkt_exp_q30_top1_hi98_to_top2', {}).get('selected_code') == stock.get('code'):
+                        markers.append('REG98')
+                    if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85', {}).get('selected_code') == stock.get('code'):
+                        markers.append('PCT')
+                    if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto', {}).get('selected_code') == stock.get('code'):
+                        markers.append('PCTV')
+                    if extra_scheme_choices.get('dual_gate', {}).get('selected_code') == stock.get('code'):
+                        markers.append('DUAL')
+                    marker_text = f" <<{','.join(markers)}" if markers else ''
+                    logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}{marker_text}")
         except Exception as e:
             logger.warning(f"无法加载SW行业映射: {e}")
             for stock in result['stocks']:
-                logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}")
+                markers = []
+                if stock.get('q40_selected'):
+                    markers.append('Q40')
+                if extra_scheme_choices.get('mkt_exp_q30_shift1', {}).get('selected_code') == stock.get('code'):
+                    markers.append('EXPQ30')
+                if extra_scheme_choices.get('mkt_exp_q30_reg10_raw_0p40_to_top2', {}).get('selected_code') == stock.get('code'):
+                    markers.append('REG040')
+                if extra_scheme_choices.get('mkt_exp_q30_top1_hi98_to_top2', {}).get('selected_code') == stock.get('code'):
+                    markers.append('REG98')
+                if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85', {}).get('selected_code') == stock.get('code'):
+                    markers.append('PCT')
+                if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto', {}).get('selected_code') == stock.get('code'):
+                    markers.append('PCTV')
+                if extra_scheme_choices.get('dual_gate', {}).get('selected_code') == stock.get('code'):
+                    markers.append('DUAL')
+                marker_text = f" <<{','.join(markers)}" if markers else ''
+                logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}{marker_text}")
     else:
         logger.warning("  无符合条件的股票")
 
@@ -239,376 +693,392 @@ def run_select_mode(args):
     return True
 
 
+def _load_selections() -> Dict:
+    if not PathConfig.STOCK_SELECTIONS_FILE.exists():
+        return {}
+    with open(PathConfig.STOCK_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _get_trade_candidate(selection_entry: Dict) -> Optional[Dict]:
+    stocks = selection_entry.get('stocks', [])
+    if not stocks:
+        return None
+
+    if StrategyConfig.ENABLE_DYNAMIC_RANK_SWITCH:
+        q40_info = selection_entry.get('q40') or {}
+        if q40_info.get('action') == 'cash':
+            return None
+        chosen_code = q40_info.get('selected_code')
+        chosen_rank = q40_info.get('chosen_rank', 1)
+        state_threshold = q40_info.get('state_threshold')
+        state_signal_value = q40_info.get('state_signal_value')
+        for stock in stocks:
+            if stock.get('code') == chosen_code or stock.get('q40_selected'):
+                chosen = dict(stock)
+                chosen['target_rank'] = int(chosen_rank)
+                chosen['is_weak_market_env'] = bool(
+                    state_threshold is not None
+                    and state_signal_value is not None
+                    and float(state_signal_value) < float(state_threshold)
+                )
+                return chosen
+
+    chosen = dict(stocks[0])
+    chosen['target_rank'] = 1
+    chosen['is_weak_market_env'] = False
+    return chosen
+
+
+def _get_strategy_position_snapshot(valid_positions, scheduler) -> tuple[Dict[int, Dict], Dict[str, Dict]]:
+    occupied_slots: Dict[int, Dict] = {}
+    position_records: Dict[str, Dict] = {}
+    fallback_slot = 0
+
+    for pos in valid_positions:
+        record = scheduler.load_latest_buy_record(pos.stock_code)
+        if not record:
+            continue
+        slot_index = record.get('slot_index')
+        if slot_index is None or int(slot_index) in occupied_slots:
+            while fallback_slot in occupied_slots and fallback_slot < StrategyConfig.MAX_CONCURRENT_POSITIONS:
+                fallback_slot += 1
+            slot_index = fallback_slot
+        slot_index = int(slot_index)
+        if slot_index >= StrategyConfig.MAX_CONCURRENT_POSITIONS:
+            continue
+        occupied_slots[slot_index] = {
+            'stock_code': pos.stock_code,
+            'position': pos,
+            'record': record,
+        }
+        position_records[pos.stock_code] = record
+    return occupied_slots, position_records
+
+
+def _calculate_target_volume(trader, stock_code: str, target_amount: float) -> tuple[int, Optional[float]]:
+    price = trader.get_current_price(stock_code)
+    if price is None or price <= 0:
+        return 0, None
+    volume = int(target_amount / price / 100) * 100
+    return volume, price
+
+
 def run_trade_mode(args):
-    """
-    运行交易模式（状态机版本）
-
-    状态机逻辑：
-    1. 有持仓第2天+ → 进入5分钟监控模式
-    2. 有持仓第1天 → 提示无需监控，退出
-    3. 无持仓 + 今天是买入日 → 执行买入，退出
-    4. 无持仓 + 今天不是买入日 → 退出
-
-    Args:
-        args: 命令行参数
-    """
-    import pandas as pd
+    """运行实盘交易模式：固定/动态 rank + 2 槽位并行 + 5分钟监控。"""
     from live_trading.trader import XtQuantTrader, TradingScheduler
     from live_trading.monitor import PositionMonitor5Min
 
     logger = logging.getLogger(__name__)
-
     logger.info("=" * 60)
-    logger.info("交易模式（状态机版本）")
+    logger.info("交易模式（槽位版）")
     logger.info("=" * 60)
     logger.info(f"选股日期(T日): {args.date}")
 
-    # 1. 连接迅投API
-    logger.info("\n步骤1: 连接迅投API...")
     trader = XtQuantTrader()
     if not trader.connect():
         logger.error("连接失败")
         return False
 
     scheduler = TradingScheduler(trader)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_compact = datetime.now().strftime('%Y%m%d')
 
-    # 2. 查询账户持仓
-    logger.info("\n步骤2: 查询账户持仓...")
-    positions = trader.query_stock_positions(trader.account)
-
-    # 调试：检查返回值
-    if positions is None:
-        logger.warning("⚠️ query_stock_positions返回None，可能是连接问题")
+    selections = _load_selections()
+    selection_entry = selections.get(args.date)
+    if not selection_entry:
+        logger.error(f"未找到 {args.date} 的选股结果: {PathConfig.STOCK_SELECTIONS_FILE}")
         trader.disconnect()
         return False
 
-    logger.info(f"📊 查询到持仓数量: {len(positions)}")
-    if positions:
-        for i, pos in enumerate(positions, 1):
-            logger.info(f"  持仓{i}: {pos.stock_code}, 持仓数量: {pos.volume}股, 可用数量: {pos.can_use_volume}股")
-
-    # 过滤出有效持仓（持仓数量 >= 100股 = 1手）
-    # 注意：使用volume而不是can_use_volume，因为买入当天可用数量为0（T+1交易制度）
+    positions = trader.query_stock_positions(trader.account) or []
     valid_positions = [pos for pos in positions if pos.volume >= 100]
+    occupied_slots, position_records = _get_strategy_position_snapshot(valid_positions, scheduler)
 
-    # 用于收集所有启动的监控器，以便在主线程退出前等待它们结束
-    active_monitors = []
+    logger.info(f"策略总资金上限: {StrategyConfig.STRATEGY_CAPITAL:.2f}")
+    logger.info(f"当前槽位配置: {StrategyConfig.MAX_CONCURRENT_POSITIONS}槽位, {StrategyConfig.POSITION_SCHEDULE}")
+    logger.info(f"当前有效持仓: {len(valid_positions)}只, 已占槽位: {sorted(occupied_slots.keys())}")
 
-    if valid_positions:
-        # ========================================
-        # 情况1&2: 有有效持仓
-        # ========================================
-        logger.info(f"发现有效持仓: {len(valid_positions)}只股票")
+    candidate = _get_trade_candidate(selection_entry)
+    if candidate:
+        logger.info(
+            f"今日候选: {candidate.get('code')} rank={candidate.get('target_rank', 1)} score={candidate.get('score', 0):.3f}"
+        )
+    else:
+        logger.warning("今日无可交易候选")
+
+    free_slots = [idx for idx in range(StrategyConfig.MAX_CONCURRENT_POSITIONS) if idx not in occupied_slots]
+    if candidate and free_slots:
+        candidate_code = candidate['code']
+        if candidate_code in position_records:
+            logger.info(f"{candidate_code} 已在持仓中，跳过重复开仓")
+        else:
+            slot_index = free_slots[0]
+            target_pct = float(StrategyConfig.POSITION_SCHEDULE[slot_index])
+            planned_amount = float(StrategyConfig.STRATEGY_CAPITAL * target_pct)
+            target_rank = int(candidate.get('target_rank', 1))
+            is_weak_market_env = bool(candidate.get('is_weak_market_env', False))
+            target_volume, ref_price = _calculate_target_volume(trader, candidate_code, planned_amount)
+
+            logger.info(
+                f"尝试开仓: {candidate_code}, 槽位={slot_index + 1}/{StrategyConfig.MAX_CONCURRENT_POSITIONS}, "
+                f"目标仓位={target_pct:.0%}, 计划金额={planned_amount:.2f}, 参考价={ref_price if ref_price else 0:.2f}, "
+                f"目标股数={target_volume}"
+            )
+
+            if target_volume >= 100:
+                execution_result = trader.order_manager.smart_buy_full_position(
+                    candidate_code,
+                    today_str,
+                    target_volume=target_volume,
+                    wait_for_open=True,
+                    apply_opening_risk=True,
+                    target_rank=target_rank,
+                    is_weak_market_env=is_weak_market_env,
+                )
+                if execution_result:
+                    filled_volume = int(execution_result.get('filled_volume', 0) or 0)
+                    entry_price = float(execution_result.get('avg_price', 0.0) or 0.0)
+                    entry_date = execution_result.get('first_fill_date') or today_str
+                    last_order_id = execution_result.get('last_order_id')
+                    order_ids = {candidate_code: last_order_id} if last_order_id else {}
+                    scheduler.save_trade_record(
+                        today_compact,
+                        'buy',
+                        [candidate_code],
+                        order_ids,
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        volume=filled_volume,
+                        slot_index=slot_index,
+                        target_pct=target_pct,
+                        planned_amount=planned_amount,
+                        strategy_capital=float(StrategyConfig.STRATEGY_CAPITAL),
+                        target_rank=target_rank,
+                    )
+                    logger.info(
+                        f"✅ 买入成功: {candidate_code}, filled={filled_volume}/{target_volume}, "
+                        f"avg_price={entry_price:.4f}, first_fill_date={entry_date}, order_id={last_order_id}"
+                    )
+                else:
+                    logger.warning(f"买入未成交或被风控跳过: {candidate_code}")
+            else:
+                logger.warning(f"{candidate_code} 目标股数不足1手，跳过开仓")
+    elif not free_slots:
+        logger.info("当前无空闲槽位，跳过新开仓")
+
+    return _run_monitoring_session(trader, scheduler, logger, session_name="交易模式")
+
+
+def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监控模式") -> bool:
+    """仅恢复当前持仓的5分钟监控，不执行任何开仓逻辑。"""
+    from live_trading.monitor import PositionMonitor5Min
+
+    positions = trader.query_stock_positions(trader.account) or []
+    valid_positions = [pos for pos in positions if pos.volume >= 100]
+    if not valid_positions:
+        logger.info(f"{session_name}: 当前无有效持仓，结束")
+        trader.disconnect()
+        return True
+
+    monitor_5m = PositionMonitor5Min(trader, scheduler)
+    monitored_count = 0
+
+    for pos in valid_positions:
+        buy_record = scheduler.load_latest_buy_record(pos.stock_code)
+        if not buy_record:
+            logger.warning(f"{pos.stock_code} 未找到买入记录，跳过监控")
+            continue
+
+        entry_date = buy_record['entry_date']
+        entry_price = buy_record.get('entry_price', 0)
+        slot_index = buy_record.get('slot_index')
+        target_pct = buy_record.get('target_pct')
+        holding_days = scheduler.calculate_holding_days(entry_date)
+
+        logger.info(
+            f"持仓监控准备: {pos.stock_code}, entry_date={entry_date}, entry_price={entry_price}, "
+            f"holding_days={holding_days}, slot={slot_index}"
+        )
+
+        if holding_days == 0:
+            logger.info(f"{pos.stock_code}: 当天买入（T+0），不启动监控")
+            continue
+
+        if holding_days >= 3:
+            logger.warning(f"{pos.stock_code}: 持仓异常（{holding_days}天），交由监控器立即处理")
+
+        monitor_5m.add_position_5m(
+            pos.stock_code,
+            entry_price,
+            entry_date,
+            slot_index=slot_index,
+            target_pct=target_pct,
+            enable_closing_sell=(holding_days >= 2),
+        )
+        monitored_count += 1
+
+    if monitored_count == 0:
+        logger.info(f"{session_name}: 当前无需要监控的持仓，结束")
+        trader.disconnect()
+        return True
+
+    monitor_5m.start_5m_monitoring()
+    logger.info(f"✅ 5分钟监控已启动，监控持仓数: {monitored_count}")
+
+    try:
+        while monitor_5m.is_monitoring:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，停止监控")
+    finally:
+        monitor_5m.stop_5m_monitoring()
+        trader.disconnect()
+
+    return True
+
+
+def run_monitor_mode(args):
+    """仅启动当前持仓的5分钟监控，不执行任何开仓逻辑。"""
+    from live_trading.trader import XtQuantTrader, TradingScheduler
+
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 60)
+    logger.info("监控模式")
+    logger.info("=" * 60)
+    logger.info(f"监控参考日期: {args.date}")
+
+    trader = XtQuantTrader()
+    if not trader.connect():
+        logger.error("连接失败")
+        return False
+
+    scheduler = TradingScheduler(trader)
+    return _run_monitoring_session(trader, scheduler, logger, session_name="监控模式")
+
+
+def run_sync_mode(args):
+    """同步当前持仓到本地买入记录。
+
+    适用场景：
+    - 在券商客户端手动买入后，希望让程序后续能正确识别槽位和监控起点。
+    - 只补“当前有持仓但本地没有买入记录”的股票，不覆盖已有记录。
+    """
+    from live_trading.trader import XtQuantTrader, TradingScheduler
+
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 60)
+    logger.info("持仓同步模式")
+    logger.info("=" * 60)
+    logger.info(f"同步买入日期: {args.date}")
+
+    sync_date = datetime.strptime(args.date, '%Y%m%d').strftime('%Y-%m-%d')
+
+    trader = XtQuantTrader()
+    if not trader.connect():
+        logger.error("连接失败")
+        return False
+
+    scheduler = TradingScheduler(trader)
+    today_compact = datetime.now().strftime('%Y%m%d')
+
+    try:
+        positions = trader.query_stock_positions(trader.account) or []
+        valid_positions = [pos for pos in positions if getattr(pos, 'volume', 0) >= 100]
+
+        if not valid_positions:
+            logger.info("当前无有效持仓，无需同步")
+            return True
+
+        occupied_slots, _ = _get_strategy_position_snapshot(valid_positions, scheduler)
+        free_slots = [idx for idx in range(StrategyConfig.MAX_CONCURRENT_POSITIONS) if idx not in occupied_slots]
+
+        synced = []
+        skipped_existing = []
+        skipped_invalid = []
 
         for pos in valid_positions:
             stock_code = pos.stock_code
-            holding_volume = pos.volume
-            volume = pos.can_use_volume
-
-            logger.info(f"  {stock_code}: {holding_volume}股")
-
-            logger.info(f"\n{'='*60}")
-            logger.info(f"处理持仓: {stock_code}")
-            logger.info(f"{'='*60}")
-            logger.info(f"  持仓数量: {holding_volume}股")
-            logger.info(f"  可用数量: {volume}股")
-
-            # 加载买入记录
-            buy_record = scheduler.load_latest_buy_record(stock_code)
-
-            if not buy_record:
-                logger.warning(f"  未找到{stock_code}的买入记录，无法监控")
-                logger.warning(f"  请手动管理此持仓")
-                continue
-
-            entry_date = buy_record['entry_date']
-            entry_price = buy_record.get('entry_price', 0)
-            record_volume = buy_record.get('volume', 0)
-
-            logger.info(f"  买入日期: {entry_date}")
-            logger.info(f"  买入价格: {entry_price:.2f}元" if entry_price > 0 else "  买入价格: 未知")
-            logger.info(f"  买入数量: {record_volume}股")
-
-            # 计算持仓天数
-            holding_days = scheduler.calculate_holding_days(entry_date)
-            logger.info(f"  持仓天数: {holding_days}天")
-
-            # 判断持仓天数
-            if holding_days == 0:
-                # ========================================
-                # 情况2: 持仓第1天（当天买入）
-                # ========================================
-                logger.info(f"\n✅ {stock_code}: 当天买入（T+0），无法卖出，无需监控")
-                logger.info("=" * 60)
-                continue
-
-            elif holding_days == 1:
-                # ========================================
-                # 情况1a: 持仓第2天，启动5分钟监控（无尾盘卖出）
-                # ========================================
-                logger.info(f"\n🛡️ {stock_code}: 持仓第2天，启动5分钟风控监控（无尾盘卖出）")
-
-                # 创建监控器
-                monitor_5m = PositionMonitor5Min(trader, scheduler)
-                monitor_5m.enable_closing_sell = False  # 第2天不尾盘卖出
-
-                # 添加持仓
-                monitor_5m.add_position_5m(
-                    stock_code,
-                    entry_price,
-                    entry_date
+            existing = scheduler.load_latest_buy_record(stock_code)
+            if existing:
+                skipped_existing.append(stock_code)
+                logger.info(
+                    f"{stock_code} 已存在买入记录，跳过同步: "
+                    f"entry_date={existing.get('entry_date')} entry_price={existing.get('entry_price')} volume={existing.get('volume')}"
                 )
-
-                # 启动监控
-                monitor_5m.start_5m_monitoring()
-
-                # 将监控器添加到列表，用于后续等待
-                active_monitors.append(monitor_5m)
-
-                logger.info(f"✅ 5分钟K线监控已启动")
-                logger.info(f"  监控股票: {stock_code}")
-                logger.info(f"  买入价格: {entry_price:.2f}元")
-                logger.info(f"  买入日期: {entry_date}")
-                logger.info(f"  持仓天数: {holding_days}天")
-                logger.info(f"  风控规则: 累计下跌5% OR 连续{StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD}根阴线")
-                logger.info(f"  尾盘卖出: 否")
-                logger.info("")
-
-                # 监控在后台线程运行，主线程继续处理下一个持仓
-                # 不再需要等待监控结束（删除了阻塞的while循环）
                 continue
 
-            elif holding_days == 2:
-                # ========================================
-                # 情况1b: 持仓第3天，启动5分钟监控（14:55尾盘卖出）
-                # ========================================
-                logger.info(f"\n🛡️ {stock_code}: 持仓第3天，启动5分钟风控监控（14:55尾盘卖出）")
-
-                # 创建监控器
-                monitor_5m = PositionMonitor5Min(trader, scheduler)
-                monitor_5m.enable_closing_sell = True  # 第3天启用尾盘卖出
-
-                # 添加持仓
-                monitor_5m.add_position_5m(
-                    stock_code,
-                    entry_price,
-                    entry_date
-                )
-
-                # 启动监控
-                monitor_5m.start_5m_monitoring()
-
-                # 将监控器添加到列表，用于后续等待
-                active_monitors.append(monitor_5m)
-
-                logger.info(f"✅ 5分钟K线监控已启动")
-                logger.info(f"  监控股票: {stock_code}")
-                logger.info(f"  买入价格: {entry_price:.2f}元")
-                logger.info(f"  买入日期: {entry_date}")
-                logger.info(f"  持仓天数: {holding_days}天")
-                logger.info(f"  风控规则: 累计下跌5% OR 连续{StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD}根阴线")
-                logger.info(f"  尾盘卖出: 14:55")
-                logger.info("")
-
-                # 监控在后台线程运行，主线程继续处理下一个持仓
-                # 不再需要等待监控结束（删除了阻塞的while循环）
+            volume = int(getattr(pos, 'can_use_volume', 0) or 0)
+            if volume < 100:
+                volume = int(getattr(pos, 'volume', 0) or 0)
+            volume = (volume // 100) * 100
+            if volume < 100:
+                skipped_invalid.append(stock_code)
+                logger.warning(f"{stock_code} 当前可同步数量不足1手，跳过")
                 continue
 
-            elif holding_days >= 3:
-                # ========================================
-                # 情况1c: 持仓满3天（异常情况），立即卖出
-                # ========================================
-                logger.warning(f"\n⚠️ {stock_code}: 持仓异常（{holding_days}天），立即卖出")
-
-                # 获取最新价
+            entry_price = float(getattr(pos, 'open_price', 0) or 0.0)
+            if entry_price <= 0:
+                entry_price = float(getattr(pos, 'avg_price', 0) or 0.0)
+            if entry_price <= 0:
                 current_price = trader.get_current_price(stock_code)
-                if current_price and entry_price > 0:
-                    profit_pct = (current_price - entry_price) / entry_price * 100
-                    logger.info(f"  买入价: {entry_price:.2f}, 卖出价: {current_price:.2f}, 收益率: {profit_pct:+.2f}%")
-                else:
-                    profit_pct = None
-
-                # 执行卖出
-                order_id = trader.order_manager.smart_sell_full_position(stock_code, volume)
-
-                if order_id:
-                    logger.info(f"✅ 卖出成功: {stock_code}, 订单号={order_id}")
-
-                    # 保存记录
-                    scheduler.save_trade_record(
-                        args.date,
-                        'sell',
-                        [stock_code],
-                        {stock_code: order_id},
-                        exit_reason='持仓异常',
-                        profit_pct=profit_pct
-                    )
-                else:
-                    logger.error(f"❌ 卖出失败: {stock_code}")
-
+                entry_price = float(current_price or 0.0)
+            if entry_price <= 0:
+                skipped_invalid.append(stock_code)
+                logger.warning(f"{stock_code} 无法确定买入成本价，跳过")
                 continue
 
-        # 所有持仓处理完成
-        logger.info("\n" + "=" * 60)
-        logger.info("持仓处理完成")
-        logger.info("=" * 60)
+            slot_index = None
+            target_pct = None
+            planned_amount = None
+            strategy_capital = float(StrategyConfig.STRATEGY_CAPITAL)
 
-        # 等待所有监控线程结束
-        if active_monitors:
-            logger.info(f"\n⏳ 等待 {len(active_monitors)} 个监控线程结束...")
-            logger.info("💡 提示: 按 Ctrl+C 可随时停止监控")
+            if free_slots:
+                slot_index = free_slots.pop(0)
+                if slot_index < len(StrategyConfig.POSITION_SCHEDULE):
+                    target_pct = float(StrategyConfig.POSITION_SCHEDULE[slot_index])
+                    planned_amount = strategy_capital * target_pct
 
-            try:
-                for idx, monitor in enumerate(active_monitors, 1):
-                    logger.info(f"  [{idx}/{len(active_monitors)}] 等待监控结束...")
-
-                    # 等待监控线程结束（主线程阻塞在这里）
-                    if monitor.monitor_thread and monitor.monitor_thread.is_alive():
-                        monitor.monitor_thread.join()
-                        logger.info(f"  [{idx}/{len(active_monitors)}] ✅ 监控线程已结束")
-
-                logger.info("\n✅ 所有监控线程已结束")
-
-            except KeyboardInterrupt:
-                logger.info("\n\n⚠️ 用户手动停止监控")
-                logger.info("正在停止所有监控线程...")
-
-                # 停止所有监控
-                for monitor in active_monitors:
-                    monitor.stop_5m_monitoring()
-
-                logger.info("✅ 所有监控已停止")
-                logger.info("程序即将退出...")
-
-    else:
-        # ========================================
-        # 情况3&4: 无持仓
-        # ========================================
-        logger.info("账户无持仓")
-
-        # 计算交易日期
-        logger.info("\n步骤3: 计算交易日期...")
-        # args.date 是 T+1日（买入日）
-        buy_date = pd.to_datetime(args.date, format='%Y%m%d')
-        logger.info(f"T+1日(买入日): {buy_date.strftime('%Y-%m-%d')}")
-
-        # 反推 T日（选股日）：往前推最近的交易日
-        t_date = buy_date - pd.Timedelta(days=1)
-        while t_date.weekday() >= 5:  # 跳过周末
-            t_date -= pd.Timedelta(days=1)
-        logger.info(f"T日(选股日): {t_date.strftime('%Y-%m-%d')}")
-
-        today = datetime.now().date()
-        buy_date_date = buy_date.date()
-
-        if today != buy_date_date:
-            # ========================================
-            # 情况4: 今天不是买入日
-            # ========================================
-            logger.info(f"\n当前日期{today}不是买入日{buy_date_date}，无需操作")
-            trader.disconnect()
-            return True
-
-        # ========================================
-        # 情况3: 今天是买入日，执行买入
-        # ========================================
-        logger.info(f"\n步骤4: 加载选股结果...")
-
-        if not PathConfig.STOCK_SELECTIONS_FILE.exists():
-            logger.error(f"选股文件不存在: {PathConfig.STOCK_SELECTIONS_FILE}")
-            trader.disconnect()
-            return False
-
-        try:
-            with open(PathConfig.STOCK_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
-                selections = json.load(f)
-        except Exception as e:
-            logger.error(f"加载选股文件失败: {e}")
-            trader.disconnect()
-            return False
-
-        # 使用选股日（t_date）查找选股记录
-        t_date_str = t_date.strftime('%Y%m%d')
-        if t_date_str not in selections:
-            logger.error(f"未找到日期{t_date_str}的选股结果")
-            logger.info(f"可用的选股日期: {list(selections.keys())}")
-            trader.disconnect()
-            return False
-
-        selected_stocks = selections[t_date_str]['stocks']
-        if not selected_stocks:
-            logger.warning("选股结果为空,无法交易")
-            trader.disconnect()
-            return False
-
-        # 提取top1股票
-        top1_stocks = [s for s in selected_stocks if s['rank'] == 1]
-        if not top1_stocks:
-            logger.error("未找到rank=1的股票")
-            trader.disconnect()
-            return False
-
-        top1_stock = top1_stocks[0]
-        stock_code = top1_stock['code']
-        score = top1_stock['score']
-
-        logger.info(f"✅ 找到top1股票: {stock_code}, 分数: {score:.3f}")
-
-        # 执行买入
-        logger.info(f"\n步骤5: 执行买入...")
-        logger.info(f"目标股票: {stock_code}")
-
-        order_id = trader.order_manager.smart_buy_full_position(
-            stock_code,
-            buy_date.strftime('%Y-%m-%d')
-        )
-
-        if order_id:
-            logger.info(f"✅ 买入成功: {stock_code}, 订单号={order_id}")
-
-            # 获取买入价格和数量
-            entry_price = trader.get_current_price(stock_code)
-            if not entry_price and order_id in trader.order_manager.orders:
-                entry_price = trader.order_manager.orders[order_id]['price']
-
-            # 获取买入数量
-            volume = 0
-            if order_id in trader.order_manager.orders:
-                volume = trader.order_manager.orders[order_id].get('volume', 0)
-
-            # 保存记录（增强版）
+            synthetic_order_id = f"SYNC_{stock_code}_{today_compact}"
             scheduler.save_trade_record(
-                args.date,
-                'buy',
+                today_compact,
+                'manual_buy',
                 [stock_code],
-                {stock_code: order_id},
-                entry_date=buy_date.strftime('%Y-%m-%d'),
+                {stock_code: synthetic_order_id},
+                entry_date=sync_date,
                 entry_price=entry_price,
-                volume=volume
+                volume=volume,
+                slot_index=slot_index,
+                target_pct=target_pct,
+                planned_amount=planned_amount,
+                strategy_capital=strategy_capital,
+            )
+            synced.append({
+                'stock_code': stock_code,
+                'entry_date': sync_date,
+                'entry_price': entry_price,
+                'volume': volume,
+                'slot_index': slot_index,
+                'target_pct': target_pct,
+            })
+            logger.info(
+                f"✅ 已同步持仓: {stock_code}, entry_date={sync_date}, entry_price={entry_price:.4f}, "
+                f"volume={volume}, slot={slot_index}, target_pct={target_pct}"
             )
 
-            logger.info(f"买入记录已保存:")
-            logger.info(f"  股票代码: {stock_code}")
-            logger.info(f"  买入日期: {buy_date.strftime('%Y-%m-%d')}")
-            logger.info(f"  买入价格: {entry_price:.2f}元" if entry_price else "  买入价格: 未知")
-            logger.info(f"  买入数量: {volume}股")
-
-            logger.info(f"\nℹ️  买入完成，程序退出")
-            logger.info(f"ℹ️  明天再次运行程序将启动5分钟风控监控")
-
-        else:
-            logger.error(f"❌ 买入失败: {stock_code}")
-            trader.disconnect()
-            return False
-
-    # 断开连接
-    trader.disconnect()
-
-    logger.info("\n" + "=" * 60)
-    logger.info("交易完成")
-    logger.info("=" * 60)
-
-    return True
+        logger.info("=" * 60)
+        logger.info(
+            f"同步完成: synced={len(synced)} skipped_existing={len(skipped_existing)} skipped_invalid={len(skipped_invalid)}"
+        )
+        if synced:
+            for item in synced:
+                logger.info(
+                    f"  {item['stock_code']} -> date={item['entry_date']} price={item['entry_price']:.4f} "
+                    f"volume={item['volume']} slot={item['slot_index']}"
+                )
+        return True
+    finally:
+        trader.disconnect()
 
 
 def run_manual_mode(args):
@@ -768,37 +1238,40 @@ def _execute_manual_buy(args, trader, scheduler):
     logger.info(f"目标股票: {stock_code}")
     logger.info(f"买入方式: 限价单（价格={current_price:.2f}元）")
 
-    order_id = trader.order_manager.smart_buy_full_position(
+    execution_result = trader.order_manager.smart_buy_full_position(
         stock_code,
         datetime.now().strftime('%Y-%m-%d'),
         target_volume=buy_volume  # 指定买入数量
     )
 
-    if order_id:
+    if execution_result:
+        filled_volume = int(execution_result.get('filled_volume', 0) or 0)
+        entry_price = float(execution_result.get('avg_price', 0.0) or 0.0)
+        entry_date = execution_result.get('first_fill_date') or datetime.now().strftime('%Y-%m-%d')
+        last_order_id = execution_result.get('last_order_id')
         logger.info(f"✅ 买入成功: {stock_code}")
-        logger.info(f"  订单号: {order_id}")
-        logger.info(f"  买入价格: {current_price:.2f}元")
-        logger.info(f"  买入数量: {buy_volume}股")
-        logger.info(f"  实际金额: {buy_amount:.2f}元")
+        logger.info(f"  订单号: {last_order_id}")
+        logger.info(f"  买入价格: {entry_price:.2f}元")
+        logger.info(f"  买入数量: {filled_volume}股")
+        logger.info(f"  实际金额: {entry_price * filled_volume:.2f}元")
 
         # 6. 保存交易记录
-        entry_date = datetime.now().strftime('%Y-%m-%d')
         scheduler.save_trade_record(
             datetime.now().strftime('%Y%m%d'),
             'manual_buy',
             [stock_code],
-            {stock_code: order_id},
+            ({stock_code: last_order_id} if last_order_id else {}),
             entry_date=entry_date,
-            entry_price=current_price,
-            volume=buy_volume
+            entry_price=entry_price,
+            volume=filled_volume
         )
 
         logger.info(f"\n买入记录已保存:")
         logger.info(f"  股票代码: {stock_code}")
         logger.info(f"  买入日期: {entry_date}")
-        logger.info(f"  买入价格: {current_price:.2f}元")
-        logger.info(f"  买入数量: {buy_volume}股")
-        logger.info(f"  买入金额: {buy_amount:.2f}元")
+        logger.info(f"  买入价格: {entry_price:.2f}元")
+        logger.info(f"  买入数量: {filled_volume}股")
+        logger.info(f"  买入金额: {entry_price * filled_volume:.2f}元")
         logger.info(f"  操作模式: 手动交易")
 
         return True
@@ -943,8 +1416,8 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='实盘交易系统')
 
-    parser.add_argument('--mode', type=str, required=True, choices=['select', 'trade', 'manual'],
-                       help='运行模式: select-选股模式, trade-交易模式, manual-手动交易模式')
+    parser.add_argument('--mode', type=str, required=True, choices=['select', 'trade', 'monitor', 'manual', 'sync'],
+                       help='运行模式: select-选股模式, trade-交易模式, monitor-仅监控模式, manual-手动交易模式, sync-持仓同步模式')
 
     parser.add_argument('--date', type=str,
                        help='日期(格式: YYYYMMDD)，select和trade模式必需')
@@ -971,7 +1444,7 @@ def main():
     args = parser.parse_args()
 
     # 参数验证
-    if args.mode in ['select', 'trade'] and not args.date:
+    if args.mode in ['select', 'trade', 'monitor', 'sync'] and not args.date:
         parser.error(f"{args.mode}模式需要--date参数")
 
     if args.mode == 'manual':
@@ -998,6 +1471,10 @@ def main():
             success = run_select_mode(args)
         elif args.mode == 'trade':
             success = run_trade_mode(args)
+        elif args.mode == 'monitor':
+            success = run_monitor_mode(args)
+        elif args.mode == 'sync':
+            success = run_sync_mode(args)
         elif args.mode == 'manual':
             success = run_manual_mode(args)
         else:
@@ -1017,4 +1494,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

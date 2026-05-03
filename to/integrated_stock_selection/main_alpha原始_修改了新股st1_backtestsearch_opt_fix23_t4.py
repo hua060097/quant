@@ -923,7 +923,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_小波因子34_排序_2026因子7.log',
+        'stock_selection_test_mode_walkforward_排序模型_小波因子34_排序_2026因子9.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -1531,33 +1531,22 @@ def _calculate_xgboost_group_weights(train_dates: np.ndarray,
 
 def _calculate_professional_sample_weights(
     y_train: np.ndarray,
-    imbalance_ratio: float,
     logger,
-    boundary_distances: np.ndarray = None,
-    is_regression: bool = False,
-    y_train_original: np.ndarray = None,
-    train_dates: np.ndarray = None,
-    time_decay_half_life: float = 365.0,
-    reference_date: str = None,
     turnover_rate: np.ndarray = None,
     circ_mv: np.ndarray = None,
-    label_rank: np.ndarray = None,
-    label_boost_beta: float = 0.1,
-    w_min: float = 0.8,
-    w_max: float = 1.2
+    is_monster: np.ndarray = None
 ) -> np.ndarray:
     """
-    稳健样本权重计算 (修复版)
-    - 在 log1p 前先填充/替换 NaN/Inf/<=0
-    - 使用 per-field winsorize (1%-99%)
-    - 在 log 空间合成，限制最终范围 [w_min, w_max]
-    - 返回已中位数归一化的样本权重
+    简化版样本权重计算
+    - 基于 is_monster 字段设置权重：is_monster==1 权重为5，is_monster==0 权重为1
+    - 可选：基于 turnover_rate 和 circ_mv 进行微调（如果提供）
+    - 返回样本权重数组
     """
     import numpy as np
     import pandas as pd
 
     try:
-        logger.info("样本权重计算 (修复版) 开始")
+        logger.info("样本权重计算 (简化版) 开始")
         n = len(y_train)
         logger.info(f"  总样本数: {n}")
 
@@ -1566,145 +1555,47 @@ def _calculate_professional_sample_weights(
         logger.info(f"  min={np.nanmin(y_train):.6f}, max={np.nanmax(y_train):.6f}, mean={np.nanmean(y_train):.6f}, std={np.nanstd(y_train):.6f}")
         logger.info(f"  NaN count in labels: {int(np.isnan(y_train).sum())}, Inf count: {int(np.isinf(y_train).sum())}")
 
-        # ---------- 检查输入 ----------
-        if turnover_rate is None or circ_mv is None:
-            logger.warning("[WARNING] turnover_rate or circ_mv is None -> 返回均匀权重")
-            return np.ones(n)
+        # ---------- 基于 is_monster 设置权重 ----------
+        # is_monster == 1: 权重为 5.0（优质样本）
+        # is_monster == 0 或 None: 权重为 1.0（普通样本）
+        monster_weight_multiplier = np.ones(n)  # 默认全部为1.0
 
-        turnover = np.asarray(turnover_rate, dtype=float).copy()
-        mcap = np.asarray(circ_mv, dtype=float).copy()
+        if is_monster is not None:
+            is_monster_arr = np.asarray(is_monster, dtype=float).copy()
 
-        # ---------- 1) 预处理：替换 Inf/NaN/<=0 ----------
-        # 记录问题数量
-        n_inf_turn = np.isinf(turnover).sum()
-        n_nan_turn = np.isnan(turnover).sum()
-        n_le0_turn = np.sum(~np.isnan(turnover) & (turnover <= 0))
-        logger.info(f"换手率预检: finite={np.isfinite(turnover).sum()}/{len(turnover)}, Inf={n_inf_turn}, NaN={n_nan_turn}, <=0={n_le0_turn}")
+            # 统计 is_monster 分布
+            monster_count = int(np.sum(is_monster_arr == 1.0))
+            normal_count = int(np.sum(is_monster_arr == 0.0))
+            other_count = len(is_monster_arr) - monster_count - normal_count
 
-        n_inf_mc = np.isinf(mcap).sum()
-        n_nan_mc = np.isnan(mcap).sum()
-        n_le0_mc = np.sum(~np.isnan(mcap) & (mcap <= 0))
-        logger.info(f"市值预检: finite={np.isfinite(mcap).sum()}/{len(mcap)}, Inf={n_inf_mc}, NaN={n_nan_mc}, <=0={n_le0_mc}")
+            logger.info(f"[is_monster] 统计:")
+            logger.info(f"  is_monster==1 (优质样本): {monster_count} ({monster_count/n*100:.2f}%)")
+            logger.info(f"  is_monster==0 (普通样本): {normal_count} ({normal_count/n*100:.2f}%)")
+            if other_count > 0:
+                logger.warning(f"  is_monster 其他值: {other_count} (将视为普通样本)")
 
-        # 替换策略：
-        # - 对于 turnover: 使用正值部分的 1st percentile 作为 floor 填充非正/NaN/Inf
-        # - 对于 mcap: 使用正值部分的 1st percentile 填充非正/NaN/Inf
-        pos_turn = turnover[np.isfinite(turnover) & (turnover > 0)]
-        pos_mcap = mcap[np.isfinite(mcap) & (mcap > 0)]
+            # 设置权重乘数
+            monster_mask = (is_monster_arr == 1.0)
+            monster_weight_multiplier[monster_mask] = 5.0  # 优质样本权重为5
+            # 其他样本（包括 is_monster==0）保持权重为1.0
 
-        if pos_turn.size == 0:
-            turn_floor = 1e-6
+            logger.info(f"[is_monster] 权重乘数设置:")
+            logger.info(f"  优质样本权重乘数: 5.0")
+            logger.info(f"  普通样本权重乘数: 1.0")
+            logger.info(f"  权重乘数统计: min={monster_weight_multiplier.min():.1f}, max={monster_weight_multiplier.max():.1f}")
         else:
-            turn_floor = max(np.nanpercentile(pos_turn, 1), 1e-6)
+            logger.info("[is_monster] 未提供 is_monster 字段，所有样本使用统一权重乘数 1.0")
 
-        if pos_mcap.size == 0:
-            mcap_floor = 1.0
-        else:
-            mcap_floor = max(np.nanpercentile(pos_mcap, 1), 1.0)
+        # ---------- 可选：基于 turnover_rate 和 circ_mv 进行微调 ----------
+        w_final = monster_weight_multiplier.copy()
 
-        # 替换：把非正/NaN/Inf -> floor
-        bad_turn_mask = ~np.isfinite(turnover) | (turnover <= 0)
-        replaced_turn = int(bad_turn_mask.sum())
-        turnover[bad_turn_mask] = turn_floor
+        # ---------- 最终统计 ----------
+        logger.info("最终权重统计:")
+        logger.info(f"  min={float(np.nanmin(w_final)):.4f}, max={float(np.nanmax(w_final)):.4f}, mean={float(np.nanmean(w_final)):.4f}, median={float(np.median(w_final)):.4f}")
 
-        bad_mcap_mask = ~np.isfinite(mcap) | (mcap <= 0)
-        replaced_mcap = int(bad_mcap_mask.sum())
-        mcap[bad_mcap_mask] = mcap_floor
+        # 确保无 NaN/Inf
+        w_final = np.nan_to_num(w_final, nan=1.0, posinf=5.0, neginf=1.0)
 
-        logger.info(f"已替换换手率 {replaced_turn} 个无效值 -> {turn_floor:.6g}")
-        logger.info(f"已替换市值 {replaced_mcap} 个无效值 -> {mcap_floor:.6g}")
-
-        # ---------- 2) log 缩放 + per-field winsorize (1%-99%) ----------
-        t_log = np.log1p(turnover)  # >=0
-        m_log = np.log1p(mcap)
-
-        # winsorize in log space
-        lo_t, hi_t = np.nanpercentile(t_log, [1, 99])
-        lo_m, hi_m = np.nanpercentile(m_log, [1, 99])
-        t_log_clipped = np.clip(t_log, lo_t, hi_t)
-        m_log_clipped = np.clip(m_log, lo_m, hi_m)
-
-        logger.info(f"t_log percentiles(1,99): {lo_t:.6f}, {hi_t:.6f}; m_log percentiles(1,99): {lo_m:.6f}, {hi_m:.6f}")
-
-        # 标准化到接近 1 的尺度（用中位数）
-        t_med = np.nanmedian(t_log_clipped) + 1e-12
-        m_med = np.nanmedian(m_log_clipped) + 1e-12
-        t_w = t_log_clipped / t_med
-        m_w = m_log_clipped / m_med
-
-        # ---------- 3) 合成权重（在 log 空间做幂次混合，避免乘法爆炸） ----------
-        alpha = 0.6
-        # 防止取 log(0)：确保正数
-        t_w_safe = np.clip(t_w, 1e-6, None)
-        m_w_safe = np.clip(m_w, 1e-6, None)
-        log_base = alpha * np.log(t_w_safe) + (1 - alpha) * np.log(m_w_safe)
-        w_base = np.exp(log_base)
-        w_base = np.ones_like(w_base)
-
-        logger.info(f"基础权重 (w_base) 统计: min={np.nanmin(w_base):.4f}, max={np.nanmax(w_base):.4f}, mean={np.nanmean(w_base):.4f}, NaN={int(np.isnan(w_base).sum())}")
-
-        # ---------- 4) 时间衰减（弱化） ----------
-        # 处理 train_dates
-        if train_dates is None:
-            decay = np.ones(n)
-            logger.warning("[WARNING] train_dates 为 None, 跳过时间衰减")
-        else:
-            dates = pd.to_datetime(pd.Series(train_dates))
-            recent = dates.max()
-            age_days = (recent - dates).dt.days.values
-            age_days = np.clip(age_days, 0, None)
-            decay_raw = np.exp(-np.log(2) * age_days / float(time_decay_half_life))
-            # 将 decay 映射成靠近 1 的微调因子，避免过度放大/缩小
-            decay = 1.0 + 0.15 * (decay_raw - np.mean(decay_raw))
-            # 保证 finite
-            decay = np.nan_to_num(decay, nan=1.0, posinf=1.0, neginf=1.0)
-
-        w_time = w_base * decay
-        w_final = w_time
-        logger.info(f"time adjusted weight 统计: min={np.nanmin(w_time):.4f}, max={np.nanmax(w_time):.4f}, mean={np.nanmean(w_time):.4f}, NaN={int(np.isnan(w_time).sum())}")
-
-        # ---------- 5) relevance 增强（有限制） ----------
-        # if label_rank is not None:
-        #     rel = np.asarray(label_rank, dtype=float)
-        #     # 把 rel 缺失当 0
-        #     rel = np.where(~np.isfinite(rel), 0.0, rel)
-        #     r_factor = 1.0 + float(label_boost_beta) * rel
-        #     # 强制上下限，例如 [0.85, 1.3]
-        #     r_factor = np.clip(r_factor, 0.85, 1.3)
-        #     w_rel = w_time * r_factor
-        #     logger.info(f"relevance factor 统计: min={np.nanmin(r_factor):.4f}, max={np.nanmax(r_factor):.4f}, mean={np.nanmean(r_factor):.4f}")
-        # else:
-        #     w_rel = w_time
-        #     logger.info("no relevance provided -> skip relevance boost")
-
-        # ---------- 6) 全局 winsorize + clip 到 [w_min, w_max] ----------
-        # w_rel = np.nan_to_num(w_rel, nan=1.0, posinf=w_max, neginf=w_min)
-        # w_clip = np.clip(w_rel, w_min, w_max)
-
-        # # ---------- 7) 归一化（中位数归一化） ----------
-        # med = float(np.median(w_clip))
-        # if not np.isfinite(med) or med <= 0:
-        #     med = float(np.nanmean(w_clip))
-        #     logger.warning(f"权重中位数异常, 用均值替代: {med:.6f}")
-
-        # w_final = w_clip / (med + 1e-12)
-
-        # # 最后保证无 NaN/Inf
-        # if np.any(~np.isfinite(w_final)):
-        #     bad = int(np.sum(~np.isfinite(w_final)))
-        #     logger.warning(f"最终权重存在 {bad} 个无效值, 用 1.0 替换")
-        #     w_final = np.nan_to_num(w_final, nan=1.0, posinf=w_max, neginf=w_min)
-
-        # # ---------- 诊断日志 ----------
-        # logger.info("最终权重统计:")
-        # logger.info(f"  min={float(np.nanmin(w_final)):.4f}, max={float(np.nanmax(w_final)):.4f}, mean={float(np.nanmean(w_final)):.4f}, median={float(np.median(w_final)):.4f}")
-        # # 集中度
-        # w_sorted = np.sort(w_final)[::-1]
-        # total = np.sum(w_final)
-        # n_samples = len(w_final)
-        # k1 = max(1, int(n_samples * 0.01))
-        # top1_share = np.sum(w_sorted[:k1]) / (total + 1e-12)
-        # logger.info(f"  Top1% weight share: {top1_share*100:.2f}%")
         return w_final
 
     except Exception as e:
@@ -1713,7 +1604,7 @@ def _calculate_professional_sample_weights(
         logger.error(traceback.format_exc())
         logger.warning("返回均匀权重作为后备")
         return np.ones(len(y_train) if y_train is not None else 100)
-
+    
 
 def _calculate_precision_at_k(y_true, y_scores, k_values=[1, 3, 5, 10]):
     """
@@ -2739,13 +2630,13 @@ def _get_lgb_search_space():
         'reg_lambda': [5,6, 8, 15, 20, 25],
         'feature_fraction': [0.5, 0.6],
         'bagging_fraction': [0.6, 0.7, 0.8],
-        'min_sum_hessian_in_leaf': [1e-1, 1, 5, 10, 20],
+        # 'min_sum_hessian_in_leaf': [1e-1, 1, 5, 10, 20],
         # 'min_data_in_leaf': [200, 220, 240, 250, 260, 270, 280, 290, 295, 300, 305, 310, 315, 320, 325, 330, 335, 340], # 覆盖稀疏到密集 , 330, 400
         'min_data_in_leaf': [320, 480, 950, 1200],#560, 720, 1120
         # 'reg_alpha': [5.0, 8.0, 10], #8.5, 
         # 'reg_lambda': [5.0, 8.0, 10], #, 8.5
         # 'n_estimators': [20, 40, 60, 90], #, 200, 300, 800
-        'lambdarank_truncation_level': [1,2,3,5,20], # 关注头部排名的范围 3,4,5,8,10
+        'lambdarank_truncation_level': [8,10], # 关注头部排名的范围 3,4,5,8,10
     }
     # space = {
     #     'max_depth': [5],
@@ -2765,15 +2656,8 @@ def _get_lgb_search_space():
     
     # 不同的label_gain策略
     label_gain_candidates = [
-        [0, 0, 0, 0, 0, 1],
-        # [0, 0, 0, 0, 0, 5],
-        # [0, 1, 3, 7, 15, 31], 
-        # [0, 1, 2, 4, 7, 12],
-        # [0, 1, 2, 4, 8, 20],
-        # [0, 1, 2, 4, 8, 14],
-        # [0, 1, 2, 4, 6, 10],
-        # [0, 1, 2, 4, 8, 99],
-        # [0, 1, 2, 4, 10, 25]
+        [0,1,2,3,4,5],
+        [0,1,2,3,5,8]
         # [0, 1, 2, 4, 8, 17]  # 标准2次方
         # [i for i in range(6)] # 线性
     ]
@@ -2911,8 +2795,10 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     y_atr = y_atr[:n]
                 return X2, y2, d2, w2, y_atr
 
-            sample_weights = np.ones(len(y_train), dtype=np.float32)
-            val_sample_weights = np.ones(len(y_val), dtype=np.float32) if val_dates is not None else None
+            sample_weights = preprocessed_data.get('sample_weights')
+            val_sample_weights = preprocessed_data.get('val_sample_weights')
+            # sample_weights = np.ones(len(y_train), dtype=np.float32)
+            # val_sample_weights = np.ones(len(y_val), dtype=np.float32) if val_dates is not None else None
 
             # 对齐训练集和验证集
             X_train_scaled, y_train, train_dates, sample_weights, y_train_atr = _align_len(
@@ -3031,8 +2917,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
         _, train_groups = np.unique(train_dates, return_counts=True)
         _, val_groups = np.unique(val_dates, return_counts=True)
-        sample_weights = np.ones_like(y_train, dtype=np.float32)
-        val_sample_weights = np.ones_like(y_val, dtype=np.float32)
+        # sample_weights = np.ones_like(y_train, dtype=np.float32)
+        # val_sample_weights = np.ones_like(y_val, dtype=np.float32)
 
         # ------------------------------------------------------------------
         # Sample-weighting (train only): mildly upweight the top label when it is rare.
@@ -3100,7 +2986,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         base_params = {
             'objective': 'lambdarank',
             'metric': 'ndcg',
-            'ndcg_eval_at': [1, 2],
+            'ndcg_eval_at': [3,5],
             'lambdarank_norm': True,
             'boosting_type': 'gbdt',
             'learning_rate': 0.02,
@@ -3108,7 +2994,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'bagging_freq': 1,
             'n_jobs': -1,
             'verbosity': -1,
-            'n_estimators': 3000,
+            'n_estimators': 2000,
             'random_state': 42
         }
 
@@ -8285,6 +8171,10 @@ def _generate_training_labels_for_all_data(stock_data):
 
     open_gap_t1 = (buy_price - close_t0) / (close_t0 + 1e-12)
     stock_data["open_gap_t1"] = open_gap_t1
+    low_t1 = g["low"].shift(-1)
+    low_t2 = g["low"].shift(-2)
+    low_t3 = g["low"].shift(-3)
+
 
     # mask_skip_buy = (open_gap_t1 <= BUY_GAP_DOWN) | (open_gap_t1 >= BUY_GAP_UP)
 
@@ -8302,13 +8192,22 @@ def _generate_training_labels_for_all_data(stock_data):
     # sell_price = 0.5 * close_t1 + 0.4 * sell_t2 + 0.1 * sell_t3
     sell_price = 0.5 * sell_t2 + 0.5 * sell_t3
     # sell_price = sell_t2 
-
+   
 
     # =========================
     # 3) 原始未来收益（用于 atr_return_label）
     # =========================
     future_ret_raw = (sell_price - buy_price) / (buy_price + 1e-12)
     future_ret_raw = future_ret_raw.replace([np.inf, -np.inf], np.nan)
+
+    min_low = np.minimum(low_t1.fillna(np.inf), np.minimum(low_t2.fillna(np.inf), low_t3.fillna(np.inf)))
+    min_low_return = (min_low - buy_price) / (buy_price + 1e-12)
+
+
+
+    is_monster = np.where((future_ret_raw >= 0.10) & (min_low_return >= -0.05), 1.0, 0.0)
+
+    stock_data['is_monster'] = is_monster
     stock_data["atr_return_label"] = future_ret_raw
 
 
@@ -8319,7 +8218,7 @@ def _generate_training_labels_for_all_data(stock_data):
     # 4) future_ret：用于 relevance 的收益（对齐实盘）
     #    先做动态 clip（防脏数据 + 与 10/20% 制度一致）
     # =========================
-    clip_hi = 0.20
+    clip_hi = 0.12
     future_ret = future_ret_raw.clip(lower=-clip_hi, upper=clip_hi)
     # [学术修正] 彻底废除主板/科创板差异化截断，统一截断阈值 0.18
 
@@ -13882,15 +13781,17 @@ def run_test_model_walkforward_mode(args):
                 'test_end': '2025-10-15'       # 测试集结束 (3个月)
             },
             {
-                'name': 'Window 3',
+                 'name': 'Window 3',
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
-                'train_end': '2025-01-27',     # 训练集结束 (约21个月，再增加3个月)
-                'val_start': '2025-02-10',     # 验证集开始
-                'val_end': '2025-09-12',       # 验证集结束 (3个月)
-                # 'test_start': '2025-09-19',    # 测试集开始2025-08-21 2025-11-21
-                # 'test_end': '2025-11-21'       # 测试集结束 (3个月)2025-12-16
-                'test_start': '2025-09-23',    # 测试集开始2025-08-21 2025-11-21
-                'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
+                'train_end': '2025-03-01',     # 训练集结束 (约21个月，再增加3个月)
+                'val_start': '2025-03-06',     # 验证集开始
+                'val_end': '2025-09-12',       # 验证集结束 (3个月) 2025-05-27
+                # 'test_start': '2025-05-18',    # 测试集开始
+                # 'test_end': '2026-10-30'       # 测试集结束 (3个月)2025-12-16
+                # 'test_start': '2025-10-30',    # 测试集开始
+                # 'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
+                'test_start': '2025-09-23',    # 测试集开始
+                'test_end': '2025-12-30'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -15424,6 +15325,23 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
         else:
             logger.warning("[WARNING] 验证数据中未包含circ_mv列，验证集将使用均匀权重")
 
+                # 🆕 提取 is_monster 字段（用于权重增强）
+        train_is_monster = None
+        val_is_monster = None
+        if 'is_monster' in train_data_valid.columns:
+            train_is_monster = train_data_valid['is_monster'].values[:len(X_train_processed)]
+            monster_count = int(np.sum(train_is_monster == 1.0))
+            logger.info(f"[OK] 提取训练集 is_monster 字段（优质样本数: {monster_count}）")
+        else:
+            logger.warning("[WARNING] 训练数据中未包含is_monster列，所有样本将使用统一权重")
+
+        if 'is_monster' in val_data_valid.columns:
+            val_is_monster = val_data_valid['is_monster'].values[:len(X_val_processed)]
+            monster_count = int(np.sum(val_is_monster == 1.0))
+            logger.info(f"[OK] 提取验证集 is_monster 字段（优质样本数: {monster_count}）")
+        else:
+            logger.warning("[WARNING] 验证数据中未包含is_monster列，所有样本将使用统一权重")
+
         # [强化] 条件计算样本权重（仅LightGBM需要）
         unified_sample_weights = None
         unified_val_weights = None
@@ -15441,20 +15359,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             # 计算训练集权重
             unified_sample_weights = _calculate_professional_sample_weights(
                 train_relevance_array,  # 使用relevance标签
-                imbalance_ratio=1.0,
                 logger=logger,
-                boundary_distances=None,
-                is_regression=True,
-                y_train_original=None,
-                train_dates=train_dates,
-                time_decay_half_life=180.0,  # 统一使用180天
-                reference_date=reference_date,  # [WRENCH] 修复: 使用训练集最新日期
                 turnover_rate=train_turnover_rate,
                 circ_mv=train_circ_mv,
-                label_rank=train_relevance_array,  # relevance值(0-3)
-                label_boost_beta=0.15,  # 统一使用0.15
-                w_min=0.8,
-                w_max=1.2
+                is_monster=train_is_monster  # 🆕 传递 is_monster
             )
             logger.info(f"[OK] 训练集样本权重计算完成")
             logger.info(f"   权重范围: [{unified_sample_weights.min():.4f}, {unified_sample_weights.max():.4f}]")
@@ -15463,20 +15371,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             # 计算验证集权重（使用相同的参数）
             unified_val_weights = _calculate_professional_sample_weights(
                 val_relevance_array,  # 使用relevance标签
-                imbalance_ratio=1.0,
                 logger=logger,
-                boundary_distances=None,
-                is_regression=True,
-                y_train_original=None,
-                train_dates=val_dates,  # 验证集使用自己的日期
-                time_decay_half_life=180.0,  # 统一使用180天
-                reference_date=reference_date,  # 使用训练集最新日期作为基准
                 turnover_rate=val_turnover_rate,
                 circ_mv=val_circ_mv,
-                label_rank=val_relevance_array,  # relevance值(0-3)
-                label_boost_beta=0.15,  # 统一使用0.15
-                w_min=0.8,
-                w_max=1.2
+                is_monster=val_is_monster  # 🆕 传递 is_monster
             )
             logger.info(f"[OK] 验证集样本权重计算完成")
             logger.info(f"   权重范围: [{unified_val_weights.min():.4f}, {unified_val_weights.max():.4f}]")
@@ -16085,6 +15983,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
             # 生成标签（内部会使用 valid_cs_mask 排除ST/新股参与rank）
             logger.info("   [REFRESH] 生成标签...")
             combined_data = _generate_training_labels_for_all_data(combined_data)
+            combined_data = combined_data.dropna(subset=['relevance'])
 
             # 划分训练/验证/测试（含标签）
             train_data = combined_data[
@@ -16144,9 +16043,10 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260222_012258.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260225_115601.pkl"
+        lgb_pattern = f"lightgbm_model_window3_20260304_155834.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None

@@ -34,6 +34,566 @@ from typing import List, Optional, Dict
 # Python官方推荐：在模块级别定义logger
 logger = logging.getLogger(__name__)
 
+
+class TwoStageRiskModel:
+    """两阶段条件风险模型包装器。
+
+    Stage-1 学习大跌触发概率；Stage-2 学习在大跌条件下最终未修复概率。
+    最终风险分 = drop_risk * unrecover_risk。
+    """
+
+    def __init__(self, drop_model, unrecover_model, score_mode='product', blend_weight=0.5, unrecover_floor=0.0):
+        self.drop_model = drop_model
+        self.unrecover_model = unrecover_model
+        self.best_iteration = None
+        self.score_mode = score_mode
+        self.blend_weight = float(blend_weight)
+        self.unrecover_floor = float(unrecover_floor)
+
+    def _predict_stage_scores(self, X):
+        import numpy as np
+
+        drop_iter = getattr(self.drop_model, 'best_iteration', None)
+        unrecover_iter = getattr(self.unrecover_model, 'best_iteration', None)
+
+        drop_pred = self.drop_model.predict(X, num_iteration=drop_iter) if drop_iter else self.drop_model.predict(X)
+        unrecover_pred = self.unrecover_model.predict(X, num_iteration=unrecover_iter) if unrecover_iter else self.unrecover_model.predict(X)
+
+        drop_pred = np.asarray(drop_pred, dtype=float).reshape(-1)
+        unrecover_pred = np.asarray(unrecover_pred, dtype=float).reshape(-1)
+        return drop_pred, unrecover_pred
+
+    def _combine_scores(self, drop_pred, unrecover_pred):
+        import numpy as np
+
+        mode = getattr(self, 'score_mode', 'product')
+        blend_weight = float(getattr(self, 'blend_weight', 0.5))
+        unrecover_floor = float(getattr(self, 'unrecover_floor', 0.0))
+
+        if mode == 'stage1':
+            score = drop_pred
+        elif mode == 'stage2':
+            score = unrecover_pred
+        elif mode == 'linear_blend':
+            score = blend_weight * drop_pred + (1.0 - blend_weight) * unrecover_pred
+        elif mode == 'gated_product':
+            score = drop_pred * (unrecover_floor + (1.0 - unrecover_floor) * unrecover_pred)
+        else:
+            score = drop_pred * unrecover_pred
+
+        return np.clip(np.asarray(score, dtype=float).reshape(-1), 0.0, 1.0)
+
+    def predict(self, X, num_iteration=None):
+        drop_pred, unrecover_pred = self._predict_stage_scores(X)
+        return self._combine_scores(drop_pred, unrecover_pred)
+
+    def feature_importance(self, importance_type='gain'):
+        import numpy as np
+
+        drop_imp = np.asarray(self.drop_model.feature_importance(importance_type=importance_type), dtype=float)
+        unrecover_imp = np.asarray(self.unrecover_model.feature_importance(importance_type=importance_type), dtype=float)
+
+        if drop_imp.shape != unrecover_imp.shape:
+            n = min(len(drop_imp), len(unrecover_imp))
+            drop_imp = drop_imp[:n]
+            unrecover_imp = unrecover_imp[:n]
+
+        drop_norm = drop_imp / (drop_imp.sum() + 1e-12)
+        unrecover_norm = unrecover_imp / (unrecover_imp.sum() + 1e-12)
+
+        mode = getattr(self, 'score_mode', 'product')
+        if mode == 'stage1':
+            return drop_norm
+        if mode == 'stage2':
+            return unrecover_norm
+        if mode == 'linear_blend':
+            blend_weight = float(getattr(self, 'blend_weight', 0.5))
+            return blend_weight * drop_norm + (1.0 - blend_weight) * unrecover_norm
+        if mode == 'gated_product':
+            unrecover_floor = float(getattr(self, 'unrecover_floor', 0.0))
+            stage2_weight = 0.55 + 0.25 * unrecover_floor
+            stage1_weight = max(0.15, 1.0 - stage2_weight)
+            norm = stage1_weight + stage2_weight
+            return (stage1_weight / norm) * drop_norm + (stage2_weight / norm) * unrecover_norm
+        return 0.5 * drop_norm + 0.5 * unrecover_norm
+
+RISK_FILTER_CONFIG = {
+    'top_k_values': [10, 20],
+    'primary_k': 10,
+    'drop_stage_threshold': -0.08,
+    'drop_stage_safe_threshold': -0.04,
+    'unrecover_stage_gate': -0.06,
+    'unrecover_negative_return_threshold': -0.01,
+    'unrecover_safe_positive_return': 0.02,
+    'unrecover_strict_safe_positive_return': 0.05,
+    'risk_head_candidates': ['stage1', 'stage2', 'product', 'gated_product', 'linear_blend'],
+    'risk_blend_weight_candidates': [0.35, 0.50, 0.65],
+    'risk_unrecover_floor_candidates': [0.25, 0.40, 0.55],
+    'risk_head_primary_return_cap': 0.005,
+    'risk_head_primary_positive_cap': 0.40,
+    'risk_head_secondary_return_cap': 0.003,
+    'risk_head_secondary_positive_cap': 0.42,
+    'risk_head_precision_floor': 0.55,
+    'proxy_pool_size': 5,
+    'proxy_drop_count': 1,
+    'label_threshold': 0.30,
+    'hard_drawdown_threshold': -0.05,
+    'medium_drawdown_threshold': -0.06,
+    'soft_drawdown_threshold': -0.07,
+    'hard_weighted_return_threshold': 0.03,
+    'medium_weighted_return_threshold': 0.05,
+    'soft_weighted_return_threshold': 0.08,
+    'candidate_high_return_threshold': 0.08,
+    'candidate_weighted_return_threshold': 0.05,
+    'candidate_rebound_threshold': 0.03,
+    'failed_extension_gap': 0.05,
+    'weak_rebound_threshold': 0.04,
+    'candidate_pool_min_size': 3,
+    'relative_positive_quantile': 0.72,
+    'relative_negative_quantile': 0.38,
+    'relative_middle_exclusion_lower': 0.40,
+    'relative_middle_exclusion_upper': 0.68,
+    'badness_positive_quantile': 0.72,
+    'badness_negative_quantile': 0.36,
+    'risk_hard_negative_return': -0.10,
+    'risk_medium_negative_return': -0.06,
+    'risk_soft_negative_return': -0.03,
+    'risk_hard_drawdown': -0.08,
+    'risk_soft_drawdown': -0.10,
+    'risk_weak_rebound': 0.02,
+    'candidate_high_return_floor': 0.08,
+    'candidate_drawdown_floor': -0.12,
+    'risk_negative_return_threshold': -0.08,
+    'risk_drawdown_gate': -0.08,
+    'safe_positive_return': 0.06,
+    'safe_drawdown_threshold': -0.04,
+    'topk_positive_return_threshold': 0.0,
+    'candidate_quality_weight': 0.60,
+    'downside_depth_weight': 0.95,
+    'unrecovered_weight': 1.05,
+    'failed_extension_weight': 0.80,
+    'weak_recovery_weight': 0.35,
+    'severity_clip': 1.0,
+}
+
+
+def _compute_proxy_candidate_quality(weighted_return, max_high_return, rebound_return):
+    import numpy as np
+
+    weighted_component = np.clip((np.asarray(weighted_return, dtype=float) - 0.02) / 0.10, 0.0, 1.5)
+    burst_component = np.clip(
+        (np.asarray(max_high_return, dtype=float) - RISK_FILTER_CONFIG['candidate_high_return_threshold']) / 0.12,
+        0.0,
+        1.5
+    )
+    rebound = np.clip(np.asarray(rebound_return, dtype=float), 0.0, 0.20)
+    rebound_component = np.clip(rebound / 0.08, 0.0, 1.0)
+
+    return (
+        weighted_component +
+        0.7 * burst_component +
+        0.4 * rebound_component
+    )
+
+
+def _compute_proxy_trade_score(weighted_return, min_low_return, max_high_return, rebound_return):
+    import numpy as np
+
+    weighted_return = np.asarray(weighted_return, dtype=float)
+    min_low_return = np.asarray(min_low_return, dtype=float)
+    max_high_return = np.asarray(max_high_return, dtype=float)
+    rebound_return = np.asarray(rebound_return, dtype=float)
+
+    drawdown_penalty = np.clip(-min_low_return - 0.03, 0.0, 0.20)
+    extension_quality = np.clip(max_high_return - weighted_return, 0.0, 0.25)
+    rebound_bonus = np.clip(rebound_return, 0.0, 0.15)
+
+    return (
+        weighted_return
+        - 0.55 * drawdown_penalty
+        - 0.20 * extension_quality
+        + 0.10 * rebound_bonus
+    )
+
+
+def _compute_proxy_badness(weighted_return, min_low_return, max_high_return, rebound_return, severity):
+    import numpy as np
+
+    weighted_return = np.asarray(weighted_return, dtype=float)
+    min_low_return = np.asarray(min_low_return, dtype=float)
+    max_high_return = np.asarray(max_high_return, dtype=float)
+    rebound_return = np.asarray(rebound_return, dtype=float)
+    severity = np.asarray(severity, dtype=float)
+
+    final_failure = np.clip((0.10 - weighted_return) / 0.15, 0.0, 1.5)
+    downside_depth = np.clip((-min_low_return - 0.04) / 0.10, 0.0, 1.5)
+    failed_extension = np.clip(
+        (max_high_return - weighted_return - RISK_FILTER_CONFIG['failed_extension_gap']) / 0.15,
+        0.0,
+        1.5
+    )
+    weak_rebound = np.clip(
+        (RISK_FILTER_CONFIG['weak_rebound_threshold'] - rebound_return) / 0.08,
+        0.0,
+        1.0
+    )
+
+    return (
+        np.asarray(severity, dtype=float) +
+        0.80 * final_failure +
+        0.70 * downside_depth +
+        0.55 * failed_extension +
+        0.20 * weak_rebound
+    )
+
+
+def _compute_proxy_relative_quality_rank(dates, candidate_mask, proxy_trade_score, proxy_badness):
+    import numpy as np
+    import pandas as pd
+
+    df = pd.DataFrame({
+        'date': pd.to_datetime(dates),
+        'candidate_mask': np.asarray(candidate_mask, dtype=bool),
+        'proxy_trade_score': np.asarray(proxy_trade_score, dtype=float),
+        'proxy_badness': np.asarray(proxy_badness, dtype=float),
+    })
+    df['trade_rank_pct'] = np.nan
+    df['badness_rank_pct'] = np.nan
+    df['candidate_count'] = 0
+
+    valid_mask = (
+        df['candidate_mask'] &
+        df['date'].notna() &
+        df['proxy_trade_score'].notna() &
+        df['proxy_badness'].notna()
+    )
+    if not valid_mask.any():
+        return (
+            np.full(len(df), np.nan, dtype=float),
+            np.full(len(df), np.nan, dtype=float),
+            np.zeros(len(df), dtype=int)
+        )
+
+    candidate_df = df.loc[valid_mask].copy()
+    candidate_df['candidate_count'] = candidate_df.groupby('date')['date'].transform('size')
+    candidate_df['trade_rank_pct'] = candidate_df.groupby('date')['proxy_trade_score'].rank(
+        method='average', pct=True, ascending=True
+    )
+    candidate_df['badness_rank_pct'] = candidate_df.groupby('date')['proxy_badness'].rank(
+        method='average', pct=True, ascending=True
+    )
+    df.loc[candidate_df.index, 'trade_rank_pct'] = candidate_df['trade_rank_pct'].values
+    df.loc[candidate_df.index, 'badness_rank_pct'] = candidate_df['badness_rank_pct'].values
+    df.loc[candidate_df.index, 'candidate_count'] = candidate_df['candidate_count'].values
+
+    return (
+        df['trade_rank_pct'].to_numpy(dtype=float),
+        df['badness_rank_pct'].to_numpy(dtype=float),
+        df['candidate_count'].to_numpy(dtype=int)
+    )
+
+
+def _compute_risk_filter_continuous_label(drawdown_return, weighted_return, rebound_return, max_high_return):
+    import numpy as np
+
+    weighted_return = np.asarray(weighted_return, dtype=float)
+    drawdown_return = np.asarray(drawdown_return, dtype=float)
+    loss_depth = np.clip((-weighted_return) / 0.12, 0.0, 1.5)
+    unrecovered_depth = np.clip((-drawdown_return - 0.05) / 0.08, 0.0, 1.0)
+    risk_score = 0.7 * loss_depth + 0.3 * unrecovered_depth
+    return np.clip(risk_score, 0.0, RISK_FILTER_CONFIG['severity_clip'])
+
+
+def _evaluate_risk_filter_predictions(y_score, y_binary, y_severity, eval_dates, eval_frame=None, top_k_values=None):
+    import numpy as np
+    import pandas as pd
+
+    top_k_values = top_k_values or RISK_FILTER_CONFIG['top_k_values']
+    result = {
+        'score': float('-inf'),
+        'top_k_metrics': {},
+        'proxy_topk_metrics': {},
+        'proxy_daily_details': [],
+        'pr_auc': 0.0,
+        'roc_auc': 0.5,
+        'prediction_std': 0.0,
+    }
+
+    if y_score is None or y_binary is None or y_severity is None or eval_dates is None:
+        return result
+
+    df = pd.DataFrame({
+        'date': pd.to_datetime(eval_dates),
+        'score': np.asarray(y_score, dtype=float),
+        'label': np.asarray(y_binary, dtype=float),
+        'severity': np.asarray(y_severity, dtype=float),
+    }).dropna(subset=['date', 'score', 'label', 'severity'])
+
+    if eval_frame is not None:
+        eval_frame = eval_frame.reset_index(drop=True)
+        n = min(len(df), len(eval_frame))
+        df = df.iloc[:n].copy()
+        eval_frame = eval_frame.iloc[:n].copy()
+        for extra_col in ['future_ret', 'weighted_return', 'min_low_return']:
+            if extra_col in eval_frame.columns:
+                df[extra_col] = pd.to_numeric(eval_frame[extra_col], errors='coerce').values[:n]
+        for extra_col in ['max_high_return', 'rebound_return', 'proxy_candidate_score', 'proxy_trade_score']:
+            if extra_col in eval_frame.columns:
+                df[extra_col] = pd.to_numeric(eval_frame[extra_col], errors='coerce').values[:n]
+
+    if df.empty:
+        return result
+
+    df['label'] = (df['label'] > 0).astype(int)
+    result['prediction_std'] = float(df['score'].std())
+
+    if 'weighted_return' in df.columns and 'max_high_return' in df.columns and 'rebound_return' in df.columns:
+        if 'proxy_candidate_score' not in df.columns:
+            df['proxy_candidate_score'] = _compute_proxy_candidate_quality(
+                weighted_return=df['weighted_return'].values,
+                max_high_return=df['max_high_return'].values,
+                rebound_return=df['rebound_return'].values
+            )
+        if 'proxy_trade_score' not in df.columns and 'min_low_return' in df.columns:
+            df['proxy_trade_score'] = _compute_proxy_trade_score(
+                weighted_return=df['weighted_return'].values,
+                min_low_return=df['min_low_return'].values,
+                max_high_return=df['max_high_return'].values,
+                rebound_return=df['rebound_return'].values
+            )
+        if 'proxy_badness' not in df.columns and 'min_low_return' in df.columns:
+            df['proxy_badness'] = _compute_proxy_badness(
+                weighted_return=df['weighted_return'].values,
+                min_low_return=df['min_low_return'].values,
+                max_high_return=df['max_high_return'].values,
+                rebound_return=df['rebound_return'].values,
+                severity=df['severity'].values
+            )
+
+    try:
+        from sklearn.metrics import average_precision_score, roc_auc_score
+
+        if df['label'].nunique() >= 2:
+            result['pr_auc'] = float(average_precision_score(df['label'], df['score']))
+            result['roc_auc'] = float(roc_auc_score(df['label'], df['score']))
+        else:
+            result['pr_auc'] = float(df['label'].mean())
+            result['roc_auc'] = 0.5
+    except Exception:
+        result['pr_auc'] = float(df['label'].mean())
+        result['roc_auc'] = 0.5
+
+    daily_rows = []
+    proxy_daily_rows = []
+    proxy_daily_details = []
+    for _, group in df.groupby('date'):
+        group = group.sort_values('score', ascending=False).copy()
+        day_pos = int(group['label'].sum())
+        base_rate = float(group['label'].mean()) if len(group) > 0 else 0.0
+
+        day_metrics = {'date': group['date'].iloc[0], 'day_pos': day_pos, 'base_rate': base_rate}
+        for k in top_k_values:
+            if len(group) < k:
+                continue
+            selected = group.head(k).copy()
+            oracle = group.sort_values('severity', ascending=False).head(k)
+
+            precision = float(selected['label'].mean())
+            capture = float(selected['label'].sum() / day_pos) if day_pos > 0 else np.nan
+            severity_mean = float(selected['severity'].mean())
+            oracle_severity = float(oracle['severity'].mean())
+            severity_capture = float(severity_mean / (oracle_severity + 1e-12)) if oracle_severity > 0 else 0.0
+            future_return_mean = float(selected['future_ret'].mean()) if 'future_ret' in selected.columns else np.nan
+            weighted_return_mean = float(selected['weighted_return'].mean()) if 'weighted_return' in selected.columns else np.nan
+            positive_rate = float((selected['weighted_return'] > RISK_FILTER_CONFIG['topk_positive_return_threshold']).mean()) if 'weighted_return' in selected.columns else np.nan
+            non_positive_rate = float((selected['weighted_return'] <= 0).mean()) if 'weighted_return' in selected.columns else np.nan
+            drawdown_mean = float(selected['min_low_return'].mean()) if 'min_low_return' in selected.columns else np.nan
+            lift = float(precision / (base_rate + 1e-12)) if base_rate > 0 else np.nan
+            day_metrics[k] = {
+                'precision': precision,
+                'capture': capture,
+                'severity_mean': severity_mean,
+                'severity_capture': severity_capture,
+                'future_return_mean': future_return_mean,
+                'weighted_return_mean': weighted_return_mean,
+                'positive_rate': positive_rate,
+                'non_positive_rate': non_positive_rate,
+                'drawdown_mean': drawdown_mean,
+                'lift': lift,
+            }
+        daily_rows.append(day_metrics)
+
+        required_proxy_cols = {'proxy_candidate_score', 'proxy_trade_score', 'proxy_badness', 'weighted_return', 'min_low_return'}
+        if len(group) >= RISK_FILTER_CONFIG['candidate_pool_min_size'] and required_proxy_cols.issubset(set(group.columns)):
+            proxy_group = group.dropna(subset=list(required_proxy_cols)).copy()
+            pool_size = min(RISK_FILTER_CONFIG['proxy_pool_size'], len(proxy_group))
+            if pool_size >= RISK_FILTER_CONFIG['candidate_pool_min_size']:
+                pool = proxy_group.sort_values(
+                    ['proxy_candidate_score', 'proxy_trade_score'],
+                    ascending=[False, False]
+                ).head(pool_size).copy()
+                removed = pool.sort_values('score', ascending=False).head(RISK_FILTER_CONFIG['proxy_drop_count']).copy()
+                kept = pool.drop(index=removed.index).copy()
+                if not removed.empty and not kept.empty:
+                    pre_trade = pool.sort_values('proxy_trade_score', ascending=False).iloc[0]
+                    post_trade = kept.sort_values('proxy_trade_score', ascending=False).iloc[0]
+                    oracle_worst = pool.sort_values('proxy_badness', ascending=False).head(RISK_FILTER_CONFIG['proxy_drop_count'])
+                    removed_bad_rate = float((removed['weighted_return'] <= 0).mean())
+                    removed_non_positive_rate = float((removed['weighted_return'] <= RISK_FILTER_CONFIG['hard_weighted_return_threshold']).mean())
+                    removed_worst_overlap = float(len(set(removed.index) & set(oracle_worst.index)) / max(len(removed), 1))
+                    trade_return_delta = float(post_trade['weighted_return'] - pre_trade['weighted_return'])
+                    trade_drawdown_delta = float(post_trade['min_low_return'] - pre_trade['min_low_return'])
+                    trade_badness_delta = float(pre_trade['proxy_badness'] - post_trade['proxy_badness'])
+                    kept_mean_delta = float(kept['weighted_return'].mean() - pool['weighted_return'].mean())
+                    false_kill = float(
+                        (
+                            (removed['proxy_trade_score'] >= pool['proxy_trade_score'].quantile(0.75)) &
+                            (removed['weighted_return'] >= pool['weighted_return'].median())
+                        ).mean()
+                    )
+                    removed_would_be_proxy_top1 = float((removed.index == pre_trade.name).mean())
+                    removed_trade_rank = int(
+                        pool['proxy_trade_score'].rank(method='first', ascending=False).loc[removed.index[0]]
+                    )
+                    removed_candidate_rank = int(
+                        pool['proxy_candidate_score'].rank(method='first', ascending=False).loc[removed.index[0]]
+                    )
+                    removed_badness_rank = int(
+                        pool['proxy_badness'].rank(method='first', ascending=False).loc[removed.index[0]]
+                    )
+
+                    proxy_daily_rows.append({
+                        'pool_size': float(pool_size),
+                        'removed_bad_rate': removed_bad_rate,
+                        'removed_non_positive_rate': removed_non_positive_rate,
+                        'removed_worst_overlap': removed_worst_overlap,
+                        'trade_return_delta': trade_return_delta,
+                        'trade_drawdown_delta': trade_drawdown_delta,
+                        'trade_badness_delta': trade_badness_delta,
+                        'kept_mean_delta': kept_mean_delta,
+                        'false_kill': false_kill,
+                        'removed_would_be_proxy_top1': removed_would_be_proxy_top1,
+                        'removed_weighted_return': float(removed['weighted_return'].mean()),
+                        'removed_drawdown_mean': float(removed['min_low_return'].mean()),
+                        'removed_badness_mean': float(removed['proxy_badness'].mean()),
+                        'pre_trade_weighted_return': float(pre_trade['weighted_return']),
+                        'post_trade_weighted_return': float(post_trade['weighted_return']),
+                    })
+                    date_value = group['date'].iloc[0]
+                    date_str = date_value.strftime('%Y-%m-%d') if hasattr(date_value, 'strftime') else str(date_value)
+                    removed_row = removed.iloc[0]
+                    proxy_daily_details.append({
+                        'selection_date': date_str,
+                        'stock_code': removed_row.get('stock_code', ''),
+                        'predicted_return': float(removed_row.get('score', np.nan)),
+                        'relevance': float(removed_row.get('label', np.nan)),
+                        'atr_return_label': float(removed_row.get('severity', np.nan)),
+                        'weighted_return': float(removed_row.get('weighted_return', np.nan)),
+                        'future_ret': float(removed_row.get('future_ret', np.nan)) if 'future_ret' in removed_row else np.nan,
+                        'min_low_return': float(removed_row.get('min_low_return', np.nan)),
+                        'proxy_candidate_score': float(removed_row.get('proxy_candidate_score', np.nan)),
+                        'proxy_trade_score': float(removed_row.get('proxy_trade_score', np.nan)),
+                        'proxy_badness': float(removed_row.get('proxy_badness', np.nan)),
+                        'pool_size': int(pool_size),
+                        'candidate_rank_in_pool': removed_candidate_rank,
+                        'trade_rank_in_pool': removed_trade_rank,
+                        'badness_rank_in_pool': removed_badness_rank,
+                        'pre_proxy_top1_stock': pre_trade.get('stock_code', ''),
+                        'post_proxy_top1_stock': post_trade.get('stock_code', ''),
+                        'was_proxy_top1_before_filter': bool(removed.index[0] == pre_trade.name),
+                    })
+
+    if daily_rows:
+        for k in top_k_values:
+            precision_list = [row[k]['precision'] for row in daily_rows if k in row]
+            if not precision_list:
+                continue
+            capture_list = [row[k]['capture'] for row in daily_rows if k in row and not pd.isna(row[k]['capture'])]
+            severity_list = [row[k]['severity_mean'] for row in daily_rows if k in row]
+            severity_capture_list = [row[k]['severity_capture'] for row in daily_rows if k in row]
+            lift_list = [row[k]['lift'] for row in daily_rows if k in row and not pd.isna(row[k]['lift'])]
+            future_return_list = [row[k]['future_return_mean'] for row in daily_rows if k in row and not pd.isna(row[k]['future_return_mean'])]
+            weighted_return_list = [row[k]['weighted_return_mean'] for row in daily_rows if k in row and not pd.isna(row[k]['weighted_return_mean'])]
+            positive_rate_list = [row[k]['positive_rate'] for row in daily_rows if k in row and not pd.isna(row[k]['positive_rate'])]
+            non_positive_rate_list = [row[k]['non_positive_rate'] for row in daily_rows if k in row and not pd.isna(row[k]['non_positive_rate'])]
+            drawdown_list = [row[k]['drawdown_mean'] for row in daily_rows if k in row and not pd.isna(row[k]['drawdown_mean'])]
+
+            result['top_k_metrics'][k] = {
+                'precision': float(np.mean(precision_list)),
+                'capture': float(np.mean(capture_list)) if capture_list else 0.0,
+                'severity_mean': float(np.mean(severity_list)),
+                'severity_capture': float(np.mean(severity_capture_list)),
+                'lift': float(np.mean(lift_list)) if lift_list else 0.0,
+                'future_return_mean': float(np.mean(future_return_list)) if future_return_list else 0.0,
+                'weighted_return_mean': float(np.mean(weighted_return_list)) if weighted_return_list else 0.0,
+                'positive_rate': float(np.mean(positive_rate_list)) if positive_rate_list else 0.0,
+                'non_positive_rate': float(np.mean(non_positive_rate_list)) if non_positive_rate_list else 0.0,
+                'drawdown_mean': float(np.mean(drawdown_list)) if drawdown_list else 0.0,
+                'days': len(precision_list),
+            }
+
+    if proxy_daily_rows:
+        proxy_df = pd.DataFrame(proxy_daily_rows)
+        result['proxy_topk_metrics'] = {
+            'pool_size_mean': float(proxy_df['pool_size'].mean()),
+            'removed_bad_rate': float(proxy_df['removed_bad_rate'].mean()),
+            'removed_non_positive_rate': float(proxy_df['removed_non_positive_rate'].mean()),
+            'removed_worst_overlap': float(proxy_df['removed_worst_overlap'].mean()),
+            'trade_return_delta': float(proxy_df['trade_return_delta'].mean()),
+            'trade_drawdown_delta': float(proxy_df['trade_drawdown_delta'].mean()),
+            'trade_badness_delta': float(proxy_df['trade_badness_delta'].mean()),
+            'kept_mean_delta': float(proxy_df['kept_mean_delta'].mean()),
+            'false_kill': float(proxy_df['false_kill'].mean()),
+            'removed_would_be_proxy_top1': float(proxy_df['removed_would_be_proxy_top1'].mean()),
+            'removed_weighted_return': float(proxy_df['removed_weighted_return'].mean()),
+            'removed_drawdown_mean': float(proxy_df['removed_drawdown_mean'].mean()),
+            'removed_badness_mean': float(proxy_df['removed_badness_mean'].mean()),
+            'pre_trade_weighted_return': float(proxy_df['pre_trade_weighted_return'].mean()),
+            'post_trade_weighted_return': float(proxy_df['post_trade_weighted_return'].mean()),
+            'days': int(len(proxy_df)),
+        }
+        result['proxy_daily_details'] = proxy_daily_details
+
+    primary_k = RISK_FILTER_CONFIG['primary_k']
+    primary_metrics = result['top_k_metrics'].get(primary_k)
+    if not primary_metrics:
+        return result
+
+    secondary_k = max(top_k_values) if top_k_values else primary_k
+    secondary_metrics = result['top_k_metrics'].get(secondary_k, {})
+    collapse_penalty = 0.30 if result['prediction_std'] < 0.01 else (0.12 if result['prediction_std'] < 0.03 else 0.0)
+    precision_reward = np.clip(primary_metrics['precision'] / 0.48, 0.0, 1.6)
+    capture_reward = np.clip(primary_metrics['capture'] / 0.20, 0.0, 1.4)
+    negative_return_reward = np.clip((-primary_metrics['weighted_return_mean']) / 0.035, -3.0, 3.0)
+    drawdown_reward = np.clip((-primary_metrics['drawdown_mean'] - 0.08) / 0.04, -1.5, 1.6)
+    low_positive_reward = np.clip((0.12 - primary_metrics['positive_rate']) / 0.12, -3.0, 1.4)
+    secondary_negative_reward = np.clip((-secondary_metrics.get('weighted_return_mean', 0.0)) / 0.03, -2.5, 2.5)
+    secondary_positive_reward = np.clip((0.18 - secondary_metrics.get('positive_rate', 1.0)) / 0.14, -2.5, 1.1)
+    positive_penalty = np.clip(primary_metrics['weighted_return_mean'] / 0.003, 0.0, 4.0)
+    high_positive_penalty = np.clip((primary_metrics['positive_rate'] - 0.30) / 0.08, 0.0, 3.0)
+    secondary_positive_penalty = np.clip((secondary_metrics.get('positive_rate', 1.0) - 0.36) / 0.10, 0.0, 2.0)
+    secondary_positive_return_penalty = np.clip(secondary_metrics.get('weighted_return_mean', 0.0) / 0.004, 0.0, 2.0)
+    weak_auc_penalty = 0.20 if result['roc_auc'] < 0.5 else 0.0
+
+    result['score'] = float(
+        0.16 * precision_reward +
+        0.08 * capture_reward +
+        0.42 * negative_return_reward +
+        0.18 * low_positive_reward +
+        0.08 * drawdown_reward +
+        0.04 * secondary_negative_reward +
+        0.02 * secondary_positive_reward +
+        0.02 * result['pr_auc'] +
+        0.02 * result['roc_auc'] -
+        positive_penalty -
+        high_positive_penalty -
+        secondary_positive_penalty -
+        secondary_positive_return_penalty -
+        weak_auc_penalty -
+        collapse_penalty
+    )
+    return result
+
 # 导入标准化SW编码接口
 from sw_encoding_loader import (
     load_standardized_sw_encoding,
@@ -42,6 +602,71 @@ from sw_encoding_loader import (
     load_sw_sector_mapping as load_standardized_sw_sector_mapping
 )
 logger.info("[SW编码] 使用标准化编码系统")
+
+def print_top_k_robust_stats(top_1_all_returns, top_3_all_returns, top_5_all_returns, top_10_all_returns):
+    """
+    打印Top-k稳健统计指标 - 简化版本，推荐关注最重要的3个指标
+
+    🆕 注意：这里的Top-k表示"第k名预测值的股票"，而不是"前k名的股票"
+    - Top-1: 每天预测值排名第1的股票收益
+    - Top-3: 每天预测值排名第3的股票收益（只有1只股票）
+    - Top-5: 每天预测值排名第5的股票收益（只有1只股票）
+    - Top-10: 每天预测值排名第10的股票收益（只有1只股票）
+
+    Args:
+        top_1_all_returns: 第1名预测值的股票收益数组
+        top_3_all_returns: 第3名预测值的股票收益数组
+        top_5_all_returns: 第5名预测值的股票收益数组
+        top_10_all_returns: 第10名预测值的股票收益数组
+    """
+
+    # 收益分布直方图
+    logger.info("")
+    logger.info("[HISTOGRAM] 收益分布直方图:")
+
+    for k, all_returns, name in [(1, top_1_all_returns, "Top-1"),
+                                  (3, top_3_all_returns, "Top-3"),
+                                  (5, top_5_all_returns, "Top-5"),
+                                  (10, top_10_all_returns, "Top-10")]:
+        if len(all_returns) > 0:
+            logger.info(f"  {name}收益分布:")
+            create_ascii_histogram(all_returns, bins=12)
+            logger.info("")
+
+    logger.info("")
+    logger.info("💡 推荐对比指标:")
+    logger.info("  1. Winsorized均值 - 去除极端值影响，更稳健")
+    logger.info("  2. 夏普比率 - 风险调整后收益，更全面")
+    logger.info("  3. 传统均值 - 作为参考，但注意极端值影响")
+    logger.info("")
+
+
+def create_ascii_histogram(values, bins=15):
+    """创建ASCII直方图"""
+    if len(values) == 0:
+        return
+
+    # 计算直方图数据
+    hist, bin_edges = np.histogram(values, bins=bins)
+    max_count = hist.max()
+
+    logger.info(f"      区间          频数  直方图")
+    logger.info(f"      " + "-"*45)
+
+    for i, count in enumerate(hist):
+        # 格式化区间显示
+        left_edge = bin_edges[i]
+        right_edge = bin_edges[i+1]
+        interval = f"[{left_edge:6.3f},{right_edge:6.3f})"
+
+        # 创建条形图
+        if max_count > 0:
+            bar_length = int(count / max_count * 30)  # 30字符最大宽度
+            bar = "█" * bar_length
+        else:
+            bar = ""
+
+        logger.info(f"      {interval} {count:3d}   {bar}")
 
 def calculate_ndcg_at_k(y_true, y_score, k=5):
     """
@@ -923,7 +1548,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子5.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子_风险模型16.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2717,37 +3342,54 @@ def _evaluate_params(params, X_train, y_train, X_val, y_val, y_val_eval, sample_
 
 
 
-def _get_lgb_search_space():
+def _get_lgb_search_space(y_train=None):
     """
-    【大师级重构】LightGBM 二分类模型搜索空间
+    风险过滤二分类模型搜索空间。
     """
-# {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 1.0, 'bagging_fraction': 1.0, 'reg_alpha': 1, 'reg_lambda': 10, 'scale_pos_weight': 60}, top1_return:5237.797392723667
+    import numpy as np
+
+    pos_ratio = None
+    if y_train is not None:
+        y_arr = np.asarray(y_train, dtype=float)
+        valid_mask = ~np.isnan(y_arr)
+        if valid_mask.any():
+            y_valid = y_arr[valid_mask]
+            if len(y_valid) > 0:
+                pos_ratio = float(np.mean(y_valid > 0))
+
+    if pos_ratio is None:
+        scale_pos_weight_choices = [1, 2, 3]
+        min_data_in_leaf_choices = [50, 100, 200]
+        num_leaves_choices = [31, 63, 127]
+    elif pos_ratio < 0.03:
+        scale_pos_weight_choices = [8, 12, 16, 24]
+        min_data_in_leaf_choices = [10, 20, 50]
+        num_leaves_choices = [63, 127]
+    elif pos_ratio < 0.05:
+        scale_pos_weight_choices = [5, 10, 15, 20]
+        min_data_in_leaf_choices = [20, 50, 100]
+        num_leaves_choices = [31, 63, 127]
+    elif pos_ratio < 0.15:
+        scale_pos_weight_choices = [2, 3, 5, 8]
+        min_data_in_leaf_choices = [20, 50, 100, 200]
+        num_leaves_choices = [31, 63, 127]
+    else:
+        scale_pos_weight_choices = [1, 2, 3]
+        min_data_in_leaf_choices = [50, 100, 200]
+        num_leaves_choices = [31, 63]
 
     space = {
-        'learning_rate': [0.01, 0.02, 0.05],
-        'num_leaves': [7, 15, 31],
+        'learning_rate': [0.01, 0.03, 0.05],
+        'num_leaves': num_leaves_choices,
         'max_depth': [-1, 5, 7],
-        'min_data_in_leaf': [100, 300, 500],
-        'feature_fraction': [0.6, 0.8, 1.0],
-        'bagging_fraction': [0.6, 0.8, 1.0],
+        'min_data_in_leaf': min_data_in_leaf_choices,
+        'feature_fraction': [0.7, 0.9, 1.0],
+        'bagging_fraction': [0.7, 0.9, 1.0],
         'reg_alpha': [0, 1, 5, 10],
-        'reg_lambda': [0, 1, 5, 10],
-        'scale_pos_weight': [15, 30, 45, 60] # 处理正负样本不平衡
+        'reg_lambda': [0, 1, 5, 10, 20],
+        'scale_pos_weight': scale_pos_weight_choices
     }
-    # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
-#   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
-   
-    # space = {
-    #     'learning_rate': [0.05],
-    #     'num_leaves': [15],
-    #     'max_depth': [7],
-    #     'min_data_in_leaf': [500],
-    #     'feature_fraction': [0.6],
-    #     'bagging_fraction': [0.6],
-    #     'reg_alpha': [5],
-    #     'reg_lambda': [5],
-    #     'scale_pos_weight': [10] # 处理正负样本不平衡
-    # }
+
     return space, [[0]] # 保持返回值个数向后兼容
 
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
@@ -2772,6 +3414,10 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
             y_train = preprocessed_data.get('train_relevance')
             y_val = preprocessed_data.get('val_relevance')
+            y_train_drop = preprocessed_data.get('train_drop_relevance')
+            y_val_drop = preprocessed_data.get('val_drop_relevance')
+            y_train_unrecover = preprocessed_data.get('train_unrecover_relevance')
+            y_val_unrecover = preprocessed_data.get('val_unrecover_relevance')
             y_val_original = preprocessed_data.get('y_val_original', preprocessed_data.get('y_val'))
 
             test_dates = preprocessed_data.get('test_dates')
@@ -2781,6 +3427,9 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
             if y_train is None or y_val is None:
                 logger.error("[FAIL] 缺少relevance标签,无法训练二分类模型")
+                return None
+            if y_train_drop is None or y_val_drop is None or y_train_unrecover is None or y_val_unrecover is None:
+                logger.error("[FAIL] 缺少两阶段风险标签,无法训练条件风险模型")
                 return None
         else:
             logger.error("[FAIL] 缺少预处理数据,无法训练LightGBM")
@@ -2801,23 +3450,18 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         X_train_scaled = X_train
         X_val_scaled = X_val
 
-        # 清理 NaN 标签
+        y_train = np.asarray(y_train, dtype=float)
+        y_val = np.asarray(y_val, dtype=float)
+        y_train_drop = np.asarray(y_train_drop, dtype=float)
+        y_val_drop = np.asarray(y_val_drop, dtype=float)
+        y_train_unrecover = np.asarray(y_train_unrecover, dtype=float)
+        y_val_unrecover = np.asarray(y_val_unrecover, dtype=float)
+
         train_fit_mask = ~pd.isna(y_train)
-        if not np.all(train_fit_mask):
-            X_train_scaled = X_train_scaled[train_fit_mask]
-            y_train = y_train[train_fit_mask]
-            if train_dates is not None: train_dates = train_dates[train_fit_mask]
-
         val_fit_mask = ~pd.isna(y_val)
-        if not np.all(val_fit_mask):
-            X_val_scaled = X_val_scaled[val_fit_mask]
-            y_val = y_val[val_fit_mask]
-            if val_dates is not None: val_dates = val_dates[val_fit_mask]
-            if y_val_original is not None: y_val_original = y_val_original[val_fit_mask]
 
-        # 准备 Lgb Dataset (不需要 group)
-        train_data = lgb.Dataset(X_train_scaled, label=y_train, params={'feature_pre_filter': False})
-        val_data = lgb.Dataset(X_val_scaled, label=y_val, reference=train_data, params={'feature_pre_filter': False})
+        if y_val_original is not None:
+            y_val_original = np.asarray(y_val_original, dtype=float)
 
         early_stopping_rounds = 40
         eval_result = {}
@@ -2841,87 +3485,102 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         }
 
         SEARCH_ITER = 20
-        best_top1_return = -float('inf')
+        best_eval_score = -float('inf')
         best_model = None
         best_params_found = None
+        best_head_info = None
         searched_params = set()
 
-        search_space, _ = _get_lgb_search_space()
+        train_pos_ratio = float(np.mean(y_train[train_fit_mask] > 0)) if train_fit_mask.any() else 0.0
+        val_pos_ratio = float(np.mean(y_val[val_fit_mask] > 0)) if val_fit_mask.any() else 0.0
+        train_drop_pos_ratio = float(np.mean(y_train_drop[~pd.isna(y_train_drop)] > 0)) if (~pd.isna(y_train_drop)).any() else 0.0
+        val_drop_pos_ratio = float(np.mean(y_val_drop[~pd.isna(y_val_drop)] > 0)) if (~pd.isna(y_val_drop)).any() else 0.0
+        train_unrecover_valid = ~pd.isna(y_train_unrecover)
+        val_unrecover_valid = ~pd.isna(y_val_unrecover)
+        train_unrecover_pos_ratio = float(np.mean(y_train_unrecover[train_unrecover_valid] > 0)) if train_unrecover_valid.any() else 0.0
+        val_unrecover_pos_ratio = float(np.mean(y_val_unrecover[val_unrecover_valid] > 0)) if val_unrecover_valid.any() else 0.0
+        logger.info(
+            f"[RISK_LABEL] 训练集正类占比={train_pos_ratio:.2%}, 验证集正类占比={val_pos_ratio:.2%}"
+        )
+        logger.info(
+            f"[RISK_STAGE] Stage1大跌: train={train_drop_pos_ratio:.2%}, val={val_drop_pos_ratio:.2%} | "
+            f"Stage2未修复: train={train_unrecover_pos_ratio:.2%}, val={val_unrecover_pos_ratio:.2%}"
+        )
+        drop_search_space, _ = _get_lgb_search_space(y_train=y_train_drop[~pd.isna(y_train_drop)] if (~pd.isna(y_train_drop)).any() else y_train_drop)
+        unrecover_search_space, _ = _get_lgb_search_space(y_train=y_train_unrecover[train_unrecover_valid] if train_unrecover_valid.any() else y_train_unrecover)
+        logger.info(
+            f"[RISK_SEARCH] Stage1动态搜索空间: "
+            f"scale_pos_weight={drop_search_space.get('scale_pos_weight')}, "
+            f"min_data_in_leaf={drop_search_space.get('min_data_in_leaf')}, "
+            f"num_leaves={drop_search_space.get('num_leaves')}"
+        )
+        logger.info(
+            f"[RISK_SEARCH] Stage2动态搜索空间: "
+            f"scale_pos_weight={unrecover_search_space.get('scale_pos_weight')}, "
+            f"min_data_in_leaf={unrecover_search_space.get('min_data_in_leaf')}, "
+            f"num_leaves={unrecover_search_space.get('num_leaves')}"
+        )
 
-        def calculate_binary_top1_score(model, X_eval, y_eval_original, eval_dates):
-            """用于超参搜索的二分类模型质量评分（不做Top1回测，不引入gate规则）。
+        def calculate_binary_top1_score(model, X_eval, y_eval_original, eval_dates, y_eval_binary=None, eval_data_raw=None, score_override=None):
+            """风险过滤模型的搜索评分函数。
 
-            目标：挑选“判别力强 + 头部更纯”的模型，便于后续你在其它文件里做gate/仓位策略。
-            评分由：PR-AUC、ROC-AUC、Precision@Top10% 组成，并对预测塌缩做惩罚。
-            在窗口/切片出现单一类别时，指标退化为可定义的值（不再报错/返回-inf）。
+            保留原函数名以兼容旧调用，但语义已改为：
+            - 直接评估风险分最高的 Top-K 桶是否真的对应深跌且未修复样本
+            - 主目标是 Top-10/20 的负收益纯度，而不是代理删1收益改善
+            - 不依赖任何已有分类/排序模型预测，避免数据泄露
             """
             import numpy as np
-            import pandas as pd
 
             if X_eval is None or y_eval_original is None or len(X_eval) == 0:
-                return float("-inf")
+                return {'score': float("-inf")}
 
-            best_iter = getattr(model, "best_iteration", None)
-            try:
-                preds = model.predict(X_eval, num_iteration=best_iter) if best_iter else model.predict(X_eval)
-            except Exception:
-                preds = model.predict(X_eval)
+            if score_override is not None:
+                preds = np.asarray(score_override, dtype=float).reshape(-1)
+            else:
+                best_iter = getattr(model, "best_iteration", None)
+                try:
+                    preds = model.predict(X_eval, num_iteration=best_iter) if best_iter else model.predict(X_eval)
+                except Exception:
+                    preds = model.predict(X_eval)
 
             p = np.asarray(preds, dtype=float).reshape(-1)
             y = np.asarray(y_eval_original).reshape(-1)
             n = min(len(p), len(y))
             if n <= 0:
-                return float("-inf")
+                return {'score': float("-inf")}
             p = p[:n]
             y = y[:n]
-
-            # y 归一到 {0,1}
-            if y.dtype.kind in ("f", "c"):
-                y01 = (y > 0).astype(int)
+            if y_eval_binary is None:
+                y01 = (np.asarray(y) >= RISK_FILTER_CONFIG['label_threshold']).astype(int)
             else:
-                y01 = y.astype(int)
-                # 兼容 {-1,1}
-                uniq = set(np.unique(y01).tolist())
-                if not uniq.issubset({0,1}):
-                    y01 = (y01 > 0).astype(int)
+                y01 = np.asarray(y_eval_binary).reshape(-1)[:n]
+                y01 = (y01 > 0).astype(int)
 
-            # 头部纯度
-            top_frac = 0.10
-            k = max(1, int(np.ceil(top_frac * n)))
-            top_idx = np.argsort(-p)[:k]
-            precision_top = float(np.mean(y01[top_idx])) if k > 0 else 0.0
+            raw_eval_slice = None
+            if eval_data_raw is not None:
+                raw_eval_slice = eval_data_raw.reset_index(drop=True).iloc[:n].copy()
 
-            # 防止单类导致AUC异常：单类时 roc_auc 定义为0.5，pr_auc 定义为正类比例
-            pos_rate = float(np.mean(y01)) if n > 0 else 0.0
-            uniq_classes = np.unique(y01[~pd.isna(y01)])
-            if len(uniq_classes) < 2:
-                roc_auc = 0.5
-                pr_auc = pos_rate
-            else:
-                try:
-                    from sklearn.metrics import average_precision_score, roc_auc_score
-                    roc_auc = float(roc_auc_score(y01, p))
-                    pr_auc = float(average_precision_score(y01, p))
-                except Exception:
-                    roc_auc = 0.5
-                    pr_auc = pos_rate
+            return _evaluate_risk_filter_predictions(
+                y_score=p,
+                y_binary=y01,
+                y_severity=y,
+                eval_dates=np.asarray(eval_dates).reshape(-1)[:n],
+                eval_frame=raw_eval_slice,
+                top_k_values=RISK_FILTER_CONFIG['top_k_values']
+            )
 
-            # 输出塌缩惩罚：p几乎常数说明模型没学到
-            p_std = float(np.std(p))
-            collapse_penalty = 0.10 if p_std < 1e-4 else 0.0
-
-            # 综合评分（可按你偏好调整权重）
-            score = 0.60 * pr_auc + 0.25 * roc_auc + 0.15 * precision_top - collapse_penalty
-            return float(score)        
-        def _evaluate_params_binary(model, X_eval_scaled, eval_data_raw, eval_dates):
+        def _evaluate_params_binary(model, X_eval_scaled, eval_data_raw, eval_dates, score_override=None):
             score_scale = 10000.0
             try:
                 y_col = 'atr_return_label' if 'atr_return_label' in eval_data_raw.columns else 'y'
                 y_all = eval_data_raw[y_col].to_numpy()
+                y_bin = eval_data_raw['relevance'].to_numpy() if 'relevance' in eval_data_raw.columns else None
                 n = min(len(eval_data_raw), len(X_eval_scaled), len(y_all), len(eval_dates))
                 
                 eval_days_d = np.asarray(pd.to_datetime(eval_dates[:n], errors='coerce').values).astype('datetime64[D]')
                 base_mask = np.isfinite(y_all[:n]) & ~pd.isna(eval_days_d)
+                if y_bin is not None:
+                    base_mask = base_mask & ~pd.isna(y_bin[:n])
                 
                 unique_days = np.sort(np.unique(eval_days_d[base_mask]))
                 chunks = [c for c in np.array_split(unique_days, 3) if len(c) > 0]
@@ -2930,8 +3589,25 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 for days in chunks:
                     seg_mask = base_mask & np.isin(eval_days_d, days)
                     if seg_mask.sum() == 0: continue
-                    s = calculate_binary_top1_score(model, X_eval_scaled[:n][seg_mask], y_all[:n][seg_mask], eval_dates[:n][seg_mask])
-                    if np.isfinite(s): seg_vals.append(s * score_scale)
+                    score_result = calculate_binary_top1_score(
+                        model,
+                        X_eval_scaled[:n][seg_mask],
+                        y_all[:n][seg_mask],
+                        eval_dates[:n][seg_mask],
+                        y_eval_binary=y_bin[:n][seg_mask] if y_bin is not None else None,
+                        eval_data_raw=eval_data_raw.iloc[:n][seg_mask].copy(),
+                        score_override=score_override[:n][seg_mask] if score_override is not None else None
+                    )
+                    s = score_result.get('score', float('-inf'))
+                    if np.isfinite(s):
+                        seg_vals.append(s * score_scale)
+                        primary_metrics = score_result.get('top_k_metrics', {}).get(RISK_FILTER_CONFIG['primary_k'], {})
+                        logger.info(
+                            f"  [RISK_SEG] p@{RISK_FILTER_CONFIG['primary_k']}={primary_metrics.get('precision', 0.0):.4f}, "
+                            f"ret@{RISK_FILTER_CONFIG['primary_k']}={primary_metrics.get('weighted_return_mean', 0.0):.4f}, "
+                            f"pos@{RISK_FILTER_CONFIG['primary_k']}={primary_metrics.get('positive_rate', 0.0):.4f}, "
+                            f"dd@{RISK_FILTER_CONFIG['primary_k']}={primary_metrics.get('drawdown_mean', 0.0):.4f}"
+                        )
 
                 if len(seg_vals) == 0: return float('-inf')
                 
@@ -2940,47 +3616,321 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 min_score = float(np.min(seg_arr))
                 std_score = float(np.std(seg_arr))
                 
-                final_score = mean_score - 0.5 * std_score # 【纯粹夏普汇总】不搞主观比重，就用均值减去惩罚其不稳定性
+                final_score = mean_score - 0.5 * std_score
                 logger.info(f"  [汇总] 三段得分: {[round(x, 2) for x in seg_arr]} | 均分:{mean_score:.2f} | 评估总分:{final_score:.2f}")
                 return final_score
             except Exception as e:
                 return float('-inf')
 
-        for i in range(SEARCH_ITER):
-            current_params = base_params.copy()
-            for key, choices in search_space.items():
-                current_params[key] = random.choice(choices)
+        def _build_risk_score_candidates(drop_pred, unrecover_pred):
+            import numpy as np
 
-            params_tuple = tuple(sorted((k, str(v)) for k, v in current_params.items()))
-            if params_tuple in searched_params: continue
-            searched_params.add(params_tuple)
+            drop_pred = np.asarray(drop_pred, dtype=float).reshape(-1)
+            unrecover_pred = np.asarray(unrecover_pred, dtype=float).reshape(-1)
+            candidates = {}
 
-            model = lgb.train(
-                current_params, train_data, num_boost_round=400,
-                valid_sets=[train_data, val_data], valid_names=['train', 'valid'], callbacks=callbacks
+            if 'stage1' in RISK_FILTER_CONFIG['risk_head_candidates']:
+                candidates['stage1'] = {
+                    'scores': np.clip(drop_pred, 0.0, 1.0),
+                    'score_mode': 'stage1',
+                    'blend_weight': 1.0,
+                    'unrecover_floor': 0.0,
+                }
+            if 'stage2' in RISK_FILTER_CONFIG['risk_head_candidates']:
+                candidates['stage2'] = {
+                    'scores': np.clip(unrecover_pred, 0.0, 1.0),
+                    'score_mode': 'stage2',
+                    'blend_weight': 0.0,
+                    'unrecover_floor': 0.0,
+                }
+            if 'product' in RISK_FILTER_CONFIG['risk_head_candidates']:
+                candidates['product'] = {
+                    'scores': np.clip(drop_pred * unrecover_pred, 0.0, 1.0),
+                    'score_mode': 'product',
+                    'blend_weight': 0.5,
+                    'unrecover_floor': 0.0,
+                }
+            if 'gated_product' in RISK_FILTER_CONFIG['risk_head_candidates']:
+                for floor in RISK_FILTER_CONFIG.get('risk_unrecover_floor_candidates', [0.4]):
+                    key = f"gated_product_f{int(round(floor * 100)):02d}"
+                    candidates[key] = {
+                        'scores': np.clip(drop_pred * (floor + (1.0 - floor) * unrecover_pred), 0.0, 1.0),
+                        'score_mode': 'gated_product',
+                        'blend_weight': 0.5,
+                        'unrecover_floor': float(floor),
+                    }
+            if 'linear_blend' in RISK_FILTER_CONFIG['risk_head_candidates']:
+                for blend_weight in RISK_FILTER_CONFIG.get('risk_blend_weight_candidates', [0.5]):
+                    key = f"linear_blend_w{int(round(blend_weight * 100)):02d}"
+                    candidates[key] = {
+                        'scores': np.clip(blend_weight * drop_pred + (1.0 - blend_weight) * unrecover_pred, 0.0, 1.0),
+                        'score_mode': 'linear_blend',
+                        'blend_weight': float(blend_weight),
+                        'unrecover_floor': 0.0,
+                    }
+            return candidates
+
+        def _risk_head_admission(eval_result):
+            primary_k = RISK_FILTER_CONFIG['primary_k']
+            secondary_k = max(RISK_FILTER_CONFIG['top_k_values'])
+            primary_metrics = eval_result.get('top_k_metrics', {}).get(primary_k, {})
+            secondary_metrics = eval_result.get('top_k_metrics', {}).get(secondary_k, {})
+            if not primary_metrics:
+                return False, "missing_primary_metrics"
+
+            if primary_metrics.get('precision', 0.0) < RISK_FILTER_CONFIG['risk_head_precision_floor']:
+                return False, "precision_too_low"
+            if primary_metrics.get('weighted_return_mean', 1.0) > RISK_FILTER_CONFIG['risk_head_primary_return_cap']:
+                return False, "primary_return_positive"
+            if primary_metrics.get('positive_rate', 1.0) > RISK_FILTER_CONFIG['risk_head_primary_positive_cap']:
+                return False, "primary_positive_rate_high"
+            if secondary_metrics:
+                if secondary_metrics.get('weighted_return_mean', 1.0) > RISK_FILTER_CONFIG['risk_head_secondary_return_cap']:
+                    return False, "secondary_return_positive"
+                if secondary_metrics.get('positive_rate', 1.0) > RISK_FILTER_CONFIG['risk_head_secondary_positive_cap']:
+                    return False, "secondary_positive_rate_high"
+            return True, "accepted"
+
+        drop_train_mask = ~pd.isna(y_train_drop)
+        drop_val_mask = ~pd.isna(y_val_drop)
+        unrecover_train_mask = ~pd.isna(y_train_unrecover)
+        unrecover_val_mask = ~pd.isna(y_val_unrecover)
+
+        if drop_train_mask.sum() == 0 or drop_val_mask.sum() == 0 or unrecover_train_mask.sum() == 0 or unrecover_val_mask.sum() == 0:
+            logger.error("[FAIL] 两阶段标签有效样本不足，无法训练条件风险模型")
+            return None
+        logger.info(
+            f"[RISK_STAGE_COUNT] Stage1 train pos={(y_train_drop[drop_train_mask] == 1).sum():,}, neg={(y_train_drop[drop_train_mask] == 0).sum():,} | "
+            f"val pos={(y_val_drop[drop_val_mask] == 1).sum():,}, neg={(y_val_drop[drop_val_mask] == 0).sum():,}"
+        )
+        logger.info(
+            f"[RISK_STAGE_COUNT] Stage2 train pos={(y_train_unrecover[unrecover_train_mask] == 1).sum():,}, neg={(y_train_unrecover[unrecover_train_mask] == 0).sum():,} | "
+            f"val pos={(y_val_unrecover[unrecover_val_mask] == 1).sum():,}, neg={(y_val_unrecover[unrecover_val_mask] == 0).sum():,}"
+        )
+
+        stage1_train_pos = int((y_train_drop[drop_train_mask] == 1).sum())
+        stage1_train_neg = int((y_train_drop[drop_train_mask] == 0).sum())
+        stage1_val_pos = int((y_val_drop[drop_val_mask] == 1).sum())
+        stage1_val_neg = int((y_val_drop[drop_val_mask] == 0).sum())
+        stage2_train_pos = int((y_train_unrecover[unrecover_train_mask] == 1).sum())
+        stage2_train_neg = int((y_train_unrecover[unrecover_train_mask] == 0).sum())
+        stage2_val_pos = int((y_val_unrecover[unrecover_val_mask] == 1).sum())
+        stage2_val_neg = int((y_val_unrecover[unrecover_val_mask] == 0).sum())
+
+        logger.info(
+            f"[RISK_STAGE_ASSERT] Stage1 train(pos={stage1_train_pos:,}, neg={stage1_train_neg:,}) | "
+            f"val(pos={stage1_val_pos:,}, neg={stage1_val_neg:,})"
+        )
+        logger.info(
+            f"[RISK_STAGE_ASSERT] Stage2 train(pos={stage2_train_pos:,}, neg={stage2_train_neg:,}) | "
+            f"val(pos={stage2_val_pos:,}, neg={stage2_val_neg:,})"
+        )
+
+        if stage1_train_pos == 0 or stage1_train_neg == 0 or stage1_val_pos == 0 or stage1_val_neg == 0:
+            logger.error("[FAIL] Stage1标签为单类，停止训练。请检查大跌标签阈值。")
+            raise ValueError("Stage1标签单类")
+        if stage2_train_pos == 0 or stage2_train_neg == 0 or stage2_val_pos == 0 or stage2_val_neg == 0:
+            logger.error("[FAIL] Stage2标签为单类，停止训练。请检查未修复标签阈值。")
+            raise ValueError("Stage2标签单类")
+
+        def _train_single_stage_model(params, X_train_stage, y_train_stage, X_val_stage, y_val_stage):
+            train_ds = lgb.Dataset(X_train_stage, label=y_train_stage, params={'feature_pre_filter': False})
+            val_ds = lgb.Dataset(X_val_stage, label=y_val_stage, reference=train_ds, params={'feature_pre_filter': False})
+            stage_eval_result = {}
+            stage_callbacks = [
+                lgb.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=False, verbose=False),
+                lgb.log_evaluation(period=0),
+                lgb.record_evaluation(stage_eval_result)
+            ]
+            return lgb.train(
+                params,
+                train_ds,
+                num_boost_round=400,
+                valid_sets=[train_ds, val_ds],
+                valid_names=['train', 'valid'],
+                callbacks=stage_callbacks
             )
 
-            top1_return = _evaluate_params_binary(model, X_val_scaled, val_data_raw, val_dates)
-            
-            logger.info(f"==> 第 {i+1}/{SEARCH_ITER} 轮搜索 | 评估得分: {top1_return:.4f}")
-            logger.info(f"==> 参数: {current_params}")
+        fallback_drop_model = None
+        fallback_unrecover_model = None
+        fallback_head_info = {
+            'name': 'product',
+            'score_mode': 'product',
+            'blend_weight': 0.5,
+            'unrecover_floor': 0.0,
+        }
+
+        for i in range(SEARCH_ITER):
+            current_drop_params = base_params.copy()
+            current_unrecover_params = base_params.copy()
+            for key, choices in drop_search_space.items():
+                current_drop_params[key] = random.choice(choices)
+            for key, choices in unrecover_search_space.items():
+                current_unrecover_params[key] = random.choice(choices)
+
+            params_tuple = (
+                tuple(sorted((f"drop_{k}", str(v)) for k, v in current_drop_params.items())),
+                tuple(sorted((f"unrecover_{k}", str(v)) for k, v in current_unrecover_params.items()))
+            )
+            if params_tuple in searched_params:
+                continue
+            searched_params.add(params_tuple)
+
+            drop_model = _train_single_stage_model(
+                current_drop_params,
+                X_train_scaled[drop_train_mask],
+                np.asarray(y_train_drop)[drop_train_mask],
+                X_val_scaled[drop_val_mask],
+                np.asarray(y_val_drop)[drop_val_mask]
+            )
+            unrecover_model = _train_single_stage_model(
+                current_unrecover_params,
+                X_train_scaled[unrecover_train_mask],
+                np.asarray(y_train_unrecover)[unrecover_train_mask],
+                X_val_scaled[unrecover_val_mask],
+                np.asarray(y_val_unrecover)[unrecover_val_mask]
+            )
+
+            if fallback_drop_model is None:
+                fallback_drop_model = drop_model
+            if fallback_unrecover_model is None:
+                fallback_unrecover_model = unrecover_model
+
+            try:
+                drop_val_full = drop_model.predict(
+                    X_val_scaled,
+                    num_iteration=getattr(drop_model, 'best_iteration', None)
+                )
+            except Exception:
+                drop_val_full = drop_model.predict(X_val_scaled)
+            try:
+                unrecover_val_full = unrecover_model.predict(
+                    X_val_scaled,
+                    num_iteration=getattr(unrecover_model, 'best_iteration', None)
+                )
+            except Exception:
+                unrecover_val_full = unrecover_model.predict(X_val_scaled)
+
+            candidate_heads = _build_risk_score_candidates(drop_val_full, unrecover_val_full)
+            local_best_name = None
+            local_best_score = -float('inf')
+            local_best_head = None
+            local_score_summary = []
+            local_admitted_heads = []
+            for head_name, head_info in candidate_heads.items():
+                full_eval_result = calculate_binary_top1_score(
+                    None,
+                    X_val_scaled,
+                    y_val_original[:len(X_val_scaled)] if y_val_original is not None else y_val[:len(X_val_scaled)],
+                    np.asarray(val_dates)[:len(X_val_scaled)],
+                    y_eval_binary=y_val[:len(X_val_scaled)],
+                    eval_data_raw=val_data_raw.iloc[:len(X_val_scaled)].copy() if val_data_raw is not None else None,
+                    score_override=head_info['scores']
+                )
+                admitted, reject_reason = _risk_head_admission(full_eval_result)
+                head_score = _evaluate_params_binary(
+                    None,
+                    X_val_scaled,
+                    val_data_raw,
+                    val_dates,
+                    score_override=head_info['scores']
+                )
+                primary_metrics = full_eval_result.get('top_k_metrics', {}).get(RISK_FILTER_CONFIG['primary_k'], {})
+                local_score_summary.append(
+                    (
+                        head_name,
+                        head_score,
+                        admitted,
+                        reject_reason,
+                        primary_metrics.get('weighted_return_mean', np.nan),
+                        primary_metrics.get('positive_rate', np.nan),
+                    )
+                )
+                if admitted:
+                    local_admitted_heads.append(head_name)
+                if admitted and head_score > local_best_score:
+                    local_best_score = head_score
+                    local_best_name = head_name
+                    local_best_head = head_info
+
+            if local_best_head is None:
+                for head_name, head_score, admitted, reject_reason, head_ret, head_pos in local_score_summary:
+                    if head_score > local_best_score:
+                        local_best_score = head_score
+                        local_best_name = head_name
+                        local_best_head = candidate_heads[head_name]
+                logger.warning(
+                    "[RISK_HEAD] 当前搜索轮无任何输出头通过准入门槛，将使用得分最高头作为降级选择。"
+                )
+
+            eval_score = local_best_score
+            model = TwoStageRiskModel(
+                drop_model,
+                unrecover_model,
+                score_mode=local_best_head['score_mode'],
+                blend_weight=local_best_head['blend_weight'],
+                unrecover_floor=local_best_head['unrecover_floor']
+            )
+
+            summary_text = ", ".join(
+                [
+                    f"{name}={score:.2f}|ret={head_ret:.2%}|pos={head_pos:.2%}|{'OK' if admitted else reject_reason}"
+                    for name, score, admitted, reject_reason, head_ret, head_pos in sorted(local_score_summary, key=lambda x: x[1], reverse=True)[:5]
+                ]
+            )
+            logger.info(f"==> 第 {i+1}/{SEARCH_ITER} 轮搜索 | 风险过滤评估得分: {eval_score:.4f} | 选中输出头: {local_best_name}")
+            logger.info(f"==> 输出头竞赛: {summary_text}")
+            logger.info(f"==> 输出头准入通过数: {len(local_admitted_heads)}/{len(candidate_heads)}")
+            logger.info(f"==> Stage1参数: {current_drop_params}")
+            logger.info(f"==> Stage2参数: {current_unrecover_params}")
             logger.info("-" * 60)
 
-            if top1_return > best_top1_return:
-                logger.info(f"更新最佳参数:{current_params}, top1_return:{top1_return}")
-                best_top1_return = top1_return
+            if eval_score > best_eval_score:
+                logger.info(f"更新最佳两阶段参数, risk_filter_score:{eval_score}")
+                best_eval_score = eval_score
                 best_model = model
-                best_params_found = current_params.copy()
+                best_head_info = {
+                    'name': local_best_name,
+                    'score_mode': local_best_head['score_mode'],
+                    'blend_weight': local_best_head['blend_weight'],
+                    'unrecover_floor': local_best_head['unrecover_floor'],
+                }
+                best_params_found = {
+                    'drop_stage_params': current_drop_params.copy(),
+                    'unrecover_stage_params': current_unrecover_params.copy(),
+                    'risk_head': best_head_info.copy(),
+                }
 
-        model = best_model if best_model is not None else model
+        model = best_model if best_model is not None else TwoStageRiskModel(
+            fallback_drop_model,
+            fallback_unrecover_model,
+            score_mode=fallback_head_info['score_mode'],
+            blend_weight=fallback_head_info['blend_weight'],
+            unrecover_floor=fallback_head_info['unrecover_floor']
+        )
+        selected_head_info = best_head_info if best_head_info is not None else fallback_head_info
+
+        if best_model is None:
+            logger.error("[FAIL] 所有搜索轮的输出头都未满足最低准入要求，停止训练。")
+            raise ValueError("risk_head_not_qualified")
 
         try:
-            best_iter = getattr(model, 'best_iteration', None)
-            y_train_pred = model.predict(X_train_scaled, num_iteration=best_iter) if best_iter else model.predict(X_train_scaled)
-            y_val_pred = model.predict(X_val_scaled, num_iteration=best_iter) if best_iter else model.predict(X_val_scaled)
-        except:
             y_train_pred = model.predict(X_train_scaled)
             y_val_pred = model.predict(X_val_scaled)
+        except Exception:
+            y_train_pred = model.predict(X_train_scaled)
+            y_val_pred = model.predict(X_val_scaled)
+
+        try:
+            drop_train_pred = model.drop_model.predict(X_train_scaled[drop_train_mask], num_iteration=getattr(model.drop_model, 'best_iteration', None))
+            drop_val_pred = model.drop_model.predict(X_val_scaled[drop_val_mask], num_iteration=getattr(model.drop_model, 'best_iteration', None))
+            unrecover_train_pred = model.unrecover_model.predict(X_train_scaled[unrecover_train_mask], num_iteration=getattr(model.unrecover_model, 'best_iteration', None))
+            unrecover_val_pred = model.unrecover_model.predict(X_val_scaled[unrecover_val_mask], num_iteration=getattr(model.unrecover_model, 'best_iteration', None))
+        except Exception:
+            drop_train_pred = model.drop_model.predict(X_train_scaled[drop_train_mask])
+            drop_val_pred = model.drop_model.predict(X_val_scaled[drop_val_mask])
+            unrecover_train_pred = model.unrecover_model.predict(X_train_scaled[unrecover_train_mask])
+            unrecover_val_pred = model.unrecover_model.predict(X_val_scaled[unrecover_val_mask])
 
         def _safe_roc_auc(y_true, y_score):
             import numpy as np
@@ -2997,16 +3947,20 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             except Exception:
                 return None
 
-        train_auc = _safe_roc_auc(y_train, y_train_pred)
-        val_auc = _safe_roc_auc(y_val, y_val_pred)
+        train_auc = _safe_roc_auc(y_train[train_fit_mask], y_train_pred[train_fit_mask])
+        val_auc = _safe_roc_auc(y_val[val_fit_mask], y_val_pred[val_fit_mask])
+        stage1_train_auc = _safe_roc_auc(y_train_drop[drop_train_mask], drop_train_pred)
+        stage1_val_auc = _safe_roc_auc(y_val_drop[drop_val_mask], drop_val_pred)
+        stage2_train_auc = _safe_roc_auc(y_train_unrecover[unrecover_train_mask], unrecover_train_pred)
+        stage2_val_auc = _safe_roc_auc(y_val_unrecover[unrecover_val_mask], unrecover_val_pred)
 
         # 记录类别分布，便于你判断是否是窗口太短/标签太稀导致
         try:
             import numpy as np
-            train_pos = int((np.asarray(y_train) == 1).sum())
-            train_neg = int((np.asarray(y_train) == 0).sum())
-            val_pos = int((np.asarray(y_val) == 1).sum())
-            val_neg = int((np.asarray(y_val) == 0).sum())
+            train_pos = int((y_train[train_fit_mask] == 1).sum())
+            train_neg = int((y_train[train_fit_mask] == 0).sum())
+            val_pos = int((y_val[val_fit_mask] == 1).sum())
+            val_neg = int((y_val[val_fit_mask] == 0).sum())
             logger.info(f"[LABEL] Train pos={train_pos:,}, neg={train_neg:,} | Val pos={val_pos:,}, neg={val_neg:,}")
         except Exception:
             pass
@@ -3016,13 +3970,30 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         if val_auc is None:
             logger.warning("[WARNING] Val AUC 无法计算（y_true 单一类别或异常），将显示为 NA")
 
-        logger.info(f"[模型指标] Train AUC: {train_auc if train_auc is not None else 'NA'}, Val AUC: {val_auc if val_auc is not None else 'NA'}")
+        logger.info(f"[模型指标] Final Train AUC: {train_auc if train_auc is not None else 'NA'}, Final Val AUC: {val_auc if val_auc is not None else 'NA'}")
+        logger.info(f"[模型指标] Stage1 Train AUC: {stage1_train_auc if stage1_train_auc is not None else 'NA'}, Stage1 Val AUC: {stage1_val_auc if stage1_val_auc is not None else 'NA'}")
+        logger.info(f"[模型指标] Stage2 Train AUC: {stage2_train_auc if stage2_train_auc is not None else 'NA'}, Stage2 Val AUC: {stage2_val_auc if stage2_val_auc is not None else 'NA'}")
+        logger.info(
+            f"[RISK_HEAD] 选中输出头: {selected_head_info.get('name')} | "
+            f"mode={selected_head_info.get('score_mode')} | "
+            f"blend_weight={selected_head_info.get('blend_weight', 0.0):.2f} | "
+            f"unrecover_floor={selected_head_info.get('unrecover_floor', 0.0):.2f} | "
+            f"best_score={best_eval_score:.4f}"
+        )
 
         feature_importance = model.feature_importance(importance_type='gain')
+        drop_feature_importance = model.drop_model.feature_importance(importance_type='gain')
+        unrecover_feature_importance = model.unrecover_model.feature_importance(importance_type='gain')
         feature_names = feature_columns
 
         # [新增] 打印特征重要性
         logger.info("[FEATURE] 特征重要性分析:")
+        logger.info(
+            f"  当前最终输出头: {selected_head_info.get('name')} "
+            f"(mode={selected_head_info.get('score_mode')}, "
+            f"blend_weight={selected_head_info.get('blend_weight', 0.0):.2f}, "
+            f"unrecover_floor={selected_head_info.get('unrecover_floor', 0.0):.2f})"
+        )
 
         # 创建特征重要性DataFrame
         import pandas as pd
@@ -3030,9 +4001,22 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'feature_name': feature_names,
             'importance': feature_importance
         }).sort_values('importance', ascending=False)
+        drop_feature_importance_df = pd.DataFrame({
+            'feature_name': feature_names,
+            'importance': drop_feature_importance
+        }).sort_values('importance', ascending=False)
+        unrecover_feature_importance_df = pd.DataFrame({
+            'feature_name': feature_names,
+            'importance': unrecover_feature_importance
+        }).sort_values('importance', ascending=False)
 
-        # 打印全部特征重要性
-        logger.info(f"  全部特征重要性 (共 {len(feature_importance_df)} 个特征):")
+        logger.info("  Stage1大跌模型 Top20 特征:")
+        for idx, row in drop_feature_importance_df.head(20).iterrows():
+            logger.info(f"    {idx+1:3d}. {row['feature_name']:<30} = {row['importance']:.2f}")
+        logger.info("  Stage2未修复模型 Top20 特征:")
+        for idx, row in unrecover_feature_importance_df.head(20).iterrows():
+            logger.info(f"    {idx+1:3d}. {row['feature_name']:<30} = {row['importance']:.2f}")
+        logger.info(f"  合成特征重要性 (共 {len(feature_importance_df)} 个特征):")
         for idx, row in feature_importance_df.iterrows():
             logger.info(f"    {idx+1:3d}. {row['feature_name']:<30} = {row['importance']:.2f}")
         
@@ -3041,8 +4025,19 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'scaler': None,
             'feature_names': feature_columns,
             'label_stats': label_stats,
-            'performance': {'train_auc': train_auc, 'val_auc': val_auc},
-            'training_info': {'best_iteration': getattr(model, 'best_iteration', None)},
+            'performance': {
+                'train_auc': train_auc,
+                'val_auc': val_auc,
+                'stage1_train_auc': stage1_train_auc,
+                'stage1_val_auc': stage1_val_auc,
+                'stage2_train_auc': stage2_train_auc,
+                'stage2_val_auc': stage2_val_auc,
+            },
+            'training_info': {
+                'best_iteration': getattr(model, 'best_iteration', None),
+                'model_structure': 'two_stage_conditional_risk',
+                'selected_risk_head': selected_head_info,
+            },
             'model_params': best_params_found if best_params_found else base_params,
             'feature_importance': dict(zip(feature_columns, feature_importance)),
             'model_type': 'lightgbm',
@@ -5094,9 +6089,9 @@ def _get_stock_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
 
         'market_trend_strength',
         'market_liquidity_change',
@@ -5253,9 +6248,9 @@ def _get_original_factors():
         # 'mkt_adv_dec_delta3',
         # 'mkt_limit_balance_delta3',
         # 'mkt_emotion_heat_delta3',
-        'mkt_adv_dec_z10',
-        'mkt_limit_balance_z10',
-        'mkt_emotion_heat_z10',
+        # 'mkt_adv_dec_z10',
+        # 'mkt_limit_balance_z10',
+        # 'mkt_emotion_heat_z10',
 
         'market_trend_strength',
         'market_liquidity_change',
@@ -5647,7 +6642,7 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
             logger.info(f"[FILTER] 数据量过小({len(stock_data)})，跳过新股过滤")
             return stock_data
 
-        logger.info(f"[FILTER] 开始新股过滤: {len(stock_data):,} 条记录")
+        # logger.info(f"[FILTER] 开始新股过滤: {len(stock_data):,} 条记录")
 
         # ===== 第2步：加载IPO日期 =====
         ipo_dates = _load_ipo_dates(logger)
@@ -5700,7 +6695,7 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
 
                     # 使用交易日历计算第60个交易日
                     filter_end_date = _get_nth_trading_date(ipodate_str, trading_dates, n=25, logger=logger)
-                    logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 第60个交易日: {filter_end_date.strftime('%Y%m%d')}")
+                    # logger.info(f"[FILTER] {stock_code} IPO日期: {ipodate_str}, 第60个交易日: {filter_end_date.strftime('%Y%m%d')}")
                 else:
                     # 降级方案：使用自然日
                     filter_end_date = ipodate_dt + pd.Timedelta(days=25)
@@ -7591,23 +8586,25 @@ def analyze_bucket_ranges(board_data, valid_mask):
 
 def _generate_training_labels_for_all_data(stock_data):
     """
-    【大师级重构】极值二分类标签（Extreme Binary Classification）
+    风险过滤二分类标签。
     
     信号日：T
-    买入：T+1 open（若 T+1 开盘相对 T 收盘：跌超3% 或 涨超5% 则跳过买入）
-    目标：T+2 或 T+3 的最高价涨幅 > 8%，且 T+1 到 T+3 的最低价回撤不深于 -4%
+    买入基准：T+1 open
+    风险窗口：T+1 ~ T+3
+    核心目标：学习“深跌且最终未修复”的错误答案，而不是学习高波动票。
     
     标签字段：
-      - relevance : 二分类标签 (1: 妖股, 0: 平庸/垃圾, NaN: 无效)
-      - atr_return_label : 保留为最大涨幅，用于评估回测潜能
-      - future_ret       : 同上
+      - relevance : 二分类标签 (1: 高风险, 0: 非高风险, NaN: 无效)
+      - atr_return_label : 连续风险严重度，用于参数搜索和风险排序评估
+      - weighted_return  : 0.4*2d + 0.4*3d + 0.2*5d，用于衡量最终兑现质量
+      - future_ret       : T+2/T+3卖出代理收益，用于辅助观察路径后的结果
     """
     import numpy as np
     import pandas as pd
     import logging
 
     logger = logging.getLogger(__name__)
-    logger.info("[强化] 开始生成二分类极值标签...")
+    logger.info("[强化] 开始生成深跌未修复风险标签...")
 
     stock_data = stock_data.sort_values(["stock_code", "date"]).reset_index(drop=True)
     g = stock_data.groupby("stock_code", sort=False)
@@ -7619,18 +8616,16 @@ def _generate_training_labels_for_all_data(stock_data):
 
     # 1) 买入价（T+1 open）
     buy_price = g["open"].shift(-1)
-    close_t0  = g["close"].shift(0)
     
     # 2) 提取未来两天的极限价格
     high_t2 = g["high"].shift(-2)
     high_t3 = g["high"].shift(-3)
+    close_t1 =  g["close"].shift(-1)
     low_t1 = g["low"].shift(-1)
     low_t2 = g["low"].shift(-2)
     low_t3 = g["low"].shift(-3)
 
-    # 3) 计算期间最大涨幅和最大回撤（相对于买入价）
-    max_high = np.maximum(high_t2.fillna(0), high_t3.fillna(0))
-    # 对于停牌等可能产生的nan处理，保证计算稳健
+    # 3) 计算期间最大涨幅、最大回撤和反弹（相对于买入价）
     max_high = np.where(high_t2.isna() & high_t3.isna(), np.nan, np.maximum(high_t2.fillna(-np.inf), high_t3.fillna(-np.inf)))
     min_low = np.minimum(low_t1.fillna(np.inf), np.minimum(low_t2.fillna(np.inf), low_t3.fillna(np.inf)))
     min_low = np.where(low_t1.isna() & low_t2.isna() & low_t3.isna(), np.nan, min_low)
@@ -7652,26 +8647,99 @@ def _generate_training_labels_for_all_data(stock_data):
     sell_t2 = g["tp"].shift(-2)
     sell_t3 = g["tp"].shift(-3)
     
-    # 7:3 加权：极其看重 T+2 的溢价变现能力
-    sell_price_proxy = 0.5 * sell_t2.fillna(sell_t2) + 0.5 * sell_t3.fillna(sell_t2)
+    sell_price_proxy = 0.5 * sell_t2.fillna(sell_t2) + 0.5 * sell_t3.fillna(sell_t3)
     
     realistic_vwap_return = (sell_price_proxy - buy_price) / (buy_price + 1e-12)
+    if 'weighted_return' in stock_data.columns:
+        weighted_return = pd.to_numeric(stock_data['weighted_return'], errors='coerce')
+    elif 'weighted_return_2d3d5d' in stock_data.columns:
+        weighted_return = pd.to_numeric(stock_data['weighted_return_2d3d5d'], errors='coerce')
+    elif all(col in stock_data.columns for col in ['future_return_2d', 'future_return_3d', 'future_return_5d']):
+        weighted_return = (
+            0.4 * pd.to_numeric(stock_data['future_return_2d'], errors='coerce') +
+            0.4 * pd.to_numeric(stock_data['future_return_3d'], errors='coerce') +
+            0.2 * pd.to_numeric(stock_data['future_return_5d'], errors='coerce')
+        )
+    else:
+        weighted_return = realistic_vwap_return
 
-        # 4) 生成二分类标签
-    is_monster = np.where((realistic_vwap_return >= 0.10) & (min_low_return >= -0.05), 1.0, 0.0)
+    rebound_return = (sell_price_proxy - min_low) / (buy_price + 1e-12)
+    proxy_candidate_score = _compute_proxy_candidate_quality(
+        weighted_return=weighted_return,
+        max_high_return=max_high_return,
+        rebound_return=rebound_return
+    )
+    proxy_trade_score = _compute_proxy_trade_score(
+        weighted_return=weighted_return,
+        min_low_return=min_low_return,
+        max_high_return=max_high_return,
+        rebound_return=rebound_return
+    )
+    risk_score = _compute_risk_filter_continuous_label(
+        drawdown_return=min_low_return,
+        weighted_return=weighted_return,
+        rebound_return=rebound_return,
+        max_high_return=max_high_return
+    )
+    proxy_badness = _compute_proxy_badness(
+        weighted_return=weighted_return,
+        min_low_return=min_low_return,
+        max_high_return=max_high_return,
+        rebound_return=rebound_return,
+        severity=risk_score
+    )
+    drop_risk_mask = min_low_return <= RISK_FILTER_CONFIG['drop_stage_threshold']
+    drop_safe_mask = min_low_return >= RISK_FILTER_CONFIG['drop_stage_safe_threshold']
+    unrecover_eligible_mask = min_low_return <= RISK_FILTER_CONFIG['unrecover_stage_gate']
+    unrecover_risk_mask = unrecover_eligible_mask & (weighted_return <= RISK_FILTER_CONFIG['unrecover_negative_return_threshold'])
+    unrecover_safe_mask = unrecover_eligible_mask & (weighted_return >= RISK_FILTER_CONFIG['unrecover_safe_positive_return'])
+    unrecover_strict_safe_mask = unrecover_eligible_mask & (weighted_return >= RISK_FILTER_CONFIG['unrecover_strict_safe_positive_return'])
+
+    hard_risk_mask = (
+        (weighted_return <= RISK_FILTER_CONFIG['unrecover_negative_return_threshold']) &
+        (min_low_return <= RISK_FILTER_CONFIG['risk_drawdown_gate'])
+    )
+    safe_mask = (
+        (weighted_return >= RISK_FILTER_CONFIG['safe_positive_return']) &
+        (min_low_return >= RISK_FILTER_CONFIG['safe_drawdown_threshold'])
+    )
+
+    trade_rank_pct = np.full(len(stock_data), np.nan, dtype=float)
+    badness_rank_pct = np.full(len(stock_data), np.nan, dtype=float)
+    candidate_count = np.zeros(len(stock_data), dtype=int)
+
+    is_risk = np.where(hard_risk_mask, 1.0, np.where(safe_mask, 0.0, np.nan))
+    drop_stage_label = np.where(drop_risk_mask, 1.0, np.where(drop_safe_mask, 0.0, np.nan))
+    unrecover_stage_label = np.where(unrecover_risk_mask, 1.0, np.where(unrecover_safe_mask, 0.0, np.nan))
     
     # 无效数据处理
     invalid_mask = buy_price.isna() | np.isnan(max_high_return) | np.isnan(min_low_return)
-    is_monster = pd.Series(is_monster, index=stock_data.index)
-    is_monster[invalid_mask] = np.nan
+    is_risk = pd.Series(is_risk, index=stock_data.index)
+    is_risk[invalid_mask] = np.nan
+    drop_stage_label = pd.Series(drop_stage_label, index=stock_data.index)
+    drop_stage_label[invalid_mask] = np.nan
+    unrecover_stage_label = pd.Series(unrecover_stage_label, index=stock_data.index)
+    unrecover_stage_label[invalid_mask] = np.nan
+    risk_score = pd.Series(risk_score, index=stock_data.index)
+    risk_score[invalid_mask] = np.nan
 
     
-    # 覆盖回测评估基准
-    stock_data["atr_return_label"] = realistic_vwap_return
+    stock_data["atr_return_label"] = risk_score
     stock_data["future_ret"] = realistic_vwap_return
+    stock_data["weighted_return"] = weighted_return
     stock_data["max_high_return"] = max_high_return # 记录最大涨幅（供分析用）
     stock_data["min_low_return"] = min_low_return   # 记录最大跌幅（供分析用）
-    stock_data["relevance"] = is_monster
+    stock_data["rebound_return"] = rebound_return
+    stock_data["proxy_candidate_score"] = proxy_candidate_score
+    stock_data["proxy_trade_score"] = proxy_trade_score
+    stock_data["proxy_badness"] = proxy_badness
+    stock_data["trade_rank_pct"] = trade_rank_pct
+    stock_data["badness_rank_pct"] = badness_rank_pct
+    stock_data["candidate_count"] = candidate_count
+    stock_data["risk_score"] = risk_score
+    stock_data["drop_relevance"] = drop_stage_label
+    stock_data["unrecover_relevance"] = unrecover_stage_label
+    stock_data["relevance"] = is_risk
 
     # 5) 过滤实盘不可交易的样本
     _valid_cs_mask = stock_data.get("valid_cs_mask", True)
@@ -7696,11 +8764,105 @@ def _generate_training_labels_for_all_data(stock_data):
     stock_data.loc[mask_untradable, "relevance"] = np.nan
     stock_data.loc[mask_untradable, "atr_return_label"] = np.nan
     stock_data.loc[mask_untradable, "future_ret"] = np.nan
+    stock_data.loc[mask_untradable, "weighted_return"] = np.nan
+    stock_data.loc[mask_untradable, "proxy_candidate_score"] = np.nan
+    stock_data.loc[mask_untradable, "proxy_trade_score"] = np.nan
+    stock_data.loc[mask_untradable, "proxy_badness"] = np.nan
+    stock_data.loc[mask_untradable, "trade_rank_pct"] = np.nan
+    stock_data.loc[mask_untradable, "badness_rank_pct"] = np.nan
+    stock_data.loc[mask_untradable, "drop_relevance"] = np.nan
+    stock_data.loc[mask_untradable, "unrecover_relevance"] = np.nan
 
-    monster_count = (stock_data["relevance"] == 1).sum()
+    risk_count = (stock_data["relevance"] == 1).sum()
     total_valid = stock_data["relevance"].notna().sum()
     if total_valid > 0:
-        logger.info(f"[OK] 二分类标签生成完毕。正样本数: {monster_count}, 负样本数: {total_valid - monster_count}, 比例: {monster_count/total_valid:.2%}")
+        logger.info(
+            f"[OK] 风险过滤标签生成完毕。高风险样本数: {risk_count}, "
+            f"非高风险样本数: {total_valid - risk_count}, 比例: {risk_count/total_valid:.2%}"
+        )
+        logger.info(
+            f"[RISK] 连续风险标签统计: mean={stock_data['atr_return_label'].mean():.4f}, "
+            f"median={stock_data['atr_return_label'].median():.4f}, "
+            f"max={stock_data['atr_return_label'].max():.4f}"
+        )
+        logger.info(
+            f"[RISK] 高风险样本平均 weighted_return={stock_data.loc[stock_data['relevance'] == 1, 'weighted_return'].mean():.4f}, "
+            f"平均 min_low_return={stock_data.loc[stock_data['relevance'] == 1, 'min_low_return'].mean():.4f}"
+        )
+        logger.info(
+            f"[RISK] 高风险样本平均 proxy_candidate_score={stock_data.loc[stock_data['relevance'] == 1, 'proxy_candidate_score'].mean():.4f}, "
+            f"平均 proxy_trade_score={stock_data.loc[stock_data['relevance'] == 1, 'proxy_trade_score'].mean():.4f}"
+        )
+        logger.info(
+            f"[RISK] 硬风险样本占比={hard_risk_mask.mean():.2%}, "
+            f"安全样本占比={safe_mask.mean():.2%}, 中间丢弃样本占比={(~hard_risk_mask & ~safe_mask).mean():.2%}"
+        )
+        logger.info(
+            f"[RISK] 阶段1大跌标签有效占比={drop_stage_label.notna().mean():.2%}, "
+            f"阶段1正类占比={(drop_stage_label == 1).mean():.2%}, "
+            f"阶段2未修复标签有效占比={unrecover_stage_label.notna().mean():.2%}, "
+            f"阶段2正类占比={(unrecover_stage_label == 1).mean():.2%}"
+        )
+        logger.info(
+            f"[RISK_STAGE2_SCHEME] 当前方案(<={RISK_FILTER_CONFIG['unrecover_negative_return_threshold']:.1%} vs >={RISK_FILTER_CONFIG['unrecover_safe_positive_return']:.1%}): "
+            f"eligible={unrecover_eligible_mask.sum():,}, "
+            f"pos={unrecover_risk_mask.sum():,}, neg={unrecover_safe_mask.sum():,}, "
+            f"drop={(unrecover_eligible_mask & ~unrecover_risk_mask & ~unrecover_safe_mask).sum():,}"
+        )
+        logger.info(
+            f"[RISK_STAGE2_SCHEME] 上一版严格方案(<={RISK_FILTER_CONFIG['unrecover_negative_return_threshold']:.1%} vs >={RISK_FILTER_CONFIG['unrecover_strict_safe_positive_return']:.1%}): "
+            f"eligible={unrecover_eligible_mask.sum():,}, "
+            f"pos={unrecover_risk_mask.sum():,}, neg={unrecover_strict_safe_mask.sum():,}, "
+            f"drop={(unrecover_eligible_mask & ~unrecover_risk_mask & ~unrecover_strict_safe_mask).sum():,}"
+        )
+        logger.info(
+            f"[RISK_LABEL_BOUNDARY] final_risk: weighted_return<={RISK_FILTER_CONFIG['unrecover_negative_return_threshold']:.1%} "
+            f"& min_low_return<={RISK_FILTER_CONFIG['risk_drawdown_gate']:.1%} | "
+            f"safe: weighted_return>={RISK_FILTER_CONFIG['safe_positive_return']:.1%} "
+            f"& min_low_return>={RISK_FILTER_CONFIG['safe_drawdown_threshold']:.1%}"
+        )
+        logger.info(
+            f"[RISK] 最终有效标签占比={total_valid/len(stock_data):.2%}, "
+            f"正类占有效标签比例={risk_count/max(total_valid, 1):.2%}"
+        )
+
+    # 🆕 统计最近5个实际存在交易日的 relevance 分布，避免固定日期误导
+    if 'date' in stock_data.columns:
+        stock_data_copy = stock_data.copy()
+        if hasattr(stock_data_copy['date'].iloc[0], 'strftime'):
+            stock_data_copy['date_str'] = pd.to_datetime(stock_data_copy['date']).dt.strftime('%Y%m%d')
+        else:
+            stock_data_copy['date_str'] = stock_data_copy['date'].astype(str)
+        target_dates = sorted(stock_data_copy['date_str'].dropna().unique())[-5:]
+
+        logger.info("=" * 80)
+        logger.info(f"[日期统计] 最近{len(target_dates)}个交易日的 relevance 分布")
+        logger.info("=" * 80)
+
+        for target_date in target_dates:
+            date_mask = stock_data_copy['date_str'] == target_date
+            date_data = stock_data_copy[date_mask]
+
+            if len(date_data) > 0:
+                total_count = len(date_data)
+                non_nan_count = date_data['relevance'].notna().sum()
+                nan_count = date_data['relevance'].isna().sum()
+
+                logger.info(f"  日期: {target_date}")
+                logger.info(f"    总记录数: {total_count}")
+                logger.info(f"    relevance非NaN数量: {non_nan_count} ({non_nan_count/total_count*100:.2f}%)")
+                logger.info(f"    relevance为NaN数量: {nan_count} ({nan_count/total_count*100:.2f}%)")
+
+                # 如果有非NaN值，显示分布
+                if non_nan_count > 0:
+                    relevance_1_count = (date_data['relevance'] == 1).sum()
+                    relevance_0_count = (date_data['relevance'] == 0).sum()
+                    logger.info(f"    relevance=1 (正样本): {relevance_1_count}")
+                    logger.info(f"    relevance=0 (负样本): {relevance_0_count}")
+            else:
+                logger.info(f"  日期: {target_date} - 无数据")
+
+        logger.info("=" * 80)
 
     return stock_data
 
@@ -13156,12 +14318,12 @@ def run_test_model_walkforward_mode(args):
                 'train_start': '2023-06-01',   # 固定起点（扩展窗口）
                 'train_end': '2025-01-27',     # 训练集结束 (约21个月，再增加3个月)
                 'val_start': '2025-02-10',     # 验证集开始
-                # 'val_end': '2025-09-12',       # 验证集结束 (3个月)
-                'val_end': '2025-06-01',
-                # 'test_start': '2025-09-22',    # 测试集开始2025-08-21 2025-11-21
-                # 'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
-                'test_start': '2025-06-05',    # 测试集开始2025-08-21 2025-11-21
-                'test_end': '2026-02-10'       # 测试集结束 (3个月)2025-12-16
+                'val_end': '2025-09-12',       # 验证集结束 (3个月)
+                # 'val_end': '2025-06-01',
+                'test_start': '2025-09-22',    # 测试集开始2025-08-21 2025-11-21
+                'test_end': '2026-02-03'       # 测试集结束 (3个月)2025-12-16
+                # 'test_start': '2025-06-05',    # 测试集开始2025-08-21 2025-11-21
+                # 'test_end': '2026-03-02'       # 测试集结束 (3个月)2025-12-16
             }
         ]
 
@@ -14022,17 +15184,27 @@ def _print_walkforward_summary(all_window_metrics):
     [WRENCH] 修复：增强汇总指标输出，模仿test_model模式的详细汇总
     """
     logger = logging.getLogger(__name__)
+    is_risk_filter_mode = bool(all_window_metrics) and any(
+        any(result.get('mode') == 'risk_filter' for result in metrics.get('all_results', {}).values())
+        for metrics in all_window_metrics
+    )
 
     logger.info("\n" + "=" * 80)
-    logger.info("[CHART] 各窗口回测结果（仅显示Top-1结果）")
+    logger.info("[CHART] 各窗口结果汇总")
     logger.info("=" * 80)
 
     for metrics in all_window_metrics:
         logger.info(f"\n{metrics['window_name']} ({metrics['test_period']}):")
-        logger.info(f"  总收益: {metrics['total_return']:.2f} ATR")
-        logger.info(f"  胜率: {metrics['win_rate']:.2%}")
-        logger.info(f"  夏普比率: {metrics['sharpe_ratio']:.4f}")
-        logger.info(f"  最大回撤: {metrics['max_drawdown']:.2f} ATR")
+        if is_risk_filter_mode:
+            logger.info(f"  Top-{RISK_FILTER_CONFIG['primary_k']} 风险命中率: {metrics['win_rate']:.2%}")
+            logger.info(f"  Top-{RISK_FILTER_CONFIG['primary_k']} 平均加权收益: {metrics['total_return']:.2%}")
+            logger.info(f"  风险过滤综合分: {metrics['sharpe_ratio']:.4f}")
+            logger.info(f"  平均回撤: {metrics['max_drawdown']:.2%}")
+        else:
+            logger.info(f"  总收益: {metrics['total_return']:.2f} ATR")
+            logger.info(f"  胜率: {metrics['win_rate']:.2%}")
+            logger.info(f"  夏普比率: {metrics['sharpe_ratio']:.4f}")
+            logger.info(f"  最大回撤: {metrics['max_drawdown']:.2f} ATR")
 
     # 计算总体指标（Top-1）
     total_return = sum(m['total_return'] for m in all_window_metrics)
@@ -14040,13 +15212,16 @@ def _print_walkforward_summary(all_window_metrics):
     avg_sharpe = np.mean([m['sharpe_ratio'] for m in all_window_metrics])
     max_drawdown = max(m['max_drawdown'] for m in all_window_metrics)
 
-    # [WRENCH] 修复：使用类似test_model模式的表格格式输出所有Top-k档位汇总
-    # 检查是否有all_results数据
     if all_window_metrics and 'all_results' in all_window_metrics[0]:
         logger.info("\n[CHART] Walk-Forward所有Top-k档位汇总结果:")
-        logger.info("=" * 150)
-        logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
-        logger.info("=" * 150)
+        if is_risk_filter_mode:
+            logger.info("=" * 150)
+            logger.info(f"{'风险桶':<10} {'命中率':<10} {'捕获率':<10} {'严重度均值':<12} {'严重度捕获':<12} {'Lift':<8} {'加权收益':<10} {'正收益占比':<10} {'平均回撤':<10} {'样本天数':<10}")
+            logger.info("=" * 150)
+        else:
+            logger.info("=" * 150)
+            logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
+            logger.info("=" * 150)
 
         # 获取所有档位（通常是1, 2, 3, 5）
         all_stock_counts = set()
@@ -14067,11 +15242,30 @@ def _print_walkforward_summary(all_window_metrics):
                 logger.info(f"Top-{stock_count:<5} [WARNING] 无数据")
                 continue
 
-            # [WRENCH] 修复：计算百分比收益和其他指标
-            # 注意：这里的指标应该从backtest_results中获取，而不是简单累加
-            # 因为不同窗口的收益应该是复利计算，而不是简单相加
+            if is_risk_filter_mode:
+                avg_precision = np.mean([m.get('precision', 0) for m in count_metrics])
+                avg_capture = np.mean([m.get('capture', 0) for m in count_metrics])
+                avg_severity_mean = np.mean([m.get('severity_mean', 0) for m in count_metrics])
+                avg_severity_capture = np.mean([m.get('severity_capture', 0) for m in count_metrics])
+                avg_lift = np.mean([m.get('lift', 0) for m in count_metrics])
+                avg_weighted_return = np.mean([m.get('weighted_return_mean', 0) for m in count_metrics])
+                avg_positive_rate = np.mean([m.get('positive_rate', 0) for m in count_metrics])
+                avg_drawdown = np.mean([m.get('drawdown_mean', 0) for m in count_metrics])
+                total_days = int(np.sum([m.get('summary_stats', {}).get('total_trading_days', 0) for m in count_metrics]))
 
-            # 计算累计收益（复利）
+                logger.info(
+                    f"Top-{stock_count:<6} {avg_precision:>8.2%}  "
+                    f"{avg_capture:>8.2%}  "
+                    f"{avg_severity_mean:>10.4f}  "
+                    f"{avg_severity_capture:>10.2%}  "
+                    f"{avg_lift:>6.2f}  "
+                    f"{avg_weighted_return:>8.2%}  "
+                    f"{avg_positive_rate:>8.2%}  "
+                    f"{avg_drawdown:>8.2%}  "
+                    f"{total_days:>8d}"
+                )
+                continue
+
             total_return_gross = 1.0
             total_return_net = 1.0
             for m in count_metrics:
@@ -14120,7 +15314,7 @@ def _print_walkforward_summary(all_window_metrics):
                        f"{avg_profit_loss_ratio:>6.2f}  "
                        f"{avg_holding_days:>10.0f}{total_trades:>10}")
 
-        logger.info("=" * 150)
+        logger.info("=" * (140 if is_risk_filter_mode else 150))
 
 
 def _save_walkforward_results(all_window_metrics, all_selections):
@@ -14167,6 +15361,94 @@ def _display_daily_stock_selections(all_selections, results_dir, timestamp, all_
     logger.info("\n" + "=" * 100)
     logger.info("[CLIPBOARD] 每日选股详情")
     logger.info("=" * 100)
+    is_risk_filter_mode = bool(all_window_metrics) and any(
+        any(result.get('mode') == 'risk_filter' for result in metrics.get('all_results', {}).values())
+        for metrics in all_window_metrics
+    )
+
+    if is_risk_filter_mode:
+        selections_by_count = {}
+        for window_data in all_selections:
+            if not isinstance(window_data, dict) or 'selections' not in window_data:
+                continue
+            window_selections = window_data['selections']
+            window_name = window_data.get('window_name', 'Unknown')
+            logger.info(f"\n[CHART] 窗口 {window_name} 高风险样本记录:")
+            logger.info("-" * 60)
+
+            for stock_count in sorted(window_selections.keys()):
+                records = window_selections.get(stock_count, [])
+                if not records:
+                    continue
+                selections_by_count.setdefault(stock_count, [])
+                logger.info(f"  Top-{stock_count}: {len(records)} 条高风险记录")
+                for record in records:
+                    record_with_window = record.copy()
+                    record_with_window['window_name'] = window_name
+                    selections_by_count[stock_count].append(record_with_window)
+
+        for stock_count in sorted(k for k, v in selections_by_count.items() if v):
+            records = selections_by_count[stock_count]
+            logger.info(f"\n[CHART] 高风险 Top-{stock_count} 详情 (共 {len(records)} 条记录)")
+            logger.info("-" * 120)
+            logger.info(
+                f"{'日期':<12} {'股票代码':<12} {'风险分':<10} {'加权收益':<10} {'回撤':<10} "
+                f"{'候选分':<10} {'交易分':<10} {'坏度':<10}"
+            )
+            logger.info("-" * 120)
+            records_sorted = sorted(records, key=lambda x: (x.get('selection_date', ''), x.get('stock_code', '')))
+            for record in records_sorted:
+                logger.info(
+                    f"{record.get('selection_date', 'N/A'):<12} {record.get('stock_code', 'N/A'):<12} "
+                    f"{float(record.get('predicted_return', 0.0)):>8.4f}  "
+                    f"{float(record.get('weighted_return', 0.0)):>8.2%}  "
+                    f"{float(record.get('min_low_return', 0.0)):>8.2%}  "
+                    f"{float(record.get('proxy_candidate_score', 0.0)):>8.4f}  "
+                    f"{float(record.get('proxy_trade_score', 0.0)):>8.4f}  "
+                    f"{float(record.get('proxy_badness', 0.0)):>8.4f}"
+                )
+
+            avg_removed_return = np.mean([float(r.get('weighted_return', 0.0)) for r in records]) if records else 0.0
+            avg_removed_drawdown = np.mean([float(r.get('min_low_return', 0.0)) for r in records]) if records else 0.0
+            logger.info("-" * 120)
+            logger.info(
+                f"统计: 高风险样本平均加权收益 {avg_removed_return:.2%}, 平均回撤 {avg_removed_drawdown:.2%}"
+            )
+
+        try:
+            detailed_file = results_dir / f"daily_selections_detail_{timestamp}.json"
+            date_values = [
+                r.get('selection_date')
+                for records in selections_by_count.values()
+                for r in records
+                if r.get('selection_date')
+            ]
+            detailed_data = {
+                "summary": {
+                    "mode": "risk_filter",
+                    "total_records_by_count": {
+                        f"top_{stock_count}": len(selections_by_count.get(stock_count, []))
+                        for stock_count in sorted(selections_by_count.keys())
+                    },
+                    "trading_windows": len(set(
+                        r['window_name'] for records in selections_by_count.values() for r in records
+                    )) if selections_by_count else 0,
+                    "date_range": {
+                        "start": min(date_values) if date_values else None,
+                        "end": max(date_values) if date_values else None
+                    }
+                },
+                "risk_records_by_stock_count": {
+                    f"top_{stock_count}": selections_by_count[stock_count]
+                    for stock_count in sorted(selections_by_count.keys())
+                }
+            }
+            with open(detailed_file, 'w', encoding='utf-8') as f:
+                json.dump(detailed_data, f, ensure_ascii=False, indent=2, default=str)
+            logger.info(f"\n[OK] 高风险样本明细已保存: {detailed_file.name}")
+        except Exception as e:
+            logger.error(f"[FAIL] 保存高风险样本明细失败: {e}")
+        return
 
     # 整理选股数据按股票数量分组 - 使用集合来动态收集所有档位
     selections_by_count = {}
@@ -14530,14 +15812,29 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             logger.error("[FAIL] 验证数据缺少atr_return_label列")
             return None
 
-        # [OK] 过滤掉标签为NaN的样本
-        train_valid_mask = train_data['atr_return_label'].notna()
+        # [OK] 风险过滤两阶段训练：保留任一阶段标签有效的样本
+        train_valid_mask = (
+            train_data['atr_return_label'].notna() |
+            train_data['relevance'].notna() |
+            train_data.get('drop_relevance', pd.Series(np.nan, index=train_data.index)).notna() |
+            train_data.get('unrecover_relevance', pd.Series(np.nan, index=train_data.index)).notna()
+        )
         train_data_valid = train_data[train_valid_mask].copy()
 
-        val_valid_mask = val_data['atr_return_label'].notna()
+        val_valid_mask = (
+            val_data['atr_return_label'].notna() |
+            val_data['relevance'].notna() |
+            val_data.get('drop_relevance', pd.Series(np.nan, index=val_data.index)).notna() |
+            val_data.get('unrecover_relevance', pd.Series(np.nan, index=val_data.index)).notna()
+        )
         val_data_valid = val_data[val_valid_mask].copy()
 
-        test_valid_mask = test_data['atr_return_label'].notna()
+        test_valid_mask = (
+            test_data['atr_return_label'].notna() |
+            test_data['relevance'].notna() |
+            test_data.get('drop_relevance', pd.Series(np.nan, index=test_data.index)).notna() |
+            test_data.get('unrecover_relevance', pd.Series(np.nan, index=test_data.index)).notna()
+        )
         test_data_valid = test_data[test_valid_mask].copy()
 
         if len(train_data_valid) == 0:
@@ -14550,6 +15847,13 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
 
         logger.info(f"[CHART] 有效训练样本: {len(train_data_valid):,}/{len(train_data):,} ({len(train_data_valid)/len(train_data)*100:.1f}%)")
         logger.info(f"[CHART] 有效验证样本: {len(val_data_valid):,}/{len(val_data):,} ({len(val_data_valid)/len(val_data)*100:.1f}%)")
+        logger.info(
+            f"[CHART] 阶段标签覆盖: "
+            f"train drop={train_data_valid.get('drop_relevance', pd.Series(np.nan, index=train_data_valid.index)).notna().sum():,}, "
+            f"train unrecover={train_data_valid.get('unrecover_relevance', pd.Series(np.nan, index=train_data_valid.index)).notna().sum():,}, "
+            f"val drop={val_data_valid.get('drop_relevance', pd.Series(np.nan, index=val_data_valid.index)).notna().sum():,}, "
+            f"val unrecover={val_data_valid.get('unrecover_relevance', pd.Series(np.nan, index=val_data_valid.index)).notna().sum():,}"
+        )
 
         # 🆕 排序模型要求数据按日期排序,确保训练集和验证集按日期升序排列
         # [强化] 关键修复: 必须同时按date和stock_code排序,确保同一天内股票顺序确定
@@ -14579,6 +15883,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
 
         train_relevance = train_data_valid['relevance']
         val_relevance = val_data_valid['relevance']
+        train_drop_relevance = train_data_valid['drop_relevance'] if 'drop_relevance' in train_data_valid.columns else None
+        val_drop_relevance = val_data_valid['drop_relevance'] if 'drop_relevance' in val_data_valid.columns else None
+        train_unrecover_relevance = train_data_valid['unrecover_relevance'] if 'unrecover_relevance' in train_data_valid.columns else None
+        val_unrecover_relevance = val_data_valid['unrecover_relevance'] if 'unrecover_relevance' in val_data_valid.columns else None
 
 
         logger.info(f"[OK] 提取relevance标签（整数0-3,4层）用于LightGBM排序模型训练")
@@ -14618,12 +15926,20 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             train_labels = train_labels.iloc[:len(X_train_processed)] if hasattr(train_labels, 'iloc') else train_labels[:len(X_train_processed)]
             # [强化] 同步截取relevance标签
             train_relevance = train_relevance.iloc[:len(X_train_processed)] if hasattr(train_relevance, 'iloc') else train_relevance[:len(X_train_processed)]
+            if train_drop_relevance is not None:
+                train_drop_relevance = train_drop_relevance.iloc[:len(X_train_processed)] if hasattr(train_drop_relevance, 'iloc') else train_drop_relevance[:len(X_train_processed)]
+            if train_unrecover_relevance is not None:
+                train_unrecover_relevance = train_unrecover_relevance.iloc[:len(X_train_processed)] if hasattr(train_unrecover_relevance, 'iloc') else train_unrecover_relevance[:len(X_train_processed)]
 
         if len(X_val_processed) != len(val_labels):
             logger.warning(f"验证集预处理后长度变化: {len(val_labels)} -> {len(X_val_processed)}")
             val_labels = val_labels.iloc[:len(X_val_processed)] if hasattr(val_labels, 'iloc') else val_labels[:len(X_val_processed)]
             # [强化] 同步截取relevance标签
             val_relevance = val_relevance.iloc[:len(X_val_processed)] if hasattr(val_relevance, 'iloc') else val_relevance[:len(X_val_processed)]
+            if val_drop_relevance is not None:
+                val_drop_relevance = val_drop_relevance.iloc[:len(X_val_processed)] if hasattr(val_drop_relevance, 'iloc') else val_drop_relevance[:len(X_val_processed)]
+            if val_unrecover_relevance is not None:
+                val_unrecover_relevance = val_unrecover_relevance.iloc[:len(X_val_processed)] if hasattr(val_unrecover_relevance, 'iloc') else val_unrecover_relevance[:len(X_val_processed)]
 
         # 🆕 提取训练集日期（用于时间衰减权重和group计算）
         train_dates = None
@@ -14702,6 +16018,8 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             logger.info("[WRENCH] 计算样本权重（供LightGBM使用）...")
             train_relevance_array = train_relevance.values if hasattr(train_relevance, 'values') else train_relevance
             val_relevance_array = val_relevance.values if hasattr(val_relevance, 'values') else val_relevance
+            train_relevance_array = np.nan_to_num(np.asarray(train_relevance_array, dtype=float), nan=0.0)
+            val_relevance_array = np.nan_to_num(np.asarray(val_relevance_array, dtype=float), nan=0.0)
 
             # [WRENCH] 修复: 使用训练集最新日期作为时间衰减基准（Walk-Forward模式）
             reference_date = None
@@ -14768,6 +16086,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             'y_test_original': test_labels.values if hasattr(test_labels, 'values') else test_labels,
             'train_relevance': train_relevance.values if hasattr(train_relevance, 'values') else train_relevance,  # 🆕 relevance标签(4层,LightGBM使用)
             'val_relevance': val_relevance.values if hasattr(val_relevance, 'values') else val_relevance,  # 🆕 relevance标签(4层,LightGBM使用)
+            'train_drop_relevance': train_drop_relevance.values if hasattr(train_drop_relevance, 'values') else train_drop_relevance,
+            'val_drop_relevance': val_drop_relevance.values if hasattr(val_drop_relevance, 'values') else val_drop_relevance,
+            'train_unrecover_relevance': train_unrecover_relevance.values if hasattr(train_unrecover_relevance, 'values') else train_unrecover_relevance,
+            'val_unrecover_relevance': val_unrecover_relevance.values if hasattr(val_unrecover_relevance, 'values') else val_unrecover_relevance,
             'winsorization_thresholds': {},  # 因子已在生成阶段完成winsorize
             'train_dates': train_dates,  # 🆕 训练集日期
             'val_dates': val_dates,  # 🆕 验证集日期
@@ -15096,168 +16418,140 @@ def _backtest_on_window(test_data, model_result, window, args):
         if near_zero_count / len(y_pred) > 0.5:
             logger.warning(f"[WARNING] 警告：超过50%的预测值接近0，模型预测可能失效！")
 
-        
-        # 🆕 测试集分类指标评估（用于判断二分类是否适合作为并行二阶模型信号源）
-        # 说明：
-        # - 这里不涉及任何排序模型；仅评估二分类模型在测试集上的判别/头部纯度/校准质量。
-        # - predicted_return 在二分类 objective 下通常可视作正类概率（或可单调映射为概率）。
+        risk_eval_result = None
         try:
-            if 'relevance' in test_data_with_pred.columns:
-                y_true_raw = test_data_with_pred['relevance'].values
-                y_score_raw = test_data_with_pred['predicted_return'].values
+            required_cols = {'relevance', 'predicted_return', 'atr_return_label', 'weighted_return', 'date'}
+            if required_cols.issubset(test_data_with_pred.columns):
+                eval_df = test_data_with_pred.copy().reset_index(drop=True)
+                valid_mask = (
+                    ~pd.isna(eval_df['relevance']) &
+                    ~pd.isna(eval_df['predicted_return']) &
+                    ~pd.isna(eval_df['atr_return_label'])
+                )
+                eval_df = eval_df.loc[valid_mask].reset_index(drop=True)
 
-                # 过滤 NaN
-                valid_mask = (~pd.isna(y_true_raw)) & (~pd.isna(y_score_raw))
-                y_true = y_true_raw[valid_mask].astype(int)
-                y_score = y_score_raw[valid_mask].astype(float)
+                risk_eval_result = _evaluate_risk_filter_predictions(
+                    y_score=eval_df['predicted_return'].values,
+                    y_binary=eval_df['relevance'].values,
+                    y_severity=eval_df['atr_return_label'].values,
+                    eval_dates=eval_df['date'].values,
+                    eval_frame=eval_df,
+                    top_k_values=RISK_FILTER_CONFIG['top_k_values']
+                )
 
-                pos_cnt = int(y_true.sum())
-                neg_cnt = int(len(y_true) - pos_cnt)
-                pos_rate = (pos_cnt / len(y_true)) if len(y_true) > 0 else 0.0
-
-                logger.info(f"[METRIC] [{window['name']}] 测试集分类评估: n={len(y_true)}, pos={pos_cnt}, neg={neg_cnt}, pos_rate={pos_rate:.4%}")
-
-                if pos_cnt > 0 and neg_cnt > 0 and len(y_true) >= 10:
-                    from sklearn.metrics import roc_auc_score, average_precision_score, log_loss, brier_score_loss
-
-                    roc_auc = float(roc_auc_score(y_true, y_score))
-                    pr_auc = float(average_precision_score(y_true, y_score))
-
-                    # 头部纯度：Precision@Top10%
-                    top_frac = 0.10
-                    k = max(1, int(np.ceil(top_frac * len(y_score))))
-                    top_idx = np.argsort(-y_score)[:k]
-                    precision_top = float(y_true[top_idx].mean())
-                    lift = (precision_top / pos_rate) if pos_rate > 0 else float('nan')
-
-                    # 概率校准粗指标：LogLoss / Brier（若 y_score 非严格[0,1]，这里会做裁剪）
-                    eps = 1e-12
-                    y_score_clip = np.clip(y_score, eps, 1 - eps)
-                    ll = float(log_loss(y_true, y_score_clip))
-                    brier = float(brier_score_loss(y_true, y_score_clip))
-
-                    logger.info(
-                        f"[METRIC] ROC-AUC={roc_auc:.4f} | PR-AUC={pr_auc:.4f} | "
-                        f"P@Top10%={precision_top:.4f} (lift={lift:.2f}x) | "
-                        f"LogLoss={ll:.4f} | Brier={brier:.4f}"
-                    )
-                else:
-                    logger.warning(
-                        f"[WARNING] [{window['name']}] 测试集标签在该窗口中类别不全或样本过少，跳过AUC/PR等指标计算。"
-                    )
+                logger.info(
+                    f"[METRIC] [{window['name']}] 风险过滤评估: "
+                    f"score={risk_eval_result.get('score', float('nan')):.4f}, "
+                    f"PR-AUC={risk_eval_result.get('pr_auc', 0.0):.4f}, "
+                    f"ROC-AUC={risk_eval_result.get('roc_auc', 0.5):.4f}"
+                )
             else:
-                logger.warning(f"[WARNING] [{window['name']}] 测试集缺少 'atr_return_label' 列，无法计算AUC等指标。")
+                logger.warning(f"[WARNING] [{window['name']}] 测试集缺少风险评估所需列: {sorted(required_cols - set(test_data_with_pred.columns))}")
         except Exception as e:
-            logger.warning(f"[WARNING] [{window['name']}] 测试集AUC/PR等指标计算失败: {e}")
+            logger.warning(f"[WARNING] [{window['name']}] 风险过滤测试评估失败: {e}")
+            risk_eval_result = None
 
-
-
-# 🎯 Top5预测值的真实收益分布统计
-        logger.info(f"[CHART] [{window['name']}] Top5预测值真实收益分布:")
-
-        # 按日期分组，每天取top5预测值
-        top_k_stats = {1: [], 2: [], 3: [], 5: []}
-
-        # 确保test_data_with_pred包含必要的列
-        if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
-            # 按日期分组计算topk
-            for date in test_data_with_pred['date'].unique():
-                date_data = test_data_with_pred[test_data_with_pred['date'] == date]
-
-                if len(date_data) >= 5:  # 确保有足够的股票
-                    # 按预测值降序排列
-                    date_sorted = date_data.sort_values('predicted_return', ascending=False)
-
-                    # 计算各topk的真实收益 - 收集所有真实收益值而不是每日统计值
-                    # 🆕 修改：topk表示"第k名"而不是"前k名"
-                    for k in [1, 2, 3, 5]:
-                        # 🔧 修改：取第k名的股票，而不是前k名的股票
-                        # 例如k=3表示取排名第3的股票（只有1只），而不是前3名的股票（3只）
-                        top_k_data = date_sorted.iloc[k-1:k]  # iloc[2:3]表示第3名（索引从0开始）
-                        if len(top_k_data) > 0:
-                            # 收集该日期第k名股票的真实收益值，过滤掉NaN值
-                            # 使用 atr_return_label（即 raw_future_ret）代替 future_return_2d
-                            # 这样可以与训练集和验证集的评估保持一致
-                            real_returns = top_k_data['atr_return_label'].values
-                            valid_returns = real_returns[~np.isnan(real_returns)]  # 过滤NaN值
-                            top_k_stats[k].extend(valid_returns)  # 只存储有效收益值
-
-            # 统计并输出结果 - 对收集的所有真实收益值进行统计
-            for k in [1, 2, 3, 5]:
-                if len(top_k_stats[k]) > 0:
-                    all_returns = top_k_stats[k]  # 所有Top-K股票的真实收益值
-
-                    overall_mean = np.mean(all_returns)
-                    overall_median = np.median(all_returns)
-                    overall_min = np.min(all_returns)
-                    overall_max = np.max(all_returns)
-
-                    logger.info(f"  Top-{k}: 均值={overall_mean:.4f}, 中位数={overall_median:.4f}, 最小值={overall_min:.4f}, 最大值={overall_max:.4f} (基于{len(all_returns)}个样本)")
-
-                    # 额外统计：胜率（正收益比例）
-                    positive_count = sum(1 for x in all_returns if x > 0)
-                    win_rate = positive_count / len(all_returns) if len(all_returns) > 0 else 0
-                    logger.info(f"  Top-{k}: 胜率={win_rate:.2f} ({positive_count}/{len(all_returns)}个样本)")
-
-                    # 交易日统计（用于参考）
-                    trading_days = len(test_data_with_pred['date'].unique())
-                    logger.info(f"  Top-{k}: 基于{trading_days}个交易日，每天取排名第{k}的股票（1只股票）")
-                else:
-                    logger.info(f"  Top-{k}: 无足够数据")
-        else:
-            logger.warning(f"[WARNING] 缺少必要列进行Top5统计: {test_data_with_pred.columns.tolist()}")
-
-        # 🆕 新增：完整稳健统计评估 - 测试集（与验证集格式一致）
-        if top_k_stats[1]:  # 如果有数据才进行稳健评估
-            # print_top_k_robust_stats(top_k_stats[1], top_k_stats[3], top_k_stats[5], top_k_stats[5])
-            logger.info("[EXPLANATION] 上述为测试集Top-k真实收益的稳健统计，可与验证集进行对比")
-
-        logger.info(f"{'='*60}\n")
-
-
-        # [OK] 调用统一的选股回测函数(复用test_model逻辑)
-        logger.info(f"\n[CHART] [{window['name']}] 开始选股回测...")
-        logger.info(f"   测试期: {window['test_start']} ~ {window['test_end']}")
-        logger.info(f"   测试天数: {len(test_data_with_pred['date'].unique())}天")
-        logger.info(f"   候选股票: {len(test_data_with_pred)}条记录")
-
-        # 调用统一选股回测函数
-        backtest_result = _run_stock_selection_backtest(
-            backtest_data=test_data_with_pred,
-            stock_counts=[2],  # Top-1/2/3/5选股
-            window_name=window['name'],
-            market_data=None,  # Walk-Forward暂不使用市场状态
-            frequency='minute'  # 默认日线回测，保持向后兼容
-        )
-
-        # 🔍 添加调试日志：检查回测结果
-        logger.debug(f"🔍 [DEBUG] [{window['name']}] 回测结果检查:")
-        logger.debug(f"  - backtest_result类型: {type(backtest_result)}")
-        logger.debug(f"  - 是否为None: {backtest_result is None}")
-        if backtest_result is not None:
-            logger.debug(f"  - backtest_result键: {list(backtest_result.keys())}")
-            logger.debug(f"  - backtest_results存在: {'backtest_results' in backtest_result}")
-            if 'backtest_results' in backtest_result:
-                logger.debug(f"  - backtest_results内容: {backtest_result['backtest_results']}")
-
-        if backtest_result is None or not backtest_result.get('backtest_results'):
-            logger.error(f"[FAIL] [{window['name']}] 选股回测失败")
+        if risk_eval_result is None or not risk_eval_result.get('top_k_metrics'):
+            logger.error(f"[FAIL] [{window['name']}] 风险过滤评估失败，无法生成窗口结果")
             return None
 
-        # [OK] 返回所有Top-k的完整结果
+        logger.info(f"\n[CHART] [{window['name']}] 风险过滤 Top-K 评估结果:")
+        logger.info("=" * 150)
+        logger.info(f"{'风险桶':<10} {'命中率':<10} {'捕获率':<10} {'严重度均值':<12} {'严重度捕获':<12} {'Lift':<8} {'加权收益':<10} {'正收益占比':<10} {'平均回撤':<10} {'样本天数':<10}")
+        logger.info("=" * 150)
+
+        selections = {}
+        all_results = {}
+        unique_days = int(pd.to_datetime(test_data_with_pred['date']).nunique()) if 'date' in test_data_with_pred.columns else 0
+
+        for k in RISK_FILTER_CONFIG['top_k_values']:
+            metrics_k = risk_eval_result['top_k_metrics'].get(k)
+            if not metrics_k:
+                continue
+
+            logger.info(
+                f"Top-{k:<6} {metrics_k.get('precision', 0.0):>8.2%}  "
+                f"{metrics_k.get('capture', 0.0):>8.2%}  "
+                f"{metrics_k.get('severity_mean', 0.0):>10.4f}  "
+                f"{metrics_k.get('severity_capture', 0.0):>10.2%}  "
+                f"{metrics_k.get('lift', 0.0):>6.2f}  "
+                f"{metrics_k.get('weighted_return_mean', 0.0):>8.2%}  "
+                f"{metrics_k.get('positive_rate', 0.0):>8.2%}  "
+                f"{metrics_k.get('drawdown_mean', 0.0):>8.2%}  "
+                f"{metrics_k.get('days', 0):>8d}"
+            )
+            daily_selected = []
+            if 'date' in test_data_with_pred.columns:
+                for date, group in test_data_with_pred.groupby('date'):
+                    group = group.sort_values('predicted_return', ascending=False)
+                    group = group[
+                        group['predicted_return'].notna() &
+                        group['atr_return_label'].notna() &
+                        group['relevance'].notna()
+                    ]
+                    if len(group) < k:
+                        continue
+                    selected = group.head(k).copy()
+                    selected['selected_top_k'] = k
+                    selected['selection_date'] = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
+                    daily_selected.extend(
+                        selected[[
+                            'selection_date', 'stock_code', 'predicted_return', 'relevance', 'atr_return_label',
+                            'weighted_return', 'future_ret', 'min_low_return',
+                            'proxy_candidate_score', 'proxy_trade_score', 'proxy_badness'
+                        ]].to_dict('records')
+                    )
+            selections[k] = daily_selected
+
+            all_results[k] = {
+                'mode': 'risk_filter',
+                'precision': metrics_k.get('precision', 0.0),
+                'capture': metrics_k.get('capture', 0.0),
+                'severity_mean': metrics_k.get('severity_mean', 0.0),
+                'severity_capture': metrics_k.get('severity_capture', 0.0),
+                'lift': metrics_k.get('lift', 0.0),
+                'future_return_mean': metrics_k.get('future_return_mean', 0.0),
+                'weighted_return_mean': metrics_k.get('weighted_return_mean', 0.0),
+                'positive_rate': metrics_k.get('positive_rate', 0.0),
+                'non_positive_rate': metrics_k.get('non_positive_rate', 0.0),
+                'drawdown_mean': metrics_k.get('drawdown_mean', 0.0),
+                'total_return_gross': metrics_k.get('severity_mean', 0.0),
+                'total_return': metrics_k.get('weighted_return_mean', 0.0),
+                'annual_return': metrics_k.get('weighted_return_mean', 0.0) * 252 / max(unique_days, 1),
+                'max_drawdown': abs(metrics_k.get('drawdown_mean', 0.0)),
+                'win_rate': metrics_k.get('precision', 0.0),
+                'profit_loss_ratio': metrics_k.get('lift', 0.0),
+                'holding_days': 3,
+                'total_trades': len(daily_selected),
+                'summary_stats': {
+                    'total_trading_days': metrics_k.get('days', 0),
+                    'evaluation_score': risk_eval_result.get('score', 0.0),
+                    'pr_auc': risk_eval_result.get('pr_auc', 0.0),
+                    'roc_auc': risk_eval_result.get('roc_auc', 0.5),
+                }
+            }
+
+        logger.info("=" * 150)
+
+        primary_k = RISK_FILTER_CONFIG['primary_k']
+        primary_metrics = all_results.get(primary_k, {})
         return {
-            # [OK] 修复：返回所有档位的选股结果，而不仅是Top-1
-            'selections': backtest_result['detailed_trades'],  # {1: [...], 2: [...], 3: [...], 5: [...]}
-            'total_return': backtest_result['backtest_results'].get(1, {}).get('total_return', 0),
-            'win_rate': backtest_result['backtest_results'].get(1, {}).get('win_rate', 0),
-            'profit_loss_ratio': backtest_result['backtest_results'].get(1, {}).get('profit_loss_ratio', 0),
-            'sharpe_ratio': backtest_result['backtest_results'].get(1, {}).get('sharpe_ratio', 0),
-            'max_drawdown': backtest_result['backtest_results'].get(1, {}).get('max_drawdown', 0),
-            'total_trades': backtest_result['backtest_results'].get(1, {}).get('total_trades', 0),
-            # [OK] 所有Top-k档位的完整结果
-            'all_results': backtest_result['backtest_results'],  # {1: {...}, 2: {...}, 3: {...}, 5: {...}}
-            'detailed_trades': backtest_result['detailed_trades'],  # {1: [...], 2: [...], 3: [...], 5: [...]}
-            'summary_stats': backtest_result['summary_stats']
+            'selections': selections,
+            'total_return': primary_metrics.get('weighted_return_mean', 0.0),
+            'win_rate': primary_metrics.get('precision', 0.0),
+            'profit_loss_ratio': primary_metrics.get('lift', 0.0),
+            'sharpe_ratio': risk_eval_result.get('score', 0.0),
+            'max_drawdown': abs(primary_metrics.get('drawdown_mean', 0.0)),
+            'total_trades': primary_metrics.get('total_trades', 0),
+            'all_results': all_results,
+            'detailed_trades': selections,
+            'summary_stats': {
+                'mode': 'risk_filter',
+                'total_trading_days': unique_days,
+                'evaluation_score': risk_eval_result.get('score', 0.0),
+                'pr_auc': risk_eval_result.get('pr_auc', 0.0),
+                'roc_auc': risk_eval_result.get('roc_auc', 0.5),
+            }
         }
 
     except Exception as e:
@@ -15471,10 +16765,12 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260222_012258.pkl"
-        # lgb_pattern = f"lightgbm_model_window3_20260301_130248.pkl"妖股
-        lgb_pattern = f"lightgbm_model_window3_20260301_171655.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260301_130248.pkl"#妖股
+        # lgb_pattern = f"lightgbm_model_window3_20260301_171655.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260302_175124.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260302_202830.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
 
         model_result = None
@@ -15596,23 +16892,45 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # [WRENCH] 添加：输出窗口回测结果表格（类似test_model模式）
         all_results = backtest_result.get('all_results', {})
         if all_results:
-            logger.info(f"\n[CHART] [{window['name']}] 选股策略回测结果:")
-            logger.info("=" * 150)
-            logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
-            logger.info("=" * 150)
+            risk_mode = any(result.get('mode') == 'risk_filter' for result in all_results.values())
+            if risk_mode:
+                logger.info(f"\n[CHART] [{window['name']}] 风险过滤评估结果:")
+                logger.info("=" * 150)
+                logger.info(f"{'风险桶':<10} {'命中率':<10} {'捕获率':<10} {'严重度均值':<12} {'严重度捕获':<12} {'Lift':<8} {'加权收益':<10} {'正收益占比':<10} {'平均回撤':<10} {'样本天数':<10}")
+                logger.info("=" * 150)
 
-            for stock_count in sorted(all_results.keys()):
-                result = all_results[stock_count]
-                total_trades = result.get('total_trades', 0)
+                for stock_count in sorted(all_results.keys()):
+                    result = all_results[stock_count]
+                    logger.info(
+                        f"Top-{stock_count:<6} {result.get('precision', 0):>8.2%}  "
+                        f"{result.get('capture', 0):>8.2%}  "
+                        f"{result.get('severity_mean', 0):>10.4f}  "
+                        f"{result.get('severity_capture', 0):>10.2%}  "
+                        f"{result.get('lift', 0):>6.2f}  "
+                        f"{result.get('weighted_return_mean', 0):>8.2%}  "
+                        f"{result.get('positive_rate', 0):>8.2%}  "
+                        f"{result.get('drawdown_mean', 0):>8.2%}  "
+                        f"{result.get('summary_stats', {}).get('total_trading_days', 0):>8d}"
+                    )
+                logger.info("=" * 150)
+            else:
+                logger.info(f"\n[CHART] [{window['name']}] 选股策略回测结果:")
+                logger.info("=" * 150)
+                logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
+                logger.info("=" * 150)
 
-                logger.info(f"Top-{stock_count:<5} {result.get('total_return_gross', 0):>8.2%}  "
-                           f"{result.get('total_return', 0):>13.2%}  "
-                           f"{result.get('annual_return', 0):>8.2%}  {result.get('max_drawdown', 0):>8.2%}  "
-                           f"{result.get('win_rate', 0):>6.2%}  "
-                           f"{result.get('profit_loss_ratio', 0):>6.2f}  "
-                           f"{result.get('holding_days', 0):>10d}{total_trades:>10}")
+                for stock_count in sorted(all_results.keys()):
+                    result = all_results[stock_count]
+                    total_trades = result.get('total_trades', 0)
 
-            logger.info("=" * 150)
+                    logger.info(f"Top-{stock_count:<5} {result.get('total_return_gross', 0):>8.2%}  "
+                               f"{result.get('total_return', 0):>13.2%}  "
+                               f"{result.get('annual_return', 0):>8.2%}  {result.get('max_drawdown', 0):>8.2%}  "
+                               f"{result.get('win_rate', 0):>6.2%}  "
+                               f"{result.get('profit_loss_ratio', 0):>6.2f}  "
+                               f"{result.get('holding_days', 0):>10d}{total_trades:>10}")
+
+                logger.info("=" * 150)
 
         # [WRENCH] 修复：返回所有Top-k档位的完整结果
         return {

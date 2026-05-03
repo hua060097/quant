@@ -81,6 +81,33 @@ class TradingConfig:
     ORDER_TYPE_SELL = "STOCK_SELL"
 
 
+class StrategyConfig:
+    """策略层配置"""
+    # 是否启用与回测一致的 q40 Top1/Top2 动态切换
+    ENABLE_DYNAMIC_RANK_SWITCH = True
+
+    # 策略级可用总资金上限（独立于账户总资产）
+    STRATEGY_CAPITAL = 86_000.0
+
+    # 并行槽位和固定槽位仓位
+    MAX_CONCURRENT_POSITIONS = 2
+    POSITION_SCHEDULE = [0.8, 0.2]
+
+    # pred/select 输出保留的候选数
+    PRED_TOPN = 5
+
+    # q40 训练窗
+    Q40_TRAIN_START = "2023-06-01"
+    Q40_TRAIN_END = "2025-03-01"
+
+    # 开盘跳空风控（与当前回测逻辑对齐）
+    GAP_DOWN_THRESHOLD_TOP1 = -0.03
+    GAP_DOWN_THRESHOLD_STRONG_TOP2 = -0.03
+    GAP_DOWN_THRESHOLD_NON_TOP1 = -0.05
+    GAP_DOWN_THRESHOLD_WEAK_TOP2 = -0.07
+    GAP_UP_THRESHOLD = 0.05
+
+
 # ============================================================
 # 止盈止损配置
 # ============================================================
@@ -101,7 +128,7 @@ class StopLossConfig:
 
     # 连续阴线风控阈值（根数）
     # 说明：连续N根5分钟K线阴线触发风控
-    CONSECUTIVE_BEARISH_THRESHOLD = 4  # 连续4根阴线触发风控
+    CONSECUTIVE_BEARISH_THRESHOLD = 3  # 连续3根阴线触发风控
 
     # 最大持仓天数
     # 注意: T+1买入当天算第1天
@@ -176,4 +203,3 @@ class FilterConfig:
 
 # 初始化目录
 PathConfig.ensure_dirs()
-

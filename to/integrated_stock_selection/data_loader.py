@@ -194,15 +194,7 @@ class IntegratedDataLoader:
         """加载个股特征数据"""
         try:
             self.logger.info(f"加载个股特征数据: {start_date} - {end_date}")
-            
-            # 检查缓存
-            cache_key = f"stock_features_{start_date}_{end_date}"
-            cache_file = self.cache_dir / f"{cache_key}.parquet"
-            
-            if cache_file.exists():
-                self.logger.info(f"从缓存加载: {cache_file}")
-                return pd.read_parquet(cache_file)
-            
+
             # 使用本地实现以确保正确的数据路径
             # 获取交易日
             trading_dates = self.get_trading_dates(start_date, end_date)
@@ -216,6 +208,33 @@ class IntegratedDataLoader:
             # 使用相对于当前文件的路径，确保路径正确
             current_file_dir = Path(__file__).parent  # integrated_stock_selection目录
             features_dir = current_file_dir.parent / "local_data" / "features" / "daily"
+
+            # 检查缓存
+            cache_key = f"stock_features_{start_date}_{end_date}"
+            cache_file = self.cache_dir / f"{cache_key}.parquet"
+
+            def _is_cache_stale() -> bool:
+                if not cache_file.exists():
+                    return True
+                cache_mtime = cache_file.stat().st_mtime
+                checked_files = 0
+                for date_str in trading_dates:
+                    src = features_dir / f"{date_str}.parquet"
+                    if not src.exists():
+                        continue
+                    checked_files += 1
+                    if src.stat().st_mtime > cache_mtime:
+                        self.logger.info(f"检测到更新的源文件，缓存失效: {src.name}")
+                        return True
+                if checked_files == 0:
+                    self.logger.warning(f"未找到任何源日文件用于校验缓存: {features_dir}")
+                return False
+
+            if cache_file.exists() and not _is_cache_stale():
+                self.logger.info(f"从缓存加载: {cache_file}")
+                return pd.read_parquet(cache_file)
+            elif cache_file.exists():
+                self.logger.info(f"缓存已过期，重建: {cache_file}")
 
             for date_str in trading_dates:
                 # 构建日度文件路径：local_data/features/daily/YYYYMMDD.parquet

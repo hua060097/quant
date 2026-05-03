@@ -49,8 +49,14 @@ class MinuteLevelStockSelector:
         logger.info(f"  数据维度: {prediction_data.shape}")
         logger.info(f"  字段数量: {len(prediction_data.columns)}")
 
-    def run_minute_level_backtest(self, stock_counts: List[int] = [1, 2, 3, 5],
-                              holding_days: int = 2) -> Dict:
+    def run_minute_level_backtest(self,
+                              stock_counts: List[int] = [1, 2, 3, 5],
+                              holding_days: int = 2,
+                              enable_dynamic_rank_switch: bool = True,
+                              max_concurrent_positions: int = 3,
+                              fixed_position_pct: float = 0.5,
+                              position_schedule: Optional[List[float]] = None,
+                              strategy_config_overrides: Optional[Dict] = None) -> Dict:
         """
         运行回测（兼容接口）
 
@@ -61,20 +67,39 @@ class MinuteLevelStockSelector:
         try:
             return self.backtest_engine.run_minute_level_backtest(
                 stock_counts=stock_counts,
-                holding_days=holding_days
+                holding_days=holding_days,
+                enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+                max_concurrent_positions=max_concurrent_positions,
+                fixed_position_pct=fixed_position_pct,
+                position_schedule=position_schedule,
+                strategy_config_overrides=strategy_config_overrides,
             )
         except Exception as e:
             logger.error(f"回测执行失败: {e}")
             raise
 
-    def run_backtest(self, stock_counts: List[int] = [1, 2, 3, 5],
-                    holding_days: int = 2) -> Dict:
+    def run_backtest(self,
+                    stock_counts: List[int] = [1, 2, 3, 5],
+                    holding_days: int = 2,
+                    enable_dynamic_rank_switch: bool = True,
+                    max_concurrent_positions: int = 3,
+                    fixed_position_pct: float = 0.5,
+                    position_schedule: Optional[List[float]] = None,
+                    strategy_config_overrides: Optional[Dict] = None) -> Dict:
         """
         运行回测（兼容接口别名）
 
         调用新的优化引擎进行实际回测
         """
-        return self.run_minute_level_backtest(stock_counts, holding_days)
+        return self.run_minute_level_backtest(
+            stock_counts,
+            holding_days,
+            enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+            max_concurrent_positions=max_concurrent_positions,
+            fixed_position_pct=fixed_position_pct,
+            position_schedule=position_schedule,
+            strategy_config_overrides=strategy_config_overrides,
+        )
 
 
 class PositionManager:
@@ -147,8 +172,14 @@ class EnhancedMinuteBacktest:
     # 🚀 优化方法：基于策略的回测架构 (避免时间->TopK循环问题)
     # =====================================================
 
-    def run_optimized_backtest(self, stock_counts: List[int] = [1, 2, 3, 5],
-                             holding_days: int = 2) -> Dict:
+    def run_optimized_backtest(self,
+                             stock_counts: List[int] = [1, 2, 3, 5],
+                             holding_days: int = 2,
+                             enable_dynamic_rank_switch: bool = True,
+                             max_concurrent_positions: int = 3,
+                             fixed_position_pct: float = 0.5,
+                             position_schedule: Optional[List[float]] = None,
+                             strategy_config_overrides: Optional[Dict] = None) -> Dict:
         """
         运行优化版5分钟级别选股回测 - 使用真正的Strategy-Based架构
 
@@ -167,7 +198,12 @@ class EnhancedMinuteBacktest:
                 prediction_data=self.prediction_data,
                 stock_counts=stock_counts,
                 minute_data_path=self.minute_data_path,  # 使用传递的路径
-                holding_days=holding_days
+                holding_days=holding_days,
+                enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+                max_concurrent_positions=max_concurrent_positions,
+                fixed_position_pct=fixed_position_pct,
+                position_schedule=position_schedule,
+                strategy_config_overrides=strategy_config_overrides,
             )
 
             logger.info("✅ Strategy-Based回测完成")
@@ -217,15 +253,29 @@ class EnhancedMinuteBacktest:
 
         return backtest_results
 
-    def run_minute_level_backtest(self, stock_counts: List[int] = [1, 2, 3, 5],
-                                 holding_days: int = 2) -> Dict:
+    def run_minute_level_backtest(self,
+                                 stock_counts: List[int] = [1, 2, 3, 5],
+                                 holding_days: int = 2,
+                                 enable_dynamic_rank_switch: bool = True,
+                                 max_concurrent_positions: int = 3,
+                                 fixed_position_pct: float = 0.5,
+                                 position_schedule: Optional[List[float]] = None,
+                                 strategy_config_overrides: Optional[Dict] = None) -> Dict:
         """
         兼容方法：调用优化版回测
 
         保持与原版main.py的兼容性
         """
         logger.info("📊 使用优化版5分钟回测系统")
-        return self.run_optimized_backtest(stock_counts, holding_days)
+        return self.run_optimized_backtest(
+            stock_counts,
+            holding_days,
+            enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+            max_concurrent_positions=max_concurrent_positions,
+            fixed_position_pct=fixed_position_pct,
+            position_schedule=position_schedule,
+            strategy_config_overrides=strategy_config_overrides,
+        )
 
     def _select_top_k_stocks(self, daily_stocks: pd.DataFrame, stock_count: int) -> pd.DataFrame:
         """选择Top-K股票"""

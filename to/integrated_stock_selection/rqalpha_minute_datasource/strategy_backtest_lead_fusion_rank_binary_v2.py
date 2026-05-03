@@ -14,9 +14,12 @@ from datetime import datetime, timedelta, date
 from typing import Dict, List, Any, Optional
 import logging
 import os
+import gc
+import bisect
 import pyarrow.parquet as pq
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ class RiskControlStrategy:
 class RiskControlConfig:
     """风控配置"""
     # 风控策略选择（默认使用日线MA5跌破策略）
-    STRATEGY = RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN
+    STRATEGY = RiskControlStrategy.DAILY_MA5_BREAK
 
     # 日线MA5跌破策略参数
     MA5_CONSECUTIVE_BREAKS = 2  # 连续跌破MA5的次数（连续N个5分钟收盘价低于MA5）
@@ -68,15 +71,19 @@ class EntryRiskControlConfig:
     # 涨跌幅风控参数（保持原有逻辑）
     GAP_MAX_DOWN_THRESHOLD = -0.03  # 跌空超过3%禁止买入
     GAP_MAX_UP_THRESHOLD = 0.05  # 高开超过5%禁止买入
+    GAP_MAX_DOWN_THRESHOLD_NON_TOP1 = -0.03  # 非Top1跌空超过5%禁止买入
 
 @dataclass
 class StrategyConfig:
     """策略配置类"""
     strategy_type: StrategyType
     stock_count: int
+    enable_dynamic_rank_switch: bool = True
     holding_days: int = 3
     initial_capital: float = 1000000.0
-    max_position_ratio: float = 0.25  # 单只股票最大仓位比例（用于多股票策略的资金分配）
+    max_concurrent_positions: int = 3
+    fixed_position_pct: float = 0.5
+    position_schedule: Optional[List[float]] = None
 
     # 持仓卖出止损阈值（用于T+2、T+3及以后的持仓风控）
     # 说明：
@@ -87,7 +94,7 @@ class StrategyConfig:
     #       - stop_loss_threshold = 0.00   : 收益为负（0%）就卖出（激进风控）
     #       - stop_loss_threshold = 0.01   : 收益低于1%就卖出（要求正收益）
     #       - stop_loss_threshold = -0.10  : 跌幅超过10%才卖出（宽松风控）
-    stop_loss_threshold: float = -0.05  # 默认-5%，保持向后兼容
+    stop_loss_threshold: float = -0.05  # 默认-4%，更早切断左尾风险
 
     # 🆕 风控策略配置
     risk_control_strategy: str = RiskControlConfig.STRATEGY  # 风控策略选择
@@ -100,10 +107,15 @@ class StrategyConfig:
     entry_risk_ma5_down_threshold: float = EntryRiskControlConfig.MA5_MAX_DOWN_THRESHOLD  # MA5低开阈值
     entry_risk_up_threshold: float = EntryRiskControlConfig.GAP_MAX_UP_THRESHOLD  # MA5高开阈值
     entry_risk_down_threshold: float = EntryRiskControlConfig.GAP_MAX_DOWN_THRESHOLD  # MA5低开阈值
+    entry_risk_down_threshold_non_top1: float = EntryRiskControlConfig.GAP_MAX_DOWN_THRESHOLD_NON_TOP1  # 非Top1低开阈值
 
     # 🆕 高位回撤风控参数（用于MA5跌破策略）
     high_return_threshold: float = 0.04  # 最高浮盈阈值（4%），触发后开始监控回撤
     high_drawdown_threshold: float = -0.03  # 从最高点回撤阈值（-3%），超过则卖出
+    profit_bearish_min_peak_return: float = 0.09  # 盈利状态连续阴线风控生效前，至少先达到9%最高浮盈
+    profit_bearish_trailing_drawdown: float = -0.04  # 盈利状态下相对最高点至少回撤4%
+    profit_bearish_min_current_return: float = 0.06  # 盈利状态连续阴线风控时，当前至少仍有6%浮盈
+    profit_bearish_required_count: int = 3  # 盈利状态下连续阴线触发数量
 
 @dataclass
 class Position:
@@ -120,29 +132,57 @@ class Position:
     holding_end_date: Optional[datetime.date] = None
     entry_reason: str = "normal"
     exit_reason: str = ""
+    holding_days: int = 3
+    slot_index: int = 0
 
     # 🆕 跟踪买入后的最高价和最高浮盈（用于高位回撤风控）
     highest_price_since_buy: float = 0.0  # 买入后的最高价格
     highest_return_since_buy: float = -999.0  # 买入后的最高浮盈（相对买入价）
     t1_day_lowest_price: float = 0.0  # 🆕 T+1日（买入日）的最低价（从日线数据获取）
+    last_valid_mark_price: float = 0.0  # 最近一次有效估值价格，避免异常分钟close污染组合净值
 
 class BacktestStrategy:
     """单个策略的回测类 - 完全独立，避免状态干扰"""
 
     def __init__(self, config: StrategyConfig, prediction_data: pd.DataFrame, minute_data_path: str):
         self.config = config
-        # lead_z 历史（用于鲁棒 z-score），只使用过去数据，避免 look-ahead
-        self._lead_history: list[float] = []
         self.minute_data_path = minute_data_path
 
         # 标准化预测数据的日期格式 - 统一为datetime.date
         prediction_data = prediction_data.copy()
+        if prediction_data.columns.duplicated().any():
+            duplicated_columns = prediction_data.columns[prediction_data.columns.duplicated()].tolist()
+            logger.warning(f"⚠️ 预测数据存在重复列，已保留首列并去重: {duplicated_columns}")
+            prediction_data = prediction_data.loc[:, ~prediction_data.columns.duplicated()].copy()
         if 'date' in prediction_data.columns:
             # 将pandas Timestamp转换为datetime.date
             prediction_data['date'] = pd.to_datetime(prediction_data['date']).dt.date
             logger.info(f"📅 标准化日期格式: pandas Timestamp -> datetime.date")
 
         self.prediction_data = prediction_data
+        self.sorted_prediction_dates = sorted(self.prediction_data['date'].unique())
+        self.daily_bar_lookup: Dict[tuple, Dict[str, float]] = {}
+        self.stock_daily_history: Dict[str, Dict[str, list]] = {}
+        if {'stock_code', 'date'}.issubset(self.prediction_data.columns):
+            history_cols = [col for col in ['stock_code', 'date', 'close', 'low'] if col in self.prediction_data.columns]
+            daily_history_df = (
+                self.prediction_data[history_cols]
+                .drop_duplicates(subset=['stock_code', 'date'], keep='first')
+                .sort_values(['stock_code', 'date'])
+                .reset_index(drop=True)
+            )
+            for row in daily_history_df.itertuples(index=False):
+                key = (row.date, row.stock_code)
+                self.daily_bar_lookup[key] = {
+                    'close': float(getattr(row, 'close', np.nan)) if pd.notna(getattr(row, 'close', np.nan)) else np.nan,
+                    'low': float(getattr(row, 'low', np.nan)) if pd.notna(getattr(row, 'low', np.nan)) else np.nan,
+                }
+            for stock_code, grp in daily_history_df.groupby('stock_code', sort=False):
+                self.stock_daily_history[str(stock_code)] = {
+                    'dates': grp['date'].tolist(),
+                    'closes': grp['close'].tolist() if 'close' in grp.columns else [],
+                    'lows': grp['low'].tolist() if 'low' in grp.columns else [],
+                }
 
         # 策略状态 - 独立管理
         self.positions: List[Position] = []
@@ -156,18 +196,12 @@ class BacktestStrategy:
         self.is_holding: bool = False
         self.current_holding_end_date: Optional[datetime.date] = None
 
-        # 正确的T+1逻辑：当前轮次的T日状态
-        self.current_t_date: Optional[datetime.date] = None  # 当前轮次的T日
-
         # 回测结果
         self.trades: List[Dict] = []
         self.daily_portfolio_values: List[float] = [config.initial_capital]
         self.daily_returns: List[float] = [0.0]
         self.trading_dates_list: List[datetime.date] = []  # 保存交易日期列表，用于绘图
         self.skipped_buy_attempts: List[Dict] = []  # 保存被跳过的买入尝试（开盘风控等），用于绘图
-
-        # 仓位控制状态机（NORMAL: 正常模式 limit=0.0, DEFENSIVE: 防御模式 limit=0.01）
-        self.position_control_state = "NORMAL"  # 初始状态为正常模式
 
         # 数据缓存
         self.minute_data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -191,6 +225,16 @@ class BacktestStrategy:
             self.stock_to_sw_industry = {}
 
         logger.info(f"🚀 初始化策略: Top-{config.stock_count}, 初始资金: {config.initial_capital:,.0f}")
+
+    def clear_minute_data_cache(self, dates: Optional[List[str]] = None):
+        """释放分钟数据缓存，避免全量缓存构建时内存持续膨胀。"""
+        if dates is None:
+            self.minute_data_cache.clear()
+            gc.collect()
+            return
+        for date_key in dates:
+            self.minute_data_cache.pop(date_key, None)
+        gc.collect()
 
 
     @staticmethod
@@ -300,7 +344,8 @@ class BacktestStrategy:
                     filtering_stats['zhaban_filtered'] += 1
                     continue
 
-                filtered_stocks.append(stock)
+                # 转为dict，避免重复列索引的Series在DataFrame重建时触发 InvalidIndexError
+                filtered_stocks.append(stock.to_dict())
                 filtering_stats['passed'] += 1
                 # 🔍 添加调试日志：记录通过过滤的股票关键信息
                 if stock['stock_code'] == '603778.SH':  # 专门跟踪问题股票
@@ -548,13 +593,36 @@ class BacktestStrategy:
         """
         批量预加载指定日期和股票的5分钟数据 - 提高效率，避免重复IO
         """
-        logger.info(f"🚀 开始批量预加载: {len(dates)}个日期 x {len(target_stocks)}只股票")
+        unique_stocks = list(dict.fromkeys([str(s) for s in target_stocks if pd.notna(s)]))
+        logger.info(f"🚀 开始批量预加载: {len(dates)}个日期 x {len(unique_stocks)}只股票")
 
         for date in dates:
             date_str = date.strftime('%Y-%m-%d')
             try:
-                # 使用精准批量加载
-                stock_mapping = self.load_minute_data_on_demand(date_str, target_stocks)
+                if not unique_stocks:
+                    stock_mapping = {}
+                elif len(unique_stocks) <= 200:
+                    stock_mapping = self.load_minute_data_on_demand(date_str, unique_stocks)
+                else:
+                    target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    year_month = target_date.strftime('%Y%m')
+                    month_dir = os.path.join(self.minute_data_path, year_month)
+                    minute_file = os.path.join(month_dir, "minute_data.parquet")
+                    if not os.path.exists(minute_file):
+                        logger.warning(f"❌ 未找到{date_str}的数据文件: {minute_file.replace(os.sep, '/')}")
+                        stock_mapping = {stock: pd.DataFrame() for stock in unique_stocks}
+                    else:
+                        start_time = datetime.strptime(f'{date_str} 00:00:00', '%Y-%m-%d %H:%M:%S')
+                        end_time = datetime.strptime(f'{date_str} 23:59:59', '%Y-%m-%d %H:%M:%S')
+                        stock_mapping = {}
+                        batch_size = 200
+                        for start_idx in range(0, len(unique_stocks), batch_size):
+                            batch_stocks = unique_stocks[start_idx:start_idx + batch_size]
+                            batch_mapping = self._load_specific_stocks(
+                                date_str, minute_file, start_time, end_time, batch_stocks
+                            )
+                            stock_mapping.update(batch_mapping)
+                        self.minute_data_cache[date_str] = stock_mapping
                 logger.info(f"📦 {date_str}: 预加载完成 {len(stock_mapping)}只股票数据")
 
             except Exception as e:
@@ -608,6 +676,47 @@ class BacktestStrategy:
             logger.error(f"获取{stock_code}在{date_str}的5分钟数据失败: {e}")
             return pd.DataFrame()
 
+    def _get_safe_mark_price(self, position: Position, trade_date: datetime.date) -> float:
+        """
+        获取用于组合净值估值的安全价格。
+
+        目的：
+        - 避免分钟数据异常 close（接近0、NaN、单日跳变异常）把组合净值瞬间打穿
+        - 当日数据缺失时，优先沿用最近一次有效估值价，而不是让净值异常波动
+        """
+        fallback_price = (
+            position.last_valid_mark_price
+            if position.last_valid_mark_price and position.last_valid_mark_price > 0
+            else position.buy_price
+        )
+        day_data = self.get_stock_data(position.stock_code, trade_date)
+        if day_data.empty:
+            logger.warning(
+                f"⚠️ {position.stock_code} 在{trade_date}无分钟数据，估值回退到最近有效价格: {fallback_price:.4f}"
+            )
+            return fallback_price
+
+        raw_close = day_data.iloc[-1].get('close', np.nan)
+        if pd.isna(raw_close) or not np.isfinite(raw_close) or raw_close <= 0:
+            logger.warning(
+                f"⚠️ {position.stock_code} 在{trade_date}收盘价异常({raw_close})，估值回退到最近有效价格: {fallback_price:.4f}"
+            )
+            return fallback_price
+
+        mark_price = float(raw_close)
+        reference_price = fallback_price if fallback_price > 0 else position.buy_price
+        if reference_price > 0:
+            one_day_move = abs(mark_price / reference_price - 1.0)
+            if one_day_move > 0.40:
+                logger.warning(
+                    f"⚠️ {position.stock_code} 在{trade_date}估值价异常跳变: last_valid={reference_price:.4f}, "
+                    f"close={mark_price:.4f}, 单日变化={one_day_move:.2%}，回退到最近有效价格"
+                )
+                return fallback_price
+
+        position.last_valid_mark_price = mark_price
+        return mark_price
+
     def _calculate_daily_ma5_at_open(self, stock_code: str, buy_date: datetime.date,
                                      buy_open: float) -> Optional[float]:
         """
@@ -648,7 +757,8 @@ class BacktestStrategy:
         return ma5
 
     def check_entry_signal(self, stock_code: str, buy_date: datetime.date,
-                          prev_close: Optional[float], buy_open: float) -> Dict[str, Any]:
+                          prev_close: Optional[float], buy_open: float,
+                          target_rank: int = 1) -> Dict[str, Any]:
         """
         开盘风控检查 - 支持配置化策略选择
 
@@ -669,9 +779,17 @@ class BacktestStrategy:
             gap_ratio = (buy_open - prev_close) / prev_close
             logger.info(f"📊 {stock_code}: 跳空计算 (buy_open={buy_open} - prev_close={prev_close}) / prev_close = {gap_ratio:.4f} ({gap_ratio:.2%})")
 
-            # 风控条件1: 跌空超过3%
-            if gap_ratio < self.config.entry_risk_down_threshold:  # 使用-0.03
-                logger.info(f"🚫 {stock_code}: 跌空超过3% ({gap_ratio:.2%})，禁止买入")
+            down_threshold = (
+                self.config.entry_risk_down_threshold
+                if int(target_rank) == 1
+                else self.config.entry_risk_down_threshold_non_top1
+            )
+
+            # 风控条件1: Top1 跌空超过3%，非Top1跌空超过5%
+            if gap_ratio < down_threshold:
+                logger.info(
+                    f"🚫 {stock_code}: 跌空超过{abs(down_threshold):.0%} ({gap_ratio:.2%})，禁止买入"
+                )
                 return {
                     'can_buy': False,
                     'reason': f'开盘跳空{-gap_ratio:.2%}',
@@ -775,38 +893,23 @@ class BacktestStrategy:
             如果 date=2026-01-10, n=4
             返回: [10.2, 10.3, 10.1, 10.4]  # 2026-01-06, 01-07, 01-08, 01-09的close
         """
-        # 获取所有交易日期（已排序）
-        all_dates = sorted(self.prediction_data['date'].unique())
+        stock_history = self.stock_daily_history.get(str(stock_code))
+        if not stock_history:
+            return []
 
-        # 找到基准日期在交易日列表中的位置
-        try:
-            date_index = all_dates.index(date)
-        except ValueError:
-            # 如果基准日期不在交易日列表中，找最近的前一个交易日
-            earlier_dates = [d for d in all_dates if d < date]
-            if not earlier_dates:
-                return []
-            date = earlier_dates[-1]
-            date_index = all_dates.index(date)
+        dates = stock_history['dates']
+        closes = stock_history['closes']
+        if not dates or not closes:
+            return []
 
-        # 获取前N个交易日
-        start_index = max(0, date_index - n)
-        target_dates = all_dates[start_index:date_index]
+        pos = bisect.bisect_left(dates, date)
+        if pos == 0:
+            return []
 
-        # 获取这些日期的close价格
-        closes = []
-        for target_date in target_dates:
-            daily_data = self.prediction_data[
-                (self.prediction_data['date'] == target_date) &
-                (self.prediction_data['stock_code'] == stock_code)
-            ]
-            if not daily_data.empty:
-                closes.append(daily_data.iloc[0]['close'])
-            else:
-                logger.warning(f"⚠️ {stock_code} 在 {target_date} 无日线数据")
-
-        logger.info(f"📊 {stock_code} 在{date}前{n}天的日线close: {closes}")
-        return closes
+        start_index = max(0, pos - n)
+        result = [float(x) for x in closes[start_index:pos] if pd.notna(x)]
+        logger.info(f"📊 {stock_code} 在{date}前{n}天的日线close: {result}")
+        return result
 
     def _get_daily_low(self, stock_code: str, date: datetime.date) -> Optional[float]:
         """
@@ -824,20 +927,21 @@ class BacktestStrategy:
             返回: 10.1  # 2026-01-10当天的最低价
         """
         try:
-            # 从prediction_data中获取指定日期的日线数据
-            daily_data = self.prediction_data[
-                (self.prediction_data['date'] == date) &
-                (self.prediction_data['stock_code'] == stock_code)
-            ]
-
-            if daily_data.empty:
+            bar = self.daily_bar_lookup.get((date, str(stock_code)))
+            if bar is None:
                 logger.warning(f"⚠️ {stock_code} 在 {date} 无日线数据")
                 return None
-
-            daily_low = daily_data.iloc[0]['close']
-            logger.info(f"📊 {stock_code} 在{date}的日线最低价: {daily_low:.4f}")
-            return daily_low
-
+            low_value = bar.get('low')
+            if pd.notna(low_value):
+                daily_low = float(low_value)
+                logger.info(f"📊 {stock_code} 在{date}的日线最低价(low): {daily_low:.4f}")
+                return daily_low
+            close_value = bar.get('close')
+            if pd.notna(close_value):
+                daily_low = float(close_value)
+                logger.info(f"📊 {stock_code} 在{date}的日线最低价(close回退): {daily_low:.4f}")
+                return daily_low
+            return None
         except Exception as e:
             logger.error(f"❌ 获取{stock_code}在{date}的日线最低价失败: {e}")
             return None
@@ -905,8 +1009,9 @@ class BacktestStrategy:
 
         # 确定风控检查范围：T+2交易日（买入日的下1个交易日）~ min(T+holding_days交易日, 当前日)
         start_index = buy_date_index + 1  # T+2交易日（买入日的下一个交易日）
+        effective_holding_days = int(getattr(position, 'holding_days', self.config.holding_days))
         end_index = min(
-            buy_date_index + self.config.holding_days,  # T+holding_days交易日
+            buy_date_index + effective_holding_days,  # T+holding_days交易日
             current_date_index + 1  # 当前日（包含）
         )
 
@@ -1023,7 +1128,7 @@ class BacktestStrategy:
                     is_red_2 = candle_2['close'] < candle_2['open']
                     is_red_3 = candle_3['close'] < candle_3['open']
 
-                    if is_red_1 and is_red_2 and is_red_3: #is_red_0 and
+                    if is_red_1 and is_red_2 and is_red_3: #is_red_0 and 
                         # 发现连续3根阴线，触发风控
                         logger.info(f"🚨 {position.stock_code}: 在第{i-1}-{i+1}根K线发现连续3根阴线!")
                         logger.debug(f"   阴线1: 时间={candle_1['datetime']}, 开盘={candle_1['open']:.4f}, 收盘={candle_1['close']:.4f}")
@@ -1182,98 +1287,60 @@ class BacktestStrategy:
                     position.highest_price_since_buy = high_price
                     position.highest_return_since_buy = (high_price - position.buy_price) / position.buy_price
 
-                # ===== 状态判断：亏损/持平 vs 盈利 =====
-                if current_return <= 0:
-                    # ===== 状态A：亏损/持平状态 - T+1最低价跌破策略 =====
+                # 连续3根5分钟阴线仅在 T+2 / T+3 生效，但不再要求“盈利状态”
+                try:
+                    buy_date_index = trading_dates.index(position.buy_date)
+                    check_date_index = trading_dates.index(check_date)
+                    holding_day_offset = check_date_index - buy_date_index
+                except ValueError:
+                    holding_day_offset = None
 
-                    # 检查是否跌破T+1日最低价
-                    is_below_t1_low = close_price < position.t1_day_lowest_price
+                if holding_day_offset not in (1, 2):
+                    if consecutive_bearish_in_profit > 0:
+                        logger.info(
+                            f"📅 {position.stock_code}: 当前为持仓第{holding_day_offset + 1 if holding_day_offset is not None else '未知'}日，"
+                            f"不在T+2/T+3范围，重置连续阴线计数（从{consecutive_bearish_in_profit}重置为0）"
+                        )
+                    consecutive_bearish_in_profit = 0
+                    continue
 
-                    if is_below_t1_low:
-                        consecutive_below_t1_low += 1
-                        logger.info(f"📉 {position.stock_code} 第{i+1}根K线:")
-                        logger.info(f"   close({close_price:.4f}) < T+1最低价({position.t1_day_lowest_price:.4f})")
-                        logger.info(f"   收益:{current_return*100:.2f}%")
-                        logger.info(f"   连续跌破T+1最低价: {consecutive_below_t1_low}次")
-                    else:
-                        if consecutive_below_t1_low > 0:
-                            logger.info(f"📈 {position.stock_code} 第{i+1}根K线:")
-                            logger.info(f"   close({close_price:.4f}) >= T+1最低价({position.t1_day_lowest_price:.4f})")
-                            logger.info(f"   重置跌破计数（从{consecutive_below_t1_low}重置为0）")
-                        consecutive_below_t1_low = 0
-
-                    # 检查是否触发卖出：连续跌破T+1日最低价
-                    if consecutive_below_t1_low >= self.config.risk_control_t1_low_consecutive_breaks:
-                        logger.info(f"🚨 {position.stock_code}: 在第{i+1}根K线触发T+1最低价跌破风控!")
-                        logger.debug(f"   触发K线: 时间={current_datetime}, close={close_price:.4f}")
-                        logger.debug(f"   T+1最低价: {position.t1_day_lowest_price:.4f}")
-                        logger.debug(f"   连续跌破次数: {consecutive_below_t1_low}")
-                        logger.debug(f"   当前收益: {current_return*100:.2f}%")
-
-                        # 处理不同的datetime格式
-                        if isinstance(current_datetime, str):
-                            exit_time = datetime.fromisoformat(current_datetime)
-                        elif hasattr(current_datetime, 'to_pydatetime'):
-                            exit_time = current_datetime.to_pydatetime()
-                        elif isinstance(current_datetime, datetime):
-                            exit_time = current_datetime
-                        else:
-                            exit_time = datetime.now()
-
-                        return {
-                            'should_exit': True,
-                            'reason': f'亏损状态下连续{consecutive_below_t1_low}次跌破T+1最低价',
-                            'exit_price': close_price,
-                            'exit_time': exit_time,
-                            't1_lowest_price': position.t1_day_lowest_price,
-                            'current_return_pct': current_return * 100,
-                            'consecutive_breaks': consecutive_below_t1_low
-                        }
-
+                is_bearish = close_price < minute_data['open']
+                if is_bearish:
+                    consecutive_bearish_in_profit += 1
+                    logger.info(f"📉 {position.stock_code} 第{i+1}根K线(连续阴线监控):")
+                    logger.info(f"   open={minute_data['open']:.4f}, close={close_price:.4f} (阴线)")
+                    logger.info(f"   当前收益:{current_return*100:.2f}%")
+                    logger.info(f"   连续阴线: {consecutive_bearish_in_profit}次")
                 else:
-                    # ===== 状态B：盈利状态 - 连续阴线策略 =====
+                    if consecutive_bearish_in_profit > 0:
+                        logger.info(f"📈 {position.stock_code} 第{i+1}根K线(连续阴线监控):")
+                        logger.info(f"   open={minute_data['open']:.4f}, close={close_price:.4f} (阳线)")
+                        logger.info(f"   重置阴线计数（从{consecutive_bearish_in_profit}重置为0）")
+                    consecutive_bearish_in_profit = 0
 
-                    # 检查当前K线是否为阴线
-                    is_bearish = close_price < minute_data['open']
+                if consecutive_bearish_in_profit >= self.config.profit_bearish_required_count:
+                    logger.info(f"🚨 {position.stock_code}: 在第{i+1}根K线触发连续阴线风控!")
+                    logger.info(f"   触发K线: 时间={current_datetime}")
+                    logger.info(f"   连续阴线次数: {consecutive_bearish_in_profit}")
+                    logger.info(f"   当前收益: {current_return*100:.2f}%")
 
-                    if is_bearish:
-                        consecutive_bearish_in_profit += 1
-                        logger.info(f"📉 {position.stock_code} 第{i+1}根K线(盈利状态):")
-                        logger.info(f"   open={minute_data['open']:.4f}, close={close_price:.4f} (阴线)")
-                        logger.info(f"   当前收益:{current_return*100:.2f}%")
-                        logger.info(f"   连续阴线: {consecutive_bearish_in_profit}次")
+                    if isinstance(current_datetime, str):
+                        exit_time = datetime.fromisoformat(current_datetime)
+                    elif hasattr(current_datetime, 'to_pydatetime'):
+                        exit_time = current_datetime.to_pydatetime()
+                    elif isinstance(current_datetime, datetime):
+                        exit_time = current_datetime
                     else:
-                        # 阳线，重置计数
-                        if consecutive_bearish_in_profit > 0:
-                            logger.info(f"📈 {position.stock_code} 第{i+1}根K线(盈利状态):")
-                            logger.info(f"   open={minute_data['open']:.4f}, close={close_price:.4f} (阳线)")
-                            logger.info(f"   重置阴线计数（从{consecutive_bearish_in_profit}重置为0）")
-                        consecutive_bearish_in_profit = 0
+                        exit_time = datetime.now()
 
-                    # 检查是否触发卖出：连续3根阴线
-                    if consecutive_bearish_in_profit >= 3:
-                        logger.info(f"🚨 {position.stock_code}: 在第{i+1}根K线触发连续阴线风控(盈利状态)!")
-                        logger.info(f"   触发K线: 时间={current_datetime}")
-                        logger.info(f"   连续阴线次数: {consecutive_bearish_in_profit}")
-
-                        # 处理不同的datetime格式
-                        if isinstance(current_datetime, str):
-                            exit_time = datetime.fromisoformat(current_datetime)
-                        elif hasattr(current_datetime, 'to_pydatetime'):
-                            exit_time = current_datetime.to_pydatetime()
-                        elif isinstance(current_datetime, datetime):
-                            exit_time = current_datetime
-                        else:
-                            exit_time = datetime.now()
-
-                        return {
-                            'should_exit': True,
-                            'reason': f'盈利状态下连续{consecutive_bearish_in_profit}根阴线',
-                            'exit_price': close_price,
-                            'exit_time': exit_time,
-                            'current_return_pct': current_return * 100,
-                            'consecutive_bearish': consecutive_bearish_in_profit
-                        }
+                    return {
+                        'should_exit': True,
+                        'reason': f'连续{consecutive_bearish_in_profit}根5分钟阴线',
+                        'exit_price': close_price,
+                        'exit_time': exit_time,
+                        'current_return_pct': current_return * 100,
+                        'consecutive_bearish': consecutive_bearish_in_profit,
+                    }
 
                 # end for - T+1最低价跌破策略循环结束
 
@@ -1285,7 +1352,7 @@ class BacktestStrategy:
         elif self.config.risk_control_strategy == RiskControlStrategy.DAILY_MA5_BREAK:
             logger.info(f"✅ {position.stock_code}: 未发现风控信号（止损阈值: {self.config.stop_loss_threshold:.2%} 或 日线MA5跌破）")
         elif self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
-            logger.info(f"✅ {position.stock_code}: 未发现风控信号（止损阈值: {self.config.stop_loss_threshold:.2%} 或 T+1最低价跌破/盈利状态连续阴线）")
+            logger.info(f"✅ {position.stock_code}: 未发现风控信号（止损阈值: {self.config.stop_loss_threshold:.2%} 或 T+1最低价跌破/连续阴线）")
         else:
             logger.info(f"✅ {position.stock_code}: 未发现风控信号（止损阈值: {self.config.stop_loss_threshold:.2%}）")
         return {'should_exit': False, 'reason': '无风控信号'}
@@ -1326,6 +1393,212 @@ class BacktestStrategy:
             # 如果买入日期不在trading_dates中，返回None
             logger.error(f"❌ 买入日期 {start_date} 不在交易日期列表中")
             return None
+
+    def _compute_minute_path_stats(
+        self,
+        stock_code: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        trading_dates: List[datetime.date],
+        buy_price: float
+    ) -> Dict[str, float]:
+        """计算单笔交易分钟路径统计，用于缓存和分钟级复筛。"""
+        min_return = 0.0
+        worst_drawdown = 0.0
+        peak_price = float(buy_price)
+
+        try:
+            start_index = trading_dates.index(start_date)
+            end_index = trading_dates.index(end_date)
+        except ValueError:
+            return {
+                'minute_min_return': 0.0,
+                'minute_max_drawdown': 0.0
+            }
+
+        for check_date in trading_dates[start_index:end_index + 1]:
+            day_data = self.get_stock_data(stock_code, check_date)
+            if day_data.empty:
+                continue
+            for _, row in day_data.iterrows():
+                low_price = row['low'] if 'low' in row and pd.notna(row['low']) else row['close']
+                high_price = row['high'] if 'high' in row and pd.notna(row['high']) else row['close']
+
+                if pd.notna(low_price) and buy_price > 0:
+                    low_ret = (float(low_price) - float(buy_price)) / float(buy_price)
+                    min_return = min(min_return, low_ret)
+
+                if pd.notna(high_price):
+                    peak_price = max(peak_price, float(high_price))
+
+                if pd.notna(low_price) and peak_price > 0:
+                    current_drawdown = (float(low_price) - float(peak_price)) / float(peak_price)
+                    worst_drawdown = min(worst_drawdown, current_drawdown)
+
+        return {
+            'minute_min_return': float(min_return),
+            'minute_max_drawdown': float(worst_drawdown)
+        }
+
+    def simulate_single_prediction_outcome(
+        self,
+        stock_code: str,
+        prediction_date: datetime.date,
+        trading_dates: List[datetime.date],
+        predicted_return: float = 0.0,
+        target_rank: int = 1,
+        preloaded: bool = False
+    ) -> Dict[str, Any]:
+        """
+        单股票单预测日模拟，用于离线缓存分钟交易结果。
+        该函数不依赖策略历史交易状态，适合反复复用。
+        """
+        prediction_date = pd.to_datetime(prediction_date).date()
+        result: Dict[str, Any] = {
+            'date': prediction_date,
+            'stock_code': stock_code,
+            'predicted_return': float(predicted_return) if pd.notna(predicted_return) else 0.0,
+            'buy_executable': False,
+            'skip_reason': '',
+            'buy_price': np.nan,
+            'exit_price': np.nan,
+            'exit_date': pd.NaT,
+            'exit_reason': '',
+            'minute_realized_return': 0.0,
+            'minute_min_return': 0.0,
+            'minute_max_drawdown': 0.0,
+            'stoploss_hit': False,
+            'profit_bearish_hit': False,
+            'holding_days_realized': 0,
+            'missing_minute_data': False,
+        }
+
+        trade_date = self.add_trading_days(prediction_date, 1, trading_dates)
+        if trade_date is None:
+            result['skip_reason'] = '无T+1交易日'
+            result['missing_minute_data'] = True
+            return result
+
+        holding_end_date = self.add_trading_days(trade_date, self.config.holding_days - 1, trading_dates)
+        if holding_end_date is None:
+            holding_end_date = trade_date
+
+        if not preloaded:
+            preload_dates = [prediction_date]
+            try:
+                trade_index = trading_dates.index(trade_date)
+                end_index = trading_dates.index(holding_end_date)
+                preload_dates.extend(trading_dates[trade_index:end_index + 1])
+            except ValueError:
+                preload_dates.append(trade_date)
+                if holding_end_date != trade_date:
+                    preload_dates.append(holding_end_date)
+            self._preload_stocks_data(preload_dates, [stock_code])
+
+        prediction_day_data = self.get_stock_data(stock_code, prediction_date)
+        prev_close = prediction_day_data.iloc[-1]['close'] if not prediction_day_data.empty else None
+
+        execution_day_data = self.get_stock_data(stock_code, trade_date)
+        if execution_day_data.empty:
+            result['skip_reason'] = 'T+1无5分钟数据'
+            result['missing_minute_data'] = True
+            return result
+
+        buy_open = float(execution_day_data.iloc[0]['open'])
+        result['buy_price'] = buy_open
+
+        entry_check = self.check_entry_signal(
+            stock_code, trade_date, prev_close, buy_open, target_rank=target_rank
+        )
+        if not entry_check.get('can_buy', False):
+            result['skip_reason'] = str(entry_check.get('reason', '开盘风控拒绝'))
+            return result
+
+        t1_day_lowest_price = 0.0
+        if self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
+            t1_low = self._get_daily_low(stock_code, trade_date)
+            if t1_low is not None and pd.notna(t1_low):
+                t1_day_lowest_price = float(t1_low)
+
+        buy_datetime_value = pd.to_datetime(execution_day_data.iloc[0]['datetime'], errors='coerce')
+        if pd.isna(buy_datetime_value):
+            buy_datetime = datetime.combine(trade_date, datetime.min.time())
+        else:
+            buy_datetime = (
+                buy_datetime_value.to_pydatetime()
+                if hasattr(buy_datetime_value, 'to_pydatetime')
+                else buy_datetime_value
+            )
+
+        position = Position(
+            stock_code=stock_code,
+            buy_date=trade_date,
+            buy_datetime=buy_datetime,
+            buy_price=buy_open,
+            highest_price_since_buy=buy_open,
+            highest_return_since_buy=0.0,
+            quantity=100,
+            predicted_return=float(predicted_return) if pd.notna(predicted_return) else 0.0,
+            holding_end_date=holding_end_date,
+            entry_reason='cache_sim',
+            holding_days=int(self.config.holding_days),
+            slot_index=0,
+            t1_day_lowest_price=t1_day_lowest_price,
+            last_valid_mark_price=buy_open
+        )
+
+        result['buy_executable'] = True
+        exit_price = buy_open
+        exit_date = holding_end_date
+        exit_reason = '到期'
+
+        try:
+            trade_index = trading_dates.index(trade_date)
+            end_index = trading_dates.index(holding_end_date)
+            scan_dates = trading_dates[trade_index:end_index + 1]
+        except ValueError:
+            scan_dates = [trade_date]
+            if holding_end_date != trade_date:
+                scan_dates.append(holding_end_date)
+
+        for check_date in scan_dates:
+            risk_check = self.check_position_risk(position, check_date, trading_dates)
+            if risk_check.get('should_exit', False):
+                exit_date = check_date
+                exit_price = float(risk_check.get('exit_price', buy_open))
+                exit_reason = f"风控: {risk_check.get('reason', '')}"
+                break
+
+        if exit_reason == '到期':
+            exit_day_data = self.get_stock_data(stock_code, holding_end_date)
+            if not exit_day_data.empty and pd.notna(exit_day_data.iloc[-1]['close']):
+                exit_price = float(exit_day_data.iloc[-1]['close'])
+            else:
+                exit_price = buy_open
+
+        path_stats = self._compute_minute_path_stats(
+            stock_code=stock_code,
+            start_date=trade_date,
+            end_date=exit_date,
+            trading_dates=trading_dates,
+            buy_price=buy_open
+        )
+        realized_return = (float(exit_price) - float(buy_open)) / float(buy_open) if buy_open > 0 else 0.0
+
+        result.update({
+            'exit_price': float(exit_price),
+            'exit_date': exit_date,
+            'exit_reason': exit_reason,
+            'minute_realized_return': float(realized_return),
+            'minute_min_return': float(path_stats['minute_min_return']),
+            'minute_max_drawdown': float(path_stats['minute_max_drawdown']),
+            'stoploss_hit': ('累计收益低于' in exit_reason),
+            'profit_bearish_hit': ('连续' in exit_reason and '阴线' in exit_reason),
+            'holding_days_realized': int(
+                max(0, trading_dates.index(exit_date) - trading_dates.index(trade_date) + 1)
+            ) if exit_date in trading_dates and trade_date in trading_dates else 0
+        })
+        return result
 
     def _is_last_trade_stop_loss(self) -> bool:
         """
@@ -1512,6 +1785,32 @@ class BacktestStrategy:
         #     return 0.0
         return 1.0
 
+    def _resolve_position_pct(self, slot_index: int) -> float:
+        """按固定槽位身份返回本次开仓目标仓位。"""
+        schedule = list(self.config.position_schedule or [])
+        if schedule:
+            resolved_slot_index = max(0, int(slot_index))
+            if resolved_slot_index < len(schedule):
+                pct = float(schedule[resolved_slot_index])
+            else:
+                pct = float(schedule[-1])
+        else:
+            pct = float(self.config.fixed_position_pct)
+        return max(0.0, min(1.0, pct))
+
+    def _get_first_free_slot_index(self, positions: Optional[Dict[str, "Position"]] = None) -> Optional[int]:
+        """返回当前固定槽位体系下的第一个空槽位。"""
+        positions = self.current_holdings if positions is None else positions
+        occupied = {
+            int(pos.slot_index) for pos in positions.values()
+            if hasattr(pos, 'slot_index') and pos.slot_index is not None
+        }
+        max_slots = int(max(1, self.config.max_concurrent_positions))
+        for slot_index in range(max_slots):
+            if slot_index not in occupied:
+                return slot_index
+        return None
+
     def _robust_mad(self, values: list[float]) -> float:
         """MAD = median(|x - median(x)|). values 需为非空。"""
         if not values:
@@ -1560,9 +1859,18 @@ class BacktestStrategy:
             self._lead_history = self._lead_history[-int(rolling_window) * 2:]
 
     def execute_buy(self, stock_code: str, buy_date: datetime.date,
-                    predicted_return: float, trading_dates: List[datetime.date], position_pct: float) -> Optional[Position]:
+                    predicted_return: float, trading_dates: List[datetime.date],
+                    position_pct: float, entry_reason: str = "normal",
+                    holding_days_override: Optional[int] = None,
+                    day_start_cash: Optional[float] = None,
+                    day_start_equity: Optional[float] = None,
+                    slot_index: int = 0) -> Optional[Position]:
         """执行买入操作"""
         logger.info(f"🛒 准备买入 {stock_code}, 预测收益: {predicted_return:.4f}")
+
+        if stock_code in self.current_holdings:
+            logger.warning(f"⚠️ {stock_code} 已在持仓中，跳过重复开仓，避免覆盖原持仓")
+            return None
 
         stock_data = self.get_stock_data(stock_code, buy_date)
         if stock_data.empty:
@@ -1597,20 +1905,19 @@ class BacktestStrategy:
             logger.warning(f"⚠️ 现金不足，无法买入{stock_code}: 可用现金={self.cash:.2f}, 最少需要={min_cost:.2f}")
             return None
 
-        # 🆕 关键修复：所有策略都全仓买入
-        # stock_count=1: 买入排名第1的股票，全仓
-        # stock_count=2: 买入排名第2的股票，全仓
-        # stock_count=3: 买入排名第3的股票，全仓
-        # stock_count=5: 买入排名第5的股票，全仓
-        # 每个策略每天只买入1只股票，所以应该用全部可用现金
         position_pct = float(position_pct)
         position_pct = max(0.0, min(1.0, position_pct))
-
-        asset_cash = self.cash  # 或你当前现金变量
-        use_cash = asset_cash * position_pct
-        position_amount = use_cash
-        # position_amount = self.cash
-        logger.info(f"📊 Top-{self.config.stock_count}策略: 全仓买入排名第{self.config.stock_count}的股票，使用全部现金 {self.cash:.2f}")
+        day_start_cash = float(self.cash if day_start_cash is None else day_start_cash)
+        holdings_cost = sum(p.buy_price * p.quantity for p in self.current_holdings.values())
+        reference_equity = float(
+            (self.cash + holdings_cost) if day_start_equity is None else day_start_equity
+        )
+        position_amount = min(day_start_cash, reference_equity * position_pct)
+        logger.info(
+            f"📊 固定仓位买入: 日初现金={day_start_cash:.2f}, 当前现金={self.cash:.2f}, "
+            f"持仓成本={holdings_cost:.2f}, 日初参考权益={reference_equity:.2f}, "
+            f"目标仓位={position_pct:.0%}, 分配金额={position_amount:.2f}"
+        )
         quantity = int(position_amount / buy_price / 100) * 100  # 整手
         actual_cost = buy_price * quantity
 
@@ -1631,13 +1938,16 @@ class BacktestStrategy:
         logger.info(f"💵 资金使用情况: 分配金额={position_amount:.2f}, 买入数量={quantity}股, 实际花费={actual_cost:.2f}")
         logger.info(f"💰 买入后现金: {self.cash - actual_cost:.2f} (买入前: {self.cash:.2f})")
 
+        effective_holding_days = int(holding_days_override or self.config.holding_days)
+        effective_holding_days = max(1, effective_holding_days)
+
         # 计算持仓到期日 - 使用交易日而非自然日
-        holding_end_date = self.add_trading_days(buy_date, self.config.holding_days - 1, trading_dates)
+        holding_end_date = self.add_trading_days(buy_date, effective_holding_days - 1, trading_dates)
 
         # 如果计算失败（买入日期不在交易列表中），回退到自然日计算
         if holding_end_date is None:
             logger.warning(f"⚠️ 无法通过交易日计算到期日，使用自然日计算")
-            holding_end_date = buy_date + timedelta(days=self.config.holding_days - 1)
+            holding_end_date = buy_date + timedelta(days=effective_holding_days - 1)
 
         # 计算实际持有的交易日数量（用于日志）
         try:
@@ -1646,9 +1956,9 @@ class BacktestStrategy:
             actual_trading_days = end_index - buy_index + 1
             logger.info(f"📅 持仓计划: 买入日={buy_date} (交易日索引#{buy_index}), "
                        f"到期日={holding_end_date} (交易日索引#{end_index}), "
-                       f"持有{actual_trading_days}个交易日 (配置: {self.config.holding_days}天)")
+                       f"持有{actual_trading_days}个交易日 (配置: {effective_holding_days}天)")
         except (ValueError, Exception):
-            logger.info(f"📅 持仓计划: 买入日={buy_date}, 到期日={holding_end_date} (配置: {self.config.holding_days}天)")
+            logger.info(f"📅 持仓计划: 买入日={buy_date}, 到期日={holding_end_date} (配置: {effective_holding_days}天)")
 
         # 🆕 获取T+1日（买入日）的最低价（用于T+1最低价跌破策略）
         t1_day_lowest_price = 0.0
@@ -1668,26 +1978,29 @@ class BacktestStrategy:
             quantity=quantity,
             predicted_return=predicted_return,
             holding_end_date=holding_end_date,
-            t1_day_lowest_price=t1_day_lowest_price  # 🆕 记录T+1日最低价
+            entry_reason=entry_reason,
+            holding_days=effective_holding_days,
+            slot_index=int(slot_index),
+            t1_day_lowest_price=t1_day_lowest_price,  # 🆕 记录T+1日最低价
+            last_valid_mark_price=buy_price
         )
 
         self.current_holdings[stock_code] = position
         self.cash -= buy_price * quantity
 
-        # 更新买入周期状态 (关键修复)
         self.last_buy_date = buy_date
         self.current_buy_cycle_date = buy_date
-        self.is_holding = True
-        self.current_holding_end_date = position.holding_end_date
-
-        # 🆕 设置本轮已尝试买入的标志（用于判断是否需要重置）
-        self.has_attempted_buy_this_cycle = True
-
-        # 修复T+1买入bug：买入成功后清除动态T日，使用正式的last_position_end_date
-        self.dynamic_t_date = None  # 清除动态T日，买入后使用正式逻辑
+        self.is_holding = bool(self.current_holdings)
+        self.current_holding_end_date = max(
+            p.holding_end_date for p in self.current_holdings.values() if p.holding_end_date is not None
+        )
 
         logger.info(f"✅ 买入成功: {stock_code}, 价格: {buy_price:.4f}, 数量: {quantity}, 时间: {buy_datetime}, 剩余现金: {self.cash:.2f}")
-        logger.info(f"📅 买入周期状态: 最后买入日={self.last_buy_date}, 预计卖出日={self.current_holding_end_date}")
+        logger.info(
+            f"📅 买入后持仓状态: 槽位={position.slot_index + 1}/{self.config.max_concurrent_positions}, "
+            f"持仓数={len(self.current_holdings)}/{self.config.max_concurrent_positions}, "
+            f"最晚到期日={self.current_holding_end_date}"
+        )
 
         return position
 
@@ -1758,129 +2071,42 @@ class BacktestStrategy:
             pass
         return None
 
-    def _should_attempt_buy(self, trade_date: datetime.date, trading_dates: List[datetime.date]) -> Dict[str, Any]:
-        """检查当前交易日是否应该尝试买入 - 实现正确的T+1逻辑"""
+    def _should_attempt_buy(self, trade_date: datetime.date, trading_dates: List[datetime.date],
+                            day_start_open_slots: Optional[int] = None) -> Dict[str, Any]:
+        """检查当前交易日是否应该尝试买入。
+
+        并行持仓版本使用“当日开盘前的可用槽位”决定是否允许买入。
+        如果槽位是当日先卖出才腾出来的，则当天不能复用，只能从下一交易日开始使用。
+        """
         try:
-            logger.debug(f"🤔 判断是否买入: trade_date={trade_date}, is_holding={self.is_holding}, "
-                        f"last_buy_date={self.last_buy_date}, current_t_date={getattr(self, 'current_t_date', None)}")
+            max_slots = int(max(1, self.config.max_concurrent_positions))
+            if day_start_open_slots is None:
+                day_start_open_slots = max_slots - len(self.current_holdings)
+            open_slots = int(day_start_open_slots)
+            logger.debug(
+                f"🤔 判断是否买入: trade_date={trade_date}, holdings={len(self.current_holdings)}, "
+                f"day_start_open_slots={open_slots}/{max_slots}"
+            )
 
-            # 如果当前有持仓，不能买入
-            if self.is_holding:
-                logger.debug(f"🚫 当前有持仓，不允许买入")
-                return {'should_buy': False, 'reason': f'持仓期间 (预计{self.current_holding_end_date}到期)', 'prediction_date': None}
+            if open_slots <= 0:
+                return {
+                    'should_buy': False,
+                    'reason': f'当日开盘前无可用槽位({max_slots - open_slots}/{max_slots})',
+                    'prediction_date': None
+                }
 
-            # 首次运行：设置current_t_date为交易日的前一日，允许买入
-            # 📌 优先级最高：首次运行逻辑必须在空仓重置逻辑之前
-            if not self.last_buy_date:
-                # 为了找到T日，我们需要找当前交易日之前的最近一个预测数据日期
-                available_dates = sorted(self.prediction_data['date'].unique())
-                earlier_dates = [d for d in available_dates if d < trade_date]
+            prediction_dates = pd.to_datetime(self.prediction_data['date']).dt.date
+            prediction_dates = sorted(set(prediction_dates.tolist()))
+            earlier_dates = [d for d in prediction_dates if d < trade_date]
+            if not earlier_dates:
+                return {'should_buy': False, 'reason': '无前一交易日预测数据', 'prediction_date': None}
 
-                if not earlier_dates:
-                    # 第一个交易日，无法设置T日，但需要初始化current_t_date
-                    # 将前一个交易日作为T日（如果没有则使用当前日）
-                    prev_day = self._get_previous_trading_day(trade_date, trading_dates)
-                    self.current_t_date = prev_day if prev_day else trade_date
-                    logger.info(f"🆕 首个交易日: 设置T日={self.current_t_date}")
-                    return {'should_buy': False, 'reason': f'{trade_date} 是第一个交易日，无前一日预测数据', 'prediction_date': None}
-
-                # 设置T日为最近的有预测数据的日期
-                self.current_t_date = max(earlier_dates)
-                logger.info(f"🆕 首次运行: 设置T日={self.current_t_date}, 允许在{trade_date}买入")
-
-                # 检查是否是T+1日
-                current_index = trading_dates.index(trade_date)
-                t_index = trading_dates.index(self.current_t_date)
-                days_since_t = current_index - t_index
-
-                if days_since_t == 1:
-                    # 正好是T+1日，可以买入
-                    return {'should_buy': True, 'reason': '首次买入', 'prediction_date': self.current_t_date}
-                else:
-                    # 还不是T+1日
-                    logger.info(f"⏰ 首次运行，还未到T+1买入日 (还需{1-days_since_t}日)")
-                    return {'should_buy': False, 'reason': f'首次运行，未到T+1日 (还需{1-days_since_t}日)', 'prediction_date': None}
-
-            # 🆕 空仓时立即重置T日，避免日期浪费（只在非首次运行时执行）
-            if not self.is_holding and self.last_buy_date:  # ⭐ 关键：只在last_buy_date不为空时才重置
-                if self._should_reset_t_date(trade_date, trading_dates):
-                    # 将前一日设为新的T日，当日为T+1日
-                    prev_day = self._get_previous_trading_day(trade_date, trading_dates)
-                    if prev_day:
-                        logger.info(f"🔄 [空仓重置] T日重置: {self.current_t_date} → {prev_day}")
-                        logger.info(f"📅 [空仓重置] 当前日{trade_date}作为T+1日，允许立即买入")
-
-                        self.current_t_date = prev_day
-                        self.last_position_end_date = prev_day  # 记录重置日期
-
-                        # ✅ 修复bug：不要直接返回False
-                        # 此时 days_since_t = trade_date - prev_day = 1，正好是T+1日
-                        # 让代码继续执行到line 969-981的T+1判断逻辑，允许立即买入
-                        logger.info(f"✅ [空仓重置] T日已重置为{prev_day}，当前日{trade_date}是T+1日，继续执行买入判断")
-                        # 不返回，继续执行后续的T+1判断逻辑
-
-            # 正常运行：按照用户指定的正确逻辑
-            # "当前轮次的T+holding_days日，在T+holding_days日结束时，把该日当作下一轮的T日"
-
-            try:
-                # 获取当前交易日在交易日列表中的索引
-                current_index = trading_dates.index(trade_date)
-
-                if not hasattr(self, 'current_t_date') or self.current_t_date is None:
-                    # 如果没有current_t_date，说明需要重新设置
-                    # T日应该是当前交易日的上一交易日
-                    if current_index > 0:
-                        self.current_t_date = trading_dates[current_index - 1]
-                        logger.info(f"🔄 重新设置T日: {self.current_t_date}")
-                    else:
-                        return {'should_buy': False, 'reason': '无法确定T日', 'prediction_date': None}
-
-                # 检查当前交易日是否是T+1日
-                t_index = trading_dates.index(self.current_t_date)
-                days_since_t = current_index - t_index
-
-                logger.debug(f"📅 T日逻辑: T日={self.current_t_date}, 当前={trade_date}, 距离T日={days_since_t}日")
-
-                if days_since_t == 1:
-                    # 正好是T+1日，可以买入
-                    # 使用T日的预测数据
-                    available_dates = sorted(self.prediction_data['date'].unique())
-                    prediction_dates = [d for d in available_dates if d <= self.current_t_date]
-
-                    if prediction_dates:
-                        prediction_date = max(prediction_dates)
-                    else:
-                        prediction_date = self.current_t_date
-
-                    logger.info(f"✅ T+1买入: T日={self.current_t_date}, T+1日={trade_date}, 使用预测日={prediction_date}")
-                    return {'should_buy': True, 'reason': 'T+1买入', 'prediction_date': prediction_date}
-
-                elif days_since_t < 1:
-                    # 还没到T+1日
-                    logger.debug(f"⏰ 还未到T+1买入日: {trade_date}（T日：{self.current_t_date}，还需{1-days_since_t}日）")
-                    return {'should_buy': False, 'reason': f'未到T+1日 (T日={self.current_t_date}, 当前={trade_date}, 还需{1-days_since_t}日)', 'prediction_date': None}
-
-                else:
-                    # days_since_t > 1，已经过了T+1买入窗口
-                    # 根据用户逻辑，此时应该等待T+holding_days日结束，然后将该日设为下一轮的T日
-                    days_past_t1 = days_since_t - 1  # 已经过了T+1日的天数
-                    days_in_holding_period = days_past_t1 + 1  # T+1日到当前日的总天数
-
-                    logger.info(f"📅 已过T+1买入窗口: T日={self.current_t_date}, 当前={trade_date}, 已过T+1({days_past_t1}日)")
-
-                    if days_in_holding_period >= self.config.holding_days:
-                        # 已过持仓周期，按照用户逻辑：将当前日设为下一轮的T日
-                        logger.info(f"🔄 持仓周期已过，更新T日: {self.current_t_date} → {trade_date}")
-                        self.current_t_date = trade_date
-                        return {'should_buy': False, 'reason': f'持仓周期已过，更新T日为{trade_date}', 'prediction_date': None}
-                    else:
-                        # 还在持仓周期内，不能买入
-                        logger.debug(f"⏳ 持仓期间: 已过{days_in_holding_period}/{self.config.holding_days}日")
-                        return {'should_buy': False, 'reason': f'已过T+1买入窗口，持仓中({days_in_holding_period}/{self.config.holding_days}日)', 'prediction_date': None}
-
-            except ValueError as e:
-                logger.warning(f"⚠️ 交易日索引错误: {e}")
-                return {'should_buy': False, 'reason': '日期索引错误', 'prediction_date': None}
+            prediction_date = max(earlier_dates)
+            logger.info(
+                f"✅ 并行持仓买入: 当日开盘前可用槽位{open_slots}/{max_slots}, 当前持仓{len(self.current_holdings)}/{max_slots}, "
+                f"T日={prediction_date}, T+1日={trade_date}"
+            )
+            return {'should_buy': True, 'reason': '并行持仓T+1买入', 'prediction_date': prediction_date}
 
         except Exception as e:
             logger.error(f"❌ 买入判断逻辑异常: {e}")
@@ -1946,22 +2172,16 @@ class BacktestStrategy:
         self.trades.append(trade_record)
         del self.current_holdings[position.stock_code]
 
-        # 检查是否所有持仓都已卖出，如果是则重置买入周期状态
         if not self.current_holdings:
             logger.info("🔄 所有持仓已清空，重置买入周期状态")
             self.is_holding = False
             self.current_holding_end_date = None
-
-            # 🆕 关键修复：卖出后立即重置T日，避免日期浪费
-            # 将卖出日本身作为新的T日，下一个交易日就是新的T+1日
-            # 这样次日可以立即尝试买入，不需要等待
-            self.current_t_date = sell_date
-            logger.info(f"📅 [卖出重置] T日重置: {sell_date} (卖出日本身)")
-            logger.info(f"📅 [卖出重置] 下个交易日将是T+1日，可以立即买入")
-
-            # 记录持仓结束日期
             self.last_position_end_date = sell_date
-            # 注意：保留last_buy_date用于下次买入周期判断
+        else:
+            self.is_holding = True
+            self.current_holding_end_date = max(
+                p.holding_end_date for p in self.current_holdings.values() if p.holding_end_date is not None
+            )
 
         logger.info(f"💰 卖出: {position.stock_code}, 价格: {exit_price:.4f}, "
                    f"收益: {actual_return:.4f} ({actual_return*100:.2f}%), "
@@ -1987,57 +2207,33 @@ class BacktestStrategy:
         for i, trade_date in enumerate(trading_dates):
             # 保存交易日期，用于后续绘图
             self.trading_dates_list.append(trade_date)
-
-            # 🆕 重置尝试标志（每个交易日开始时重置）
-            if not self.is_holding:
-                self.has_attempted_buy_this_cycle = False
+            day_start_positions = dict(self.current_holdings)
+            day_start_holdings_count = len(self.current_holdings)
+            day_start_open_slots = max(0, int(self.config.max_concurrent_positions) - day_start_holdings_count)
+            day_start_free_slot_index = self._get_first_free_slot_index(day_start_positions)
+            day_start_cash = float(self.cash)
+            day_start_holdings_cost = sum(
+                p.buy_price * p.quantity for p in self.current_holdings.values()
+            )
+            day_start_equity = day_start_cash + day_start_holdings_cost
 
             logger.info(f"📅 交易日 {i+1}/{len(trading_dates)}: {trade_date}")
             logger.info(f"💼 当前持仓: {len(self.current_holdings)}只, 现金: {self.cash:.2f}")
 
-            # 风控检查（优先执行 - 在到期卖出之前检查）
-            risk_exited_positions = []
-            positions_to_remove = []
-
-            for stock_code, position in list(self.current_holdings.items()):
-                # 使用交易日期列表进行精确的风控检查
-                logger.debug(f"🔍 检查{position.stock_code}在{trade_date}的风控状态 (买入日: {position.buy_date})")
-                risk_check = self.check_position_risk(position, trade_date, trading_dates)
-                if risk_check['should_exit']:
-                    logger.info(f"🛡️ 风控触发: {position.stock_code}, 原因: {risk_check['reason']}")
-                    trade = self.execute_sell(
-                        position, trade_date,
-                        f"风控: {risk_check['reason']}",
-                        risk_check.get('exit_price')
-                    )
-                    if trade:
-                        risk_exited_positions.append(trade)
-                        positions_to_remove.append(stock_code)
-
-            # 检查持仓到期（在风控检查之后执行）
-            expired_positions = []
-            for stock_code, position in self.current_holdings.items():
-                if stock_code not in positions_to_remove and position.holding_end_date and trade_date >= position.holding_end_date:
-                    expired_positions.append(position)
-
-            # 到期卖出
-            if expired_positions:
-                logger.info(f"⏰ {len(expired_positions)}只持仓到期")
-                for position in expired_positions:
-                    self.execute_sell(position, trade_date, "到期")
-
-            # 空仓选股 - 检查买入时机
-            if not self.current_holdings and i < len(trading_dates) - 1:
+            # 先按早盘状态决定是否买入。A股是T+1，当天9:35可用于买入的资金只能来自早盘可用现金，
+            # 不能使用同日盘中风控/到期卖出后才释放的资金。
+            # 因此买入必须发生在当日卖出逻辑之前，且只允许使用当日开盘前本来就空着的槽位。
+            if day_start_open_slots > 0 and i < len(trading_dates) - 1 and day_start_free_slot_index is not None:
                 # 检查是否是正确的买入时机
-                should_buy = self._should_attempt_buy(trade_date, trading_dates)
+                should_buy = self._should_attempt_buy(
+                    trade_date,
+                    trading_dates,
+                    day_start_open_slots=day_start_open_slots
+                )
 
                 if not should_buy['should_buy']:
                     logger.info(f"⏸️ {should_buy['reason']}, 跳过买入")
                     continue
-
-                # 🆕 关键修复：只在真正进入买入流程时设置标志
-                # 避免在判断时设置，导致"判断为可以买但实际未买"的误判
-                self.has_attempted_buy_this_cycle = True
 
                 # T+1交易逻辑：使用T日预测数据在T+1日买入
                 prediction_date = should_buy['prediction_date']
@@ -2070,21 +2266,62 @@ class BacktestStrategy:
 
                 logger.info(f"🎆 使用预分析结果Top-{len(selected_stocks)}股票进行买入检查:")
                 for _, stock in selected_stocks.iterrows():
-                    logger.info(f"   📈 {stock['stock_code']}: 预测收益={stock['predicted_return']:.4f}")
+                    overlay_desc = ""
+                    if 'overlay_action' in stock.index and pd.notna(stock.get('overlay_action')):
+                        overlay_desc = (
+                            f", overlay={stock.get('overlay_action', 'none')}"
+                            f", overlay_scale={float(stock.get('overlay_scale', 1.0)):.2f}"
+                            f", gap12_rel={float(stock.get('overlay_margin12_rel', np.nan)):.4f}"
+                            f", certainty={float(stock.get('overlay_std_certainty_pct', np.nan)):.4f}"
+                        )
+                    logger.info(f"   📈 {stock['stock_code']}: 预测收益={stock['predicted_return']:.4f}{overlay_desc}")
 
                 logger.info(f"🔄 开始对Top-{self.config.stock_count}策略执行买入逻辑...")
 
                 # 🆕 修改逻辑：stock_count表示买入排名第几的股票，而不是买入前几只
                 # 例如：stock_count=2表示只买入排名第2的股票（1只）
+                # 若预测表中包含regime_target_rank，则优先使用日级状态层决定Top1/Top2切换
                 target_rank = self.config.stock_count  # 目标排名
+                regime_override_active = False
+                regime_skip_buy = False
+                if (
+                    self.config.enable_dynamic_rank_switch and
+                    'regime_target_rank' in selected_stocks.columns
+                ):
+                    regime_rank_series = pd.to_numeric(
+                        selected_stocks['regime_target_rank'], errors='coerce'
+                    ).dropna()
+                    if not regime_rank_series.empty:
+                        target_rank = int(np.clip(regime_rank_series.iloc[0], 1, len(selected_stocks)))
+                        regime_override_active = True
+                        logger.info(
+                            f"🧭 日级状态切换生效: prediction_date={prediction_date}, "
+                            f"使用regime_target_rank={target_rank} 覆盖默认Top-{self.config.stock_count}"
+                        )
+                if (
+                    self.config.enable_dynamic_rank_switch and
+                    'regime_skip_buy' in selected_stocks.columns
+                ):
+                    skip_series = selected_stocks['regime_skip_buy']
+                    if len(skip_series) > 0:
+                        first_skip = skip_series.iloc[0]
+                        regime_skip_buy = bool(first_skip) if pd.notna(first_skip) else False
+                        if regime_skip_buy:
+                            logger.info(
+                                f"🧭 日级状态空仓生效: prediction_date={prediction_date}, "
+                                f"跳过当日所有买入"
+                            )
+                            continue
 
                 # 检查是否有足够的候选股票
                 if len(selected_stocks) < target_rank:
                     logger.warning(f"⚠️ 候选股票数{len(selected_stocks)}不足目标排名{target_rank}，跳过买入")
                     continue
-
-                # 🧠 融合选择：仅对Top-1策略，在Top1/Top2之间用 rank+binary 融合二选一
-                if target_rank == 1:
+                # todo 临时加的
+                # target_rank = 1
+                # 仅在启用动态rank切换时，Top-1策略才允许通过融合在Top1/Top2之间二选一。
+                # 固定Top1模式下直接交易排名第1，不做融合替换。
+                if self.config.enable_dynamic_rank_switch and target_rank == 1 and not regime_override_active:
                     target_stock = self._select_target_stock_for_top1_fusion(selected_stocks, alpha=0.1)
                     if target_stock is None:
                         logger.warning(f"⚠️ 候选股票为空，跳过买入")
@@ -2103,6 +2340,17 @@ class BacktestStrategy:
                 logger.info(f"🎯 处理Top-{self.config.stock_count}策略: 买入排名第{target_rank}的股票")
                 stock = target_stock
                 stock_code = stock['stock_code']
+                overlay_action = str(stock.get('overlay_action', 'none')).lower()
+                overlay_scale = float(stock.get('overlay_scale', 1.0) if pd.notna(stock.get('overlay_scale', 1.0)) else 1.0)
+                overlay_reason = str(stock.get('overlay_reason', '') or '')
+
+                if target_rank == 1 and overlay_action in {'skip', 'half', 'full'}:
+                    logger.info(
+                        f"🛡️ Top1 Overlay决策: {stock_code} -> {overlay_action.upper()} "
+                        f"(scale={overlay_scale:.2f}, reason={overlay_reason}, "
+                        f"gap12_rel={float(stock.get('overlay_margin12_rel', np.nan)):.4f}, "
+                        f"certainty={float(stock.get('overlay_std_certainty_pct', np.nan)):.4f})"
+                    )
 
                 # 正确的T+1风控检查：使用T日收盘价 vs T+1日开盘价
                 logger.info(f"📅 {stock_code} T+1买入逻辑: T日={prediction_date}(预测日), T+1日={trade_date}(执行日)")
@@ -2136,39 +2384,59 @@ class BacktestStrategy:
                     buy_open = None
 
                 if not buy_data.empty:
+                    if target_rank == 1 and overlay_action == 'skip':
+                        logger.info(f"🚫 {stock_code} 被Top1 Overlay跳过: {overlay_reason}")
+                        skipped_record = {
+                            'stock_code': stock_code,
+                            'prediction_date': prediction_date,
+                            'attempt_buy_date': trade_date,
+                            'buy_open': buy_open,
+                            'prev_close': prev_close,
+                            'gap_ratio': np.nan,
+                            'skip_reason': f"Top1 Overlay跳过: {overlay_reason}",
+                            'predicted_return': stock['predicted_return'],
+                            'skip_category': 'Top1 Overlay',
+                            'overlay_action': overlay_action,
+                            'overlay_scale': overlay_scale,
+                            'overlay_margin12': stock.get('overlay_margin12', np.nan),
+                            'overlay_margin12_rel': stock.get('overlay_margin12_rel', np.nan),
+                            'overlay_std_certainty_pct': stock.get('overlay_std_certainty_pct', np.nan)
+                        }
+                        self.skipped_buy_attempts.append(skipped_record)
+                        continue
+
                     # 重新获取buy_open（确保使用正确的值）
                     buy_open = buy_data.iloc[0]['open']
                     prev_close_str = f"{prev_close:.4f}" if prev_close is not None else "N/A"
                     logger.info(f"🔍 {stock_code} 买入检查: 开盘价={buy_open:.4f}, 前收盘={prev_close_str}")
 
                     entry_check = self.check_entry_signal(
-                        stock_code, trade_date, prev_close, buy_open
+                        stock_code, trade_date, prev_close, buy_open, target_rank=target_rank
                     )
 
                     logger.info(f"🚦 {stock_code} 买入信号: {entry_check['can_buy']}, 原因: {entry_check['reason']}")
 
                     if entry_check['can_buy']:
-                        scores = pd.to_numeric(selected_stocks["predicted_return"], errors="coerce").to_numpy(dtype=float)
-                        scores = scores[np.isfinite(scores)]  # 去掉 NaN/inf
+                        final_position_pct = self._resolve_position_pct(day_start_free_slot_index)
+                        entry_reason = "normal"
+                        logger.info(
+                            f"🧭 分层并行仓位生效: {stock_code} 使用 {final_position_pct:.0%} 仓位, "
+                            f"分配到槽位={day_start_free_slot_index + 1}/{self.config.max_concurrent_positions}, "
+                            f"开盘前持仓数={day_start_holdings_count}/{self.config.max_concurrent_positions}"
+                        )
 
-                        if scores.size == 0:
-                            topk_mean = float(stock["predicted_return"])
-                        else:
-                            topk_mean = float(scores.mean())
-                        lead_raw = float(stock['predicted_return']) - float(topk_mean)
-                        lead_z = self._calc_lead_z(lead_raw, rolling_window=60, eps=1e-9)
-                        # 更新历史（在做完当日决策后再纳入分布；这里更新不影响 lead_z（已用过去数据）
-                        self._update_lead_history(lead_raw, rolling_window=60)
-                        position_pct = self._position_pct_by_lead(lead_z, prediction_date)
-
-                        if position_pct <= 0.0:
-                            logger.info(f"🚫 {stock_code} 触发预测强度过滤: lead_z={lead_z:.2f} (limit={self._get_position_limit_by_trade_history():.2f})，跳过买入")
-                            continue
-                        else:
-                            logger.info(f"✅ {stock_code} 预测强度通过: lead_z={lead_z:.2f} -> 仓位 {position_pct:.0%}")
+                        # 固定持仓3天；A股T+1规则下允许从T+2开始因风控提前卖出。
+                        holding_days_override = self.config.holding_days
+                        logger.info(f"🧭 固定持仓天数生效: {stock_code} 使用 {holding_days_override} 天持仓")
 
                         position = self.execute_buy(
-                            stock_code, trade_date, stock['predicted_return'], trading_dates, position_pct=position_pct  # trade_date 是执行日
+                            stock_code, trade_date, stock['predicted_return'], trading_dates,
+                            position_pct=final_position_pct,
+                            entry_reason=entry_reason,  # trade_date 是执行日
+                            holding_days_override=holding_days_override,
+                            day_start_cash=day_start_cash,
+                            day_start_equity=day_start_equity,
+                            slot_index=day_start_free_slot_index
                         )
                         if position:
                             self.positions.append(position)
@@ -2193,23 +2461,42 @@ class BacktestStrategy:
                 else:
                     logger.warning(f"⚠️ {stock_code} {trade_date}无5分钟数据，跳过买入")
 
-                # 🆕 关键修复：买入流程结束后，如果仍然空仓，立即重置T日
-                # 避免等到下一个交易日才重置，导致日期浪费
-                if not self.current_holdings:
-                    logger.info(f"🔄 [买入失败重置] 所有股票买入失败（风控跳过或无数据），立即重置T日")
-                    self.current_t_date = trade_date  # 将当前日设为新的T日
-                    logger.info(f"📅 [买入失败重置] T日重置: {trade_date} (买入日)")
-                    logger.info(f"📅 [买入失败重置] 下个交易日将是T+1日，可以立即买入")
+            # 风控检查（在买入之后、到期卖出之前执行）。这样当天卖出释放的资金不会错误参与早盘买入。
+            risk_exited_positions = []
+            positions_to_remove = []
+
+            for stock_code, position in list(self.current_holdings.items()):
+                # 使用交易日期列表进行精确的风控检查
+                logger.debug(f"🔍 检查{position.stock_code}在{trade_date}的风控状态 (买入日: {position.buy_date})")
+                risk_check = self.check_position_risk(position, trade_date, trading_dates)
+                if risk_check['should_exit']:
+                    logger.info(f"🛡️ 风控触发: {position.stock_code}, 原因: {risk_check['reason']}")
+                    trade = self.execute_sell(
+                        position, trade_date,
+                        f"风控: {risk_check['reason']}",
+                        risk_check.get('exit_price')
+                    )
+                    if trade:
+                        risk_exited_positions.append(trade)
+                        positions_to_remove.append(stock_code)
+
+            # 检查持仓到期（在风控检查之后执行）
+            expired_positions = []
+            for stock_code, position in self.current_holdings.items():
+                if stock_code not in positions_to_remove and position.holding_end_date and trade_date >= position.holding_end_date:
+                    expired_positions.append(position)
+
+            # 到期卖出
+            if expired_positions:
+                logger.info(f"⏰ {len(expired_positions)}只持仓到期")
+                for position in expired_positions:
+                    self.execute_sell(position, trade_date, "到期")
 
             # 计算当日收益
             daily_pnl = sum([trade['profit_loss'] for trade in self.trades
                              if trade['sell_datetime'].date() == trade_date])
             current_value = self.cash + sum([
-                pos.quantity * self.get_stock_data(
-                    pos.stock_code, trade_date
-                ).iloc[-1]['close']
-                if not self.get_stock_data(pos.stock_code, trade_date).empty
-                else pos.buy_price
+                pos.quantity * self._get_safe_mark_price(pos, trade_date)
                 for pos in self.current_holdings.values()
             ])
 
@@ -2277,6 +2564,7 @@ class BacktestStrategy:
             # 买入风控统计
             gap_down = summary_stats.get('gap_down_3_skipped', 0)
             gap_up = summary_stats.get('gap_up_5_skipped', 0)
+            overlay_skipped = summary_stats.get('overlay_skipped', 0)
 
             if gap_down > 0 or gap_up > 0:
                 logger.info(f"      买入风控 (开盘): {gap_down + gap_up}次")
@@ -2286,6 +2574,9 @@ class BacktestStrategy:
                     logger.info(f"        - 涨超5%: {gap_up}次")
             else:
                 logger.info(f"      买入风控 (开盘): 无触发")
+
+            if overlay_skipped > 0:
+                logger.info(f"      Top1 Overlay跳过: {overlay_skipped}次")
 
             # 🆕 MA5开盘风控统计
             ma5_gap_down = summary_stats.get('ma5_gap_down_skipped', 0)
@@ -2310,7 +2601,7 @@ class BacktestStrategy:
                 consecutive = risk_details.get('consecutive_decline_exits', 0)
                 ma5_break = risk_details.get('ma5_break_exits', 0)  # 🆕 获取MA5跌破次数
                 t1_low_break = risk_details.get('t1_low_break_exits', 0)  # 🆕 获取T+1最低价跌破次数
-                profit_bearish = risk_details.get('profit_bearish_exits', 0)  # 🆕 获取盈利状态连续阴线次数
+                profit_bearish = risk_details.get('profit_bearish_exits', 0)  # 获取连续阴线退出次数
 
                 if cumulative > 0:
                     logger.info(f"        - 累计收益低于阈值: {cumulative}次")
@@ -2320,8 +2611,8 @@ class BacktestStrategy:
                     logger.info(f"        - 日线MA5跌破: {ma5_break}次")
                 if t1_low_break > 0:  # 🆕 显示T+1最低价跌破统计
                     logger.info(f"        - T+1最低价跌破: {t1_low_break}次")
-                if profit_bearish > 0:  # 🆕 显示盈利状态连续阴线统计
-                    logger.info(f"        - 盈利状态连续阴线: {profit_bearish}次")
+                if profit_bearish > 0:
+                    logger.info(f"        - 连续3根阴线(T+2/T+3): {profit_bearish}次")
 
                 risk_rate = risk_details.get('risk_exit_rate', 0)
                 logger.info(f"        风控退出率: {risk_rate:.1%}")
@@ -2351,13 +2642,25 @@ class BacktestStrategy:
 
         peak = self.daily_portfolio_values[0]
         max_drawdown = 0
+        worst_idx = 0
 
-        for value in self.daily_portfolio_values:
+        for idx, value in enumerate(self.daily_portfolio_values):
             if value > peak:
                 peak = value
             drawdown = (peak - value) / peak * 100
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
+                worst_idx = idx
+
+        if max_drawdown > 80:
+            worst_value = self.daily_portfolio_values[worst_idx]
+            worst_date = None
+            if worst_idx > 0 and len(self.trading_dates_list) >= worst_idx:
+                worst_date = self.trading_dates_list[worst_idx - 1]
+            logger.warning(
+                f"⚠️ 检测到异常大回撤: {max_drawdown:.2f}%, "
+                f"worst_value={worst_value:.2f}, worst_date={worst_date}"
+            )
 
         return max_drawdown
 
@@ -2394,6 +2697,7 @@ class BacktestStrategy:
             'skipped_positions': len(self.skipped_buy_attempts),  # 总跳过次数
             'gap_down_3_skipped': 0,  # 跌空超过3%
             'gap_up_5_skipped': 0,  # 高开超过5%
+            'overlay_skipped': 0,  # Top1 overlay主动跳过
             # 🆕 添加MA5风控统计
             'ma5_gap_down_skipped': 0,  # 低开超MA5 3%
             'ma5_gap_up_skipped': 0,  # 高开超MA5 3%
@@ -2423,6 +2727,8 @@ class BacktestStrategy:
                     stats['ma5_gap_down_skipped'] += 1
                 elif ma5_gap_ratio > 0:
                     stats['ma5_gap_up_skipped'] += 1
+            elif skip_category == 'Top1 Overlay':
+                stats['overlay_skipped'] += 1
 
         # 持仓风控详情统计
         risk_exits = [t for t in self.trades if '风控' in t.get('exit_reason', '')]
@@ -2448,8 +2754,8 @@ class BacktestStrategy:
         ma5_break_exits = len([t for t in risk_exits if '日线MA5' in t.get('exit_reason', '')])
         # 🆕 统计T+1最低价跌破退出次数
         t1_low_break_exits = len([t for t in risk_exits if 'T+1最低价' in t.get('exit_reason', '')])
-        # 🆕 统计盈利状态连续阴线退出次数
-        profit_bearish_exits = len([t for t in risk_exits if '盈利状态下连续' in t.get('exit_reason', '') and '阴线' in t.get('exit_reason', '')])
+        # 连续阴线退出次数（当前规则下不再区分是否盈利状态）
+        profit_bearish_exits = len([t for t in risk_exits if '连续3根' in t.get('exit_reason', '') and '阴线' in t.get('exit_reason', '')])
 
         # 🔍 调试：打印统计结果
         logger.info(f"🔍 [风控统计调试] 使用阈值: {threshold_desc}")
@@ -2461,7 +2767,7 @@ class BacktestStrategy:
             logger.info(f"🔍 [风控统计调试] 日线MA5跌破: {ma5_break_exits}次")
         elif self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
             logger.info(f"🔍 [风控统计调试] T+1最低价跌破: {t1_low_break_exits}次")
-            logger.info(f"🔍 [风控统计调试] 盈利状态连续阴线: {profit_bearish_exits}次")
+            logger.info(f"🔍 [风控统计调试] 连续3根阴线: {profit_bearish_exits}次")
 
         stats['risk_control_details'] = {
             'total_risk_exits': len(risk_exits),
@@ -2471,7 +2777,7 @@ class BacktestStrategy:
             'consecutive_decline_exits': consecutive_decline_exits,
             'ma5_break_exits': ma5_break_exits,  # 🆕 MA5跌破退出次数
             't1_low_break_exits': t1_low_break_exits,  # 🆕 T+1最低价跌破退出次数
-            'profit_bearish_exits': profit_bearish_exits,  # 🆕 盈利状态连续阴线退出次数
+            'profit_bearish_exits': profit_bearish_exits,  # 连续阴线退出次数
             'normal_exits': len(normal_exits),
             'risk_exit_rate': len(risk_exits) / len(self.trades) if self.trades else 0,
             'avg_risk_exit_return': np.mean([t['actual_return'] for t in risk_exits]) if risk_exits else 0,
@@ -2479,6 +2785,146 @@ class BacktestStrategy:
         }
 
         return stats
+
+
+def get_minute_trade_cache_rule_signature(config: Optional[StrategyConfig] = None) -> str:
+    """为分钟交易缓存生成规则签名，便于规则变动后自动失效。"""
+    cfg = config or StrategyConfig(strategy_type=StrategyType.TOP_1, stock_count=1)
+    return (
+        f"hd{int(cfg.holding_days)}"
+        f"_entry{cfg.entry_risk_control_strategy}"
+        f"_down{cfg.entry_risk_down_threshold:.3f}"
+        f"_downn{cfg.entry_risk_down_threshold_non_top1:.3f}"
+        f"_up{cfg.entry_risk_up_threshold:.3f}"
+        f"_risk{cfg.risk_control_strategy}"
+        f"_sl{cfg.stop_loss_threshold:.3f}"
+        f"_pb{int(cfg.profit_bearish_required_count)}"
+    )
+
+
+def build_minute_trade_cache(
+    target_prediction_rows: pd.DataFrame,
+    context_prediction_data: pd.DataFrame,
+    minute_data_path: str,
+    trading_dates: Optional[List[datetime.date]] = None,
+    cache_path: Optional[Path] = None,
+    holding_days: int = 3,
+    overwrite: bool = False,
+    log_prefix: str = "[MINUTE_CACHE]"
+) -> pd.DataFrame:
+    """
+    为验证集/selection集股票生成分钟交易结果缓存。
+    仅缓存股票-预测日级最终结果，而非完整分钟明细。
+    """
+    if cache_path is not None and Path(cache_path).exists() and not overwrite:
+        logger.info(f"{log_prefix} 命中缓存: {cache_path}")
+        return pd.read_parquet(cache_path)
+
+    if target_prediction_rows is None or target_prediction_rows.empty:
+        logger.warning(f"{log_prefix} 目标数据为空，返回空缓存")
+        empty_df = pd.DataFrame(columns=[
+            'date', 'stock_code', 'predicted_return', 'buy_executable', 'skip_reason',
+            'buy_price', 'exit_price', 'exit_date', 'exit_reason', 'minute_realized_return',
+            'minute_min_return', 'minute_max_drawdown', 'stoploss_hit',
+            'profit_bearish_hit', 'holding_days_realized', 'missing_minute_data'
+        ])
+        if cache_path is not None:
+            Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+            empty_df.to_parquet(cache_path, index=False)
+        return empty_df
+
+    target_rows = target_prediction_rows.copy()
+    context_rows = context_prediction_data.copy()
+    target_rows['date'] = pd.to_datetime(target_rows['date']).dt.date
+    context_rows['date'] = pd.to_datetime(context_rows['date']).dt.date
+
+    if trading_dates is None:
+        trading_dates = sorted(pd.to_datetime(context_rows['date']).dt.date.unique().tolist())
+    else:
+        trading_dates = sorted(pd.to_datetime(pd.Series(trading_dates)).dt.date.unique().tolist())
+
+    target_rows = (
+        target_rows
+        .sort_values(['date', 'stock_code'])
+        .drop_duplicates(['date', 'stock_code'])
+        .reset_index(drop=True)
+    )
+
+    cfg = StrategyConfig(
+        strategy_type=StrategyType.TOP_1,
+        stock_count=1,
+        enable_dynamic_rank_switch=False,
+        holding_days=holding_days,
+        max_concurrent_positions=1,
+        fixed_position_pct=1.0,
+        position_schedule=[1.0]
+    )
+    strategy = BacktestStrategy(cfg, context_rows, minute_data_path)
+
+    results: List[Dict[str, Any]] = []
+    progress_logger = logging.getLogger(f"{__name__}.minute_cache_progress")
+    grouped = target_rows.groupby('date', sort=True)
+    total_dates = len(grouped)
+
+    for group_idx, (prediction_date, day_df) in enumerate(grouped, 1):
+        stock_list = day_df['stock_code'].dropna().astype(str).unique().tolist()
+        preload_dates = [prediction_date]
+        trade_date = strategy.add_trading_days(prediction_date, 1, trading_dates)
+        if trade_date is not None:
+            holding_end_date = strategy.add_trading_days(trade_date, holding_days - 1, trading_dates) or trade_date
+            try:
+                trade_index = trading_dates.index(trade_date)
+                end_index = trading_dates.index(holding_end_date)
+                preload_dates.extend(trading_dates[trade_index:end_index + 1])
+            except ValueError:
+                preload_dates.append(trade_date)
+                if holding_end_date != trade_date:
+                    preload_dates.append(holding_end_date)
+
+        previous_logger_disabled = logger.disabled
+        try:
+            # 缓存构建是离线批处理，逐票 INFO 日志会极大拖慢速度并放大 IO/内存压力。
+            logger.disabled = True
+            strategy._preload_stocks_data(preload_dates, stock_list)
+
+            for row in day_df.itertuples(index=False):
+                pred_value = getattr(row, 'predicted_return', 0.0)
+                results.append(
+                    strategy.simulate_single_prediction_outcome(
+                        stock_code=row.stock_code,
+                        prediction_date=prediction_date,
+                        trading_dates=trading_dates,
+                        predicted_return=float(pred_value) if pd.notna(pred_value) else 0.0,
+                        target_rank=1,
+                        preloaded=True
+                    )
+                )
+        finally:
+            logger.disabled = previous_logger_disabled
+
+        # 关键优化：每天处理完成后立即释放该批日期的分钟缓存，避免峰值内存持续累积。
+        preload_cache_keys = [pd.to_datetime(d).strftime('%Y-%m-%d') for d in preload_dates]
+        strategy.clear_minute_data_cache(preload_cache_keys)
+
+        if group_idx % 10 == 0 or group_idx == total_dates:
+            progress_logger.info(
+                f"{log_prefix} 已生成 {group_idx}/{total_dates} 个交易日缓存, "
+                f"累计记录 {len(results):,} 条"
+            )
+
+    cache_df = pd.DataFrame(results)
+    if not cache_df.empty and 'date' in cache_df.columns:
+        cache_df['date'] = pd.to_datetime(cache_df['date'])
+    if not cache_df.empty and 'exit_date' in cache_df.columns:
+        cache_df['exit_date'] = pd.to_datetime(cache_df['exit_date'], errors='coerce')
+
+    if cache_path is not None:
+        cache_path = Path(cache_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_df.to_parquet(cache_path, index=False)
+        logger.info(f"{log_prefix} 缓存已保存: {cache_path}")
+
+    return cache_df
 
 
 class OptimizedBacktester:
@@ -2545,16 +2991,49 @@ class OptimizedBacktester:
         strategy = BacktestStrategy(config, self.prediction_data, self.minute_data_path)
         self.strategies.append(strategy)
 
-    def run_strategies(self, stock_counts: List[int], trading_dates: List[datetime.date]) -> Dict[str, Any]:
+    def run_strategies(self,
+                       stock_counts: List[int],
+                       trading_dates: List[datetime.date],
+                       holding_days: int = 2,
+                       enable_dynamic_rank_switch: bool = True,
+                       max_concurrent_positions: int = 3,
+                       fixed_position_pct: float = 0.5,
+                       position_schedule: Optional[List[float]] = None,
+                       strategy_config_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """运行所有策略"""
         logger.info(f"🚀 开始运行 {len(stock_counts)} 个策略")
+        logger.info(
+            f"🧭 生效参数: holding_days={holding_days}, "
+            f"max_concurrent_positions={max_concurrent_positions}, "
+            f"fixed_position_pct={fixed_position_pct:.2f}, "
+            f"position_schedule={position_schedule}, "
+            f"enable_dynamic_rank_switch={enable_dynamic_rank_switch}"
+        )
 
         results = {}
 
         for stock_count in stock_counts:
+            config_kwargs = dict(strategy_config_overrides or {})
+            # 显式构造参数已单独传入，避免 overrides 中重复传参导致 TypeError
+            for reserved_key in [
+                'strategy_type',
+                'stock_count',
+                'holding_days',
+                'enable_dynamic_rank_switch',
+                'max_concurrent_positions',
+                'fixed_position_pct',
+                'position_schedule',
+            ]:
+                config_kwargs.pop(reserved_key, None)
             config = StrategyConfig(
                 strategy_type=StrategyType(stock_count),
-                stock_count=stock_count
+                stock_count=stock_count,
+                holding_days=holding_days,
+                enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+                max_concurrent_positions=max_concurrent_positions,
+                fixed_position_pct=fixed_position_pct,
+                position_schedule=position_schedule,
+                **config_kwargs,
             )
 
             self.add_strategy(config)
@@ -2571,7 +3050,12 @@ class OptimizedBacktester:
 def run_optimized_backtest(prediction_data: pd.DataFrame,
                           stock_counts: List[int],
                           minute_data_path: str,
-                          holding_days: int = 2) -> Dict[str, Any]:
+                          holding_days: int = 2,
+                          enable_dynamic_rank_switch: bool = True,
+                          max_concurrent_positions: int = 3,
+                          fixed_position_pct: float = 0.5,
+                          position_schedule: Optional[List[float]] = None,
+                          strategy_config_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     向后兼容的回测接口
     """
@@ -2589,6 +3073,15 @@ def run_optimized_backtest(prediction_data: pd.DataFrame,
 
     logger.info(f"📅 交易日期范围: {valid_trading_dates[0]} ~ {valid_trading_dates[-1]}")
 
-    results = backtester.run_strategies(stock_counts, valid_trading_dates)
+    results = backtester.run_strategies(
+        stock_counts,
+        valid_trading_dates,
+        holding_days=holding_days,
+        enable_dynamic_rank_switch=enable_dynamic_rank_switch,
+        max_concurrent_positions=max_concurrent_positions,
+        fixed_position_pct=fixed_position_pct,
+        position_schedule=position_schedule,
+        strategy_config_overrides=strategy_config_overrides,
+    )
 
     return results

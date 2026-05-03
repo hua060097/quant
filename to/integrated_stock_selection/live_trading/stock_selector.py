@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from .config import PathConfig, TradingConfig, FilterConfig
+from .config import PathConfig, TradingConfig, FilterConfig, StrategyConfig
 from .model_loader import ModelLoader
 
 
@@ -67,9 +67,12 @@ class StockSelector:
             
             # 4. 选股排序
             selected_stocks = self._rank_and_select(filtered_data, predictions, num_stocks)
-            
-            # 5. 保存结果
-            result = self._create_result(date, selected_stocks, num_stocks)
+
+            # 5. q40 动态切换标注（与 pred_stocks 口径一致，仅新增 q40，不加 h2c）
+            q40_info = self._compute_q40_pick(filtered_data, selected_stocks)
+
+            # 6. 保存结果
+            result = self._create_result(date, selected_stocks, len(selected_stocks), q40_info)
             self._save_selection(date, result)
             
             self.logger.info(f"选股完成: 选出{len(selected_stocks)}只股票")
@@ -269,8 +272,9 @@ class StockSelector:
         # 排序（按预测值降序）
         data = data.sort_values('predicted_score', ascending=False)
 
-        # 选取Top-N（与main.py pred_stocks一致，不使用阈值过滤）
-        selected = data.head(num_stocks)
+        # 选取Top-N（保留至少Top5，保证 q40 选到 Top2 时也能落到结果里）
+        topn = max(int(num_stocks), int(StrategyConfig.PRED_TOPN), 2)
+        selected = data.head(topn)
 
         # 构建结果
         stocks = []
@@ -278,16 +282,76 @@ class StockSelector:
             stocks.append({
                 'code': row['stock_code'],
                 'score': float(row['predicted_score']),
-                'rank': idx
+                'rank': idx,
+                'q40_selected': False,
             })
 
         return stocks
     
-    def _create_result(self, date: str, stocks: List[Dict], num_stocks: int) -> Dict:
+    def _compute_q40_pick(self, filtered_data: pd.DataFrame, selected_stocks: List[Dict]) -> Dict[str, Any]:
+        """按 main_alpha pred_stocks 的口径计算 q40 选股结果。"""
+        default = {
+            'enabled': False,
+            'chosen_rank': 1,
+            'threshold': None,
+            'signal_value': None,
+            'selected_code': selected_stocks[0]['code'] if selected_stocks else None,
+        }
+
+        if not StrategyConfig.ENABLE_DYNAMIC_RANK_SWITCH:
+            return default
+        if not selected_stocks or 'mkt_ma5_followthrough_v3' not in filtered_data.columns:
+            return default
+
+        try:
+            factor_path = PathConfig.PROJECT_ROOT / 'factor_lab_data' / 'factors.parquet'
+            ref = pd.read_parquet(factor_path, columns=['date', 'mkt_ma5_followthrough_v3'])
+            ref['date'] = pd.to_datetime(ref['date'], errors='coerce')
+            ref = (
+                ref.dropna(subset=['date'])
+                .groupby('date', as_index=False)
+                .first()
+                .sort_values('date')
+                .reset_index(drop=True)
+            )
+
+            train_mask = (
+                (ref['date'] >= pd.Timestamp(StrategyConfig.Q40_TRAIN_START)) &
+                (ref['date'] <= pd.Timestamp(StrategyConfig.Q40_TRAIN_END))
+            )
+            ref_switch = pd.to_numeric(ref.loc[train_mask, 'mkt_ma5_followthrough_v3'], errors='coerce').dropna()
+            if len(ref_switch) < 20:
+                return default
+
+            signal_value = pd.to_numeric(filtered_data['mkt_ma5_followthrough_v3'], errors='coerce').dropna()
+            if signal_value.empty:
+                return default
+
+            threshold = float(ref_switch.quantile(0.4))
+            chosen_rank = 1 if float(signal_value.iloc[0]) >= threshold else 2
+            chosen_rank = min(chosen_rank, len(selected_stocks))
+            selected_code = selected_stocks[chosen_rank - 1]['code']
+
+            for stock in selected_stocks:
+                stock['q40_selected'] = stock['rank'] == chosen_rank
+
+            return {
+                'enabled': True,
+                'chosen_rank': chosen_rank,
+                'threshold': threshold,
+                'signal_value': float(signal_value.iloc[0]),
+                'selected_code': selected_code,
+            }
+        except Exception as e:
+            self.logger.warning(f"q40 标注失败，回退 Top1: {e}")
+            return default
+
+    def _create_result(self, date: str, stocks: List[Dict], num_stocks: int, q40_info: Dict[str, Any]) -> Dict:
         """创建选股结果"""
         return {
             'stocks': stocks,
             'num_stocks': num_stocks,
+            'q40': q40_info,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
     
@@ -326,4 +390,3 @@ class StockSelector:
             
         except Exception as e:
             self.logger.error(f"保存选股结果失败: {e}")
-

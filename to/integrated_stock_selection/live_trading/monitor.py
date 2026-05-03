@@ -5,7 +5,7 @@
 1. 订阅5分钟K线数据
 2. 实时监控持仓
 3. 累计下跌风控（5%）
-4. 连续阴线风控（4根阴线）
+4. 连续阴线风控（3根阴线）
 5. 自动卖出
 """
 
@@ -27,7 +27,7 @@ class PositionMonitor5Min:
 
     风控规则：
     1. 累计下跌风控：累计下跌 > 5%（相对于买入价）→ 立即卖出
-    2. 连续阴线风控：T+2日开始，出现4根连续的5分钟K线阴线 → 立即卖出
+    2. 连续阴线风控：T+2日开始，出现3根连续的5分钟K线阴线 → 立即卖出
     """
 
     def __init__(self, trader, scheduler):
@@ -57,6 +57,9 @@ class PositionMonitor5Min:
 
         # 尾盘卖出时间（14:55）
         self.closing_sell_time = "14:55:00"
+
+        # 5分钟K线采样边界容忍秒数
+        self.kline_boundary_tolerance_seconds = 10
 
     def _load_trading_calendar(self):
         """加载交易日历"""
@@ -135,7 +138,9 @@ class PositionMonitor5Min:
             self.logger.error(f"详细错误: {traceback.format_exc()}")
             self.trading_dates = []
 
-    def add_position_5m(self, stock_code: str, entry_price: float, entry_date: str):
+    def add_position_5m(self, stock_code: str, entry_price: float, entry_date: str,
+                        slot_index: int = None, target_pct: float = None,
+                        enable_closing_sell: bool = False):
         """
         添加持仓监控（5分钟K线版本）
 
@@ -150,10 +155,14 @@ class PositionMonitor5Min:
             'entry_date': datetime.strptime(entry_date, '%Y-%m-%d').date(),
             'entry_datetime': datetime.now(),
             'klines_after_entry': [],  # 买入后的5分钟K线
-            'consecutive_bearish': 0,  # 连续阴线数
+            'consecutive_bearish': 0,  # 兼容展示字段
+            'consecutive_bearish_in_profit': 0,  # 盈利状态下连续阴线数
             'max_decline_from_entry': 0.0,  # 最大回撤（相对于买入价）
             'should_exit': False,
             'exit_reason': None,
+            'slot_index': slot_index,
+            'target_pct': target_pct,
+            'enable_closing_sell': enable_closing_sell,
         }
 
         self.logger.info(f"添加5分钟监控: {stock_code}")
@@ -198,6 +207,13 @@ class PositionMonitor5Min:
                 if not self._is_trading_time():
                     # 优化：智能午间休市处理
                     self._sleep_through_lunch_break()
+                    continue
+
+                # 只在严格的5分钟边界采样，避免启动时落在09:44/09:49这类错位分钟
+                if not self._wait_until_5min_boundary():
+                    continue
+
+                if not self._is_trading_time():
                     continue
 
                 # ===== 收集5分钟K线数据（在5分钟整数倍时间点）=====
@@ -323,9 +339,12 @@ class PositionMonitor5Min:
 
                 # 检查是否跨天（新的一天开始）
                 if prev_kline_date is not None and kline_date != prev_kline_date:
-                    # 跨天了，重置连续阴线计数
-                    if position['consecutive_bearish'] > 0:
-                        self.logger.info(f"{stock_code}: 跨天检测，重置连续阴线计数（从{position['consecutive_bearish']}重置为0）")
+                    # 跨天了，重置盈利状态连续阴线计数
+                    if position['consecutive_bearish_in_profit'] > 0:
+                        self.logger.info(
+                            f"{stock_code}: 跨天检测，重置盈利状态连续阴线计数（从{position['consecutive_bearish_in_profit']}重置为0）"
+                        )
+                        position['consecutive_bearish_in_profit'] = 0
                         position['consecutive_bearish'] = 0
 
                 # 更新上一根K线的日期
@@ -357,35 +376,50 @@ class PositionMonitor5Min:
                     self._execute_sell_5m(stock_code, position, position['exit_reason'])
                     return
 
-                # ===== 风控条件2: 连续4根阴线（需要至少4根K线）=====
-                # 判断是否为阴线：收盘价 < 开盘价
+                # ===== 风控条件2: 仅盈利状态下连续阴线（与主回测一致）=====
+                current_return = (close_price - position['entry_price']) / position['entry_price']
                 is_bearish = close_price < open_price
 
-                if is_bearish:
-                    position['consecutive_bearish'] += 1
-                    self.logger.info(f"📉 {stock_code}: 检测到阴线（{kline_date} {kline_time_str}），连续阴线: {position['consecutive_bearish']}根")
-                else:
-                    if position['consecutive_bearish'] > 0:
-                        self.logger.info(f"📈 {stock_code}: 检测到阳线，重置连续阴线计数（从{position['consecutive_bearish']}重置为0）")
+                if current_return > 0:
+                    if is_bearish:
+                        position['consecutive_bearish_in_profit'] += 1
+                        position['consecutive_bearish'] = position['consecutive_bearish_in_profit']
+                        self.logger.info(
+                            f"📉 {stock_code}: 检测到盈利状态阴线（{kline_date} {kline_time_str}），"
+                            f"连续阴线: {position['consecutive_bearish_in_profit']}根"
+                        )
+                    else:
+                        if position['consecutive_bearish_in_profit'] > 0:
+                            self.logger.info(
+                                f"📈 {stock_code}: 盈利状态检测到阳线，重置连续阴线计数"
+                                f"（从{position['consecutive_bearish_in_profit']}重置为0）"
+                            )
+                        position['consecutive_bearish_in_profit'] = 0
                         position['consecutive_bearish'] = 0
 
-                # 风控条件2: 连续阴线风控（同一天内）
-                threshold = StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD
-                if position['consecutive_bearish'] >= threshold:
-                    self.logger.warning(f"🚨 {stock_code}: 触发连续阴线风控!")
-                    self.logger.warning(f"  连续阴线: {position['consecutive_bearish']}根（阈值: {threshold}根）")
-                    self.logger.warning(f"  日期: {kline_date}")
+                    threshold = StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD
+                    if position['consecutive_bearish_in_profit'] >= threshold:
+                        self.logger.warning(f"🚨 {stock_code}: 触发盈利状态连续阴线风控!")
+                        self.logger.warning(
+                            f"  连续阴线: {position['consecutive_bearish_in_profit']}根（阈值: {threshold}根）"
+                        )
+                        self.logger.warning(f"  日期: {kline_date}")
 
-                    # 标记退出
-                    position['should_exit'] = True
-                    position['exit_reason'] = '连续阴线风控'
-
-                    # 立即卖出
-                    self._execute_sell_5m(stock_code, position, '连续阴线风控')
-                    return
+                        position['should_exit'] = True
+                        position['exit_reason'] = f'盈利状态下连续{position["consecutive_bearish_in_profit"]}根阴线'
+                        self._execute_sell_5m(stock_code, position, position['exit_reason'])
+                        return
+                else:
+                    if position['consecutive_bearish_in_profit'] > 0:
+                        self.logger.info(
+                            f"📉 {stock_code}: 当前非盈利状态，重置盈利状态连续阴线计数"
+                            f"（从{position['consecutive_bearish_in_profit']}重置为0）"
+                        )
+                    position['consecutive_bearish_in_profit'] = 0
+                    position['consecutive_bearish'] = 0
 
             # 检查是否到尾盘卖出时间（14:55）
-            if self.enable_closing_sell and self._is_closing_sell_time():
+            if position.get('enable_closing_sell') and self._is_closing_sell_time():
                 self.logger.info(f"⏰ {stock_code}: 14:55尾盘卖出时间到，执行卖出")
                 position['should_exit'] = True
                 position['exit_reason'] = '尾盘卖出'
@@ -462,7 +496,9 @@ class PositionMonitor5Min:
                     datetime.now().strftime('%Y%m%d'),
                     'sell',
                     [stock_code],
-                    {stock_code: order_id}
+                    {stock_code: order_id},
+                    exit_reason=reason,
+                    profit_pct=profit_pct
                 )
 
                 # 移除监控
@@ -601,7 +637,16 @@ class PositionMonitor5Min:
 
             # 获取当前时间
             now = datetime.now()
-            time_str = now.strftime('%Y%m%d %H:%M:00')
+
+            # 只允许在5分钟边界附近采样，避免生成09:44、09:49这类伪5分钟K线
+            if now.minute % 5 != 0 or now.second > self.kline_boundary_tolerance_seconds:
+                self.logger.debug(
+                    f"当前时间 {now.strftime('%H:%M:%S')} 不在5分钟边界容忍范围内，跳过K线采集"
+                )
+                return
+
+            boundary_time = now.replace(second=0, microsecond=0)
+            time_str = boundary_time.strftime('%Y%m%d %H:%M:00')
 
             # 检查是否已经收集过这个时间点的数据
             for stock_code in list(self.positions.keys()):
@@ -740,6 +785,36 @@ class PositionMonitor5Min:
 
         if wait_seconds > 0:
             time.sleep(wait_seconds)
+
+    def _wait_until_5min_boundary(self) -> bool:
+        """
+        等待到下一个5分钟边界。
+
+        返回:
+            bool: 是否仍应继续执行本轮监控
+        """
+        now = datetime.now()
+
+        # 已经在5分钟边界附近，直接采样
+        if now.minute % 5 == 0 and now.second <= self.kline_boundary_tolerance_seconds:
+            return True
+
+        minute = now.minute
+        next_minute = ((minute // 5) + 1) * 5
+
+        if next_minute >= 60:
+            next_time = now.replace(hour=now.hour + 1, minute=0, second=0, microsecond=0)
+        else:
+            next_time = now.replace(minute=next_minute, second=0, microsecond=0)
+
+        wait_seconds = (next_time - now).total_seconds()
+        if wait_seconds > 0:
+            self.logger.info(
+                f"⏱ 当前时间 {now.strftime('%H:%M:%S')} 未对齐5分钟边界，等待 {wait_seconds:.1f}s 至 {next_time.strftime('%H:%M:%S')}"
+            )
+            time.sleep(wait_seconds)
+
+        return self.is_monitoring
 
     def _print_positions_summary(self):
         """

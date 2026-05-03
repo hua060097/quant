@@ -197,74 +197,15 @@ def generate_and_store(
         if existing_raw_factors:
             logger.info(f"📊 临时文件中已存在 {len(existing_raw_factors)} 个原始因子，将跳过这些因子的计算")
 
-    # 🆕 定义分批保存回调函数（保存到临时文件）
     def batch_save_raw_callback(batch_data: pd.DataFrame, batch_factors: list):
         """分批保存原始因子到临时文件"""
-        logger.info(f"[调试] 开始分批保存 - 批次数据形状: {batch_data.shape}, 因子数: {len(batch_factors)}")
-        logger.info(f"[调试] 批次因子: {batch_factors}")
-
-        # [调试] 添加日期范围信息
-        if 'date' in batch_data.columns:
-            date_range = f"{batch_data['date'].min()} ~ {batch_data['date'].max()}"
-            unique_dates = batch_data['date'].nunique()
-            logger.info(f"[调试] 批次日期范围: {date_range}, 包含 {unique_dates} 个不同日期")
-        else:
-            logger.warning(f"[调试] 批次数据中没有 'date' 列")
-
-        # [调试] 保存前检查批次数据质量
-        batch_factor_cols = [c for c in batch_data.columns if c not in store.index_columns]
-        logger.info(f"[调试] 批次因子列数: {len(batch_factor_cols)}")
-
-        batch_problematic = []
-        for col in batch_factor_cols[:5]:  # 检查前5个
-            try:
-                series = batch_data[col]
-                nan_count = series.isna().sum()
-                total_count = len(series)
-                unique_count = series.nunique()
-
-                if nan_count == total_count:
-                    logger.error(f"[调试] 批次因子 {col}: 全部NaN ({nan_count}/{total_count})")
-                    batch_problematic.append(col)
-                elif unique_count == 1:
-                    # 添加日期范围信息
-                    if 'date' in batch_data.columns:
-                        date_range = f"{batch_data['date'].min()} ~ {batch_data['date'].max()}"
-                        unique_dates = batch_data['date'].nunique()
-                        constant_value = series.iloc[0] if not series.isna().all() else "NaN"
-                        logger.error(f"[调试] 批次因子 {col}: 常数列 (唯一值={unique_count}, 值={constant_value:.6f}, 批次日期范围: {date_range}, 包含{unique_dates}个日期)")
-                    else:
-                        logger.error(f"[调试] 批次因子 {col}: 常数列 (唯一值={unique_count})")
-                    batch_problematic.append(col)
-                else:
-                    valid_data = series.dropna()
-                    if len(valid_data) > 0:
-                        mean_val = valid_data.mean()
-                        std_val = valid_data.std()
-                        logger.info(f"[调试] 批次因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 最小值: {valid_data.min()}, 最大值:{valid_data.max()}, 有效={len(valid_data)}/{total_count})")
-                    else:
-                        logger.error(f"[调试] 批次因子 {col}: 无有效数据")
-                        batch_problematic.append(col)
-            except Exception as e:
-                logger.error(f"[调试] 批次因子 {col}: 检查失败 - {e}")
-                batch_problematic.append(col)
-
-        if batch_problematic:
-            logger.error(f"[调试] 批次中发现 {len(batch_problematic)} 个问题因子: {batch_problematic}")
-        else:
-            logger.info(f"[调试] 批次数据质量检查通过")
-
-        # 尝试保存
-        logger.info(f"[调试] 开始分批保存到临时文件: {store.raw_path}")
         try:
             store.merge_raw_incremental(batch_data)
-            logger.info(f"[调试] 分批保存成功")
             logger.info(f"💾 已保存原始因子批次到临时文件")
         except Exception as e:
-            logger.error(f"[调试] 分批保存失败: {e}")
-            logger.error(f"[调试] 错误类型: {type(e)}")
             import traceback
-            logger.error(f"[调试] 错误详情: {traceback.format_exc()}")
+            logger.error(f"分批保存失败: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             raise
 
     # 根据配置决定是否使用分批保存
@@ -287,69 +228,14 @@ def generate_and_store(
         existing_factors=existing_raw_factors,
     )
 
-    # 如果没有启用分批保存，则在最后一次性保存原始因子
     if not enable_batch_save and not result.data.empty:
-        # [调试] 保存前检查原始因子质量
-        logger.info(f"[调试] 准备保存原始因子 - 数据形状: {result.data.shape}")
-        logger.info(f"[调试] 原始因子列数: {len([c for c in result.data.columns if c not in store.index_columns])}")
-
-        # 检查原始因子数据质量
-        factor_cols = [c for c in result.data.columns if c not in store.index_columns]
-        logger.info(f"[调试] 开始质量检查 - 检查 {len(factor_cols)} 个原始因子")
-
-        problematic_factors = []
-        for col in factor_cols[:10]:  # 检查前10个因子
-            try:
-                series = result.data[col]
-                nan_count = series.isna().sum()
-                total_count = len(series)
-                unique_count = series.nunique()
-
-                if nan_count == total_count:
-                    logger.error(f"[调试] 原始因子 {col}: 全部NaN ({nan_count}/{total_count})")
-                    problematic_factors.append(col)
-                elif unique_count == 1:
-                    logger.error(f"[调试] 原始因子 {col}: 常数列 (唯一值={unique_count})")
-                    problematic_factors.append(col)
-                else:
-                    valid_data = series.dropna()
-                    if len(valid_data) > 0:
-                        mean_val = valid_data.mean()
-                        std_val = valid_data.std()
-                        logger.info(f"[调试] 原始因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
-                    else:
-                        logger.error(f"[调试] 原始因子 {col}: 无有效数据")
-                        problematic_factors.append(col)
-            except Exception as e:
-                logger.error(f"[调试] 原始因子 {col}: 检查失败 - {e}")
-                problematic_factors.append(col)
-
-        if problematic_factors:
-            logger.error(f"[调试] 发现 {len(problematic_factors)} 个有问题的原始因子: {problematic_factors}")
-            logger.error(f"[调试] 这可能导致最终保存的数据质量有问题")
-        else:
-            logger.info(f"[调试] 原始因子质量检查通过 - 所有因子正常")
-
-        # 检查文件权限和路径
-        try:
-            import os
-            logger.info(f"[调试] 检查保存路径: {store.raw_path}")
-            logger.info(f"[调试] 目录存在: {store.raw_path.parent.exists()}")
-            logger.info(f"[调试] 目录权限: {os.access(store.raw_path.parent, os.W_OK)}")
-        except Exception as e:
-            logger.error(f"[调试] 检查保存路径失败: {e}")
-
-        # 尝试保存
-        logger.info(f"[调试] 开始保存原始因子到临时文件: {store.raw_path}")
         try:
             store.save_raw(result.data)
-            logger.info(f"[调试] 保存成功 - 临时文件大小: {store.raw_path.stat().st_size / (1024*1024):.2f} MB")
             logger.info("💾 已保存所有原始因子到临时文件")
         except Exception as e:
-            logger.error(f"[调试] 保存原始因子失败: {e}")
-            logger.error(f"[调试] 错误类型: {type(e)}")
             import traceback
-            logger.error(f"[调试] 错误详情: {traceback.format_exc()}")
+            logger.error(f"保存原始因子失败: {e}")
+            logger.error(f"错误详情: {traceback.format_exc()}")
             raise
 
     # 如果没有计算任何因子（全部跳过），检查是否需要进入阶段2
@@ -362,65 +248,21 @@ def generate_and_store(
     logger.info("🔄 阶段2：开始后处理（缩尾→清洗→归一化）")
 
     # 加载所有原始因子
-    logger.info(f"[调试] 开始加载临时文件: {store.raw_path}")
-    logger.info(f"[调试] 临时文件存在: {store.raw_exists()}")
-
     try:
         all_raw_factors = store.load_raw()
-        logger.info(f"[调试] 成功加载临时文件 - 数据形状: {all_raw_factors.shape}")
-        logger.info(f"[调试] 临时文件列数: {len(all_raw_factors.columns)}")
-        logger.info(f"[调试] 索引列: {store.index_columns}")
-
         if all_raw_factors.empty:
-            logger.error(f"[调试] 临时文件加载成功但数据为空")
             logger.warning("⚠️ 临时文件为空，无法进行后处理")
             return result
     except Exception as e:
-        logger.error(f"[调试] 加载临时文件失败: {e}")
-        logger.error(f"[调试] 错误类型: {type(e)}")
         import traceback
-        logger.error(f"[调试] 错误详情: {traceback.format_exc()}")
+        logger.error(f"加载临时文件失败: {e}")
+        logger.error(f"错误详情: {traceback.format_exc()}")
         return result
 
     factor_count = len(all_raw_factors.columns) - len(store.index_columns)
     logger.info(f"📊 加载了 {factor_count} 个原始因子")
 
-    # [调试] 检查加载的原始因子质量
-    logger.info(f"[调试] 开始检查加载的原始因子质量")
     factor_cols = [c for c in all_raw_factors.columns if c not in store.index_columns]
-
-    loaded_problematic = []
-    for col in factor_cols[:10]:  # 检查前10个
-        try:
-            series = all_raw_factors[col]
-            nan_count = series.isna().sum()
-            total_count = len(series)
-            unique_count = series.nunique()
-
-            if nan_count == total_count:
-                logger.error(f"[调试] 加载的原始因子 {col}: 全部NaN ({nan_count}/{total_count})")
-                loaded_problematic.append(col)
-            elif unique_count == 1:
-                logger.error(f"[调试] 加载的原始因子 {col}: 常数列 (唯一值={unique_count})")
-                loaded_problematic.append(col)
-            else:
-                valid_data = series.dropna()
-                if len(valid_data) > 0:
-                    mean_val = valid_data.mean()
-                    std_val = valid_data.std()
-                    logger.info(f"[调试] 加载的原始因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
-                else:
-                    logger.error(f"[调试] 加载的原始因子 {col}: 无有效数据")
-                    loaded_problematic.append(col)
-        except Exception as e:
-            logger.error(f"[调试] 加载的原始因子 {col}: 检查失败 - {e}")
-            loaded_problematic.append(col)
-
-    if loaded_problematic:
-        logger.error(f"[调试] 加载的原始因子中发现 {len(loaded_problematic)} 个问题因子: {loaded_problematic}")
-        logger.error(f"[调试] 这解释了为什么最终保存的数据有问题")
-    else:
-        logger.info(f"[调试] 加载的原始因子质量检查通过")
 
     # 对所有原始因子进行后处理
     pipe = pipeline or FactorPipeline()
@@ -432,6 +274,30 @@ def generate_and_store(
     # 提取因子数据（排除索引列）
     factor_cols = [c for c in working.columns if c not in store.index_columns]
     computed = {name: working[name] for name in factor_cols}
+    expanding_history = None
+
+    if normalization_config:
+        expanding_factors = list(normalization_config.get('expanding_factors', []))
+        expanding_anchor_start = normalization_config.get('expanding_anchor_start')
+        if expanding_factors and store.exists():
+            available_history_cols = [c for c in expanding_factors if c in factor_cols]
+            if available_history_cols:
+                try:
+                    history_columns = store.index_columns + available_history_cols
+                    history_source = pd.read_parquet(store.path, columns=history_columns)
+                    if not history_source.empty:
+                        history_source['date'] = pd.to_datetime(history_source['date'])
+                        current_start_date = working['date'].min()
+                        history_mask = history_source['date'] < current_start_date
+                        if expanding_anchor_start:
+                            history_mask &= history_source['date'] >= pd.to_datetime(expanding_anchor_start)
+                        expanding_history = history_source.loc[history_mask].copy()
+                        logger.info(
+                            f"Expanding历史基线加载完成: {len(expanding_history):,}行, "
+                            f"锚点={expanding_anchor_start}, 当前起点={current_start_date.strftime('%Y-%m-%d')}"
+                        )
+                except Exception as exc:
+                    logger.warning(f"加载Expanding历史基线失败，将退回当前窗口计算: {exc}")
 
     # 应用后处理流程
     if normalization_config:
@@ -442,7 +308,14 @@ def generate_and_store(
         # SW 行业映射现在通过 normalization_config['sw_sector_mapping'] 直接传入，不再从 sector_data 提取
         logger.debug(f"[DEBUG] SW行业映射: normalization_config['sw_sector_mapping'] = {len(normalization_config.get('sw_sector_mapping', {}))}个股票")
 
-        processed, clipping_report = pipe._apply_postprocessing(computed, working, normalization_config, logger, enable_intelligent_clipping)
+        processed, clipping_report = pipe._apply_postprocessing(
+            computed,
+            working,
+            normalization_config,
+            logger,
+            enable_intelligent_clipping,
+            expanding_history=expanding_history,
+        )
         logger.info(f"后处理完成，最终因子数量: {len(processed)}")
 
         # 记录智能裁剪统计
@@ -458,41 +331,7 @@ def generate_and_store(
         clipping_report = {}
 
     # 构建最终数据
-    logger.info(f"[调试] 开始构建最终数据 - 处理了 {len(processed)} 个因子")
     final_data = working[store.index_columns].copy()
-
-    # [调试] 在复制前检查处理后的因子质量
-    processed_problematic = []
-    for name, series in list(processed.items())[:10]:  # 检查前10个
-        try:
-            nan_count = series.isna().sum()
-            total_count = len(series)
-            unique_count = series.nunique()
-
-            if nan_count == total_count:
-                logger.error(f"[调试] 后处理后的因子 {name}: 全部NaN ({nan_count}/{total_count})")
-                processed_problematic.append(name)
-            elif unique_count == 1:
-                logger.error(f"[调试] 后处理后的因子 {name}: 常数列 (唯一值={unique_count})")
-                processed_problematic.append(name)
-            else:
-                valid_data = series.dropna()
-                if len(valid_data) > 0:
-                    mean_val = valid_data.mean()
-                    std_val = valid_data.std()
-                    logger.info(f"[调试] 后处理后的因子 {name}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
-                else:
-                    logger.error(f"[调试] 后处理后的因子 {name}: 无有效数据")
-                    processed_problematic.append(name)
-        except Exception as e:
-            logger.error(f"[调试] 后处理后的因子 {name}: 检查失败 - {e}")
-            processed_problematic.append(name)
-
-    if processed_problematic:
-        logger.error(f"[调试] 后处理后的因子中发现 {len(processed_problematic)} 个问题因子: {processed_problematic}")
-        logger.error(f"[调试] 这将导致最终保存的数据有问题")
-    else:
-        logger.info(f"[调试] 后处理后的因子质量检查通过")
 
     # 复制数据
     logger.info(f"[调试] 开始复制处理后的因子到最终数据")
@@ -507,7 +346,6 @@ def generate_and_store(
             raise
 
     logger.info(f"[调试] 最终数据构建完成 - 形状: {final_data.shape}, 列数: {len(final_data.columns)}")
-
     # 🆕 根据模式选择保存策略
     logger.info(f"[DEBUG] 进入保存策略选择 - incremental_mode: {incremental_mode}, store.exists(): {store.exists()}, overlap_mode: {overlap_mode}")
 

@@ -902,8 +902,11 @@ class TradingScheduler:
         return order_ids
 
     def save_trade_record(self, date: str, action: str, stocks: List[str], order_ids: Dict[str, str],
-                         entry_date: str = None, entry_price: float = None, volume: int = None,
-                         exit_reason: str = None, profit_pct: float = None):
+                          entry_date: str = None, entry_price: float = None, volume: int = None,
+                          exit_reason: str = None, profit_pct: float = None,
+                          slot_index: int = None, target_pct: float = None,
+                          planned_amount: float = None, strategy_capital: float = None,
+                          target_rank: int = None):
         """
         保存交易记录（增强版）
 
@@ -938,10 +941,20 @@ class TradingScheduler:
             }
 
             # 买入记录的额外字段
-            if action == 'buy' and entry_date and entry_price and volume:
+            if action in ('buy', 'manual_buy') and entry_date and entry_price and volume:
                 record['entry_date'] = entry_date
                 record['entry_price'] = entry_price
                 record['volume'] = volume
+                if slot_index is not None:
+                    record['slot_index'] = int(slot_index)
+                if target_pct is not None:
+                    record['target_pct'] = float(target_pct)
+                if planned_amount is not None:
+                    record['planned_amount'] = float(planned_amount)
+                if strategy_capital is not None:
+                    record['strategy_capital'] = float(strategy_capital)
+                if target_rank is not None:
+                    record['target_rank'] = int(target_rank)
 
             # 卖出记录的额外字段
             if action == 'sell' and exit_reason:
@@ -1026,7 +1039,7 @@ class TradingScheduler:
                 # 找到最新的买入记录
                 for date in sorted_dates:
                     for record in records[date]:
-                        if (record['action'] == 'buy' and
+                        if (record['action'] in ('buy', 'manual_buy') and
                             stock_code in record['stocks'] and
                             'entry_date' in record):
 
@@ -1236,4 +1249,3 @@ class TradingScheduler:
         except Exception as e:
             self.logger.error(f"撤单失败: {e}")
             return False
-

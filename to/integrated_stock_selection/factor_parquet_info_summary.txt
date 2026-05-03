@@ -1,0 +1,165 @@
+# Factors Parquet 文件信息总结
+
+## 基本信息
+- **文件路径**: `C:\Users\86151\.trae-cn\pythons\path\to\integrated_stock_selection\factor_lab_data\factors.parquet`
+- **文件大小**: 752.88 MB
+- **总行数**: 3,202,444
+- **总列数**: 68
+
+## 日期范围
+- **开始日期**: 2023-06-01
+- **结束日期**: 2026-02-09
+- **时间跨度**: 984 天
+- **唯一交易日数**: 655 天
+
+## 股票信息
+- **唯一股票数**: 5,125 只
+
+## 因子列表（共66个因子）
+
+### 1. 技术指标类（8个）
+1. distance_from_52w_high - 距离52周高点的距离
+2. distance_from_52w_low - 距离52周低点的距离
+3. price_acceleration - 价格加速度
+4. body_efficiency - K线实体效率
+5. shadow_dominance - 影线主导
+6. range_compression - 区间压缩
+7. overnight_return - 隔夜收益率
+8. breakout_z - 突破Z得分
+
+### 2. 价格动量类（6个）
+9. max_rally_20d - 20日最大涨幅
+10. coskewness - 余偏度（相关性偏度）
+11. stable_momentum - 稳定动量
+12. relative_strength_20d - 20日相对强度
+13. ma60_slope - 60日均线斜率
+14. ma_alignment_score - 均线排列得分
+
+### 5. 成交量/流动性类（10个）
+15. abnormal_turnover - 异常换手率
+16. volume_cycle_strength_20d - 20日成交量周期强度
+17. turnover_stability - 换手率稳定性
+18. amihud_illiquidity - Amihud非流动性指标
+19. intraday_clv - 日内收盘买入/卖出压力
+20. money_flow_pressure - 资金流压力
+21. price_impact - 价格冲击
+22. volume_confirmed_pullback_alpha - 成交量确认回调Alpha
+23. sw_circ_mv_rank_intra_sector - 行业内部流通市值排名
+24. sw_wv_energy_gate_intra_lowvol - 小波能量门控低波动
+
+### 6. 市场情绪类（4个）
+25. market_emotion_resonance_alpha - 市场情绪共振Alpha
+26. spectral_entropy_20d - 20日谱熵
+27. sector_emotion_heat_level_20d - 行业情绪热度水平
+28. sector_emotion_heat_accel_3d - 行业情绪热度加速度
+
+### 7. 波动率类（3个）
+29. ulcer_index - 溃疡指数
+30. max_drawdown_20d - 20日最大回撤
+31. high_to_close_drawdown - 高点到收盘的回撤
+
+### 8. 限价板类（3个）
+32. limit_sustain_alpha - 涨停持续Alpha
+33. sector_limit_overflow_alpha - 行业涨停溢出Alpha
+34. intra_sector_breadth - 行业内部广度
+
+### 9. 交叉因子类（12个）
+35. mrk_liqreg_x_volume_surge - 市场流动性回归 × 成交量激增
+36. mrk_volreg_x_lowvol_trend_20d - 市场波动率回归 × 20日低波动趋势
+37. mrk_emotion_x_intraday_failure - 市场情绪 × 日内失败
+38. mrk_emotion_x_pullback_quality - 市场情绪 × 回调质量
+39. mrk_breadth_x_relstrength_5d - 市场广度 × 5日相对强度
+40. mrk_breadth_x_gap_surprise - 市场广度 × 缺口惊喜
+
+### 10. 行业/板块类（18个）
+41. sector_excess_intra_rank - 行业超额排名
+42. sector_broken_resilience_alpha - 行业突破弹性Alpha
+43. sector_momentum_interaction - 行业动量交互
+44. sector_mkt_corr_20d - 行业市场相关性20日
+45. mkt_sector_dispersion - 市场-行业离散度
+46. sector_strong_leader_alpha - 行业强势领导者Alpha
+47. sector_weak_reversal_alpha - 行业弱势反转Alpha
+48. sector_leader_capture_rank - 行业领导者捕获排名
+49. sector_trend_gated_momentum_intra_z - 行业趋势门控动量Z得分
+50. sector_momentum_consistency - 行业动量一致性
+51. sector_drawdown_from_peak_10d - 行业从峰值10日回撤
+52. sector_rotation_breakout_intra_z - 行业轮动突破Z得分
+53. sector_dispersion - 行业离散度
+54. sector_divergence_risk - 行业分化风险
+55. sw_wv_burst_gate_intra_leader - 小波爆发门控领导者
+56. sw_wv_trend_gate_intra_momentum - 小波趋势门控动量
+
+### 11. 形态/支撑阻力类（3个）
+57. support_distance - 支撑距离
+58. resistance_distance - 阻力距离
+59. cpv_factor - CPV因子
+
+### 12. 其他（6个）
+60. beta_60d - 60日Beta
+61. trend_pullback_composite_alpha - 趋势回调复合Alpha
+62. intraday_reversal - 日内反转
+63. efficiency_ratio - 效率比率
+64. intra_sector_momentum_rank - 行业内部动量排名
+65. wavelet_highfreq_energy_20d - 20日小波高频能量
+66. sector_excess_intra_rank - 行业超额排名（重复？）
+
+## 数据质量
+- **缺失值**: 0 (0.00%) - 数据完美
+- **数据类型**:
+  - float32: 66 列（因子列）
+  - datetime64[ns]: 1 列（日期列）
+  - object: 1 列（股票代码列）
+
+## 内存占用
+- **DataFrame 内存占用**: 1007.85 MB
+
+## 使用说明
+
+### 读取数据
+```python
+import pandas as pd
+
+# 读取parquet文件
+df = pd.read_parquet('factor_lab_data/factors.parquet')
+
+# 查看基本信息
+print(f"数据行数: {len(df)}")
+print(f"日期范围: {df['date'].min()} 到 {df['date'].max()}")
+print(f"股票数量: {df['stock_code'].nunique()}")
+
+# 查看因子列表
+factor_cols = [col for col in df.columns if col not in ['date', 'stock_code']]
+print(f"因子数量: {len(factor_cols)}")
+```
+
+### 过滤特定日期范围
+```python
+# 筛选2024年以后的数据
+df_filtered = df[df['date'] >= '2024-01-01']
+
+# 筛选特定日期范围
+start_date = '2024-01-01'
+end_date = '2024-12-31'
+df_filtered = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+```
+
+### 查看特定股票的因子
+```python
+# 查看某只股票的所有因子
+stock_data = df[df['stock_code'] == '000001.SZ']
+
+# 查看某只股票在某日期的因子
+specific_data = df[(df['stock_code'] == '000001.SZ') & (df['date'] == '2024-01-01')]
+```
+
+## 关键发现
+
+1. **数据完整性**: 无缺失值，数据质量优秀
+2. **时间跨度**: 覆盖近3年数据（2023-06-01 至 2026-02-09）
+3. **因子覆盖**: 66个因子，涵盖技术、情绪、流动性、动量等多个维度
+4. **股票覆盖**: 5,125只股票，覆盖面广
+5. **数据格式**: 使用float32节省内存，适合大规模计算
+
+---
+生成时间: 2026-02-19
+脚本路径: check_parquet_factors.py

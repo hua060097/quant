@@ -1,0 +1,250 @@
+                                        combined_values = [
+                                            {'date': d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d), 'value': v}
+                                            for d, v in zip(dates, portfolio_values)
+                                        ]
+
+                                    portfolio_info["windows"][f"{window_name}_top_{stock_count}"] = {
+                                        "window_name": window_name,
+                                        "stock_count": stock_count,
+                                        "portfolio_values": combined_values,
+                                        "total_return": result.get('total_return', 0),
+                                        "annual_return": result.get('annual_return', 0),
+                                        "max_drawdown": result.get('max_drawdown', 0),
+                                        "win_rate": result.get('win_rate', 0),
+                                        "total_trades": result.get('total_trades', 0)
+                                    }
+
+                with open(portfolio_file, 'w', encoding='utf-8') as f:
+                    json.dump(portfolio_info, f, ensure_ascii=False, indent=2, default=str)
+
+                logger.info(f"\n[OK] 净值和持仓数据已保存: {portfolio_file.name}")
+
+        with open(detailed_file, 'w', encoding='utf-8') as f:
+            json.dump(detailed_data, f, ensure_ascii=False, indent=2, default=str)
+
+        logger.info(f"\n[OK] 详细选股结果已保存: {detailed_file.name}")
+
+    except Exception as e:
+        logger.error(f"[FAIL] 保存详细选股结果失败: {e}")
+
+
+def _safe_numeric_frame(df, feature_columns):
+    """将指定列安全转换为数值矩阵，避免reranker阶段因少量异常值中断。"""
+    feature_df = df[feature_columns].copy()
+    for col in feature_columns:
+        feature_df[col] = pd.to_numeric(feature_df[col], errors='coerce')
+        if feature_df[col].isna().all():
+            feature_df[col] = 0.0
+        else:
+            feature_df[col] = feature_df[col].fillna(feature_df[col].median())
+    return feature_df.values.astype(np.float32)
+
+
+def _build_topk_reranker_candidates(raw_df, stage1_scores, top_k=5):
+    """
+    用一阶排序模型的分数构造二阶 reranker 候选集。
+    每个交易日只保留前 top_k 个候选，并生成候选内排序元特征。
+    """
+    if raw_df is None or len(raw_df) == 0:
+        return pd.DataFrame()
+
+    candidate_df = raw_df.reset_index(drop=True).copy()
+    candidate_df['date'] = pd.to_datetime(candidate_df['date'])
+    candidate_df['source_row_id'] = candidate_df.index
+    candidate_df['stage1_score'] = np.asarray(stage1_scores, dtype=float)[:len(candidate_df)]
+
+    all_rows = []
+    for date_val, group in candidate_df.groupby('date', sort=True):
+        if len(group) < top_k:
+            continue
+        group = group.sort_values('stage1_score', ascending=False).reset_index(drop=True)
+        group['stage1_rank_all'] = np.arange(1, len(group) + 1)
+        if len(group) > 1:
+            group['stage1_rank_pct_all'] = 1.0 - (group['stage1_rank_all'] - 1) / (len(group) - 1)
+        else:
+            group['stage1_rank_pct_all'] = 1.0
+
+        topk_df = group.head(top_k).copy()
+        topk_df['stage1_rank_in_top5'] = np.arange(1, len(topk_df) + 1)
+
+        top1_score = float(topk_df['stage1_score'].iloc[0])
+        top5_mean = float(topk_df['stage1_score'].mean())
+        top5_std = float(topk_df['stage1_score'].std(ddof=0))
+        pred_scale = max(abs(top1_score), 1e-6)
+
+        topk_df['stage1_gap_to_top1_rel'] = (top1_score - topk_df['stage1_score']) / pred_scale
+        topk_df['stage1_gap_to_top5_mean_rel'] = (topk_df['stage1_score'] - top5_mean) / pred_scale
+        topk_df['stage1_top5_z'] = 0.0 if top5_std < 1e-8 else (topk_df['stage1_score'] - top5_mean) / top5_std
+
+        if 'atr_return_label' in topk_df.columns and topk_df['atr_return_label'].notna().any():
+            best_idx = topk_df['atr_return_label'].astype(float).idxmax()
+            topk_df['rerank_label'] = 0
+            topk_df.loc[best_idx, 'rerank_label'] = 1
+        else:
+            topk_df['rerank_label'] = 0
+
+        all_rows.append(topk_df)
+
+    if not all_rows:
+        return pd.DataFrame()
+    return pd.concat(all_rows, axis=0, ignore_index=True)
+
+
+def _score_topk_reranker(candidate_df, score_col):
+    """按日从Top5候选里选最终Top1，返回二阶模型评估统计。"""
+    if candidate_df is None or candidate_df.empty or score_col not in candidate_df.columns:
+        return None
+
+    selected_rows = []
+    base_rows = []
+    for _, group in candidate_df.groupby('date', sort=True):
+        valid_group = group.dropna(subset=[score_col, 'atr_return_label']).copy()
+        if valid_group.empty:
+            continue
+        picked = valid_group.sort_values(score_col, ascending=False).iloc[0]
+        selected_rows.append(picked)
+
+        base_group = valid_group.sort_values('stage1_score', ascending=False)
+        if not base_group.empty:
+            base_rows.append(base_group.iloc[0])
+
+    if not selected_rows:
+        return None
+
+    picked_df = pd.DataFrame(selected_rows)
+    picked_returns = picked_df['atr_return_label'].astype(float).values
+    base_mean = float('nan')
+    if base_rows:
+        base_mean = float(pd.DataFrame(base_rows)['atr_return_label'].astype(float).mean())
+
+    nav = np.cumprod(1.0 + picked_returns)
+    peaks = np.maximum.accumulate(nav)
+    drawdowns = nav / np.maximum(peaks, 1e-12) - 1.0
+    max_dd = float(drawdowns.min()) if len(drawdowns) > 0 else 0.0
+
+    oracle_hit = float(picked_df['rerank_label'].mean()) if 'rerank_label' in picked_df.columns else 0.0
+    mean_ret = float(np.mean(picked_returns))
+    median_ret = float(np.median(picked_returns))
+    win_rate = float(np.mean(picked_returns > 0))
+    q10 = float(np.percentile(picked_returns, 10))
+    improvement = mean_ret - base_mean if np.isfinite(base_mean) else 0.0
+    score = (
+        260.0 * mean_ret +
+        140.0 * median_ret +
+        36.0 * (win_rate - 0.5) +
+        22.0 * q10 +
+        12.0 * max_dd +
+        22.0 * oracle_hit +
+        28.0 * improvement
+    )
+    return {
+        'days': int(len(picked_df)),
+        'mean_return': mean_ret,
+        'median_return': median_ret,
+        'win_rate': win_rate,
+        'q10': q10,
+        'max_drawdown': max_dd,
+        'oracle_hit_rate': oracle_hit,
+        'base_top1_mean': base_mean,
+        'improvement_vs_base_top1': improvement,
+        'score': float(score),
+        'picked_df': picked_df
+    }
+
+
+def _train_top5_reranker_model(train_candidate_df, selection_candidate_df, reranker_feature_columns, logger):
+    """
+    训练 Top5 reranker。
+    - 训练集：train_candidate_df（由一阶模型在 train/val-search 上生成）
+    - 选参集：selection_candidate_df（由一阶模型在 selection 段上生成）
+    """
+    import lightgbm as lgb
+    import random
+
+    if train_candidate_df is None or train_candidate_df.empty:
+        logger.error("[RERANK] 训练候选集为空，无法训练Top5 reranker")
+        return None
+    if selection_candidate_df is None or selection_candidate_df.empty:
+        logger.error("[RERANK] selection候选集为空，无法训练Top5 reranker")
+        return None
+
+    train_candidate_df = train_candidate_df.reset_index(drop=True).copy()
+    selection_candidate_df = selection_candidate_df.reset_index(drop=True).copy()
+
+    X_train = _safe_numeric_frame(train_candidate_df, reranker_feature_columns)
+    y_train = train_candidate_df['rerank_label'].astype(int).values
+    X_selection = _safe_numeric_frame(selection_candidate_df, reranker_feature_columns)
+    y_selection = selection_candidate_df['rerank_label'].astype(int).values
+
+    dtrain = lgb.Dataset(X_train, label=y_train)
+    dvalid = lgb.Dataset(X_selection, label=y_selection, reference=dtrain)
+
+    search_space = {
+        'learning_rate': [0.03, 0.05],
+        'num_leaves': [7, 15],
+        'min_data_in_leaf': [40, 80, 120],
+        'feature_fraction': [0.6, 0.8],
+        'bagging_fraction': [0.7, 1.0],
+        'bagging_freq': [1, 3],
+        'reg_alpha': [1, 5],
+        'reg_lambda': [1, 5],
+        'n_estimators': [150, 300]
+    }
+
+    base_params = {
+        'objective': 'binary',
+        'metric': 'binary_logloss',
+        'boosting_type': 'gbdt',
+        'deterministic': True,
+        'force_col_wise': True,
+        'verbosity': -1,
+        'n_jobs': -1,
+        'random_state': 42
+    }
+
+    best_model = None
+    best_params = None
+    best_score = -float('inf')
+    best_iteration = None
+    best_selection_diag = None
+
+    combinations = []
+    for lr in search_space['learning_rate']:
+        for nl in search_space['num_leaves']:
+            for md in search_space['min_data_in_leaf']:
+                for ff in search_space['feature_fraction']:
+                    for bf in search_space['bagging_fraction']:
+                        for bgf in search_space['bagging_freq']:
+                            for ra in search_space['reg_alpha']:
+                                for rl in search_space['reg_lambda']:
+                                    for ne in search_space['n_estimators']:
+                                        combinations.append({
+                                            'learning_rate': lr,
+                                            'num_leaves': nl,
+                                            'min_data_in_leaf': md,
+                                            'feature_fraction': ff,
+                                            'bagging_fraction': bf,
+                                            'bagging_freq': bgf,
+                                            'reg_alpha': ra,
+                                            'reg_lambda': rl,
+                                            'n_estimators': ne
+                                        })
+
+    random.Random(42).shuffle(combinations)
+    combinations = combinations[:24]
+
+    for idx, params in enumerate(combinations, 1):
+        current_params = base_params.copy()
+        current_params.update(params)
+        eval_result = {}
+        callbacks = [
+            lgb.early_stopping(stopping_rounds=20, first_metric_only=True, verbose=False),
+            lgb.log_evaluation(period=0),
+            lgb.record_evaluation(eval_result)
+        ]
+        model = lgb.train(
+            current_params,
+            dtrain,
+            num_boost_round=int(params['n_estimators']),
+            valid_sets=[dvalid],
+            valid_names=['selection'],
