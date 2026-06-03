@@ -11,6 +11,7 @@
 import logging
 import time
 import math
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, TYPE_CHECKING, Any
 import pandas as pd
@@ -40,7 +41,6 @@ except ImportError:
 # ==============================================================================
 # 目标下单窗口（本地时间）
 BUY_WINDOW_START = "09:30:00"
-BUY_WINDOW_END   = "09:32:20"
 
 # 当盘口快速下跌时，偏“被动”的比例（降低追价，利用下跌降低成本）
 # 0.0=完全追价，1.0=完全被动。建议 0.55~0.75 区间。
@@ -110,15 +110,83 @@ FAST_DOWN_WAIT_SECONDS = 1.0
 FAST_DOWN_EXTRA_WAIT_SECONDS = 0.8
 FAST_DOWN_PRE_ORDER_WAIT_SECONDS = 0.8
 FAST_UP_CANCEL_WAIT_SECONDS = 0.8
+FAST_DOWN_RECHECK_WAIT_SECONDS = 1.0
+FAST_DOWN_MAX_OBSERVE_SECONDS = 900.0
+FAST_DOWN_PASSIVE_RAMP_SECONDS = 300.0
+
+# 快速下跌趋稳判定：当rel波动范围收窄到该值以内，且持续时间超过阈值，认为下跌已趋稳，可以开始被动买入
+FAST_DOWN_STABILIZE_BAND = 0.005  # rel波动范围 ±0.5%
+FAST_DOWN_STABILIZE_MIN_SAMPLES = 10  # 至少采集这么多轮才做趋稳判断
+FAST_DOWN_STABILIZE_DURATION = 25.0  # 持续25秒以上才算趋稳
+
+# 每片订单的真实成交等待超时（与切片节奏分离）
+BUY_FILL_TIMEOUT_SECONDS = 2.5
+FAST_UP_FILL_TIMEOUT_SECONDS = 1.5
+FAST_DOWN_FILL_TIMEOUT_SECONDS = 2.5
+
+# 等待未终态订单进入终态的补充时间
+MID_OUTSTANDING_WAIT_SECONDS = 2.5
+FINAL_OUTSTANDING_WAIT_SECONDS = 6.0
+MAX_TICK_FAILURES_BEFORE_ABORT = 5
 
 # 每片最多撤单重试次数
 BUY_MAX_RETRIES_PER_SLICE = 3
 
 # 快涨/快跌判定阈值（相对开盘价）
-FAST_UP_TH = 0.006
+FAST_UP_TH = 0.008
+FAST_UP_MICRO_TH = 0.0030
 FAST_DOWN_TH = -0.006
 FAST_DOWN_MICRO_TH = -0.0015
 FAST_DOWN_MIN_STREAK = 1
+FAST_UP_MIN_STREAK = 2
+
+# 开盘微观结构状态机参数
+OPEN_STICKY_INITIAL_WINDOW_SECONDS = 2.5
+OPEN_STICKY_MAX_REL = 0.0020
+WHIPSAW_LOOKBACK_BARS = 5
+WHIPSAW_MIN_DIRECTION_FLIPS = 2
+WHIPSAW_MIN_AMPLITUDE = 0.0080
+WHIPSAW_PAUSE_SECONDS = 1.2
+WHIPSAW_MAX_SLICE_RATIO = 0.25
+OPEN_STICKY_MAX_SLICE_RATIO = 0.30
+FAST_BREAKOUT_MAX_SLICE_RATIO = 0.50
+
+# 深水反弹状态：相对开盘仍可能为负，但相对开盘后低点已明显修复。
+DEEP_REBOUND_MIN_DRAWDOWN = -0.030
+DEEP_REBOUND_FROM_LOW = 0.018
+DEEP_REBOUND_MAX_REL_FROM_OPEN = 0.004
+DEEP_REBOUND_MIN_UP_STREAK = 2
+DEEP_REBOUND_MAX_SLICE_RATIO = 0.35
+DEEP_REBOUND_BUY_SLIPPAGE_CAP_PCT = 0.015
+
+# 入场二阶段保护：先允许成交一部分，观察开盘后走势；若转弱则停止补剩余仓位。
+# 这不是选股过滤，而是防止“09:30 几秒内买满后当天一路下跌”的执行层保护。
+ENTRY_STAGE_GUARD_ENABLED = False
+ENTRY_STAGE_INITIAL_MAX_RATIO = 0.50
+ENTRY_STAGE_CONFIRM_SECONDS = 300.0
+ENTRY_STAGE_ABORT_REL_FROM_OPEN = -0.015
+ENTRY_STAGE_ABORT_REL_FROM_AVG_FILL = -0.012
+ENTRY_STAGE_MIN_RECHECK_SECONDS = 2.0
+
+# 成交后执行闸门：避免试单成交后，在价格没有确认强度时几秒内买满。
+# 这里处理的是实盘执行质量，不改变选股信号。
+EXECUTION_GOVERNOR_ENABLED = True
+EXECUTION_MIN_CONFIRM_SECONDS = 20.0
+EXECUTION_RECHECK_SECONDS = 1.0
+EXECUTION_MAX_WAIT_SECONDS = 1800.0
+EXECUTION_WEAK_MAX_WAIT_SECONDS = 900.0
+EXECUTION_OPEN_NO_ABORT_SECONDS = 900.0
+EXECUTION_RECOVERY_REL_FROM_OPEN = 0.0015
+EXECUTION_RECOVERY_REL_FROM_AVG_FILL = 0.0000
+EXECUTION_SOFT_WEAK_REL_FROM_OPEN = -0.0025
+EXECUTION_SOFT_WEAK_REL_FROM_AVG_FILL = -0.0015
+EXECUTION_DEEP_WEAK_REL_FROM_OPEN = -0.0120
+EXECUTION_DEEP_WEAK_REL_FROM_AVG_FILL = -0.0080
+EXECUTION_PANIC_REL_FROM_OPEN = -0.0300
+EXECUTION_PANIC_REL_FROM_AVG_FILL = -0.0250
+EXECUTION_HARD_PANIC_REL_FROM_OPEN = -0.0550
+EXECUTION_HARD_PANIC_REL_FROM_AVG_FILL = -0.0500
+EXECUTION_FLAT_MAX_SLICE_RATIO = 0.25
 
 # 价格撮合微调（单位：元，默认 A 股 0.01）
 DEFAULT_TICK_SIZE = 0.01
@@ -242,6 +310,9 @@ class SmartOrderManager:
         # 订单追踪: {order_id: order_info}
         self.active_orders = {}
 
+        # 最近一次已提交的卖单信息（供监控侧做退出态同步）
+        self.last_sell_submission = None
+
         # 兼容属性：orders 指向 active_orders（供 main.py 使用）
         self.orders = self.active_orders
 
@@ -278,6 +349,162 @@ class SmartOrderManager:
             return FAST_DOWN_WAIT_SECONDS
         return BUY_WAIT_SECONDS
 
+    def _get_slice_fill_timeout(self, is_fast_up: bool, is_fast_down: bool) -> float:
+        if is_fast_up:
+            return FAST_UP_FILL_TIMEOUT_SECONDS
+        if is_fast_down:
+            return FAST_DOWN_FILL_TIMEOUT_SECONDS
+        return BUY_FILL_TIMEOUT_SECONDS
+
+    def _round_lot(self, volume: int) -> int:
+        volume = int(volume or 0)
+        if volume <= 0:
+            return 0
+        return max(100, (volume // 100) * 100)
+
+    def _cap_slice_by_ratio(self, slice_qty: int, remaining: int, ratio: float) -> int:
+        cap_qty = self._round_lot(int(remaining * float(ratio)))
+        if cap_qty <= 0:
+            cap_qty = min(remaining, 100)
+        cap_qty = max(100, min(int(remaining), cap_qty))
+        return max(100, min(int(slice_qty), cap_qty))
+
+    def _detect_fast_up(self,
+                        open_px: float,
+                        last_px: float,
+                        ask1: float,
+                        bid1: float,
+                        prev_quote: Optional[Dict[str, float]],
+                        up_streak: int) -> tuple[bool, int]:
+        """
+        识别是否正在快速上涨（tick级别的持续上移）。
+
+        核心改动：不再仅凭\"距离开盘价多远\"来判断，而是基于tick级别
+        的持续上移信号。一旦tick不再上移，即使股价仍高于开盘价，也会退出
+        FAST_BREAKOUT状态。
+
+        两种进入方式：
+        1. 持续上移：last/ask1/bid1 连续多tick上移 + 价格高于开盘微阈值
+        2. 初始急涨：价格大幅高于开盘 + 当前tick有上移证据
+        """
+        rel = (last_px - open_px) / (open_px + 1e-12)
+
+        if not prev_quote:
+            if rel >= FAST_UP_TH:
+                return True, max(up_streak, FAST_UP_MIN_STREAK)
+            return False, 0
+
+        prev_last = _safe_float(prev_quote.get('last'))
+        prev_ask1 = _safe_float(prev_quote.get('ask1'))
+        prev_bid1 = _safe_float(prev_quote.get('bid1'))
+
+        up_signals = 0
+        if pd.notna(prev_last) and last_px > prev_last + DEFAULT_TICK_SIZE / 2:
+            up_signals += 1
+        if pd.notna(prev_ask1) and ask1 and ask1 > 0 and ask1 >= prev_ask1 + DEFAULT_TICK_SIZE / 2:
+            up_signals += 1
+        if pd.notna(prev_bid1) and bid1 and bid1 > 0 and bid1 >= prev_bid1 + DEFAULT_TICK_SIZE / 2:
+            up_signals += 1
+
+        if up_signals >= 2:
+            up_streak += 1
+        else:
+            up_streak = 0
+
+        # 维持条件：tick持续上移 + 价格已高于开盘微阈值
+        if up_streak >= FAST_UP_MIN_STREAK and rel >= FAST_UP_MICRO_TH:
+            return True, up_streak
+
+        # 进入条件：绝对涨幅较大 + 当前tick有上移证据
+        if rel >= FAST_UP_TH and up_signals >= 1:
+            return True, max(up_streak + 1, FAST_UP_MIN_STREAK)
+
+        return False, up_streak
+
+    def _count_direction_flips(self, rel_history: List[float]) -> int:
+        signs: List[int] = []
+        for rel in rel_history:
+            if rel >= FAST_UP_MICRO_TH:
+                signs.append(1)
+            elif rel <= FAST_DOWN_MICRO_TH:
+                signs.append(-1)
+        if len(signs) < 2:
+            return 0
+        flips = 0
+        prev_sign = signs[0]
+        for sign in signs[1:]:
+            if sign != prev_sign:
+                flips += 1
+                prev_sign = sign
+        return flips
+
+    def _classify_open_microstructure(self,
+                                      open_px: float,
+                                      last_px: float,
+                                      ask1: float,
+                                      bid1: float,
+                                      elapsed_seconds: float,
+                                      recent_quotes: List[Dict[str, float]],
+                                      prev_quote: Optional[Dict[str, float]],
+                                      up_streak: int,
+                                      down_streak: int) -> Dict[str, Any]:
+        rel = (last_px - open_px) / (open_px + 1e-12)
+        spread_rel = 0.0
+        if ask1 and ask1 > 0 and bid1 and bid1 > 0:
+            spread_rel = max(0.0, (ask1 - bid1) / (open_px + 1e-12))
+
+        is_fast_up, new_up_streak = self._detect_fast_up(
+            open_px=open_px,
+            last_px=last_px,
+            ask1=ask1,
+            bid1=bid1,
+            prev_quote=prev_quote,
+            up_streak=up_streak,
+        )
+        is_fast_down, new_down_streak = self._detect_fast_down(
+            open_px=open_px,
+            last_px=last_px,
+            ask1=ask1,
+            bid1=bid1,
+            prev_quote=prev_quote,
+            down_streak=down_streak,
+        )
+
+        rel_history = [float(q.get('rel', 0.0) or 0.0) for q in recent_quotes[-WHIPSAW_LOOKBACK_BARS:]]
+        amplitude = (max(rel_history) - min(rel_history)) if rel_history else 0.0
+        flips = self._count_direction_flips(rel_history)
+        recent_up = sum(1 for item in rel_history[-3:] if item >= FAST_UP_MICRO_TH)
+        recent_down = sum(1 for item in rel_history[-3:] if item <= FAST_DOWN_MICRO_TH)
+
+        if elapsed_seconds <= OPEN_STICKY_INITIAL_WINDOW_SECONDS and len(recent_quotes) <= 2 and abs(rel) <= OPEN_STICKY_MAX_REL:
+            state = 'OPEN_STICKY'
+        elif flips >= WHIPSAW_MIN_DIRECTION_FLIPS and amplitude >= WHIPSAW_MIN_AMPLITUDE:
+            state = 'WHIPSAW'
+        elif is_fast_down:
+            state = 'FAST_BREAKDOWN'
+        elif is_fast_up:
+            # 过滤下跌过程中的弱反弹，只有“最近几根也偏强”的突破才算 fast_up。
+            if rel < 0.010 and recent_down >= 2 and recent_up <= 1:
+                is_fast_up = False
+                new_up_streak = 0
+                state = 'NORMAL'
+            else:
+                state = 'FAST_BREAKOUT'
+        else:
+            state = 'NORMAL'
+
+        return {
+            'state': state,
+            'rel': rel,
+            'spread_rel': spread_rel,
+            'is_fast_up': is_fast_up,
+            'is_fast_down': is_fast_down,
+            'up_streak': new_up_streak,
+            'down_streak': new_down_streak,
+            'whipsaw_flips': flips,
+            'whipsaw_amplitude': amplitude,
+        }
+
     def _resolve_effective_slices(self, buy_volume: int) -> int:
         """按目标股数决定拆单片数，避免小单过度切片。"""
         if buy_volume <= SMALL_ORDER_SINGLE_SLICE_MAX:
@@ -286,6 +513,169 @@ class SmartOrderManager:
             return 2
         return BUY_SLICES
 
+    def _evaluate_entry_execution_governor(self,
+                                           stock_code: str,
+                                           buy_volume: int,
+                                           filled_so_far: int,
+                                           outstanding_so_far: int,
+                                           avg_fill_price: float,
+                                           open_px: float,
+                                           last_px: float,
+                                           elapsed_seconds: float,
+                                           is_fast_up: bool,
+                                           open_state: str,
+                                           state: Dict[str, Any]) -> Dict[str, Any]:
+        """成交后判断是否允许继续补剩余仓位。
+
+        原则：
+        - 未成交前不拦截，让第一笔试单去发现真实成交能力。
+        - 已有成交后，如果价格没有站回开盘价/成交均价，不急着补仓。
+        - 真正持续走强时放行；持续走弱或低于成本过久时放弃剩余。
+        """
+        if not EXECUTION_GOVERNOR_ENABLED:
+            return {'action': 'proceed', 'reason': 'disabled'}
+
+        if filled_so_far <= 0 or outstanding_so_far > 0:
+            return {'action': 'proceed', 'reason': 'no_filled_or_has_outstanding'}
+
+        if not open_px or open_px <= 0 or not last_px or last_px <= 0:
+            return {'action': 'wait', 'sleep': EXECUTION_RECHECK_SECONDS, 'reason': 'invalid_price'}
+
+        avg_fill = float(avg_fill_price or 0.0)
+        if avg_fill <= 0:
+            avg_fill = float(open_px)
+
+        fill_ratio = filled_so_far / max(1, int(buy_volume))
+        rel_open = (last_px - open_px) / (open_px + 1e-12)
+        rel_avg = (last_px - avg_fill) / (avg_fill + 1e-12)
+        now_ts = time.time()
+
+        if 'first_fill_ts' not in state:
+            state['first_fill_ts'] = now_ts
+        if 'first_fill_elapsed' not in state:
+            state['first_fill_elapsed'] = float(elapsed_seconds)
+
+        since_first_fill = max(0.0, now_ts - float(state.get('first_fill_ts', now_ts)))
+        is_deep_rebound = open_state == 'DEEP_REBOUND'
+        is_breakout = bool(is_fast_up and rel_open >= FAST_UP_MICRO_TH and rel_avg >= EXECUTION_SOFT_WEAK_REL_FROM_AVG_FILL)
+        is_recovered = (
+            rel_open >= EXECUTION_RECOVERY_REL_FROM_OPEN
+            and rel_avg >= EXECUTION_RECOVERY_REL_FROM_AVG_FILL
+        )
+        is_soft_weak = (
+            rel_open <= EXECUTION_SOFT_WEAK_REL_FROM_OPEN
+            or rel_avg <= EXECUTION_SOFT_WEAK_REL_FROM_AVG_FILL
+        )
+        is_deep_weak = (
+            rel_open <= EXECUTION_DEEP_WEAK_REL_FROM_OPEN
+            or rel_avg <= EXECUTION_DEEP_WEAK_REL_FROM_AVG_FILL
+        )
+        is_cost_panic = rel_avg <= EXECUTION_PANIC_REL_FROM_AVG_FILL
+        is_open_panic = rel_open <= EXECUTION_PANIC_REL_FROM_OPEN
+        is_panic_weak = (
+            is_open_panic
+            or (is_cost_panic and rel_open <= EXECUTION_DEEP_WEAK_REL_FROM_OPEN)
+        )
+        is_hard_panic_weak = (
+            rel_open <= EXECUTION_HARD_PANIC_REL_FROM_OPEN
+            or rel_avg <= EXECUTION_HARD_PANIC_REL_FROM_AVG_FILL
+        )
+        in_open_noise_window = elapsed_seconds < EXECUTION_OPEN_NO_ABORT_SECONDS
+
+        if is_soft_weak or is_deep_weak:
+            state.setdefault('weak_since_ts', now_ts)
+        else:
+            state.pop('weak_since_ts', None)
+        weak_duration = max(0.0, now_ts - float(state.get('weak_since_ts', now_ts)))
+
+        detail = (
+            f"filled={filled_so_far}/{buy_volume}({fill_ratio:.0%}), "
+            f"last={last_px:.2f}, open_rel={rel_open:.2%}, avg_rel={rel_avg:.2%}, "
+            f"elapsed={elapsed_seconds:.1f}s, since_fill={since_first_fill:.1f}s, state={open_state}"
+        )
+
+        if is_breakout:
+            return {
+                'action': 'proceed',
+                'reason': f"confirmed_strength, {detail}",
+            }
+
+        if is_deep_rebound and rel_avg >= EXECUTION_SOFT_WEAK_REL_FROM_AVG_FILL:
+            return {
+                'action': 'proceed_limited',
+                'max_slice_ratio': DEEP_REBOUND_MAX_SLICE_RATIO,
+                'reason': f"deep_rebound_repair_use_limited_slice, {detail}",
+            }
+
+        if is_panic_weak and in_open_noise_window and not is_hard_panic_weak:
+            return {
+                'action': 'wait',
+                'sleep': EXECUTION_RECHECK_SECONDS,
+                'reason': (
+                    f"open_noise_panic_guard_wait_for_repair, weak_duration={weak_duration:.1f}s, "
+                    f"{detail}"
+                ),
+            }
+
+        if is_panic_weak:
+            return {
+                'action': 'abort',
+                'reason': f"panic_weak_stop_remaining, {detail}",
+            }
+
+        if since_first_fill < EXECUTION_MIN_CONFIRM_SECONDS:
+            return {
+                'action': 'wait',
+                'sleep': EXECUTION_RECHECK_SECONDS,
+                'reason': f"wait_for_post_fill_confirmation, {detail}",
+            }
+
+        if is_recovered:
+            return {
+                'action': 'proceed',
+                'reason': f"confirmed_recovery, {detail}",
+            }
+
+        if is_deep_weak:
+            if (
+                not in_open_noise_window
+                and (weak_duration >= EXECUTION_WEAK_MAX_WAIT_SECONDS or since_first_fill >= EXECUTION_MAX_WAIT_SECONDS)
+            ):
+                return {
+                    'action': 'abort',
+                    'reason': f"deep_weak_not_repaired_after_long_observation, weak_duration={weak_duration:.1f}s, {detail}",
+                }
+            return {
+                'action': 'wait',
+                'sleep': EXECUTION_RECHECK_SECONDS,
+                'reason': f"deep_weak_wait_for_repair, weak_duration={weak_duration:.1f}s, {detail}",
+            }
+
+        if is_soft_weak and not in_open_noise_window and weak_duration >= EXECUTION_WEAK_MAX_WAIT_SECONDS:
+            return {
+                'action': 'abort',
+                'reason': f"weak_too_long_after_long_observation, weak_duration={weak_duration:.1f}s, {detail}",
+            }
+
+        if since_first_fill >= EXECUTION_MAX_WAIT_SECONDS:
+            return {
+                'action': 'abort',
+                'reason': f"no_recovery_timeout_stop_remaining, {detail}",
+            }
+
+        if is_soft_weak or open_state in {'OPEN_STICKY', 'WHIPSAW'}:
+            return {
+                'action': 'wait',
+                'sleep': EXECUTION_RECHECK_SECONDS,
+                'reason': f"not_confirmed_or_soft_weak, {detail}",
+            }
+
+        return {
+            'action': 'proceed_limited',
+            'max_slice_ratio': EXECUTION_FLAT_MAX_SLICE_RATIO,
+            'reason': f"flat_not_weak_use_small_slice, {detail}",
+        }
+
     def smart_buy_full_position(self, stock_code: str,
                                 buy_date: str,
                                 target_volume: int = None,
@@ -293,7 +683,7 @@ class SmartOrderManager:
                                 apply_opening_risk: bool = None,
                                 target_rank: int = 1,
                                 is_weak_market_env: bool = False) -> Optional[Dict[str, Any]]:
-        """开盘 09:30:00~09:30:20 智能买入（最小改动版，含急涨/急跌逻辑 + 追价上限）。
+        """开盘后智能买入（含急涨/急跌/WHIPSAW状态机 + 追价上限）。
 
         设计目标（贴合你的诉求）：
           - **急涨**：尽量在 BUY_SLIPPAGE_CAP_PCT 范围内“有限追价”抢到；超过 cap 则不追（宁可错过）。
@@ -342,17 +732,9 @@ class SmartOrderManager:
             available_cash = 0.0  # 手动模式用不上
 
         # -------------------------
-        # 4) 在 09:30:00~09:30:20 里分片下单
+        # 4) 开盘后按状态机分片下单；若持续 fast_down，可超过原硬窗口继续观察
         # -------------------------
         win_start = datetime.strptime(BUY_WINDOW_START, "%H:%M:%S").time()
-        win_end = datetime.strptime(BUY_WINDOW_END, "%H:%M:%S").time()
-
-        def _now_t() -> datetime.time:
-            return datetime.now().time()
-
-        # 若因延迟已经过了窗口，直接按当前价快速下单（但仍遵守 cap）
-        if _now_t() > win_end:
-            self.logger.warning(f"[{stock_code}] 当前已超过买入窗口 {BUY_WINDOW_END}，将直接按最新盘口尝试一次")
 
         # 目标成交数量（先用一次 tick 估算 open/cap 价来算手数）
         tick0 = self._get_tick(stock_code)
@@ -418,11 +800,26 @@ class SmartOrderManager:
         attempted_order_ids: List[str] = []
         aggressive_fast_up_mode = False
         prev_quote_snapshot: Optional[Dict[str, float]] = None
+        recent_quotes: List[Dict[str, float]] = []
+        fast_up_streak = 0
         fast_down_streak = 0
+        session_low_rel = 0.0
+        session_low_price = float(open_px)
+        deep_rebound_streak = 0
         max_order_attempts = effective_slices + 2
         attempt_no = 0
+        observe_rounds = 0
+        fast_down_wait_logged = False
+        fast_down_rel_tracker: List[tuple] = []  # (elapsed_seconds, rel) for stabilization detection
+        tick_failures = 0
+        entry_stage_guard_released = not ENTRY_STAGE_GUARD_ENABLED
+        entry_stage_guard_aborted = False
+        entry_stage_initial_target = max(100, int((buy_volume * ENTRY_STAGE_INITIAL_MAX_RATIO) // 100) * 100)
+        entry_stage_initial_target = min(int(buy_volume), entry_stage_initial_target)
+        execution_governor_state: Dict[str, Any] = {}
 
         while attempt_no < max_order_attempts:
+            observe_rounds += 1
             exec_state = self._get_order_execution_totals(stock_code, attempted_order_ids)
             filled_so_far = int(exec_state['filled_volume'])
             outstanding_so_far = int(exec_state['outstanding_volume'])
@@ -434,7 +831,11 @@ class SmartOrderManager:
                         f"[{stock_code}] 仍有未终态订单占用数量: filled={filled_so_far}, outstanding={outstanding_so_far}, "
                         f"remaining_to_order={remaining}，等待旧单最终回报"
                     )
-                    self._wait_for_outstanding_orders(stock_code, attempted_order_ids, timeout=1.2)
+                    self._wait_for_outstanding_orders(
+                        stock_code,
+                        attempted_order_ids,
+                        timeout=MID_OUTSTANDING_WAIT_SECONDS,
+                    )
                     exec_state = self._get_order_execution_totals(stock_code, attempted_order_ids)
                     filled_so_far = int(exec_state['filled_volume'])
                     outstanding_so_far = int(exec_state['outstanding_volume'])
@@ -451,21 +852,97 @@ class SmartOrderManager:
                     )
                     break
 
-            attempt_no += 1
+            if ENTRY_STAGE_GUARD_ENABLED and not entry_stage_guard_released:
+                if filled_so_far >= entry_stage_initial_target:
+                    now_dt = datetime.now()
+                    start_dt = now_dt.replace(hour=win_start.hour, minute=win_start.minute, second=win_start.second, microsecond=0)
+                    elapsed_guard = max(0.0, (now_dt - start_dt).total_seconds())
+                    if elapsed_guard < ENTRY_STAGE_CONFIRM_SECONDS:
+                        wait_s = min(
+                            ENTRY_STAGE_MIN_RECHECK_SECONDS,
+                            max(0.1, ENTRY_STAGE_CONFIRM_SECONDS - elapsed_guard),
+                        )
+                        self.logger.info(
+                            f"[{stock_code}] 入场二阶段保护：已成交 {filled_so_far}/{buy_volume} "
+                            f"(首阶段目标={entry_stage_initial_target})，等待开盘后 "
+                            f"{ENTRY_STAGE_CONFIRM_SECONDS:.0f}s 再决定是否补仓，sleep={wait_s:.1f}s"
+                        )
+                        time.sleep(wait_s)
+                        continue
+
+                    tick_guard = self._get_tick(stock_code)
+                    if tick_guard is None:
+                        self.logger.warning(
+                            f"[{stock_code}] 入场二阶段保护：确认时获取 tick 失败，暂缓补仓"
+                        )
+                        time.sleep(ENTRY_STAGE_MIN_RECHECK_SECONDS)
+                        continue
+
+                    open_guard = _safe_float(tick_guard.get("open") or tick_guard.get("openPrice") or open_px)
+                    last_guard = _safe_float(tick_guard.get("lastPrice") or tick_guard.get("last") or last_px)
+                    exec_summary = self._summarize_buy_execution(
+                        stock_code=stock_code,
+                        requested_volume=int(buy_volume),
+                        attempted_order_ids=attempted_order_ids,
+                        fallback_buy_date=buy_date,
+                        last_order_id=last_order_id,
+                        open_px=open_px,
+                    )
+                    avg_fill = float(exec_summary.get("avg_price") or 0.0)
+                    if not avg_fill or avg_fill <= 0:
+                        avg_fill = float(open_guard or open_px)
+
+                    rel_from_open = (last_guard - open_guard) / (open_guard + 1e-12) if open_guard and open_guard > 0 else 0.0
+                    rel_from_avg = (last_guard - avg_fill) / (avg_fill + 1e-12) if avg_fill and avg_fill > 0 else 0.0
+                    if (
+                        rel_from_open <= ENTRY_STAGE_ABORT_REL_FROM_OPEN
+                        or rel_from_avg <= ENTRY_STAGE_ABORT_REL_FROM_AVG_FILL
+                    ):
+                        self.logger.warning(
+                            f"[{stock_code}] 入场二阶段保护触发：停止补剩余仓位 "
+                            f"(filled={filled_so_far}/{buy_volume}, last={last_guard:.2f}, "
+                            f"open_rel={rel_from_open:.2%}<= {ENTRY_STAGE_ABORT_REL_FROM_OPEN:.2%} "
+                            f"或 avg_rel={rel_from_avg:.2%}<= {ENTRY_STAGE_ABORT_REL_FROM_AVG_FILL:.2%})"
+                        )
+                        entry_stage_guard_aborted = True
+                        break
+
+                    entry_stage_guard_released = True
+                    self.logger.info(
+                        f"[{stock_code}] 入场二阶段保护通过：允许补剩余仓位 "
+                        f"(filled={filled_so_far}/{buy_volume}, last={last_guard:.2f}, "
+                        f"open_rel={rel_from_open:.2%}, avg_rel={rel_from_avg:.2%})"
+                    )
 
             # 每片数量（最后一片吃剩余）
+            next_attempt_no = attempt_no + 1
             if aggressive_fast_up_mode:
                 slice_qty = remaining
-            elif attempt_no < effective_slices:
+            elif next_attempt_no < effective_slices:
                 slice_qty = max(100, (buy_volume // effective_slices) // 100 * 100)
                 slice_qty = min(slice_qty, remaining)
             else:
                 slice_qty = remaining
+            if ENTRY_STAGE_GUARD_ENABLED and not entry_stage_guard_released:
+                first_stage_remaining = max(0, entry_stage_initial_target - filled_so_far - outstanding_so_far)
+                if first_stage_remaining < 100:
+                    time.sleep(ENTRY_STAGE_MIN_RECHECK_SECONDS)
+                    continue
+                slice_qty = min(slice_qty, first_stage_remaining)
 
             tick = self._get_tick(stock_code)
             if tick is None:
-                self.logger.warning(f"[{stock_code}] 获取 tick 失败，跳过第{attempt_no}片")
+                tick_failures += 1
+                self.logger.warning(
+                    f"[{stock_code}] 获取 tick 失败，暂停 {FAST_DOWN_RECHECK_WAIT_SECONDS:.2f}s 后重试 "
+                    f"(failure={tick_failures}/{MAX_TICK_FAILURES_BEFORE_ABORT})"
+                )
+                if tick_failures >= MAX_TICK_FAILURES_BEFORE_ABORT:
+                    self.logger.error(f"[{stock_code}] 连续获取 tick 失败，放弃当日买入")
+                    return None
+                time.sleep(FAST_DOWN_RECHECK_WAIT_SECONDS)
                 continue
+            tick_failures = 0
 
             open_px2 = _safe_float(tick.get("open") or tick.get("openPrice") or open_px)
             last_px2 = _safe_float(tick.get("lastPrice") or last_px)
@@ -483,41 +960,138 @@ class SmartOrderManager:
             try:
                 now_dt = datetime.now()
                 start_dt = now_dt.replace(hour=win_start.hour, minute=win_start.minute, second=win_start.second, microsecond=0)
-                end_dt = now_dt.replace(hour=win_end.hour, minute=win_end.minute, second=win_end.second, microsecond=0)
                 prog = 1.0
-                if end_dt > start_dt:
-                    prog = (now_dt - start_dt).total_seconds() / max(1e-6, (end_dt - start_dt).total_seconds())
-                    prog = float(min(1.0, max(0.0, prog)))
+                elapsed_seconds = max(0.0, (now_dt - start_dt).total_seconds())
+                prog = float(min(1.0, max(0.0, elapsed_seconds / max(1e-6, FAST_DOWN_PASSIVE_RAMP_SECONDS))))
             except Exception:
                 prog = 1.0
+                elapsed_seconds = 999.0
 
-            # 急涨/急跌判定（相对开盘）
-            rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
-            is_fast_up = rel >= FAST_UP_TH
-            is_fast_down, fast_down_streak = self._detect_fast_down(
+            current_rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
+            preview_quotes = (recent_quotes + [{
+                'rel': float(current_rel),
+                'last': float(last_px2) if last_px2 and last_px2 > 0 else float("nan"),
+                'ask1': float(ask1_2) if ask1_2 and ask1_2 > 0 else float("nan"),
+                'bid1': float(bid1_2) if bid1_2 and bid1_2 > 0 else float("nan"),
+            }])[-WHIPSAW_LOOKBACK_BARS:]
+            micro = self._classify_open_microstructure(
                 open_px=open_px2,
                 last_px=last_px2,
                 ask1=ask1_2,
                 bid1=bid1_2,
+                elapsed_seconds=elapsed_seconds,
+                recent_quotes=preview_quotes,
                 prev_quote=prev_quote_snapshot,
+                up_streak=fast_up_streak,
                 down_streak=fast_down_streak,
             )
+            rel = float(micro['rel'])
+            is_fast_up = bool(micro['is_fast_up'])
+            is_fast_down = bool(micro['is_fast_down'])
+            fast_up_streak = int(micro['up_streak'])
+            fast_down_streak = int(micro['down_streak'])
+            open_state = str(micro['state'])
+            session_low_rel = min(float(session_low_rel), rel)
+            if last_px2 and last_px2 > 0:
+                if session_low_price <= 0 or float(last_px2) < float(session_low_price):
+                    session_low_price = float(last_px2)
+            rebound_from_low = (
+                (float(last_px2) - float(session_low_price)) / (float(session_low_price) + 1e-12)
+                if session_low_price and session_low_price > 0 and last_px2 and last_px2 > 0
+                else 0.0
+            )
+            if (
+                session_low_rel <= DEEP_REBOUND_MIN_DRAWDOWN
+                and rebound_from_low >= DEEP_REBOUND_FROM_LOW
+                and rel <= DEEP_REBOUND_MAX_REL_FROM_OPEN
+                and fast_up_streak >= DEEP_REBOUND_MIN_UP_STREAK
+                and not is_fast_down
+            ):
+                deep_rebound_streak += 1
+                is_fast_up = False
+                open_state = 'DEEP_REBOUND'
+            else:
+                deep_rebound_streak = 0
             prev_quote_snapshot = {
                 'last': float(last_px2) if last_px2 and last_px2 > 0 else float("nan"),
                 'ask1': float(ask1_2) if ask1_2 and ask1_2 > 0 else float("nan"),
                 'bid1': float(bid1_2) if bid1_2 and bid1_2 > 0 else float("nan"),
             }
+            recent_quotes = preview_quotes
 
-            # 首单若开盘即快速下跌，先额外观察一会，再重新取一次tick，争取更低成本。
-            if attempt_no == 1 and is_fast_down:
+            if is_fast_down and remaining >= 100:
+                # 记录rel用于趋稳检测
+                fast_down_rel_tracker.append((elapsed_seconds, rel))
+                # 清理超过2倍趋稳时长的旧记录
+                fast_down_rel_tracker = [
+                    (e, r) for e, r in fast_down_rel_tracker
+                    if elapsed_seconds - e <= FAST_DOWN_STABILIZE_DURATION * 2
+                ]
+
+                if elapsed_seconds <= FAST_DOWN_MAX_OBSERVE_SECONDS:
+                    # ---- 趋稳检测：波动收窄 + 持续一定时间 → 退出观察，开始被动买入 ----
+                    stabilized = False
+                    if len(fast_down_rel_tracker) >= FAST_DOWN_STABILIZE_MIN_SAMPLES:
+                        recent_rels = [r for _, r in fast_down_rel_tracker[-FAST_DOWN_STABILIZE_MIN_SAMPLES:]]
+                        rel_range = max(recent_rels) - min(recent_rels)
+                        rel_duration = fast_down_rel_tracker[-1][0] - fast_down_rel_tracker[-FAST_DOWN_STABILIZE_MIN_SAMPLES][0]
+                        if rel_range <= FAST_DOWN_STABILIZE_BAND and rel_duration >= FAST_DOWN_STABILIZE_DURATION:
+                            stabilized = True
+
+                    if not stabilized:
+                        if (not fast_down_wait_logged) or (observe_rounds % 3 == 0):
+                            self.logger.info(
+                                f"[{stock_code}] 检测到持续FAST_BREAKDOWN，暂不下单，继续观察 {FAST_DOWN_RECHECK_WAIT_SECONDS:.2f}s "
+                                f"(elapsed={elapsed_seconds:.1f}s, rel={rel:.2%}, remaining={remaining}, observe_round={observe_rounds})"
+                            )
+                            fast_down_wait_logged = True
+                        time.sleep(FAST_DOWN_RECHECK_WAIT_SECONDS)
+                        continue
+                    # 趋稳：记录日志后继续执行下单逻辑（仍保持is_fast_down=True走被动定价）
+                    self.logger.info(
+                        f"[{stock_code}] 下跌已趋稳(波动{rel_range:.2%}<{FAST_DOWN_STABILIZE_BAND:.2%})，"
+                        f"切换到被动买入 (rel={rel:.2%}, remaining={remaining}, observe_round={observe_rounds})"
+                    )
+                    fast_down_rel_tracker.clear()
+                else:
+                    # 趋稳检查：观察窗口之后是否稳定过
+                    if len(fast_down_rel_tracker) >= FAST_DOWN_STABILIZE_MIN_SAMPLES:
+                        recent_rels = [r for _, r in fast_down_rel_tracker[-FAST_DOWN_STABILIZE_MIN_SAMPLES:]]
+                        rel_range = max(recent_rels) - min(recent_rels)
+                        if rel_range <= FAST_DOWN_STABILIZE_BAND:
+                            self.logger.info(
+                                f"[{stock_code}] 超{FAST_DOWN_MAX_OBSERVE_SECONDS:.0f}s但近期已趋稳(波动{rel_range:.2%})，"
+                                f"切换到被动买入 (rel={rel:.2%}, remaining={remaining})"
+                            )
+                            fast_down_rel_tracker.clear()
+                            # fall through to buy logic
+                        else:
+                            self.logger.warning(
+                                f"[{stock_code}] 开盘后持续下跌已超过 {FAST_DOWN_MAX_OBSERVE_SECONDS:.0f}s，"
+                                f"且未趋稳，放弃当日买入 (rel={rel:.2%}, remaining={remaining})"
+                            )
+                            if filled_so_far > 0:
+                                break
+                            return None
+                    else:
+                        self.logger.warning(
+                            f"[{stock_code}] 开盘后持续下跌已超过 {FAST_DOWN_MAX_OBSERVE_SECONDS:.0f}s，放弃当日买入 "
+                            f"(rel={rel:.2%}, remaining={remaining})"
+                        )
+                        if filled_so_far > 0:
+                            break
+                        return None
+            fast_down_wait_logged = False
+
+            if open_state == 'WHIPSAW':
                 self.logger.info(
-                    f"[{stock_code}] 首单检测到 fast_down，先等待 {FAST_DOWN_PRE_ORDER_WAIT_SECONDS:.2f}s 再重新定价 "
-                    f"(last={last_px2:.2f}, open={open_px2:.2f}, rel={rel:.2%})"
+                    f"[{stock_code}] 检测到开盘WHIPSAW，先暂停 {WHIPSAW_PAUSE_SECONDS:.2f}s "
+                    f"(flips={micro['whipsaw_flips']}, amp={micro['whipsaw_amplitude']:.2%}, rel={rel:.2%})"
                 )
-                time.sleep(FAST_DOWN_PRE_ORDER_WAIT_SECONDS)
+                time.sleep(WHIPSAW_PAUSE_SECONDS)
                 tick = self._get_tick(stock_code)
                 if tick is None:
-                    self.logger.warning(f"[{stock_code}] 首单等待后获取 tick 失败，跳过第{attempt_no}片")
+                    self.logger.warning(f"[{stock_code}] WHIPSAW暂停后获取 tick 失败，跳过第{attempt_no}片")
                     continue
                 open_px2 = _safe_float(tick.get("open") or tick.get("openPrice") or open_px2)
                 last_px2 = _safe_float(tick.get("lastPrice") or last_px2)
@@ -525,26 +1099,104 @@ class SmartOrderManager:
                 bid1_2 = _safe_float((tick.get("bidPrice") or [None])[0])
                 if not open_px2 or open_px2 <= 0:
                     open_px2 = open_px
-                current_cap_pct = FAST_UP_BUY_SLIPPAGE_CAP_PCT if aggressive_fast_up_mode else BUY_SLIPPAGE_CAP_PCT
-                cap_price2 = open_px2 * (1.0 + current_cap_pct)
-                if up_limit and up_limit > 0:
-                    cap_price2 = min(cap_price2, up_limit)
-                rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
-                is_fast_up = rel >= FAST_UP_TH
-                is_fast_down, fast_down_streak = self._detect_fast_down(
+                current_rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
+                preview_quotes = (recent_quotes + [{
+                    'rel': float(current_rel),
+                    'last': float(last_px2) if last_px2 and last_px2 > 0 else float("nan"),
+                    'ask1': float(ask1_2) if ask1_2 and ask1_2 > 0 else float("nan"),
+                    'bid1': float(bid1_2) if bid1_2 and bid1_2 > 0 else float("nan"),
+                }])[-WHIPSAW_LOOKBACK_BARS:]
+                micro = self._classify_open_microstructure(
                     open_px=open_px2,
                     last_px=last_px2,
                     ask1=ask1_2,
                     bid1=bid1_2,
+                    elapsed_seconds=elapsed_seconds + WHIPSAW_PAUSE_SECONDS,
+                    recent_quotes=preview_quotes,
                     prev_quote=prev_quote_snapshot,
+                    up_streak=fast_up_streak,
                     down_streak=fast_down_streak,
                 )
+                rel = float(micro['rel'])
+                is_fast_up = bool(micro['is_fast_up'])
+                is_fast_down = bool(micro['is_fast_down'])
+                fast_up_streak = int(micro['up_streak'])
+                fast_down_streak = int(micro['down_streak'])
+                open_state = str(micro['state'])
                 prev_quote_snapshot = {
                     'last': float(last_px2) if last_px2 and last_px2 > 0 else float("nan"),
                     'ask1': float(ask1_2) if ask1_2 and ask1_2 > 0 else float("nan"),
                     'bid1': float(bid1_2) if bid1_2 and bid1_2 > 0 else float("nan"),
                 }
+                recent_quotes = preview_quotes
 
+                if is_fast_down and remaining >= 100:
+                    if elapsed_seconds <= FAST_DOWN_MAX_OBSERVE_SECONDS:
+                        self.logger.info(
+                            f"[{stock_code}] WHIPSAW重判后仍为FAST_BREAKDOWN，继续观察 {FAST_DOWN_RECHECK_WAIT_SECONDS:.2f}s "
+                            f"(elapsed={elapsed_seconds + WHIPSAW_PAUSE_SECONDS:.1f}s, rel={rel:.2%}, remaining={remaining})"
+                        )
+                        time.sleep(FAST_DOWN_RECHECK_WAIT_SECONDS)
+                        continue
+                    self.logger.warning(
+                        f"[{stock_code}] WHIPSAW重判后仍持续下跌且超过观察上限，放弃当日买入 "
+                        f"(rel={rel:.2%}, remaining={remaining})"
+                    )
+                    if filled_so_far > 0:
+                        break
+                    return None
+
+            if EXECUTION_GOVERNOR_ENABLED and filled_so_far > 0:
+                exec_summary_for_governor = self._summarize_buy_execution(
+                    stock_code=stock_code,
+                    requested_volume=int(buy_volume),
+                    attempted_order_ids=attempted_order_ids,
+                    fallback_buy_date=buy_date,
+                    last_order_id=last_order_id,
+                    open_px=open_px,
+                )
+                avg_fill_for_governor = float(exec_summary_for_governor.get("avg_price") or 0.0)
+                governor_decision = self._evaluate_entry_execution_governor(
+                    stock_code=stock_code,
+                    buy_volume=int(buy_volume),
+                    filled_so_far=int(filled_so_far),
+                    outstanding_so_far=int(outstanding_so_far),
+                    avg_fill_price=avg_fill_for_governor,
+                    open_px=float(open_px2),
+                    last_px=float(last_px2),
+                    elapsed_seconds=float(elapsed_seconds),
+                    is_fast_up=bool(is_fast_up),
+                    open_state=str(open_state),
+                    state=execution_governor_state,
+                )
+                governor_action = str(governor_decision.get('action') or 'proceed')
+                if governor_action == 'abort':
+                    self.logger.warning(
+                        f"[{stock_code}] 执行闸门停止补剩余仓位: {governor_decision.get('reason')}"
+                    )
+                    break
+                if governor_action == 'wait':
+                    sleep_s = float(governor_decision.get('sleep') or EXECUTION_RECHECK_SECONDS)
+                    self.logger.info(
+                        f"[{stock_code}] 执行闸门暂停补仓 {sleep_s:.1f}s: {governor_decision.get('reason')}"
+                    )
+                    time.sleep(max(0.1, sleep_s))
+                    continue
+                if governor_action == 'proceed_limited':
+                    max_slice_ratio = float(governor_decision.get('max_slice_ratio') or EXECUTION_FLAT_MAX_SLICE_RATIO)
+                    adjusted_qty = self._cap_slice_by_ratio(
+                        slice_qty=slice_qty,
+                        remaining=remaining,
+                        ratio=max_slice_ratio,
+                    )
+                    if adjusted_qty < slice_qty:
+                        self.logger.info(
+                            f"[{stock_code}] 执行闸门仅允许小额补仓: {slice_qty} -> {adjusted_qty}; "
+                            f"{governor_decision.get('reason')}"
+                        )
+                        slice_qty = adjusted_qty
+
+            attempt_no = next_attempt_no
             if is_fast_up and not aggressive_fast_up_mode:
                 aggressive_fast_up_mode = True
                 current_cap_pct = FAST_UP_BUY_SLIPPAGE_CAP_PCT
@@ -552,15 +1204,50 @@ class SmartOrderManager:
                 if up_limit and up_limit > 0:
                     cap_price2 = min(cap_price2, up_limit)
                 if slice_qty < remaining:
-                    slice_qty = remaining
+                    slice_qty = self._cap_slice_by_ratio(slice_qty=remaining, remaining=remaining, ratio=FAST_BREAKOUT_MAX_SLICE_RATIO)
                 self.logger.info(
                     f"[{stock_code}] 检测到 fast_up，切换为aggressive模式："
-                    f"剩余仓位一次性追单，cap_pct={current_cap_pct:.2%}, qty={slice_qty}"
+                    f"剩余仓位分段追单，cap_pct={current_cap_pct:.2%}, qty={slice_qty}"
                 )
+
+            if open_state == 'OPEN_STICKY':
+                adjusted_qty = self._cap_slice_by_ratio(slice_qty=slice_qty, remaining=remaining, ratio=OPEN_STICKY_MAX_SLICE_RATIO)
+                if adjusted_qty < slice_qty:
+                    self.logger.info(
+                        f"[{stock_code}] 开盘OPEN_STICKY，首段试单缩量: {slice_qty} -> {adjusted_qty} "
+                        f"(elapsed={elapsed_seconds:.2f}s, rel={rel:.2%})"
+                    )
+                    slice_qty = adjusted_qty
+            elif open_state == 'WHIPSAW':
+                adjusted_qty = self._cap_slice_by_ratio(slice_qty=slice_qty, remaining=remaining, ratio=WHIPSAW_MAX_SLICE_RATIO)
+                if adjusted_qty < slice_qty:
+                    self.logger.info(
+                        f"[{stock_code}] 开盘WHIPSAW，缩量试单: {slice_qty} -> {adjusted_qty} "
+                        f"(flips={micro['whipsaw_flips']}, amp={micro['whipsaw_amplitude']:.2%})"
+                    )
+                    slice_qty = adjusted_qty
+            elif open_state == 'DEEP_REBOUND':
+                adjusted_qty = self._cap_slice_by_ratio(slice_qty=slice_qty, remaining=remaining, ratio=DEEP_REBOUND_MAX_SLICE_RATIO)
+                if adjusted_qty < slice_qty:
+                    self.logger.info(
+                        f"[{stock_code}] 深水反弹DEEP_REBOUND，限制单片仓位: {slice_qty} -> {adjusted_qty} "
+                        f"(low_rel={session_low_rel:.2%}, rebound_from_low={rebound_from_low:.2%}, "
+                        f"streak={deep_rebound_streak})"
+                    )
+                    slice_qty = adjusted_qty
 
             # 计算本片下单价
             order_price = None
-            if is_fast_up:
+            if open_state == 'WHIPSAW':
+                base = ask1_2 if (ask1_2 and ask1_2 > 0) else last_px2
+                order_price = min(base, cap_price2)
+            elif open_state == 'DEEP_REBOUND':
+                deep_rebound_cap = open_px2 * (1.0 + DEEP_REBOUND_BUY_SLIPPAGE_CAP_PCT)
+                if up_limit and up_limit > 0:
+                    deep_rebound_cap = min(deep_rebound_cap, up_limit)
+                base = ask1_2 if (ask1_2 and ask1_2 > 0) else last_px2
+                order_price = min(base, deep_rebound_cap)
+            elif is_fast_up:
                 # 急涨：用卖一(ask1)去抢，但严格不超过 cap
                 if ask1_2 and ask1_2 > 0:
                     order_price = min(ask1_2, cap_price2)
@@ -597,12 +1284,14 @@ class SmartOrderManager:
                 continue
 
             slice_wait_seconds = self._get_slice_wait_seconds(is_fast_up, is_fast_down)
+            fill_timeout_seconds = self._get_slice_fill_timeout(is_fast_up, is_fast_down)
 
             self.logger.info(
-                f"[{stock_code}] 第{attempt_no}/{effective_slices}片 | qty={slice_qty} | rel={rel:.2%} | "
+                f"[{stock_code}] 第{attempt_no}/{effective_slices}片 | qty={slice_qty} | state={open_state} | rel={rel:.2%} | "
                 f"fast_up={is_fast_up} fast_down={is_fast_down} | "
+                f"low_rel={session_low_rel:.2%} rebound_low={rebound_from_low:.2%} | "
                 f"price_raw={order_price_raw:.4f} -> price={order_price:.2f} "
-                f"(cap={cap_price2:.2f}, wait={slice_wait_seconds:.2f}s)"
+                f"(cap={cap_price2:.2f}, pace_wait={slice_wait_seconds:.2f}s, fill_timeout={fill_timeout_seconds:.2f}s)"
             )
 
             order_id = self._place_buy_order(stock_code, slice_qty, order_price)
@@ -613,7 +1302,13 @@ class SmartOrderManager:
             attempted_order_ids.append(str(order_id))
 
             # 等待成交
-            filled = self._wait_for_order_fill(order_id, timeout=slice_wait_seconds)
+            filled = self._wait_for_order_fill(
+                order_id,
+                timeout=fill_timeout_seconds,
+                stock_code=stock_code,
+                open_px=open_px2,
+                initial_state=open_state,
+            )
             if filled:
                 order_info_after_fill = self._get_order_info(order_id)
                 filled_volume = int(order_info_after_fill['traded_volume']) if order_info_after_fill else slice_qty
@@ -635,7 +1330,13 @@ class SmartOrderManager:
                                 f"[{stock_code}] 第{attempt_no}片仍在快速下跌，追加等待 {FAST_DOWN_EXTRA_WAIT_SECONDS:.2f}s "
                                 f"(last {last_px2:.2f}->{last_px_retry:.2f}, rel {rel_retry:.2%})"
                             )
-                            filled = self._wait_for_order_fill(order_id, timeout=FAST_DOWN_EXTRA_WAIT_SECONDS)
+                            filled = self._wait_for_order_fill(
+                                order_id,
+                                timeout=FAST_DOWN_EXTRA_WAIT_SECONDS,
+                                stock_code=stock_code,
+                                open_px=open_px_retry,
+                                initial_state='FAST_BREAKDOWN',
+                            )
                             if filled:
                                 order_info_after_fill = self._get_order_info(order_id)
                                 filled_volume = int(order_info_after_fill['traded_volume']) if order_info_after_fill else slice_qty
@@ -654,7 +1355,11 @@ class SmartOrderManager:
             # 为避免频繁打单，稍作等待（但仍尽量保持在窗口内）
             time.sleep(0.2)
 
-        final_state = self._wait_for_outstanding_orders(stock_code, attempted_order_ids, timeout=2.0)
+        final_state = self._wait_for_outstanding_orders(
+            stock_code,
+            attempted_order_ids,
+            timeout=FINAL_OUTSTANDING_WAIT_SECONDS,
+        )
         if final_state['outstanding_volume'] > 0:
             self.logger.warning(
                 f"[{stock_code}] 结束前仍有未终态订单: outstanding={final_state['outstanding_volume']}, "
@@ -667,6 +1372,7 @@ class SmartOrderManager:
             attempted_order_ids=attempted_order_ids,
             fallback_buy_date=buy_date,
             last_order_id=last_order_id,
+            open_px=open_px,
         )
 
         if execution_result['filled_volume'] <= 0:
@@ -694,21 +1400,29 @@ class SmartOrderManager:
                           prev_quote: Optional[Dict[str, float]],
                           down_streak: int) -> tuple[bool, int]:
         """
-        双条件识别快速下跌：
-        1. 绝对跌幅：相对开盘跌幅超过 FAST_DOWN_TH
-        2. 短时连续下移：相对开盘已有一定跌幅，且 last/ask1/bid1 在短时间内连续下移
+        识别是否正在快速下跌（tick级别的持续下移）。
+
+        核心改动：不再仅凭\"距离开盘价多远\"来判断，而是基于tick级别的
+        持续下移信号。一旦tick不再下移，即使股价仍低于开盘价，也会退出
+        FAST_BREAKDOWN状态，切换到普通/被动买入。
+
+        两种进入方式：
+        1. 持续下移：last/ask1/bid1 连续多tick下移 + 价格低于开盘微阈值
+        2. 初始急跌：价格大幅低于开盘 + 当前tick有下移证据
         """
         rel = (last_px - open_px) / (open_px + 1e-12)
-        if rel <= FAST_DOWN_TH:
-            return True, max(down_streak, FAST_DOWN_MIN_STREAK)
 
         if not prev_quote:
+            # 无tick历史：仅用绝对跌幅作为初始信号
+            if rel <= FAST_DOWN_TH:
+                return True, max(down_streak, FAST_DOWN_MIN_STREAK)
             return False, 0
 
         prev_last = _safe_float(prev_quote.get('last'))
         prev_ask1 = _safe_float(prev_quote.get('ask1'))
         prev_bid1 = _safe_float(prev_quote.get('bid1'))
 
+        # 先计算tick级别的下移信号（对比当前tick vs 上一tick）
         down_signals = 0
         if pd.notna(prev_last) and last_px < prev_last - DEFAULT_TICK_SIZE / 2:
             down_signals += 1
@@ -720,10 +1434,19 @@ class SmartOrderManager:
         if down_signals >= 2:
             down_streak += 1
         else:
+            # 关键修复：tick没有下移信号→趋势已停，重置streak
             down_streak = 0
 
-        is_fast_down_micro = rel <= FAST_DOWN_MICRO_TH and down_streak >= FAST_DOWN_MIN_STREAK
-        return is_fast_down_micro, down_streak
+        # 维持条件：tick持续下移 + 价格已低于开盘微阈值（确认方向）
+        if down_streak >= FAST_DOWN_MIN_STREAK and rel <= FAST_DOWN_MICRO_TH:
+            return True, down_streak
+
+        # 进入条件：绝对跌幅较大 + 当前tick有下移证据（捕捉初跌）
+        # 此条件只在down_streak=0时触发（即刚开始跌），不会锁定状态
+        if rel <= FAST_DOWN_TH and down_signals >= 1:
+            return True, max(down_streak + 1, FAST_DOWN_MIN_STREAK)
+
+        return False, down_streak
 
     def _get_filled_volume_for_orders(self, stock_code: str, attempted_order_ids: List[str]) -> int:
         """汇总指定订单列表的真实成交量，避免超时后晚到成交导致重复下单。"""
@@ -838,6 +1561,7 @@ class SmartOrderManager:
         self.logger.info("=" * 60)
         self.logger.info(f"开始全仓卖出: {stock_code}, {volume}股")
         self.logger.info("=" * 60)
+        self.last_sell_submission = None
 
         # 获取最新价
         current_price = self.trader.get_current_price(stock_code)
@@ -1017,17 +1741,40 @@ class SmartOrderManager:
             if abs(price - raw_price) > 1e-9:
                 self.logger.info(f"[{stock_code}] 下单价格最终规整: {raw_price:.6f} -> {price:.2f}")
 
-            # 使用固定价格下单（FIX_PRICE）而非最新价
-            order_id = self.trader.order_stock_async(
-                account=self.trader.account,
-                stock_code=stock_code,
-                order_type=xtconstant.STOCK_BUY,
-                order_volume=volume,
-                price_type=xtconstant.FIX_PRICE,  # 改为固定价格
-                price=price,
-                strategy_name='live_trading_5m',
-                order_remark=stock_code
-            )
+            self.logger.info(f"[{stock_code}] 准备调用 order_stock_async: volume={volume}, price={price:.2f}")
+
+            # 使用固定价格下单（FIX_PRICE）而非最新价。
+            # 某些券商/接口在早盘高波动时可能卡住，因此这里加一层本地超时保护，
+            # 避免主线程被同步调用永久阻塞。
+            result_holder: Dict[str, Any] = {"order_id": None, "error": None}
+
+            def _submit_order() -> None:
+                try:
+                    result_holder["order_id"] = self.trader.order_stock_async(
+                        account=self.trader.account,
+                        stock_code=stock_code,
+                        order_type=xtconstant.STOCK_BUY,
+                        order_volume=volume,
+                        price_type=xtconstant.FIX_PRICE,
+                        price=price,
+                        strategy_name='live_trading_5m',
+                        order_remark=stock_code,
+                    )
+                except Exception as e:
+                    result_holder["error"] = e
+
+            thread = threading.Thread(target=_submit_order, daemon=True)
+            thread.start()
+            thread.join(timeout=5.0)
+
+            if thread.is_alive():
+                self.logger.error(f"[{stock_code}] order_stock_async 超时未返回，放弃本次下单")
+                return None
+
+            if result_holder["error"] is not None:
+                raise result_holder["error"]
+
+            order_id = result_holder["order_id"]
 
             if order_id and order_id > 0:
                 self.logger.info(f"下单成功: {stock_code} 买入{volume}股, 订单号={order_id}")
@@ -1065,7 +1812,8 @@ class SmartOrderManager:
                                  requested_volume: int,
                                  attempted_order_ids: List[str],
                                  fallback_buy_date: str,
-                                 last_order_id: Optional[str]) -> Dict[str, Any]:
+                                 last_order_id: Optional[str],
+                                 open_px: float = 0.0) -> Dict[str, Any]:
         """汇总真实成交，避免把部分成交误当成全成。"""
         attempted_order_ids = [str(x) for x in attempted_order_ids if x]
         trade_rows: List[Dict[str, Any]] = []
@@ -1122,6 +1870,7 @@ class SmartOrderManager:
             'requested_volume': int(requested_volume),
             'filled_volume': int(total_volume),
             'avg_price': float(avg_price),
+            'open_price': float(open_px) if open_px else 0.0,
             'first_fill_date': first_fill_date,
             'last_order_id': str(last_order_id) if last_order_id else None,
             'order_ids': attempted_order_ids,
@@ -1177,20 +1926,47 @@ class SmartOrderManager:
             str: 订单号（失败返回None）
         """
         try:
-            # 使用最新价下单
-            order_id = self.trader.order_stock_async(
-                account=self.trader.account,
-                stock_code=stock_code,
-                order_type=xtconstant.STOCK_SELL,
-                order_volume=volume,
-                price_type=xtconstant.LATEST_PRICE,
-                price=0,  # 卖出时price参数无效
-                strategy_name='live_trading_5m',
-                order_remark=stock_code
-            )
+            self.logger.info(f"[{stock_code}] 准备调用 order_stock_async 卖出: volume={volume}")
+
+            result_holder: Dict[str, Any] = {"order_id": None, "error": None}
+
+            def _submit_order() -> None:
+                try:
+                    result_holder["order_id"] = self.trader.order_stock_async(
+                        account=self.trader.account,
+                        stock_code=stock_code,
+                        order_type=xtconstant.STOCK_SELL,
+                        order_volume=volume,
+                        price_type=xtconstant.LATEST_PRICE,
+                        price=0,
+                        strategy_name='live_trading_5m',
+                        order_remark=stock_code,
+                    )
+                except Exception as e:
+                    result_holder["error"] = e
+
+            thread = threading.Thread(target=_submit_order, daemon=True)
+            thread.start()
+            thread.join(timeout=5.0)
+
+            if thread.is_alive():
+                self.logger.error(f"[{stock_code}] 卖出 order_stock_async 超时未返回，放弃本次下单")
+                return None
+
+            if result_holder["error"] is not None:
+                raise result_holder["error"]
+
+            order_id = result_holder["order_id"]
 
             if order_id and order_id > 0:
                 self.logger.info(f"下单成功: {stock_code} 卖出{volume}股, 订单号={order_id}")
+
+                self.last_sell_submission = {
+                    'stock_code': stock_code,
+                    'order_id': str(order_id),
+                    'submitted_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'volume': int(volume),
+                }
 
                 # 添加到追踪
                 self.active_orders[str(order_id)] = {
@@ -1221,8 +1997,12 @@ class SmartOrderManager:
             self.logger.error(traceback.format_exc())
             return None
 
-    def _wait_for_order_fill(self, order_id: str,
-                            timeout: int = 10) -> bool:
+    def _wait_for_order_fill(self,
+                             order_id: str,
+                             timeout: float = 10,
+                             stock_code: Optional[str] = None,
+                             open_px: Optional[float] = None,
+                             initial_state: str = 'NORMAL') -> bool:
         """
         等待订单成交
 
@@ -1234,6 +2014,7 @@ class SmartOrderManager:
             bool: 是否成交
         """
         start_time = time.time()
+        initial_state = str(initial_state or 'NORMAL')
 
         while time.time() - start_time < timeout:
             # 检查订单追踪
@@ -1264,12 +2045,63 @@ class SmartOrderManager:
                 # 后续由 outstanding_qty 管理避免重复下单。
                 pass
 
-            # 休眠0.5秒后重试
-            time.sleep(0.5)
+            if stock_code and open_px and open_px > 0:
+                should_abort, abort_reason = self._should_abort_waiting_buy_order(
+                    stock_code=stock_code,
+                    open_px=float(open_px),
+                    initial_state=initial_state,
+                )
+                if should_abort:
+                    self.logger.warning(
+                        f"等待成交期间盘口状态恶化，提前撤单: {order_id}, state={initial_state}, {abort_reason}"
+                    )
+                    if order_id in self.active_orders:
+                        self.active_orders[order_id]['need_cancel'] = True
+                    return False
+
+            # 轮询频率要快于开盘前30秒内的订单状态变化
+            remaining = timeout - (time.time() - start_time)
+            if remaining <= 0:
+                break
+            time.sleep(min(0.2, max(0.05, remaining)))
 
         # 超时
         self.logger.warning(f"等待订单成交超时: {order_id}")
         return False
+
+    def _should_abort_waiting_buy_order(self,
+                                        stock_code: str,
+                                        open_px: float,
+                                        initial_state: str) -> tuple[bool, str]:
+        """等待成交期间发现盘口明显转坏时，提前撤掉未成交买单。"""
+        try:
+            tick = self._get_tick(stock_code)
+            if not tick:
+                return False, ''
+            last_px = _safe_float(tick.get("lastPrice"))
+            ask1 = _safe_float((tick.get("askPrice") or [None])[0])
+            bid1 = _safe_float((tick.get("bidPrice") or [None])[0])
+            if not last_px or last_px <= 0:
+                return False, ''
+
+            rel = (last_px - open_px) / (open_px + 1e-12)
+            spread_rel = 0.0
+            if ask1 and ask1 > 0 and bid1 and bid1 > 0:
+                spread_rel = max(0.0, (ask1 - bid1) / (open_px + 1e-12))
+
+            if rel <= FAST_DOWN_TH:
+                return True, f"rel={rel:.2%} <= FAST_DOWN_TH({FAST_DOWN_TH:.2%})"
+
+            if initial_state in {'FAST_BREAKOUT', 'WHIPSAW'} and rel <= FAST_DOWN_MICRO_TH:
+                return True, f"state={initial_state} reversed to rel={rel:.2%}"
+
+            if initial_state == 'FAST_BREAKOUT' and rel <= 0 and spread_rel >= 0.003:
+                return True, f"breakout failed: rel={rel:.2%}, spread={spread_rel:.2%}"
+
+            return False, ''
+        except Exception as e:
+            self.logger.debug(f"等待成交期间盘口检查失败: {e}")
+            return False, ''
 
     def _query_order_status(self, order_id: str) -> Optional[int]:
         """

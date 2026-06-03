@@ -66,12 +66,16 @@ class StockSelector:
                 return None
             
             # 4. 选股排序
-            selected_stocks = self._rank_and_select(filtered_data, predictions, num_stocks)
+            filtered_data = self._attach_prediction_meta(filtered_data, predictions)
+            selected_stocks = self._rank_and_select(filtered_data, num_stocks)
 
-            # 5. q40 动态切换标注（与 pred_stocks 口径一致，仅新增 q40，不加 h2c）
+            # 5. 默认过滤规则：先排序，再判断候选是否可交易
+            self._annotate_exhaustion_flags(selected_stocks, filtered_data)
+
+            # 6. q40 动态切换标注（与 pred_stocks 口径一致，仅新增 q40，不加 h2c）
             q40_info = self._compute_q40_pick(filtered_data, selected_stocks)
 
-            # 6. 保存结果
+            # 7. 保存结果
             result = self._create_result(date, selected_stocks, len(selected_stocks), q40_info)
             self._save_selection(date, result)
             
@@ -253,21 +257,30 @@ class StockSelector:
             self.logger.error(f"特征对齐失败: {e}")
             return None
     
-    def _rank_and_select(self, data: pd.DataFrame, predictions: np.ndarray, num_stocks: int) -> List[Dict]:
+    def _attach_prediction_meta(self, data: pd.DataFrame, predictions: np.ndarray) -> pd.DataFrame:
+        """附加模型预测分数及当日候选池内的预测z-score。"""
+        data = data.copy()
+        data['predicted_score'] = predictions
+        scores = pd.to_numeric(data['predicted_score'], errors='coerce')
+        score_std = float(np.nanstd(scores, ddof=0))
+        if score_std > 0:
+            data['score_z_in_day'] = (scores - float(np.nanmean(scores))) / score_std
+        else:
+            data['score_z_in_day'] = np.nan
+        return data
+
+    def _rank_and_select(self, data: pd.DataFrame, num_stocks: int) -> List[Dict]:
         """
         排序并选股（与main.py pred_stocks一致，不使用阈值过滤）
 
         Args:
             data: 股票数据
-            predictions: 预测分数
             num_stocks: 选股数量
 
         Returns:
             List[Dict]: 选中的股票列表
         """
-        # 添加预测分数
         data = data.copy()
-        data['predicted_score'] = predictions
 
         # 排序（按预测值降序）
         data = data.sort_values('predicted_score', ascending=False)
@@ -282,11 +295,330 @@ class StockSelector:
             stocks.append({
                 'code': row['stock_code'],
                 'score': float(row['predicted_score']),
+                'score_z_in_day': float(row['score_z_in_day']) if pd.notna(row.get('score_z_in_day', np.nan)) else None,
                 'rank': idx,
                 'q40_selected': False,
+                'exhaustion_filtered': False,
+                'exhaustion_filter_reason': '',
+                'tradeable': True,
             })
 
         return stocks
+
+    def _is_exhaustion_filtered_row(self, row: pd.Series) -> tuple[bool, str, str]:
+        """与主脚本默认过滤规则保持一致，并返回详细值。"""
+        if not StrategyConfig.ENABLE_EXHAUSTION_BUY_FILTER:
+            return False, '', 'default_filter_disabled'
+
+        strategy = StrategyConfig.EXHAUSTION_FILTER_STRATEGY
+
+        if strategy == 'three_rule_v3':
+            rma_val = pd.to_numeric(row.get('runup_ma5_exhaustion', np.nan), errors='coerce')
+            cpv_val = pd.to_numeric(row.get('cpv_factor', np.nan), errors='coerce')
+            blowoff_val = pd.to_numeric(row.get('prev_day_blowoff_risk', np.nan), errors='coerce')
+            sector_val = pd.to_numeric(row.get('sector_momentum_accel_rank', np.nan), errors='coerce')
+            sl_val = pd.to_numeric(row.get('sector_leadership_persistence_v3', np.nan), errors='coerce')
+            ret20_val = pd.to_numeric(row.get('return_20d_intra_z', np.nan), errors='coerce')
+            liq_val = pd.to_numeric(row.get('market_liquidity_change', np.nan), errors='coerce')
+            disp_val = pd.to_numeric(row.get('mkt_dispersion_shock_v2', np.nan), errors='coerce')
+            adr_val = pd.to_numeric(row.get('market_advance_decline_ratio', np.nan), errors='coerce')
+            ulcer_val = pd.to_numeric(row.get('ulcer_index', np.nan), errors='coerce')
+            mom_peak_val = pd.to_numeric(row.get('momentum_peak_decay_3d', np.nan), errors='coerce')
+            sector_rank_val = pd.to_numeric(row.get('intra_sector_momentum_rank', np.nan), errors='coerce')
+            top10_val = pd.to_numeric(row.get('top10_10d_strength_level_v3', np.nan), errors='coerce')
+            buy_sm_val = pd.to_numeric(row.get('buy_sm_amount_rate', np.nan), errors='coerce')
+            non_first_pct20_val = pd.to_numeric(row.get('prev_non_first_limit_up_performance_percentile_20d', np.nan), errors='coerce')
+            kdj_j_val = pd.to_numeric(row.get('kdj_j_9', np.nan), errors='coerce')
+            score_z_val = pd.to_numeric(row.get('score_z_in_day', np.nan), errors='coerce')
+            reg_severe_pct_val = pd.to_numeric(row.get('reg_severe_up_10d_ratio_pct', np.nan), errors='coerce')
+            ma5_raw_val = pd.to_numeric(row.get('price_ma5_ratio_raw', np.nan), errors='coerce')
+            ma_conv_val = pd.to_numeric(row.get('ma_convergence_score', np.nan), errors='coerce')
+            ma5_pullback_val = pd.to_numeric(row.get('ma5_pullback_depth_10d', np.nan), errors='coerce')
+            ret_accel_val = pd.to_numeric(row.get('ret_3d_vs_10d_accel', np.nan), errors='coerce')
+            detail = (
+                f"runup={rma_val:.2f}" if pd.notna(rma_val) else "runup=NaN"
+            ) + ", " + (
+                f"cpv={cpv_val:.2f}" if pd.notna(cpv_val) else "cpv=NaN"
+            ) + ", " + (
+                f"blowoff={blowoff_val:.2f}" if pd.notna(blowoff_val) else "blowoff=NaN"
+            ) + ", " + (
+                f"sector_accel={sector_val:.2f}" if pd.notna(sector_val) else "sector_accel=NaN"
+            ) + ", " + (
+                f"sector_leadership={sl_val:.2f}" if pd.notna(sl_val) else "sector_leadership=NaN"
+            ) + ", " + (
+                f"return_20d_intra_z={ret20_val:.2f}" if pd.notna(ret20_val) else "return_20d_intra_z=NaN"
+            ) + ", " + (
+                f"liq={liq_val:.2f}" if pd.notna(liq_val) else "liq=NaN"
+            ) + ", " + (
+                f"ulcer={ulcer_val:.2f}" if pd.notna(ulcer_val) else "ulcer=NaN"
+            ) + ", " + (
+                f"mom_peak={mom_peak_val:.2f}" if pd.notna(mom_peak_val) else "mom_peak=NaN"
+            ) + ", " + (
+                f"sector_rank={sector_rank_val:.2f}" if pd.notna(sector_rank_val) else "sector_rank=NaN"
+            ) + ", " + (
+                f"top10={top10_val:.2f}" if pd.notna(top10_val) else "top10=NaN"
+            ) + ", " + (
+                f"buy_sm={buy_sm_val:.2f}" if pd.notna(buy_sm_val) else "buy_sm=NaN"
+            ) + ", " + (
+                f"disp={disp_val:.2f}" if pd.notna(disp_val) else "disp=NaN"
+            ) + ", " + (
+                f"adr={adr_val:.2f}" if pd.notna(adr_val) else "adr=NaN"
+            ) + ", " + (
+                f"non_first_limit_pct20={non_first_pct20_val:.2f}" if pd.notna(non_first_pct20_val) else "non_first_limit_pct20=NaN"
+            ) + ", " + (
+                f"kdj_j_9_z={kdj_j_val:.2f}" if pd.notna(kdj_j_val) else "kdj_j_9_z=NaN"
+            ) + ", " + (
+                f"score_z_in_day={score_z_val:.2f}" if pd.notna(score_z_val) else "score_z_in_day=NaN"
+            ) + ", " + (
+                f"reg_severe_pct={reg_severe_pct_val:.4f}" if pd.notna(reg_severe_pct_val) else "reg_severe_pct=NaN"
+            ) + ", " + (
+                f"ma5_raw={ma5_raw_val:.2f}" if pd.notna(ma5_raw_val) else "ma5_raw=NaN"
+            ) + ", " + (
+                f"ma_conv={ma_conv_val:.4f}" if pd.notna(ma_conv_val) else "ma_conv=NaN"
+            ) + ", " + (
+                f"ma5_pullback={ma5_pullback_val:.4f}" if pd.notna(ma5_pullback_val) else "ma5_pullback=NaN"
+            ) + ", " + (
+                f"ret_accel={ret_accel_val:.2f}" if pd.notna(ret_accel_val) else "ret_accel=NaN"
+            )
+
+            rule1_hit = (
+                pd.notna(rma_val) and pd.notna(cpv_val)
+                and rma_val > StrategyConfig.EXHAUSTION_RUNUP_MA5_THRESHOLD
+                and cpv_val <= StrategyConfig.EXHAUSTION_V3_CPV_THRESHOLD
+            )
+            rule2_hit = (
+                pd.notna(blowoff_val) and pd.notna(sector_val)
+                and (
+                    (blowoff_val >= StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD)
+                    or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a: blowoff extreme
+                    or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b: sector extreme
+                )
+            )
+            rule3_hit = (
+                pd.notna(sl_val) and pd.notna(ret20_val)
+                and sl_val <= StrategyConfig.EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD
+                and ret20_val <= StrategyConfig.EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD
+            )
+            rule4_hit = (
+                pd.notna(liq_val)
+                and liq_val < StrategyConfig.EXHAUSTION_V3_MARKET_LIQ_THRESHOLD
+                and (
+                    (pd.notna(ulcer_val) and ulcer_val < StrategyConfig.EXHAUSTION_V3_ULCER_THRESHOLD)
+                    or (pd.notna(mom_peak_val) and mom_peak_val > StrategyConfig.EXHAUSTION_V3_MOM_PEAK_THRESHOLD)
+                    or (pd.notna(sector_rank_val) and sector_rank_val < StrategyConfig.EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD)
+                )
+            )
+            rule5_hit = (
+                pd.notna(disp_val) and pd.notna(adr_val)
+                and disp_val < StrategyConfig.EXHAUSTION_V3_MKT_DISP_THRESHOLD
+                and adr_val < StrategyConfig.EXHAUSTION_V3_MKT_ADR_THRESHOLD
+            )
+
+            # Rule 6: 近3日有过跌停
+            rule6_hit = (
+                StrategyConfig.ENABLE_EXHAUSTION_LIMIT_DOWN_3D
+                and row.get('limit_down_3d', 0) == 1
+            )
+            rule7_hit = (
+                pd.notna(top10_val) and pd.notna(buy_sm_val)
+                and top10_val >= StrategyConfig.EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD
+                and buy_sm_val <= StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD
+            )
+            rule8_hit = (
+                pd.notna(non_first_pct20_val) and pd.notna(kdj_j_val)
+                and non_first_pct20_val >= StrategyConfig.EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD
+                and kdj_j_val <= StrategyConfig.EXHAUSTION_V3_KDJ_J_Z_THRESHOLD
+            )
+            rule9_hit = (
+                pd.notna(score_z_val)
+                and score_z_val <= StrategyConfig.EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD
+            )
+            # Rule10: reg_severe_up_10d_ratio >= 0.18 AND market_advance_decline_ratio <= 0.45
+            rule10_hit = (
+                pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
+                and reg_severe_pct_val >= StrategyConfig.EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD
+                and adr_val <= StrategyConfig.EXHAUSTION_V3_REG_ADR_THRESHOLD
+            )
+            # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
+            rule11_hit = (
+                pd.notna(ma5_raw_val) and pd.notna(ma_conv_val)
+                and ma5_raw_val >= StrategyConfig.EXHAUSTION_V3_MA5_RAW_THRESHOLD
+                and ma_conv_val >= StrategyConfig.EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD
+            )
+            # Rule12: MA5回撤深度极深(<=-0.05) + 短期加速上涨(>=6) → 高位回撤加速衰竭
+            rule12_hit = (
+                pd.notna(ma5_pullback_val) and pd.notna(ret_accel_val)
+                and ma5_pullback_val <= StrategyConfig.EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD
+                and ret_accel_val >= StrategyConfig.EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD
+            )
+
+            if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit or rule11_hit or rule12_hit:
+                parts = []
+                if rule1_hit:
+                    parts.append(
+                        f"runup({rma_val:.2f})>{StrategyConfig.EXHAUSTION_RUNUP_MA5_THRESHOLD}"
+                        f" & cpv({cpv_val:.2f})<={StrategyConfig.EXHAUSTION_V3_CPV_THRESHOLD}"
+                    )
+                if rule2_hit:
+                    if blowoff_val >= StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD:
+                        r2r = f"blowoff({blowoff_val:.2f})>={StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD} & sector_accel({sector_val:.2f})<={StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD}"
+                    elif blowoff_val > 5.0:
+                        r2r = f"XR2a:blowoff({blowoff_val:.2f})>5.0 & sector_accel({sector_val:.2f})<=0.50"
+                    else:
+                        r2r = f"XR2b:blowoff({blowoff_val:.2f})>1.0 & sector_accel({sector_val:.2f})<=0.15"
+                    parts.append(r2r)
+                if rule3_hit:
+                    parts.append(
+                        f"sector_leadership({sl_val:.2f})<={StrategyConfig.EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD}"
+                        f" & return_20d_intra_z({ret20_val:.2f})<={StrategyConfig.EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD}"
+                    )
+                if rule4_hit:
+                    r4_reasons = []
+                    if pd.notna(ulcer_val) and ulcer_val < StrategyConfig.EXHAUSTION_V3_ULCER_THRESHOLD:
+                        r4_reasons.append('ulcer=%.2f' % ulcer_val)
+                    if pd.notna(mom_peak_val) and mom_peak_val > StrategyConfig.EXHAUSTION_V3_MOM_PEAK_THRESHOLD:
+                        r4_reasons.append('mom_peak=%.1f' % mom_peak_val)
+                    if pd.notna(sector_rank_val) and sector_rank_val < StrategyConfig.EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD:
+                        r4_reasons.append('sector_rank=%.2f' % sector_rank_val)
+                    parts.append(
+                        f"liq({liq_val:.2f})<{StrategyConfig.EXHAUSTION_V3_MARKET_LIQ_THRESHOLD}"
+                        f" & ({'+'.join(r4_reasons)})"
+                    )
+                if rule5_hit:
+                    parts.append(
+                        f"disp({disp_val:.2f})<{StrategyConfig.EXHAUSTION_V3_MKT_DISP_THRESHOLD}"
+                        f" & adr({adr_val:.2f})<{StrategyConfig.EXHAUSTION_V3_MKT_ADR_THRESHOLD}"
+                    )
+                if rule6_hit:
+                    parts.append("limit_down_3d=1")
+                if rule7_hit:
+                    parts.append(
+                        f"top10_strength({top10_val:.2f})>={StrategyConfig.EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}"
+                        f" & buy_sm_amount({buy_sm_val:.2f})<={StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}"
+                    )
+                if rule8_hit:
+                    parts.append(
+                        f"non_first_limit_pct20({non_first_pct20_val:.2f})>={StrategyConfig.EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}"
+                        f" & kdj_j_9_z({kdj_j_val:.2f})<={StrategyConfig.EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}"
+                    )
+                if rule9_hit:
+                    parts.append(
+                        f"score_z_in_day({score_z_val:.2f})<={StrategyConfig.EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}"
+                    )
+                if rule10_hit:
+                    parts.append(
+                        f"reg_severe_pct({reg_severe_pct_val:.2f})>={StrategyConfig.EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
+                        f" & adr({adr_val:.2f})<={StrategyConfig.EXHAUSTION_V3_REG_ADR_THRESHOLD}"
+                    )
+                if rule11_hit:
+                    parts.append(
+                        f"ma5_raw({ma5_raw_val:.2f})>={StrategyConfig.EXHAUSTION_V3_MA5_RAW_THRESHOLD}"
+                        f" & ma_conv({ma_conv_val:.2f})>={StrategyConfig.EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD}"
+                    )
+                if rule12_hit:
+                    parts.append(
+                        f"ma5_pullback({ma5_pullback_val:.4f})<={StrategyConfig.EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD}"
+                        f" & ret_accel({ret_accel_val:.2f})>={StrategyConfig.EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD}"
+                    )
+                return True, " | ".join(parts), detail
+            return False, '', detail
+
+        if strategy in ('runup_ma5', 'runup_or_blowoff'):
+            runup_val = pd.to_numeric(row.get('runup_ma5_exhaustion', np.nan), errors='coerce')
+            top10_val = pd.to_numeric(row.get('top10_10d_strength_level_v3', np.nan), errors='coerce')
+            blowoff_val = pd.to_numeric(row.get('prev_day_blowoff_risk', np.nan), errors='coerce')
+            sector_accel_val = pd.to_numeric(row.get('sector_momentum_accel_rank', np.nan), errors='coerce')
+            market_ad_val = pd.to_numeric(row.get('market_advance_decline_ratio', np.nan), errors='coerce')
+            detail = (
+                f"runup_ma5_exhaustion={runup_val:.2f}" if pd.notna(runup_val) else "runup_ma5_exhaustion=NaN"
+            ) + ", " + (
+                f"top10_10d_strength_level_v3={top10_val:.2f}" if pd.notna(top10_val) else "top10_10d_strength_level_v3=NaN"
+            ) + ", " + (
+                f"prev_day_blowoff_risk={blowoff_val:.2f}" if pd.notna(blowoff_val) else "prev_day_blowoff_risk=NaN"
+            ) + ", " + (
+                f"sector_momentum_accel_rank={sector_accel_val:.2f}" if pd.notna(sector_accel_val) else "sector_momentum_accel_rank=NaN"
+            ) + ", " + (
+                f"market_advance_decline_ratio={market_ad_val:.2f}" if pd.notna(market_ad_val) else "market_advance_decline_ratio=NaN"
+            )
+            runup_hit = (
+                pd.notna(runup_val)
+                and pd.notna(top10_val)
+                and runup_val > StrategyConfig.EXHAUSTION_RUNUP_MA5_THRESHOLD
+                and top10_val >= StrategyConfig.EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD
+            )
+
+            if strategy == 'runup_ma5' and runup_hit:
+                return (
+                    True,
+                    f"runup_ma5_exhaustion({runup_val:.2f})>{StrategyConfig.EXHAUSTION_RUNUP_MA5_THRESHOLD}"
+                    f" AND top10_10d_strength_level_v3({top10_val:.2f})>={StrategyConfig.EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD}",
+                    detail,
+                )
+
+            if strategy == 'runup_or_blowoff':
+                blowoff_hit = (
+                    pd.notna(blowoff_val)
+                    and pd.notna(sector_accel_val)
+                    and blowoff_val >= StrategyConfig.EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD
+                    and sector_accel_val <= StrategyConfig.EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD
+                )
+                market_ad_hit = (
+                    pd.notna(market_ad_val)
+                    and market_ad_val >= StrategyConfig.EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD
+                )
+                if runup_hit or blowoff_hit or market_ad_hit:
+                    parts = []
+                    if runup_hit:
+                        parts.append(
+                            f"runup_ma5_exhaustion({runup_val:.2f})>{StrategyConfig.EXHAUSTION_RUNUP_MA5_THRESHOLD}"
+                            f" AND top10_10d_strength_level_v3({top10_val:.2f})>={StrategyConfig.EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD}"
+                        )
+                    if blowoff_hit:
+                        parts.append(
+                            f"prev_day_blowoff_risk({blowoff_val:.2f})>={StrategyConfig.EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD}"
+                            f" AND sector_momentum_accel_rank({sector_accel_val:.2f})<={StrategyConfig.EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD}"
+                        )
+                    if market_ad_hit:
+                        parts.append(
+                            f"market_advance_decline_ratio({market_ad_val:.2f})>={StrategyConfig.EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD}"
+                        )
+                    return True, " OR ".join(parts), detail
+            return False, '', detail
+
+        if strategy == 'close_below_ma5':
+            close_below = row.get('close_below_ma5_after_runup', 0)
+            turnover_z = pd.to_numeric(row.get('turnover_z_20', np.nan), errors='coerce')
+            detail = (
+                f"close_below_ma5_after_runup={int(close_below or 0)}, "
+                + (f"turnover_z_20={turnover_z:.2f}" if pd.notna(turnover_z) else "turnover_z_20=NaN")
+            )
+            if int(close_below or 0) == 1 and pd.notna(turnover_z):
+                if turnover_z > StrategyConfig.EXHAUSTION_TURNOVER_Z20_THRESHOLD:
+                    return (
+                        True,
+                        f"close_below_ma5_after_runup=1 AND turnover_z_20({turnover_z:.2f})>{StrategyConfig.EXHAUSTION_TURNOVER_Z20_THRESHOLD}",
+                        detail,
+                    )
+            return False, '', detail
+
+        return False, '', 'strategy_not_matched'
+
+    def _annotate_exhaustion_flags(self, selected_stocks: List[Dict[str, Any]], filtered_data: pd.DataFrame) -> None:
+        if not selected_stocks:
+            return
+        row_map = filtered_data.set_index('stock_code')
+        for stock in selected_stocks:
+            code = stock.get('code')
+            if code not in row_map.index:
+                continue
+            row = row_map.loc[code]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            filtered, reason, detail = self._is_exhaustion_filtered_row(row)
+            stock['exhaustion_filtered'] = bool(filtered)
+            stock['exhaustion_filter_reason'] = reason
+            stock['exhaustion_filter_detail'] = detail
+            stock['tradeable'] = not bool(filtered)
     
     def _compute_q40_pick(self, filtered_data: pd.DataFrame, selected_stocks: List[Dict]) -> Dict[str, Any]:
         """按 main_alpha pred_stocks 的口径计算 q40 选股结果。"""

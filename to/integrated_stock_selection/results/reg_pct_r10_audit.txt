@@ -1,0 +1,270 @@
+Loading data...
+Computing daily cross-sectional percentiles for reg_severe_up_10d_ratio...
+  Percentile stats: {'count': 3535089.0, 'mean': 0.5001024019480128, 'std': 0.26009309225010585, 'min': 0.1180270713699754, '25%': 0.2820097244732577, '50%': 0.3706279402740847, '75%': 0.7486113968319276, 'max': 1.0}
+
+================================================================================
+DATA: 115 events, missing reg_raw=0, missing reg_pct=0
+
+================================================================================
+REG_SEVERE_UP_10D_RATIO 横截面百分位 (reg_pct) 分布
+count    115.000000
+mean       0.803511
+std        0.250177
+min        0.174489
+50%        0.912366
+60%        0.952101
+70%        0.970843
+75%        0.978332
+80%        0.986879
+85%        0.991821
+90%        0.994166
+95%        0.996600
+98%        0.998323
+99%        0.998555
+max        0.999393
+
+================================================================================
+REG_PCT 按分桶 (combined)
+                        count      mean       std       min       50%       75%       90%       max
+source bucket                                                                                      
+actual big_gain          19.0  0.809042  0.260444  0.174489  0.914997  0.975965  0.993928  0.998178
+       big_loss          28.0  0.731065  0.305486  0.259567  0.912652  0.989218  0.994574  0.999393
+       flat_small_gain    4.0  0.874552  0.093457  0.755875  0.890097  0.941496  0.953881  0.962138
+       small_gain        11.0  0.822333  0.250119  0.315123  0.906478  0.961047  0.971041  0.975304
+       small_loss        30.0  0.802159  0.233109  0.297571  0.880516  0.976213  0.992263  0.997167
+shadow big_gain           3.0  0.746076  0.370385  0.320373  0.923326  0.958927  0.980288  0.994529
+       big_loss           8.0  0.924205  0.111213  0.683124  0.979743  0.992010  0.995831  0.998380
+       flat_small_gain    2.0  0.950096  0.047396  0.916582  0.950096  0.966853  0.976907  0.983610
+       small_gain         3.0  0.871503  0.055087  0.807895  0.903036  0.903307  0.903470  0.903578
+       small_loss         7.0  0.829558  0.270124  0.253443  0.950617  0.985721  0.995628  0.996358
+
+================================================================================
+UNFILTERED BIG LOSSES reg_raw & reg_pct
+source                date stock_code  actual_return  reg_severe_up_10d_ratio  reg_severe_up_10d_ratio_pct
+actual 2025-11-21 09:35:00  301201.SZ      -0.097630                 0.731941                     0.999393
+actual 2026-01-28 09:35:00  600589.SH      -0.085766                 0.080639                     0.832557
+actual 2025-11-25 09:35:00  300774.SZ      -0.083180                 0.386799                     0.995141
+shadow 2026-03-03 09:35:00  301217.SZ      -0.077647                 0.600618                     0.998380
+actual 2026-03-16 09:35:00  300943.SZ      -0.071739                 0.000000                     0.302286
+shadow 2026-02-25 09:35:00  300846.SZ      -0.060840                 0.395427                     0.994739
+actual 2026-03-24 09:35:00  301658.SZ      -0.059263                 0.533197                     0.998584
+actual 2025-11-12 09:35:00  300486.SZ      -0.057269                 0.114919                     0.890350
+shadow 2026-03-12 09:35:00  300658.SZ      -0.056786                 0.374959                     0.991100
+shadow 2026-01-26 09:35:00  002256.SZ      -0.055980                 0.041402                     0.683124
+actual 2026-04-21 09:35:00  600664.SH      -0.052758                 0.163797                     0.952005
+actual 2025-11-19 09:35:00  300086.SZ      -0.051483                 0.359665                     0.990893
+actual 2025-11-07 09:35:00  300520.SZ      -0.045317                 0.307650                     0.988659
+actual 2025-12-15 09:35:00  002474.SZ      -0.044834                 0.000000                     0.350081
+actual 2026-02-27 09:35:00  301235.SZ      -0.044321                 0.000000                     0.266910
+actual 2026-03-13 09:35:00  300461.SZ      -0.044108                 0.072681                     0.855583
+actual 2026-05-07 09:35:00  002842.SZ      -0.041519                 0.135734                     0.937842
+actual 2025-12-22 09:35:00  300427.SZ      -0.041298                 0.291477                     0.988657
+
+UNFILTERED BIG GAINS reg_raw & reg_pct
+source                date stock_code  actual_return  reg_severe_up_10d_ratio  reg_severe_up_10d_ratio_pct
+actual 2025-12-23 09:35:00  301123.SZ       0.288893                 0.413086                     0.997163
+actual 2026-01-06 09:35:00  300118.SZ       0.169433                 0.066366                     0.869565
+actual 2025-12-18 09:35:00  601566.SH       0.163636                 0.000000                     0.357780
+actual 2026-04-30 09:35:00  600396.SH       0.160542                 0.275724                     0.981877
+actual 2026-04-14 09:35:00  002787.SZ       0.145365                 0.088385                     0.914997
+actual 2026-02-13 09:35:00  002795.SZ       0.136045                 0.075384                     0.866882
+actual 2026-04-17 09:35:00  301188.SZ       0.135147                 0.050441                     0.869284
+actual 2025-12-09 09:35:00  000797.SZ       0.119107                 0.178696                     0.967173
+actual 2026-01-12 09:35:00  603716.SH       0.116667                 0.239832                     0.964011
+shadow 2026-01-16 09:35:00  300342.SZ       0.113333                 0.543438                     0.994529
+actual 2025-11-05 09:35:00  603185.SH       0.111718                 0.334535                     0.993119
+
+================================================================================
+SINGLE THRESHOLD SCAN (reg_pct >= T) - 横截面百分位阈值
+Score = inc_big_loss - 2.5 * inc_big_gain8
+  T>=0.50 standalone_n= 94 inc_n= 46 inc_big_loss=15 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0158 overlap=48 score=-10.0
+  T>=0.55 standalone_n= 94 inc_n= 46 inc_big_loss=15 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0158 overlap=48 score=-10.0
+  T>=0.60 standalone_n= 93 inc_n= 46 inc_big_loss=15 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0158 overlap=47 score=-10.0
+  T>=0.65 standalone_n= 91 inc_n= 45 inc_big_loss=15 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0165 overlap=46 score=-10.0
+  T>=0.70 standalone_n= 89 inc_n= 44 inc_big_loss=14 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0182 overlap=45 score=-11.0
+  T>=0.75 standalone_n= 87 inc_n= 42 inc_big_loss=14 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0200 overlap=45 score=-11.0
+  T>=0.80 standalone_n= 84 inc_n= 41 inc_big_loss=14 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=7 inc_mean=0.0205 overlap=43 score=-11.0
+  T>=0.85 standalone_n= 76 inc_n= 37 inc_big_loss=13 inc_big_gain8=10 inc_big_gain10=10 inc_small_gain=6 inc_mean=0.0235 overlap=39 score=-12.0
+  T>=0.90 standalone_n= 64 inc_n= 30 inc_big_loss=11 inc_big_gain8=7 inc_big_gain10=7 inc_small_gain=5 inc_mean=0.0158 overlap=34 score=-6.5
+  T>=0.92 standalone_n= 55 inc_n= 26 inc_big_loss=11 inc_big_gain8=6 inc_big_gain10=6 inc_small_gain=2 inc_mean=0.0069 overlap=29 score=-4.0
+  T>=0.95 standalone_n= 49 inc_n= 24 inc_big_loss=10 inc_big_gain8=6 inc_big_gain10=6 inc_small_gain=2 inc_mean=0.0101 overlap=25 score=-5.0
+  T>=0.97 standalone_n= 36 inc_n= 19 inc_big_loss=9 inc_big_gain8=4 inc_big_gain10=4 inc_small_gain=2 inc_mean=0.0049 overlap=17 score=-1.0
+  T>=0.98 standalone_n= 29 inc_n= 16 inc_big_loss=9 inc_big_gain8=4 inc_big_gain10=4 inc_small_gain=0 inc_mean=0.0013 overlap=13 score=-1.0
+  T>=0.99 standalone_n= 21 inc_n= 12 inc_big_loss=7 inc_big_gain8=3 inc_big_gain10=3 inc_small_gain=0 inc_mean=-0.0012 overlap=9 score=-0.5
+
+Best single pct threshold detail: reg_pct >= 0.75
+  Incremental worst returns:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    actual   2026-01-28 09:35:00 600589.SH    ret=-0.0858 reg_raw=0.0806 reg_pct=0.8326
+    actual   2025-11-25 09:35:00 300774.SZ    ret=-0.0832 reg_raw=0.3868 reg_pct=0.9951
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    shadow   2026-02-25 09:35:00 300846.SZ    ret=-0.0608 reg_raw=0.3954 reg_pct=0.9947
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-12 09:35:00 300486.SZ    ret=-0.0573 reg_raw=0.1149 reg_pct=0.8903
+    shadow   2026-03-12 09:35:00 300658.SZ    ret=-0.0568 reg_raw=0.3750 reg_pct=0.9911
+    actual   2026-04-21 09:35:00 600664.SH    ret=-0.0528 reg_raw=0.1638 reg_pct=0.9520
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2025-11-07 09:35:00 300520.SZ    ret=-0.0453 reg_raw=0.3076 reg_pct=0.9887
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  Incremental big_gains:
+    actual   2025-12-23 09:35:00 301123.SZ    ret=0.2889 reg_raw=0.4131 reg_pct=0.9972
+    actual   2026-01-06 09:35:00 300118.SZ    ret=0.1694 reg_raw=0.0664 reg_pct=0.8696
+    actual   2026-04-30 09:35:00 600396.SH    ret=0.1605 reg_raw=0.2757 reg_pct=0.9819
+    actual   2026-04-14 09:35:00 002787.SZ    ret=0.1454 reg_raw=0.0884 reg_pct=0.9150
+    actual   2026-02-13 09:35:00 002795.SZ    ret=0.1360 reg_raw=0.0754 reg_pct=0.8669
+    actual   2026-04-17 09:35:00 301188.SZ    ret=0.1351 reg_raw=0.0504 reg_pct=0.8693
+    actual   2025-12-09 09:35:00 000797.SZ    ret=0.1191 reg_raw=0.1787 reg_pct=0.9672
+    actual   2026-01-12 09:35:00 603716.SH    ret=0.1167 reg_raw=0.2398 reg_pct=0.9640
+    shadow   2026-01-16 09:35:00 300342.SZ    ret=0.1133 reg_raw=0.5434 reg_pct=0.9945
+    actual   2025-11-05 09:35:00 603185.SH    ret=0.1117 reg_raw=0.3345 reg_pct=0.9931
+
+================================================================================
+TWO-FACTOR SCAN (reg_pct + one other factor)
+Score = inc_big_loss - 3.0 * inc_big_gain8 - 0.5 * inc_small_gain
+
+--- TWO-FACTOR: TOP 30 by score ---
+                                            rule  inc_n  inc_mean  inc_big_loss  inc_small_loss  inc_small_gain  inc_big_gain8  inc_big_gain10  inc_actual_big_loss  inc_actual_big_gain  inc_shadow_big_loss  inc_shadow_big_gain  overlap_current  score
+reg_pct>=0.80&market_advance_decline_ratio<=0.45      7 -0.039372             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.85&market_advance_decline_ratio<=0.45      7 -0.039372             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.45      8 -0.034450             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.55&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               12    4.5
+reg_pct>=0.60&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               11    4.5
+reg_pct>=0.65&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.70&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.95&market_advance_decline_ratio<=0.45      5 -0.058880             4               1               0              0               0                    3                    0                    1                    0                7    4.0
+                   reg_pct>=0.90&cpv_factor>=0.6     15 -0.004145             8               3               3              1               1                    6                    1                    2                    0               18    3.5
+                   reg_pct>=0.90&cpv_factor>=0.4     16 -0.005454             8               4               3              1               1                    6                    1                    2                    0               22    3.5
+                   reg_pct>=0.95&cpv_factor>=0.6     11 -0.010437             7               2               1              1               1                    5                    1                    2                    0               15    3.5
+                   reg_pct>=0.95&cpv_factor>=0.4     12 -0.011658             7               3               1              1               1                    5                    1                    2                    0               18    3.5
+reg_pct>=0.90&market_advance_decline_ratio<=0.45      6 -0.038582             4               1               1              0               0                    3                    0                    1                    0               10    3.5
+            reg_pct>=0.65&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.70&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.75&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.80&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.85&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               15    3.5
+            reg_pct>=0.55&buy_sm_amount_rate<=-1      8 -0.028966             4               3               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.60&buy_sm_amount_rate<=-1      8 -0.028966             4               3               1              0               0                    2                    0                    2                    0               16    3.5
+                      reg_pct>=0.95&kdj_j_9<=0.5      3 -0.046457             3               0               0              0               0                    3                    0                    0                    0                6    3.0
+reg_pct>=0.95&market_advance_decline_ratio<=0.35      4 -0.049193             3               1               0              0               0                    2                    0                    1                    0                5    3.0
+reg_pct>=0.95&market_advance_decline_ratio<=0.38      4 -0.049193             3               1               0              0               0                    2                    0                    1                    0                6    3.0
+            reg_pct>=0.95&buy_sm_amount_rate<=-1      5 -0.046256             3               2               0              0               0                    1                    0                    2                    0               10    3.0
+                      reg_pct>=0.90&kdj_j_9<=0.5      4 -0.021434             3               0               1              0               0                    3                    0                    0                    0                7    2.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.80&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.80&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.85&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+
+--- TWO-FACTOR: ZERO big_gain WITH big_loss > 0 ---
+                                            rule  inc_n  inc_mean  inc_big_loss  inc_small_loss  inc_small_gain  inc_big_gain8  inc_big_gain10  inc_actual_big_loss  inc_actual_big_gain  inc_shadow_big_loss  inc_shadow_big_gain  overlap_current  score
+reg_pct>=0.80&market_advance_decline_ratio<=0.45      7 -0.039372             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.85&market_advance_decline_ratio<=0.45      7 -0.039372             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.45      8 -0.034450             5               1               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.55&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               12    4.5
+reg_pct>=0.60&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               11    4.5
+reg_pct>=0.65&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.70&market_advance_decline_ratio<=0.45      9 -0.033403             5               2               1              0               0                    4                    0                    1                    0               10    4.5
+reg_pct>=0.95&market_advance_decline_ratio<=0.45      5 -0.058880             4               1               0              0               0                    3                    0                    1                    0                7    4.0
+reg_pct>=0.90&market_advance_decline_ratio<=0.45      6 -0.038582             4               1               1              0               0                    3                    0                    1                    0               10    3.5
+            reg_pct>=0.65&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.70&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.75&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.80&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.85&buy_sm_amount_rate<=-1      7 -0.030355             4               2               1              0               0                    2                    0                    2                    0               15    3.5
+            reg_pct>=0.55&buy_sm_amount_rate<=-1      8 -0.028966             4               3               1              0               0                    2                    0                    2                    0               16    3.5
+            reg_pct>=0.60&buy_sm_amount_rate<=-1      8 -0.028966             4               3               1              0               0                    2                    0                    2                    0               16    3.5
+                      reg_pct>=0.95&kdj_j_9<=0.5      3 -0.046457             3               0               0              0               0                    3                    0                    0                    0                6    3.0
+reg_pct>=0.95&market_advance_decline_ratio<=0.35      4 -0.049193             3               1               0              0               0                    2                    0                    1                    0                5    3.0
+reg_pct>=0.95&market_advance_decline_ratio<=0.38      4 -0.049193             3               1               0              0               0                    2                    0                    1                    0                6    3.0
+            reg_pct>=0.95&buy_sm_amount_rate<=-1      5 -0.046256             3               2               0              0               0                    1                    0                    2                    0               10    3.0
+                      reg_pct>=0.90&kdj_j_9<=0.5      4 -0.021434             3               0               1              0               0                    3                    0                    0                    0                7    2.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.75&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.80&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.80&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.85&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.85&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.90&market_advance_decline_ratio<=0.35      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                6    2.5
+reg_pct>=0.90&market_advance_decline_ratio<=0.38      5 -0.026773             3               1               1              0               0                    2                    0                    1                    0                7    2.5
+reg_pct>=0.55&market_advance_decline_ratio<=0.35      6 -0.026481             3               2               1              0               0                    2                    0                    1                    0                7    2.5
+
+--- BEST ZERO-BIG-GAIN TWO-FACTOR DETAIL ---
+
+  Rule: reg_pct>=0.80&market_advance_decline_ratio<=0.45 (inc_n=7, inc_big_loss=5, score=4.5)
+  big_losses:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  big_gains: NONE (zero false kills)
+
+  Rule: reg_pct>=0.85&market_advance_decline_ratio<=0.45 (inc_n=7, inc_big_loss=5, score=4.5)
+  big_losses:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  big_gains: NONE (zero false kills)
+
+  Rule: reg_pct>=0.75&market_advance_decline_ratio<=0.45 (inc_n=8, inc_big_loss=5, score=4.5)
+  big_losses:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  big_gains: NONE (zero false kills)
+
+  Rule: reg_pct>=0.55&market_advance_decline_ratio<=0.45 (inc_n=9, inc_big_loss=5, score=4.5)
+  big_losses:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  big_gains: NONE (zero false kills)
+
+  Rule: reg_pct>=0.60&market_advance_decline_ratio<=0.45 (inc_n=9, inc_big_loss=5, score=4.5)
+  big_losses:
+    actual   2025-11-21 09:35:00 301201.SZ    ret=-0.0976 reg_raw=0.7319 reg_pct=0.9994
+    shadow   2026-03-03 09:35:00 301217.SZ    ret=-0.0776 reg_raw=0.6006 reg_pct=0.9984
+    actual   2026-03-24 09:35:00 301658.SZ    ret=-0.0593 reg_raw=0.5332 reg_pct=0.9986
+    actual   2025-11-19 09:35:00 300086.SZ    ret=-0.0515 reg_raw=0.3597 reg_pct=0.9909
+    actual   2026-03-13 09:35:00 300461.SZ    ret=-0.0441 reg_raw=0.0727 reg_pct=0.8556
+  big_gains: NONE (zero false kills)
+
+================================================================================
+RAW vs PCT COMPARISON: 未过滤大亏和大赚的区分能力
+
+  unfiltered big_losses (reg_severe_up_10d_ratio):
+    mean=0.2551 median=0.2276 p75=0.3838 p90=0.5534
+
+  unfiltered big_gains (reg_severe_up_10d_ratio):
+    mean=0.2060 median=0.1787 p75=0.3051 p90=0.4131
+
+  unfiltered big_losses (reg_severe_up_10d_ratio_pct):
+    mean=0.8342 median=0.9703 p75=0.9938 p90=0.9984
+
+  unfiltered big_gains (reg_severe_up_10d_ratio_pct):
+    mean=0.8888 median=0.9640 p75=0.9875 p90=0.9945
+
+  PCT threshold sweep (unfiltered only):
+    reg_pct>=0.50: catches 15/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.55: catches 15/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.60: catches 15/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.65: catches 15/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.70: catches 14/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.75: catches 14/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.80: catches 14/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.85: catches 13/18 big_loss, kills 10/11 big_gain
+    reg_pct>=0.90: catches 11/18 big_loss, kills 7/11 big_gain
+    reg_pct>=0.92: catches 11/18 big_loss, kills 6/11 big_gain
+    reg_pct>=0.95: catches 10/18 big_loss, kills 6/11 big_gain
+    reg_pct>=0.97: catches 9/18 big_loss, kills 4/11 big_gain
+    reg_pct>=0.98: catches 9/18 big_loss, kills 4/11 big_gain
+    reg_pct>=0.99: catches 7/18 big_loss, kills 3/11 big_gain
+
+================================================================================
+ANALYSIS COMPLETE

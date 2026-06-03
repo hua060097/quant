@@ -1,5 +1,7 @@
 """因子定义模块，导入后立即完成注册。"""
 from .moving_average import (
+    ma_ribbon_expansion_3d,
+    ma_alignment_persistence_5d,
     ma_convergence_score,
     log_price_slope_5d,
     log_price_slope_10d,
@@ -87,6 +89,9 @@ from .momentum_reversal import (
     volume_price_exhaustion,
     failed_breakout_pressure,
     ma5_ma10_flattening_after_runup,
+    prev_day_blowoff_risk,
+    carryover_overheat_risk,
+    distribution_after_strength_risk,
     volatility_structure_alpha
 )  # noqa: F401
 from .liquidity import (
@@ -111,11 +116,15 @@ from .risk_control import (
     max_rally_10d,
     max_rally_20d_raw,
     max_rally_10d_raw,
+    limit_down_3d,
 )  # noqa: F401
 from .behavioral import (
     distance_from_52w_high,
     distance_from_52w_low,
     price_acceleration,
+    post_accumulation_supply_tightness,
+    true_turnover_10d,
+    tightness_3d,
 )  # noqa: F401
 from .intraday import (
     overnight_return,
@@ -163,12 +172,17 @@ from .market_structure_factors import (
 from .support_resistance import (
     support_distance,
     resistance_distance,
+    prior_high_distance_20d,
+    prior_high_proximity_20d,
+    prior_high_volume_contest_20d,
 )  # noqa: F401
 from .market_context import (
     market_trend_strength,
     market_sentiment_ad,
     market_volatility_context,
     market_liquidity_change,
+    market_advance_decline_ratio,
+    market_advance_decline_ratio_percentile_20d,
     market_prev_60d_new_high_avg_return,
     market_60d_new_high_ratio,
     market_60d_new_high_ratio_train_percentile,
@@ -180,6 +194,7 @@ from .regulatory_risk import (
     abnormal_deviation_3d_ratio,
     abnormal_event_count_10d,
     severe_abnormal_pressure_10d,
+    reg_severe_up_10d_ratio,
     severe_abnormal_pressure_30d,
 )
 from .market_regime_context_v2 import (
@@ -208,10 +223,15 @@ from .limit_interaction import (
     sector_broken_resilience_alpha,
     limit_sustain_alpha,
     market_emotion_resonance_alpha,
+    prev_first_limit_up_performance,
+    prev_first_limit_up_performance_percentile_20d,
+    prev_non_first_limit_up_performance,
+    prev_non_first_limit_up_performance_percentile_20d,
 )
 from .moneyflow_features import (
     buy_lg_amount_rate,
     buy_sm_amount_rate,
+    lg_pos_sm_neg_10d_days,
     net_d5_amount_to_turnover,
     main_outflow_retail_takeover,
 )
@@ -252,14 +272,20 @@ from .high_position_exhaustion import (
     close_position_20d,
     close_position_60d,
     upper_shadow_ratio_3d_mean,
+    upper_shadow_pressure_5d,
+    lower_shadow_absorption_5d,
     close_to_high_3d_mean,
     turnover_z_20,
+    stock_volume_ratio_20d,
+    high_position_volume_surge,
     high_volume_no_gain_3d,
     pullback_depth_from_10d_high,
     high_pos_upper_shadow,
     high_pos_volume_no_gain,
     high_pos_reversal_volume,
+    shadow_reversal_volume_pressure,
     ret_3d_vs_10d_accel,
+    ma5_pullback_depth_10d,
     ret_5d_vs_20d_accel,
     momentum_peak_decay_3d,
     consecutive_up_days_5d,
@@ -267,4 +293,5 @@ from .high_position_exhaustion import (
     gap_up_count_5d,
     close_below_ma5_after_runup,
     low_break_prev_low_after_runup,
+    runup_ma5_exhaustion,
 )

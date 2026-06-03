@@ -249,34 +249,82 @@ def _sector_dispersion(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
 
 def _sector_momentum_consistency(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
     """计算SW行业动量一致性"""
+
     helper = _SectorDataHelper(data, ctx)
+
     sector_df = helper.sector_data.copy()
     sector_df['date_dt'] = pd.to_datetime(sector_df['date'])
-    sector_df = sector_df.sort_values(['sector_code', 'date_dt'])
+
+    sector_df = sector_df.sort_values(
+        ['sector_code', 'date_dt']
+    )
 
     periods = [3, 5, 10, 20]
     rank_cols = []
 
     for period in periods:
-        sector_df[f'avg_return_{period}d'] = sector_df.groupby('sector_code')['pct_chg_avg'].rolling(
-            window=period, min_periods=max(1, period // 2)
-        ).mean().reset_index(level=0, drop=True)
+
+        sector_df[f'avg_return_{period}d'] = (
+            sector_df
+            .groupby('sector_code')['pct_chg_avg']
+            .rolling(
+                window=period,
+                min_periods=max(1, period // 2)
+            )
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
 
         rank_col = f'sector_return_rank_{period}d'
-        sector_df[rank_col] = sector_df.groupby('date_dt')[f'avg_return_{period}d'].rank(pct=True)
+
+        sector_df[rank_col] = (
+            sector_df
+            .groupby('date_dt')[f'avg_return_{period}d']
+            .rank(pct=True)
+        )
+
         rank_cols.append(rank_col)
 
     helper.sector_data = sector_df
-    merged = helper.attach_sector_features(rank_cols).set_index('__orig_index')
-    ranks_df = merged[rank_cols].reindex(helper.original_index)
 
-    rank_std = ranks_df.std(axis=1, skipna=True)
-    max_std = rank_std.max()
-    if pd.isna(max_std) or max_std <= 0:
-        max_std = 1.0
+    merged = (
+        helper
+        .attach_sector_features(rank_cols)
+        .set_index('__orig_index')
+    )
 
-    consistency = 1 - (rank_std / max_std)
-    # [修正] 删除 fillna(0.5)
+    ranks_df = (
+        merged[rank_cols]
+        .reindex(helper.original_index)
+    )
+
+    # 多周期排名离散度
+    rank_std = ranks_df.std(
+        axis=1,
+        skipna=True
+    )
+
+    # =========================
+    # 冰冻训练期 max_std：消除未来信息 + 保持时间平稳
+    # 训练期内拟合 max_std，冻结后用于全部日期的归一化
+    # 与 _FrozenMarketMean / FrozenMADClipper 模式一致
+    # =========================
+    dates = merged['date'].reindex(helper.original_index)
+    dates_dt = pd.to_datetime(dates)
+    extra = ctx.extra or {}
+    train_start = pd.Timestamp(extra.get("frozen_clip_train_start") or "2023-06-01")
+    train_end = pd.Timestamp(extra.get("frozen_clip_train_end") or "2025-03-01")
+    train_mask = (dates_dt >= train_start) & (dates_dt <= train_end)
+    train_rank_std = rank_std[train_mask]
+    # 使用0.995分位数替代max，避免单日极端分化拉高归一化常数
+    frozen_max_std = train_rank_std.quantile(0.995)
+    if pd.isna(frozen_max_std) or frozen_max_std <= 1e-8:
+        frozen_max_std = 1.0
+
+    consistency = 1 - (rank_std / frozen_max_std)
+    # clip保持0~1语义：0=最不一致, 1=完全一致；极端行情下rank_std可能超训练期上限
+    consistency = consistency.clip(lower=0.0, upper=1.0)
+
     return consistency.astype('float64')
 
 

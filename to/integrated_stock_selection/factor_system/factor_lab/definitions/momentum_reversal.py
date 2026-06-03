@@ -496,12 +496,6 @@ def _momentum_decay(data: pd.DataFrame, _: FactorContext) -> pd.Series:
         print(f"Transform方法失败，使用循环方法: {e}")
         raise ValueError("Transform方法失败，使用循环方法")
     
-    # 异常值处理
-    if len(factor) > 100:
-        # 使用缩尾处理（winsorization）
-        q_low = factor.quantile(0.01)
-        q_high = factor.quantile(0.99)
-        factor = factor.clip(q_low, q_high)
     
     return factor.astype('float64')
 
@@ -1285,7 +1279,17 @@ def _efficiency_momentum(data: pd.DataFrame, _: FactorContext) -> pd.Series:
     # 2. 计算总路程 (Total Path)
     # 每天涨跌幅的绝对值之和
     daily_change = grouped['close'].diff(1).abs()
-    total_path = daily_change.rolling(lookback, min_periods=lookback-2).sum()
+    # 3. 正确的 group rolling
+    total_path = (
+        daily_change
+        .groupby(data['stock_code'])
+        .rolling(
+            lookback,
+            min_periods=lookback-2
+        )
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
     
     # 3. 计算效率 (Efficiency)
     # + 1e-9 防止除零
@@ -1308,6 +1312,131 @@ stable_momentum = register_factor(
         lookback_days=20,
         calculator=_efficiency_momentum,
         description='[优化] 卡夫曼效率动量 (趋势纯度)',
+    )
+)
+
+
+# ==============================================================================
+# 5. 强势股次日承接失败风险因子
+# ==============================================================================
+def _turnover_source_fallback(data: pd.DataFrame) -> pd.Series:
+    if 'turnover_rate' in data.columns:
+        return data['turnover_rate'].astype('float64')
+    if {'volume', 'circ_mv'}.issubset(data.columns):
+        return (data['volume'].astype('float64') / (data['circ_mv'].astype('float64') + 1e-9)).astype('float64')
+    if 'volume' in data.columns:
+        return data['volume'].astype('float64')
+    return pd.Series(0.0, index=data.index, dtype='float64')
+
+
+def _prev_day_return_raw(data: pd.DataFrame) -> pd.Series:
+    grouped = data.groupby('stock_code', sort=False)['close']
+    prev_close = grouped.shift(1).astype('float64')
+    prev_prev_close = grouped.shift(2).astype('float64')
+    return ((prev_close - prev_prev_close) / (prev_prev_close + 1e-9)).astype('float64')
+
+
+def _turnover_ratio_20_raw(data: pd.DataFrame) -> pd.Series:
+    turnover = _turnover_source_fallback(data)
+    base = turnover.groupby(data['stock_code'], sort=False).transform(
+        lambda s: s.rolling(20, min_periods=10).mean()
+    )
+    return (turnover / (base + 1e-9)).astype('float64')
+
+
+def _upper_shadow_ratio_raw(data: pd.DataFrame) -> pd.Series:
+    if not {'open', 'high', 'close', 'low'}.issubset(data.columns):
+        return pd.Series(0.0, index=data.index, dtype='float64')
+    open_ = data['open'].astype('float64')
+    high = data['high'].astype('float64')
+    low = data['low'].astype('float64')
+    close = data['close'].astype('float64')
+    rng = (high - low).clip(lower=1e-9)
+    upper = (high - np.maximum(open_, close)).clip(lower=0.0)
+    return (upper / rng).astype('float64')
+
+
+def _ma5_stretch_raw(data: pd.DataFrame) -> pd.Series:
+    ma5 = data.groupby('stock_code', sort=False)['close'].transform(
+        lambda s: s.rolling(5, min_periods=3).mean()
+    ).astype('float64')
+    close = data['close'].astype('float64')
+    return ((close / (ma5 + 1e-9)) - 1.0).astype('float64')
+
+
+def _prev_day_blowoff_risk(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    前一日强势冲高后，当日放量并伴随长上影的派发风险。
+    适合捕捉“昨日强、今日分歧放大、次日承接失败”的票。
+    """
+    prev_ret = _prev_day_return_raw(data).clip(lower=0.0)
+    turnover_ratio = (_turnover_ratio_20_raw(data) - 1.0).clip(lower=0.0)
+    upper_shadow = _upper_shadow_ratio_raw(data)
+    raw = prev_ret * turnover_ratio * upper_shadow * 100.0
+    return raw.astype('float64')
+
+
+prev_day_blowoff_risk = register_factor(
+    FactorDefinition(
+        name='prev_day_blowoff_risk',
+        required_columns={'stock_code', 'date', 'close', 'open', 'high', 'low', 'turnover_rate'},
+        lookback_days=25,
+        calculator=_prev_day_blowoff_risk,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: _prev_day_blowoff_risk(d, c).reindex(ti),
+        description='前一日强势后，当日放量长上影的派发风险',
+    )
+)
+
+
+def _carryover_overheat_risk(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    前一日大涨后，当日仍显著高于MA5且放量，容易形成隔夜承接脆弱。
+    """
+    prev_ret = _prev_day_return_raw(data).clip(lower=0.0)
+    turnover_ratio = (_turnover_ratio_20_raw(data) - 1.0).clip(lower=0.0)
+    ma5_stretch = _ma5_stretch_raw(data).clip(lower=0.0)
+    raw = prev_ret * turnover_ratio * ma5_stretch * 100.0
+    return raw.astype('float64')
+
+
+carryover_overheat_risk = register_factor(
+    FactorDefinition(
+        name='carryover_overheat_risk',
+        required_columns={'stock_code', 'date', 'close', 'turnover_rate'},
+        lookback_days=25,
+        calculator=_carryover_overheat_risk,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: _carryover_overheat_risk(d, c).reindex(ti),
+        description='前一日大涨后，当日高于MA5且放量的隔夜过热风险',
+    )
+)
+
+
+def _distribution_after_strength_risk(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    前一日强势后，当日放量且收盘离最高点较远，表示强势承接开始松动。
+    """
+    prev_ret = _prev_day_return_raw(data).clip(lower=0.0)
+    turnover_ratio = (_turnover_ratio_20_raw(data) - 1.0).clip(lower=0.0)
+    if not {'high', 'close'}.issubset(data.columns):
+        drawdown_mag = pd.Series(0.0, index=data.index, dtype='float64')
+    else:
+        drawdown_mag = ((data['high'].astype('float64') - data['close'].astype('float64')) /
+                        (data['high'].astype('float64') + 1e-9)).clip(lower=0.0)
+    raw = prev_ret * turnover_ratio * drawdown_mag * 100.0
+    return raw.astype('float64')
+
+
+distribution_after_strength_risk = register_factor(
+    FactorDefinition(
+        name='distribution_after_strength_risk',
+        required_columns={'stock_code', 'date', 'close', 'high', 'turnover_rate'},
+        lookback_days=25,
+        calculator=_distribution_after_strength_risk,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: _distribution_after_strength_risk(d, c).reindex(ti),
+        description='前一日强势后，当日放量且冲高回落的承接松动风险',
     )
 )
 
@@ -1341,6 +1470,9 @@ __all__ = [
     'volume_price_exhaustion',
     'failed_breakout_pressure',
     'ma5_ma10_flattening_after_runup',
-    'volatility_structure_alpha'
+    'volatility_structure_alpha',
+    'prev_day_blowoff_risk',
+    'carryover_overheat_risk',
+    'distribution_after_strength_risk',
 ]
 

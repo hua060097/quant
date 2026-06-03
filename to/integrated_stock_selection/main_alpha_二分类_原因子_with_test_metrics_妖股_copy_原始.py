@@ -1138,6 +1138,7 @@ def parse_arguments():
 运行模式说明:
   generate_factors   - 因子生成模式（计算和生成所有因子）
   test_factors      - 因子测试模式（单因子测试和分析）
+  permutation_factor_clusters - 因子簇Permutation重要性分析
   train_model       - 模型训练模式（训练机器学习模型）
   test_model        - 模型测试模式（使用模型进行选股测试）
   test_model_walkforward - 滚动窗口测试模式
@@ -1189,7 +1190,7 @@ def parse_arguments():
 
     parser.add_argument(
         '--mode',
-        choices=['generate_factors', 'test_factors', 'train_model', 'test_model', 'test_model_walkforward', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis'],
+        choices=['generate_factors', 'test_factors', 'permutation_factor_clusters', 'train_model', 'test_model', 'test_model_walkforward', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis'],
         default='generate_factors',
         help='运行模式 (默认: generate_factors)'
     )
@@ -1330,6 +1331,18 @@ def parse_arguments():
         default='xgboost,lightgbm',
         help='选择使用的模型，用逗号分隔 (可选: xgboost, lightgbm)。默认: xgboost,lightgbm (仅test_model和test_model_walkforward模式生效)'
     )
+    parser.add_argument(
+        '--permutation_repeats',
+        type=int,
+        default=5,
+        help='因子簇Permutation重复次数，默认5 (仅permutation_factor_clusters模式生效)'
+    )
+    parser.add_argument(
+        '--permutation_seed',
+        type=int,
+        default=20260602,
+        help='因子簇Permutation随机种子 (仅permutation_factor_clusters模式生效)'
+    )
 
     # 🆕 窗口选择参数（用于test_model_walkforward模式）
     parser.add_argument(
@@ -1372,7 +1385,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子55.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子复现6.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3109,34 +3122,35 @@ def _get_lgb_search_space():
     """
 # {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 1.0, 'bagging_fraction': 1.0, 'reg_alpha': 1, 'reg_lambda': 10, 'scale_pos_weight': 60}, top1_return:5237.797392723667
 
-    space = {
-        'learning_rate': [0.02],
-        'num_leaves': [31, 127],
-        'max_depth': [-1],
-        # 'min_data_in_leaf': [50, 100, 300, 500],
-        'min_data_in_leaf': [300, 380, 400, 420],
-        'feature_fraction': [0.6, 0.7, 0.8],
-        'bagging_fraction': [0.6, 0.8, 1.0],
-        'reg_alpha': [5, 10, 20, 30, 40],
-        'reg_lambda': [5, 10, 20, 30, 40],
-        # 'scale_pos_weight': [35, 45, 50] # 处理正负样本不平衡
-        'scale_pos_weight': [50, 90, 60] # 处理正负样本不平衡
-    }
+    # space = {
+    #     'learning_rate': [0.02],
+    #     'num_leaves': [31, 127],
+    #     'max_depth': [-1],
+    #     # 'min_data_in_leaf': [50, 100, 300, 500],
+    #     'min_data_in_leaf': [300, 380, 400, 420],
+    #     'feature_fraction': [0.6, 0.7, 0.8],
+    #     'bagging_fraction': [0.6, 0.8, 1.0],
+    #     'reg_alpha': [5, 10, 20, 30, 40],
+    #     'reg_lambda': [5, 10, 20, 30, 40],
+    #     # 'scale_pos_weight': [35, 45, 50] # 处理正负样本不平衡
+    #     'scale_pos_weight': [50, 90, 60] # 处理正负样本不平衡
+    # }
     # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #    {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 1.0, 'bagging_fraction': 1.0, 'reg_alpha': 1, 'reg_lambda': 10, 'scale_pos_weight': 60}, top1_return:5237.797392723667
+# {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.02, 'max_depth': -1, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 500, 'random_state': 42, 'num_leaves': 127, 'min_data_in_leaf': 400, 'feature_fraction': 0.8, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 90}, score:7414.455930008164
 
-    # space = {
-    #     'learning_rate': [0.05],
-    #     'num_leaves': [15],
-    #     'max_depth': [7],
-    #     'min_data_in_leaf': [500],
-    #     'feature_fraction': [1],
-    #     'bagging_fraction': [1],
-    #     'reg_alpha': [1],
-    #     'reg_lambda': [10],
-    #     'scale_pos_weight': [60] # 处理正负样本不平衡
-    # }
+    space = {
+        'learning_rate': [0.02],
+        'num_leaves': [127],
+        'max_depth': [-1],
+        'min_data_in_leaf': [400],
+        'feature_fraction': [0.8],
+        'bagging_fraction': [0.6],
+        'reg_alpha': [5],
+        'reg_lambda': [5],
+        'scale_pos_weight': [90] # 处理正负样本不平衡
+    }
     return space, [[0]] # 保持返回值个数向后兼容
 
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
@@ -3245,7 +3259,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'random_state': 42
         }
 
-        SEARCH_ITER = 16
+        SEARCH_ITER = 1
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
@@ -6212,7 +6226,7 @@ def _get_rankpct_factors():
     return [
         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
         'severe_abnormal_pressure_10d',
-        'price_ma5_ratio',
+        # 'price_ma5_ratio',
         'high_to_close_drawdown',
         'cpv_factor',
         'ppo_strength',
@@ -6270,6 +6284,7 @@ def _get_stock_factors():
         # 'max_rally_20d_raw',
         # 'max_rally_10d_raw',
         # 'market_prev_60d_new_high_avg_return', 
+        'prev_non_first_limit_up_performance_percentile_20d',
         'log_price_slope_10d',
         'log_price_slope_20d',
         # 'market_60d_new_high_ratio',
@@ -6436,6 +6451,7 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # 'prev_non_first_limit_up_performance_percentile_20d',
         'beta_20d',
         # 'market_prev_60d_new_high_avg_return',  
         'log_price_slope_10d',
@@ -7494,6 +7510,9 @@ def main():
 # # 禁用分批保存
 # python main.py --mode generate_factors --batch_size 0
 
+#因子簇分析
+# python main_alpha_二分类_原因子_with_test_metrics_妖股_copy_原始.py --mode permutation_factor_clusters --start_date 20250801 --end_date 20260518 --permutation_repeats 5
+
 
 
     # 执行对应的运行模式
@@ -7501,6 +7520,8 @@ def main():
         success = run_generate_factors_mode(args)
     elif args.mode == 'test_factors':
         success = run_test_factors_mode(args)
+    elif args.mode == 'permutation_factor_clusters':
+        success = run_permutation_factor_clusters_mode(args)
     elif args.mode == 'train_model':
         # success = run_train_model_mode(args,train_end_date='2024-06-01', is_regression=True)  # [强化] 启用成本感知回归模式
         success = run_train_model_mode(args,None, is_regression=True)
@@ -8014,7 +8035,7 @@ def run_generate_factors_mode(args):
 
         generated = pipeline_result.data
         record_count = len(generated)
-        factor_count = len([c for c in generated.columns if c not in {'date', 'stock_code'}])
+        factor_count = len(getattr(pipeline_result, 'factors', []) or [])
 
         logger.info(f"生成因子完成: {factor_count} 列, {record_count} 条记录")
         print(f"? 生成完成: {record_count} 条记录, {factor_count} 个因子")
@@ -9393,6 +9414,692 @@ def _save_model_results(model_results, feature_names, pca_models=None, model_typ
         logger.error(f"保存模型结果失败: {e}")
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
+
+
+def _get_permutation_factor_groups(feature_columns):
+    """按业务含义把训练特征划分为因子簇，用于簇级 permutation。"""
+    factor_groups = {
+        "beta":['beta_20d', 'beta_60d',],
+
+        'downside_beta':['downside_beta',],
+
+        "sector":['intra_sector_breadth', 
+                'sector_dispersion_leader_alpha', 'sector_leader_capture_rank',
+                'sector_leadership_persistence_v3',],
+        # "market_new":['limit_up_sw2_concentration',
+        #         'ma5_strength_breadth_v3', 'market_advance_decline_ratio', 'market_trend_adaptive_beta',"prev_non_first_limit_up_performance_percentile_20d",
+        #         'mkt_breadth_thrust_v2', 'mkt_dispersion_shock_v2', 'mkt_emotion_stability_v2', 'mkt_liquidity_impulse_v2',],
+        "market_breadth_thrust": [
+            "market_advance_decline_ratio",
+            "mkt_breadth_thrust_v2",
+            "ma5_strength_breadth_v3",
+        ],
+
+        "market_emotion_liquidity": [
+            "mkt_emotion_stability_v2",
+            "mkt_liquidity_impulse_v2",
+            "market_trend_adaptive_beta",
+        ],
+
+        "limit_concentration": [
+            "limit_up_sw2_concentration",
+            "prev_non_first_limit_up_performance_percentile_20d",
+        ],
+
+        "market_dispersion": [
+            "mkt_dispersion_shock_v2",
+        ],
+        # "old_alpha":['relative_strength_20d','skewness_20d', 'ulcer_index','vortex_trend'],
+
+        # "momentum_peak_decay_3d":['momentum_peak_decay_3d',],          
+
+        "new_supply_tightness":[
+            "post_accumulation_supply_tightness",
+            "tightness_3d",],
+
+        "true_turnover_10d":["true_turnover_10d",],
+
+        "new_pullback_accel":
+            ["ma5_pullback_depth_10d",
+            "ret_3d_vs_10d_accel",],
+
+        # "new_limit_blowoff_risk":
+        #     ["prev_day_blowoff_risk",
+        #     "limit_down_3d",
+        #     "reg_severe_up_10d_ratio_pct",],
+
+        # "new_market_breadth":
+        #     ["market_60d_new_high_ratio",
+        #     "top10_10d_strength_level_v3",],
+
+        # "new_turnover":
+        #     ["turnover_z_20",],
+        # "new": [
+        #     "post_accumulation_supply_tightness","prev_non_first_limit_up_performance_percentile_20d","market_60d_new_high_ratio","true_turnover_10d",
+        #     "top10_10d_strength_level_v3","ma5_pullback_depth_10d","tightness_3d","turnover_z_20","reg_severe_up_10d_ratio_pct","prev_day_blowoff_risk",
+        #     "ret_3d_vs_10d_accel","limit_down_3d",
+        # ],
+        "trend_ma5_position": [
+            "price_ma5_ratio_raw",
+        ],
+        "trend_ma60_position": [
+            "price_ma60_ratio",
+            "ma60_slope", 
+        ],
+        "trend_alignment": [
+            "ma_alignment_score", "ma_convergence_score",
+        ],
+        "trend_52w_position": [
+            "distance_from_52w_high", "distance_from_52w_low",
+        ],
+        "trend_rally_drawdown": [
+            "max_rally_10d", "max_rally_20d",
+        ],
+        "max_drawdown_20d":["max_drawdown_20d",],
+
+        "trend_high_risk": [
+            "high_to_close_drawdown", "high_to_close_drawdown_pct",
+        ],
+        "runup_ma5_exhaustion":["runup_ma5_exhaustion",],
+        "trend_slope_accel_consistency": [
+            "log_price_slope_10d", "log_price_slope_20d", "trend_acceleration",
+            "trend_consistency", "stable_momentum", "price_acceleration",
+        ],
+        "liquidity_turnover_microstructure": [
+            "abnormal_turnover", "turnover_stability", "price_impact", "amihud_illiquidity",
+        ],
+        # "liquidity_real_moneyflow": [
+        #     "buy_lg_amount_rate_pct", "buy_sm_amount_rate_pct", 
+        #     "net_d5_amount_to_turnover", "main_outflow_retail_takeover",
+        # ],
+        "liquidity_synthetic_flow_volume": [
+            "volume_structure_alpha_pct", "volume_confirmed_pullback_alpha","money_flow_pressure_pct",
+        ],
+        # "sector_momentum_core": [
+        #     "sector_momentum_interaction", "sector_momentum_accel_rank", "sector_momentum_consistency",
+        #     "sector_trend_gated_momentum_intra_z", "sector_rotation_breakout_intra_z",
+        #     "sector_strong_leader_alpha", "sector_leadership_persistence_v3",
+        # ],
+        # "sector_momentum_market": [
+        #     "sector_relative_strength_vs_market",
+        # ],
+        "sector_breadth_dispersion": [
+            "sector_breadth", "sector_dispersion", "sector_momentum_dispersion_rank",
+            "sector_relative_volatility", "sector_volatility_5d", "sector_vols_divergence_alpha",
+        ],
+        "sector_intra_rank": [
+            "sector_excess_intra_rank", "intra_sector_momentum_rank", "stock_sector_pos_align",
+            "sw2_high_low_position_return_spread", "sw_circ_mv_rank_intra_sector",
+        ],
+        "sector_concentration_correlation": [
+            "sector_hotspot_concentration_v3", "sector_concentration",
+            "sector_correlation_20d", "sector_mkt_corr_20d",
+        ],
+        "sector_hhi_change": [
+            "sector_hhi_change",
+        ],
+        # "sector_rank_change_5d": [
+        #     "sector_rank_change_5d",
+        # ],
+        "sector_turnover_liquidity": [
+            "sector_turnover_surge_pv_alpha",
+            "sector_liquidity_gated_turnover_z",
+        ],
+        # "sector_turnover_change_5d_20d": [
+        #     "sector_turnover_change_5d_20d",
+        # ],
+        # "sector_risk_alpha": [
+        #     "sector_weak_reversal_alpha", "sector_broken_resilience_alpha", "sector_limit_overflow_alpha",
+        # ],
+        # "market_context_regime": [
+        #     "market_trend_strength", "market_liquidity_change", "market_sentiment_ad",
+        #     "market_volatility_context", "market_vols_adaptive_iv", "market_emotion_resonance_alpha",
+        #     "mkt_sector_dispersion", "emotion_quality_balance_v3", "strong_stock_volume_confirmation_v3",
+        #     "value_growth_rotation", "size_rotation_strength","mkt_ma5_followthrough_v3_exp",
+        # ],
+        # "return_momentum_reversal1": [
+        #     "pct_chg_1d", "pct_chg_2d", "pct_chg_intra_z", "pct_chg_sector_mean",
+        #     "return_3d_intra_z", "return_5d_intra_z", "return_10d_intra_z", "return_20d_intra_z",
+        # ],
+        # "return_momentum_sector": [
+        #     "return_3d_sector_mean", "return_5d_sector_mean", "return_10d_sector_mean",
+        #     "return_10d_sector_mean_pct", "return_20d_sector_mean",
+        # ],
+        # "return_momentum_reversal3": [
+        #     "momentum_decay","trend_pullback_composite_alpha", "regime_aware_reversal_alpha",
+        #     "high_volatility_pullback_alpha", "volatility_structure_alpha",
+        # ],
+        # "candlestick_intraday_shape": [
+        #     "body_efficiency", "gap_power", "range_compression",
+        #     "intraday_clv", "intraday_reversal", "open_to_high_ratio",
+        # ],
+        # "shadow_dominance_pct": [
+        #     "shadow_dominance_pct",
+        # ],
+        "candlestick_cpv": [
+            "cpv_factor_pct",
+        ],
+        # "kdj_j_9":[
+        #     "kdj_j_9",
+        # ],
+        # "technical_oscillator": [
+        #     "kdj_diff_9", "kdj_golden_cross_strength", "kdj_k_9",
+        #     "ppo_strength_pct", "mfi_strength", "mass_index_reversal", "efficiency_ratio",
+        # ],
+        # "risk_volatility_stat1": [
+        #     "beta_20d", "downside_beta",
+        # ],
+        # "risk_volatility_stat2": [
+        #     "ulcer_index",
+        # ],
+        # "risk_volatility_stat3": [
+        #     "kurtosis_20d",
+        # ],
+        # "risk_volatility_stat4": [
+        #     "skewness_20d",
+        # ],
+        # "risk_volatility_stat5": [
+        #     "coskewness",
+        # ],
+        # "support_resistance": [
+        #     "support_distance", "resistance_distance",
+        # ],
+        # "regulatory_abnormal": [
+        #     "severe_abnormal_pressure_10d_pct", "limit_sustain_alpha",
+        # ],
+        # "worldquant_alpha": [
+        #     "alpha_001", "alpha_002", "alpha_017",
+        # ],
+    }
+
+
+    feature_set = set(feature_columns)
+    filtered = {name: [col for col in cols if col in feature_set] for name, cols in factor_groups.items()}
+    assigned = {col for cols in filtered.values() for col in cols}
+    unassigned = [col for col in feature_columns if col not in assigned]
+    if unassigned:
+        filtered["unassigned_other"] = unassigned
+        logger.info(f"unassigned_other:{unassigned}")
+    return {name: cols for name, cols in filtered.items() if cols}
+
+
+def _predict_lightgbm_model(model, X):
+    best_iter = getattr(model, "best_iteration", None)
+    return model.predict(X, num_iteration=best_iter) if best_iter else model.predict(X)
+
+
+def _evaluate_permutation_predictions(data, predictions, return_col="future_return_5d", top_ks=(1, 2, 3, 5)):
+    required_cols = ["date", "stock_code", return_col]
+    if "relevance" in data.columns:
+        required_cols.append("relevance")
+    eval_df = data[required_cols].copy()
+    eval_df["predicted_return"] = predictions
+    eval_df = eval_df.dropna(subset=["date", "stock_code", return_col, "predicted_return"])
+    if eval_df.empty:
+        raise ValueError("Permutation评估数据为空")
+
+    metrics = {
+        "sample_count": int(len(eval_df)),
+        "date_count": int(eval_df["date"].nunique()),
+    }
+    for top_k in top_ks:
+        selected = (
+            eval_df.sort_values(["date", "predicted_return"], ascending=[True, False])
+            .groupby("date", group_keys=False)
+            .head(top_k)
+        )
+        returns = selected[return_col].astype(float)
+        daily_returns = selected.groupby("date")[return_col].mean().astype(float)
+        daily_win = selected.assign(_win=selected[return_col].astype(float) > 0).groupby("date")["_win"].mean()
+        daily_big_loss = selected.assign(_big_loss=selected[return_col].astype(float) <= -0.04).groupby("date")["_big_loss"].mean()
+        daily_big_gain = selected.assign(_big_gain=selected[return_col].astype(float) >= 0.08).groupby("date")["_big_gain"].mean()
+        metrics[f"top{top_k}_n"] = int(len(returns))
+        metrics[f"top{top_k}_date_count"] = int(len(daily_returns))
+        metrics[f"top{top_k}_mean_return"] = float(daily_returns.mean()) if len(daily_returns) else np.nan
+        metrics[f"top{top_k}_std_return"] = float(daily_returns.std(ddof=1)) if len(daily_returns) > 1 else np.nan
+        metrics[f"top{top_k}_sum_return"] = float(daily_returns.sum()) if len(daily_returns) else np.nan
+        metrics[f"top{top_k}_win_rate"] = float(daily_win.mean()) if len(daily_win) else np.nan
+        metrics[f"top{top_k}_big_loss_rate"] = float(daily_big_loss.mean()) if len(daily_big_loss) else np.nan
+        metrics[f"top{top_k}_big_gain_rate"] = float(daily_big_gain.mean()) if len(daily_big_gain) else np.nan
+        if "relevance" in selected.columns:
+            daily_monster = selected.assign(_monster=selected["relevance"].astype(float) >= 1).groupby("date")["_monster"].mean()
+            metrics[f"top{top_k}_monster_rate"] = float(daily_monster.mean()) if len(daily_monster) else np.nan
+    return metrics
+
+
+def _permute_columns_within_date(X, dates, columns, rng):
+    X_perm = X.copy()
+    date_values = pd.Series(dates).reset_index(drop=True)
+    for col in columns:
+        values = X_perm[col].to_numpy(copy=True)
+        for idx in date_values.groupby(date_values, sort=False).indices.values():
+            if len(idx) > 1:
+                values[idx] = rng.permutation(values[idx])
+        X_perm[col] = values
+    return X_perm
+
+
+def _build_permutation_time_segments(eval_data: pd.DataFrame, n_segments: int = 4) -> list[dict]:
+    """按交易日数量把评估区间等分为若干段。"""
+    unique_dates = pd.Series(pd.to_datetime(eval_data["date"]).sort_values().unique())
+    if unique_dates.empty:
+        return []
+
+    segments = []
+    for idx, date_part in enumerate(np.array_split(unique_dates.to_numpy(), n_segments), start=1):
+        if len(date_part) == 0:
+            continue
+        start_ts = pd.Timestamp(date_part[0])
+        end_ts = pd.Timestamp(date_part[-1])
+        mask = (eval_data["date"] >= start_ts) & (eval_data["date"] <= end_ts)
+        segments.append({
+            "segment": f"S{idx}",
+            "segment_idx": idx,
+            "segment_start": start_ts,
+            "segment_end": end_ts,
+            "segment_date_count": int(len(date_part)),
+            "mask": mask.to_numpy(),
+        })
+    return segments
+
+
+def _summarize_permutation_repeat_metrics(
+    group_name: str,
+    cols: list[str],
+    repeats: int,
+    repeat_metrics: list[dict],
+    baseline: dict,
+    *,
+    segment_info: dict | None = None,
+) -> dict:
+    summary = {
+        "group": group_name,
+        "feature_count": len(cols),
+        "features": ",".join(cols),
+        "repeats": repeats,
+    }
+    if segment_info:
+        summary.update({
+            "segment": segment_info["segment"],
+            "segment_idx": segment_info["segment_idx"],
+            "segment_start": segment_info["segment_start"].strftime("%Y-%m-%d"),
+            "segment_end": segment_info["segment_end"].strftime("%Y-%m-%d"),
+            "segment_date_count": segment_info["segment_date_count"],
+        })
+
+    metric_names = [k for k in repeat_metrics[0].keys() if k not in {"sample_count", "date_count"}]
+    for metric_name in metric_names:
+        values = np.array([m[metric_name] for m in repeat_metrics], dtype=float)
+        summary[f"{metric_name}_mean"] = float(np.nanmean(values))
+        summary[f"{metric_name}_std"] = float(np.nanstd(values))
+        if metric_name in baseline:
+            drop = float(baseline[metric_name] - summary[f"{metric_name}_mean"])
+            summary[f"{metric_name}_drop"] = drop
+            std = summary[f"{metric_name}_std"]
+            summary[f"{metric_name}_drop_over_std"] = float(drop / std) if std and np.isfinite(std) else np.nan
+            summary[f"{metric_name}_drop_per_feature"] = float(drop / len(cols)) if len(cols) else np.nan
+    return summary
+
+
+def _summarize_segment_stability(segment_summary: pd.DataFrame) -> pd.DataFrame:
+    if segment_summary.empty or "top1_mean_return_drop" not in segment_summary.columns:
+        return pd.DataFrame()
+
+    rows = []
+    for group_name, group_df in segment_summary.groupby("group", sort=False):
+        drops = pd.to_numeric(group_df["top1_mean_return_drop"], errors="coerce").dropna()
+        top3_drops = pd.to_numeric(group_df.get("top3_mean_return_drop", pd.Series(dtype=float)), errors="coerce").dropna()
+        top5_drops = pd.to_numeric(group_df.get("top5_mean_return_drop", pd.Series(dtype=float)), errors="coerce").dropna()
+        if drops.empty:
+            continue
+        mean_drop = float(drops.mean())
+        std_drop = float(drops.std(ddof=0))
+        positive_count = int((drops > 0).sum())
+        rows.append({
+            "group": group_name,
+            "feature_count": int(group_df["feature_count"].iloc[0]),
+            "segment_count": int(len(drops)),
+            "positive_segment_count": positive_count,
+            "positive_segment_ratio": float(positive_count / len(drops)),
+            "top1_drop_segment_mean": mean_drop,
+            "top1_drop_segment_std": std_drop,
+            "top1_drop_segment_min": float(drops.min()),
+            "top1_drop_segment_max": float(drops.max()),
+            "top1_drop_stability_ratio": float(mean_drop / std_drop) if std_drop > 0 else np.nan,
+            "top3_drop_segment_mean": float(top3_drops.mean()) if len(top3_drops) else np.nan,
+            "top5_drop_segment_mean": float(top5_drops.mean()) if len(top5_drops) else np.nan,
+        })
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["positive_segment_ratio", "top1_drop_segment_mean", "top1_drop_stability_ratio"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+    return result
+
+
+def run_permutation_factor_clusters_mode(args):
+    """因子簇 permutation 重要性：固定 Window3 LightGBM 模型和训练特征。"""
+    logger = logging.getLogger(__name__)
+    print("===== 因子簇 Permutation 重要性分析 =====")
+    try:
+        # lightgbm_model_window3_20260603_043604.pkl
+        # model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        model_path = Path("results/lightgbm_model_window3_20260603_043604.pkl")
+        if not model_path.exists():
+            logger.error(f"模型文件不存在: {model_path}")
+            return False
+
+        with open(model_path, "rb") as f:
+            model_data = pickle.load(f)
+        model = model_data["model"]
+        feature_columns = list(model_data.get("feature_names") or [])
+        if not feature_columns:
+            raise ValueError("模型文件缺少 feature_names，无法保证使用训练特征")
+
+        eval_start = pd.to_datetime(getattr(args, "start_date", None) or "20250801")
+        eval_end = pd.to_datetime(getattr(args, "end_date", None) or "20260518")
+        label_end = eval_end + pd.Timedelta(days=14)
+
+        eval_data = _load_factor_cache_data(
+            required_factors=feature_columns,
+            include_label_generation_features=True,
+            start_date=eval_start.strftime("%Y%m%d"),
+            end_date=label_end.strftime("%Y%m%d"),
+        )
+        if eval_data is None or eval_data.empty:
+            logger.error("Permutation评估数据加载失败")
+            return False
+
+        missing = [col for col in feature_columns if col not in eval_data.columns]
+        if missing:
+            raise ValueError(f"Permutation输入缺少模型训练特征: {missing[:20]}")
+
+        eval_data = eval_data.copy()
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data.sort_values(["date", "stock_code"]).reset_index(drop=True)
+
+        if "stock_code" in eval_data.columns:
+            bj_mask = eval_data["stock_code"].astype(str).str.endswith((".BJ", ".bj"), na=False)
+            if bj_mask.any():
+                logger.warning(f"Permutation标签生成前剔除北交所样本: {int(bj_mask.sum()):,} 条")
+                eval_data = eval_data.loc[~bj_mask].copy()
+
+        try:
+            valid_cs_mask, _, _ = _build_valid_cs_mask(eval_data, logger)
+            eval_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+        except Exception as e:
+            logger.warning(f"valid_cs_mask生成失败，回退为全True: {e}")
+            eval_data["valid_cs_mask"] = True
+
+        labeled_result = _generate_training_labels_for_all_data(eval_data)
+        eval_data = labeled_result[0] if isinstance(labeled_result, tuple) else labeled_result
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data[
+            (eval_data["date"] >= eval_start) &
+            (eval_data["date"] <= eval_end)
+        ].copy()
+
+        if "atr_return_label" not in eval_data.columns:
+            raise ValueError("标签生成后缺少 atr_return_label，无法按训练口径评估")
+        eval_data = eval_data.dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期区间内无有效Permutation评估样本")
+
+        X = eval_data[feature_columns].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        logger.info(f"固定模型: {model_path}")
+        logger.info("固定输入: factor_lab_data/factors.parquet + local_data行情字段")
+        logger.info(f"训练特征数: {len(feature_columns)}")
+        logger.info(
+            f"评估区间: {eval_start.strftime('%Y-%m-%d')} ~ {eval_end.strftime('%Y-%m-%d')}, "
+            f"标签扩展加载至 {label_end.strftime('%Y-%m-%d')}"
+        )
+        logger.info(f"评估样本: {len(eval_data):,} 行, 日期数: {eval_data['date'].nunique()}")
+
+        baseline_pred = _predict_lightgbm_model(model, X)
+        baseline = _evaluate_permutation_predictions(eval_data, baseline_pred, return_col="atr_return_label")
+        logger.info(
+            f"Baseline Top1 mean={baseline['top1_mean_return']:.6f}, "
+            f"Top3 mean={baseline['top3_mean_return']:.6f}, Top5 mean={baseline['top5_mean_return']:.6f}"
+        )
+        segments = _build_permutation_time_segments(eval_data, n_segments=4)
+        segment_baselines = {}
+        for segment in segments:
+            seg_mask = segment["mask"]
+            seg_baseline = _evaluate_permutation_predictions(
+                eval_data.loc[seg_mask],
+                np.asarray(baseline_pred)[seg_mask],
+                return_col="atr_return_label",
+            )
+            segment_baselines[segment["segment"]] = seg_baseline
+            logger.info(
+                f"Segment {segment['segment']} "
+                f"{segment['segment_start'].strftime('%Y-%m-%d')}~{segment['segment_end'].strftime('%Y-%m-%d')}: "
+                f"Top1 mean={seg_baseline['top1_mean_return']:.6f}, dates={seg_baseline['date_count']}"
+            )
+
+        repeats = max(1, int(getattr(args, "permutation_repeats", 5)))
+        seed = int(getattr(args, "permutation_seed", 20260602))
+        groups = _get_permutation_factor_groups(feature_columns)
+
+        rows = []
+        detail_rows = []
+        segment_rows = []
+        segment_detail_rows = []
+        for group_idx, (group_name, cols) in enumerate(groups.items(), start=1):
+            logger.info(f"[{group_idx}/{len(groups)}] Permute group={group_name}, features={len(cols)}")
+            repeat_metrics = []
+            segment_repeat_metrics = {segment["segment"]: [] for segment in segments}
+            for repeat_idx in range(repeats):
+                rng = np.random.default_rng(seed + group_idx * 1000 + repeat_idx)
+                X_perm = _permute_columns_within_date(X, eval_data["date"], cols, rng)
+                pred = _predict_lightgbm_model(model, X_perm)
+                pred = np.asarray(pred)
+                metrics = _evaluate_permutation_predictions(eval_data, pred, return_col="atr_return_label")
+                repeat_metrics.append(metrics)
+                detail = {
+                    "group": group_name,
+                    "repeat": repeat_idx + 1,
+                    "feature_count": len(cols),
+                    "features": ",".join(cols),
+                }
+                detail.update(metrics)
+                detail_rows.append(detail)
+
+                for segment in segments:
+                    seg_mask = segment["mask"]
+                    seg_metrics = _evaluate_permutation_predictions(
+                        eval_data.loc[seg_mask],
+                        pred[seg_mask],
+                        return_col="atr_return_label",
+                    )
+                    segment_repeat_metrics[segment["segment"]].append(seg_metrics)
+                    seg_detail = {
+                        "group": group_name,
+                        "repeat": repeat_idx + 1,
+                        "feature_count": len(cols),
+                        "features": ",".join(cols),
+                        "segment": segment["segment"],
+                        "segment_idx": segment["segment_idx"],
+                        "segment_start": segment["segment_start"].strftime("%Y-%m-%d"),
+                        "segment_end": segment["segment_end"].strftime("%Y-%m-%d"),
+                        "segment_date_count": segment["segment_date_count"],
+                    }
+                    seg_detail.update(seg_metrics)
+                    segment_detail_rows.append(seg_detail)
+
+            rows.append(_summarize_permutation_repeat_metrics(
+                group_name, cols, repeats, repeat_metrics, baseline
+            ))
+            for segment in segments:
+                segment_rows.append(_summarize_permutation_repeat_metrics(
+                    group_name,
+                    cols,
+                    repeats,
+                    segment_repeat_metrics[segment["segment"]],
+                    segment_baselines[segment["segment"]],
+                    segment_info=segment,
+                ))
+
+        result = pd.DataFrame(rows)
+        if "top1_mean_return_drop" in result.columns:
+            result = result.sort_values("top1_mean_return_drop", ascending=False)
+        segment_result = pd.DataFrame(segment_rows)
+        if not segment_result.empty and "top1_mean_return_drop" in segment_result.columns:
+            segment_result = segment_result.sort_values(["segment_idx", "top1_mean_return_drop"], ascending=[True, False])
+        stability_result = _summarize_segment_stability(segment_result)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else Path("results")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_{timestamp}.csv"
+        detail_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_detail_{timestamp}.csv"
+        segment_summary_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_segments_{timestamp}.csv"
+        segment_detail_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_segment_detail_{timestamp}.csv"
+        stability_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_segment_stability_{timestamp}.csv"
+        baseline_path = out_dir / f"factor_cluster_permutation_lightgbm_w3_baseline_{timestamp}.json"
+        result.to_csv(summary_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(detail_rows).to_csv(detail_path, index=False, encoding="utf-8-sig")
+        segment_result.to_csv(segment_summary_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(segment_detail_rows).to_csv(segment_detail_path, index=False, encoding="utf-8-sig")
+        stability_result.to_csv(stability_path, index=False, encoding="utf-8-sig")
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_path": str(model_path),
+                    "data_path": str(FACTOR_LAB_STORE_PATH),
+                    "label_source": "atr_return_label generated by _generate_training_labels_for_all_data",
+                    "eval_start": eval_start.strftime("%Y-%m-%d"),
+                    "eval_end": eval_end.strftime("%Y-%m-%d"),
+                    "label_load_end": label_end.strftime("%Y-%m-%d"),
+                    "feature_count": len(feature_columns),
+                    "repeats": repeats,
+                    "seed": seed,
+                    "baseline": baseline,
+                    "segment_baselines": segment_baselines,
+                    "segments": [
+                        {
+                            "segment": s["segment"],
+                            "segment_idx": s["segment_idx"],
+                            "segment_start": s["segment_start"].strftime("%Y-%m-%d"),
+                            "segment_end": s["segment_end"].strftime("%Y-%m-%d"),
+                            "segment_date_count": s["segment_date_count"],
+                        }
+                        for s in segments
+                    ],
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        show_cols = [
+            "group", "feature_count", "top1_mean_return_drop", "top1_mean_return_mean",
+            "top1_mean_return_std", "top1_mean_return_drop_over_std", "top1_mean_return_drop_per_feature",
+            "top3_mean_return_drop", "top5_mean_return_drop", "top1_win_rate_drop",
+            "top1_big_loss_rate_drop", "top1_big_gain_rate_drop",
+        ]
+        existing_show_cols = [col for col in show_cols if col in result.columns]
+        print("\n===== 因子簇Permutation结果 Top =====")
+        print(result[existing_show_cols].head(30).to_string(index=False))
+
+        if not segment_result.empty:
+            print("\n===== 4段子区间 因子簇Permutation结果 Top =====")
+            segment_show_cols = [
+                "segment", "segment_start", "segment_end", "group", "feature_count",
+                "top1_mean_return_drop", "top1_mean_return_mean",
+                "top1_mean_return_std", "top1_mean_return_drop_over_std",
+                "top3_mean_return_drop", "top5_mean_return_drop",
+                "top1_big_loss_rate_drop", "top1_big_gain_rate_drop",
+            ]
+            segment_show_cols = [col for col in segment_show_cols if col in segment_result.columns]
+            for segment_name, seg_df in segment_result.groupby("segment", sort=False):
+                print(f"\n--- {segment_name} ---")
+                print(seg_df[segment_show_cols].head(10).to_string(index=False))
+
+        if not stability_result.empty:
+            print("\n===== 4段稳定性汇总 =====")
+            stability_show_cols = [
+                "group", "feature_count", "positive_segment_count", "positive_segment_ratio",
+                "top1_drop_segment_mean", "top1_drop_segment_std",
+                "top1_drop_segment_min", "top1_drop_segment_max",
+                "top1_drop_stability_ratio", "top3_drop_segment_mean", "top5_drop_segment_mean",
+            ]
+            stability_show_cols = [col for col in stability_show_cols if col in stability_result.columns]
+            print(stability_result[stability_show_cols].head(30).to_string(index=False))
+
+        if "top1_mean_return_drop" in result.columns:
+            negative = result[result["top1_mean_return_drop"] < 0].sort_values("top1_mean_return_drop")
+            print("\n===== Negative Drop 因子簇 =====")
+            if negative.empty:
+                print("无：本次没有出现打乱后Top1收益反而提升的因子簇。")
+            else:
+                print(negative[existing_show_cols].to_string(index=False))
+
+            positive = result[result["top1_mean_return_drop"] > 0].copy()
+            print("\n===== 最终分析结果 =====")
+            if positive.empty:
+                print("未发现稳定正向贡献的因子簇：所有簇的Top1 mean return drop均不大于0。")
+            else:
+                top_group = positive.iloc[0]
+                robust_cols = [
+                    "group", "feature_count", "top1_mean_return_drop",
+                    "top1_mean_return_drop_over_std", "top1_mean_return_drop_per_feature",
+                    "top3_mean_return_drop", "top5_mean_return_drop",
+                ]
+                robust_cols = [col for col in robust_cols if col in positive.columns]
+                robust = positive.sort_values(
+                    ["top1_mean_return_drop_over_std", "top1_mean_return_drop"],
+                    ascending=[False, False],
+                    na_position="last",
+                )
+                efficient = positive.sort_values(
+                    ["top1_mean_return_drop_per_feature", "top1_mean_return_drop"],
+                    ascending=[False, False],
+                    na_position="last",
+                )
+                print(
+                    f"Top1收益贡献最高的簇: {top_group['group']} "
+                    f"(drop={top_group['top1_mean_return_drop']:.6f}, features={int(top_group['feature_count'])})"
+                )
+                print("\n按 drop/std 衡量的稳定贡献排序:")
+                print(robust[robust_cols].head(10).to_string(index=False))
+                print("\n按 drop_per_feature 衡量的单位因子贡献排序:")
+                print(efficient[robust_cols].head(10).to_string(index=False))
+                negative_count = int((result["top1_mean_return_drop"] < 0).sum())
+                print(
+                    f"\n结论提示: 正drop表示打乱该簇后收益下降，模型依赖该簇；"
+                    f"negative drop簇数量={negative_count}，这类簇可能是噪声、替代关系或样本波动，需要单独复核。"
+                )
+                if not stability_result.empty:
+                    stable_positive = stability_result[
+                        (stability_result["positive_segment_count"] >= 3) &
+                        (stability_result["top1_drop_segment_mean"] > 0)
+                    ].copy()
+                    print("\n分段稳定性提示:")
+                    if stable_positive.empty:
+                        print("没有因子簇在至少3个子段保持正Top1 drop；整体重要性可能更依赖特定行情阶段。")
+                    else:
+                        print(
+                            "至少3个子段为正drop的簇，优先看作更稳定的信息来源:"
+                        )
+                        print(stable_positive[stability_show_cols].head(10).to_string(index=False))
+        print(f"\n结果已保存: {summary_path}")
+        print(f"重复明细已保存: {detail_path}")
+        print(f"4段汇总已保存: {segment_summary_path}")
+        print(f"4段重复明细已保存: {segment_detail_path}")
+        print(f"4段稳定性已保存: {stability_path}")
+        print(f"Baseline已保存: {baseline_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"因子簇Permutation模式失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 
 def run_train_model_mode(args, train_end_date=None, is_regression=True, use_xgboost=None, use_lightgbm=None):
@@ -14519,8 +15226,8 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-07',
                 'val_end': '2025-07-25',
                 # 'val_end': '2025-05-25',
-                'test_start': '2025-08-05',
-                'test_end': '2026-04-22'
+                'test_start': '2025-10-05',
+                'test_end': '2026-05-18'
                 # 'val_start': '2025-03-01',
                 # 'val_end': '2025-06-02',
                 # 'test_start': '2025-06-06',
@@ -16578,7 +17285,7 @@ def _backtest_on_window(test_data, model_result, window, args):
             # 按日期分组计算topk
             for date in test_data_with_pred['date'].unique():
                 date_data = test_data_with_pred[test_data_with_pred['date'] == date]
-                logger.info(f"日期:{date}股票:{len(date_data)}")
+                # logger.info(f"日期:{date}股票:{len(date_data)}")
 
                 if len(date_data) >= 5:  # 确保有足够的股票
                     # 按预测值降序排列
@@ -16863,7 +17570,7 @@ def _backtest_on_window(test_data, model_result, window, args):
         # 调用统一选股回测函数
         backtest_result = _run_stock_selection_backtest(
             backtest_data=test_data_with_pred,
-            stock_counts=[2],  # Top-1/2/3/5选股
+            stock_counts=[1],  # Top-1/2/3/5选股
             window_name=window['name'],
             market_data=None,  # Walk-Forward暂不使用市场状态
             frequency='minute'  # 默认日线回测，保持向后兼容
@@ -17136,7 +17843,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
-        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"
+        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260411_180603.pkl"

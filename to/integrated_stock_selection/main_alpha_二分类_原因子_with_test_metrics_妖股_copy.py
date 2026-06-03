@@ -54,7 +54,7 @@ USE_TOP1_TWO_BRANCH_GATE = False
 TOP1_SECTOR_MOMENTUM_ACCEL_GATE_THRESHOLD = 0.287
 TOP1_MARKET_VOLATILITY_CONTEXT_GATE_THRESHOLD = 1.695
 TOP1_MA_ALIGNMENT_PERSISTENCE_GATE_THRESHOLD = 1.0
-USE_TOP1_TWO_BRANCH_STRICT_MODE = True
+USE_TOP1_TWO_BRANCH_STRICT_MODE = False
 TOP1_STRICT_ENTRY_GAP_UP_THRESHOLD = 0.02
 
 # Top1 开盘极端过滤模式
@@ -84,6 +84,261 @@ SMALL_PROFIT_WATCH_WINDOW_BARS = 3
 ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT = True
 PROFIT_BEARISH_ACTIVATION_RETURN = 0.05
 ENABLE_TOP1_STATE_MACHINE_RISK = True
+
+# 预测前特征量化诊断：
+# 这些因子存在离散档位/大量重复值/边界值，LightGBM 可能被 float32 尾差跨阈值影响。
+# 这里仅在测试集/回测预测前处理，用于评估当前已训练模型对尾差的敏感度。
+ENABLE_PREDICTION_FEATURE_ROUNDING = False
+PREDICTION_FEATURE_ROUND_DECIMALS = 6
+PREDICTION_FEATURE_ROUND_COLUMNS = [
+    # 'ma_alignment_score',
+    # 'trend_consistency',
+    # 'sector_rank_change_5d',
+    # 'high_position_volume_surge',
+    # 'shadow_reversal_volume_pressure',
+    # 'trend_pullback_composite_alpha',
+    # 'high_volatility_pullback_alpha',
+    # 'prev_non_first_limit_up_performance_percentile_20d',
+    # 'limit_down_3d',
+    'price_ma5_ratio_raw',
+    'prev_day_blowoff_risk',
+    'market_advance_decline_ratio',
+    # 'market_prev_60d_new_high_avg_return',                                                                                     
+    'market_60d_new_high_ratio',                                                                                                          
+    # 'market_60d_new_high_ratio_train_percentile',
+    # 'abnormal_deviation_3d_ratio',
+    # 'abnormal_event_count_10d',
+    'severe_abnormal_pressure_10d',
+    # 'severe_abnormal_pressure_30d',
+    # 'limit_up_count_percentile_20d',                                                                                                    
+    # 'zhaban_count_percentile_20d',                                                                                                     
+    # 'limit_down_count_percentile_20d',
+    'limit_up_sw2_concentration',                                                                                                                
+    'sector_ma5_followthrough_v3',
+    'sw2_high_low_position_return_spread', 
+    'beta_20d',
+    # 'return_5d_cs_rank',
+    'high_to_close_drawdown',
+    'market_trend_strength',
+    'market_liquidity_change',
+    'market_sentiment_ad',
+    'market_volatility_context',
+    # 'mkt_regime_trend_pressure_v2',
+    'mkt_breadth_thrust_v2',
+    # 'mkt_emotion_stability_v2',
+    'mkt_dispersion_shock_v2',
+    'mkt_liquidity_impulse_v2',
+    'mkt_ma5_followthrough_v3',
+    # 'mkt_ma5_followthrough_v3_expanding_percentile',
+    'buy_lg_amount_rate',
+    'buy_sm_amount_rate',
+    'net_d5_amount_to_turnover',
+    'main_outflow_retail_takeover',
+    'sector_leadership_persistence_v3',
+    'sector_hotspot_concentration_v3',
+    'ma5_strength_breadth_v3',
+    'strong_stock_volume_confirmation_v3',
+    'emotion_quality_balance_v3',
+    'top10_10d_recent3_strength_v3',
+    'top10_5d_recent3_strength_v3',
+    'top10_3d_recent3_strength_v3',
+    'top10_10d_strength_level_v3',
+    'top10_10d_today_return_level_v3',
+    'pct_chg_sector_mean',
+    'return_10d_sector_mean',
+    'return_20d_sector_mean',
+    'return_3d_sector_mean',
+    'return_5d_sector_mean',
+    'sector_momentum_consistency',
+    'sector_momentum_dispersion_rank',
+    'sector_momentum_interaction',
+    'value_growth_rotation',
+    'size_rotation_strength',
+    'sector_dispersion',
+    'sector_relative_volatility',
+    'sector_volatility_5d',
+    'sw_circ_mv_rank_intra_sector',
+    'ma_convergence_score',
+    'pct_chg_intra_z',
+    'return_10d_intra_z',
+    'return_20d_intra_z',
+    'return_3d_intra_z',
+    'return_5d_intra_z',
+    'intra_sector_momentum_rank',
+    'sector_trend_gated_momentum_intra_z',
+    'sector_rotation_breakout_intra_z',
+    'sector_leader_capture_rank',
+    'sector_strong_leader_alpha',
+    'sector_liquidity_gated_turnover_z',
+    'sector_weak_reversal_alpha',
+    'sector_momentum_accel_rank',
+    'sector_turnover_change_5d_20d',
+    'sector_hhi_change',
+    'sector_relative_strength_vs_market',
+    'mkt_sector_dispersion',
+    'sector_mkt_corr_20d',
+    'intra_sector_breadth',
+    'market_vols_adaptive_iv',
+    'market_trend_adaptive_beta',
+    'sector_excess_intra_rank',
+    'sector_vols_divergence_alpha',
+    'sector_turnover_surge_pv_alpha',
+    'sector_dispersion_leader_alpha',
+    'vortex_trend',
+    'intraday_reversal',
+    'sector_limit_overflow_alpha',
+    'sector_broken_resilience_alpha',
+    'limit_sustain_alpha',
+    'market_emotion_resonance_alpha',
+    'resistance_distance',
+    'support_distance',
+    'coskewness',
+    'kurtosis_20d',
+    'skewness_20d',
+    'alpha_001',
+    'alpha_002',
+    'alpha_017',
+    'downside_beta',
+    'sector_correlation_20d',
+    'log_price_slope_5d',
+    'log_price_slope_10d',
+    'log_price_slope_20d',
+    'log_price_slope_10d_x_log_circ_mv',
+    'stock_sector_pos_align',
+
+    'range_compression',
+    'body_efficiency',
+    'shadow_dominance',
+    'gap_power',
+    'overnight_return',
+    'kdj_golden_cross_strength',
+    'open_to_high_ratio',
+    'sector_concentration',
+    'sector_rank_change_5d',
+    'sector_breadth',
+    'intraday_clv',
+    'beta_60d',
+    'amihud_illiquidity',
+    'abnormal_turnover',
+    'efficiency_ratio',
+    'mass_index_reversal',
+    'price_acceleration',
+    'log_price_slope_5d',
+    'log_price_slope_10d',
+    'log_price_slope_20d',
+    'log_price_slope_10d_x_log_circ_mv',
+    'ma60_slope',
+    'price_ma60_ratio',
+    'kdj_diff_9',
+    'kdj_j_9',
+    'kdj_k_9',
+    'stable_momentum',
+    'momentum_decay',
+    'turnover_stability',
+    'money_flow_pressure',
+    'ulcer_index',
+    'max_drawdown_20d',
+    'max_rally_20d',
+    'max_rally_10d',
+    'ppo_strength',
+    'mfi_strength',
+    'relative_strength_20d',
+    'volatility_structure_alpha',
+    'price_impact',
+    'volume_structure_alpha',
+    'pct_chg_1d',
+    'pct_chg_2d',
+    'regime_aware_reversal_alpha',
+    'trend_acceleration',
+    'trend_consistency',
+    'trend_pullback_composite_alpha',
+    'cpv_factor',
+    'price_ma5_ratio',
+    'high_volatility_pullback_alpha',
+    'volume_confirmed_pullback_alpha',
+    'distance_from_52w_high',
+    'distance_from_52w_low',
+    'ma_alignment_score',
+    'turnover_z_20',
+    'runup_ma5_exhaustion',
+    'post_accumulation_supply_tightness',
+    'true_turnover_10d',
+    'tightness_3d',
+
+]
+
+# ============================================================
+# Exhaustion factor buy filter (高位衰竭因子买入过滤)
+# ============================================================
+ENABLE_EXHAUSTION_BUY_FILTER = True
+
+# 策略选择:
+#   'three_rule_v3' (默认):       [runup_ma5_exhaustion > 0.8 AND cpv_factor <= -0.4]
+#                              OR [prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.30]
+#                              OR [sector_leadership_persistence_v3 <= -0.18 AND return_20d_intra_z <= 0.40]
+#                              OR [market_liquidity_change < 0.94 AND (ulcer_index < -0.80 OR momentum_peak_decay_3d > 1.0 OR intra_sector_momentum_rank < 0.67)]
+#                              OR [mkt_dispersion_shock_v2 < 0.98 AND market_advance_decline_ratio < 0.38]
+#                              OR [limit_down_3d == 1]
+#                              OR [top10_10d_strength_level_v3 >= 0.70 AND buy_sm_amount_rate <= -1.25]
+#                              OR [prev_non_first_limit_up_performance_percentile_20d >= 0.80 AND kdj_j_9 <= 0.75]
+#                              OR [score_z_in_day <= 1.50]
+#                              OR [reg_severe_up_10d_ratio_pct >= 0.80 AND market_advance_decline_ratio <= 0.45]
+#                              OR [price_ma5_ratio_raw >= 9.0 AND ma_convergence_score >= 0.20]
+#   'runup_or_blowoff':        [runup_ma5_exhaustion > 0.8 AND top10_10d_strength_level_v3 >= 0.5]
+#                              OR [prev_day_blowoff_risk >= 4.15 AND sector_momentum_accel_rank <= 0.41]
+#                              OR [market_advance_decline_ratio >= 5.39559]
+#   'runup_ma5':                runup_ma5_exhaustion > 0.8 AND top10_10d_strength_level_v3 >= 0.5 → 拦截
+#   'close_below_ma5':          close_below_ma5_after_runup==1 AND turnover_z_20>THRESHOLD → 拦截
+EXHAUSTION_FILTER_STRATEGY = 'three_rule_v3'
+
+# v3 策略参数 (strategy='three_rule_v3') — 基于50+162双日志鲁棒性分析
+EXHAUSTION_V3_CPV_THRESHOLD = -0.4              # cpv_factor <= 此值（配合runup>0.8）
+EXHAUSTION_V3_BLOWOFF_THRESHOLD = 2.0           # prev_day_blowoff_risk >= 此值
+EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.30     # sector_momentum_accel_rank <= 此值
+EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD = -0.18  # sector_leadership_persistence_v3 <= 此值
+EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD = 0.40  # 仅在个股20日相对强度也偏弱时才触发R3
+# v3 Rule4: 大盘流动性弱 + 个股三项至少其一（经历深度回撤 / 动能峰值已过 / 行业内排名垫底）
+# 基于162/175日志+影子机会鲁棒性分析，三路径OR，零误杀大赚
+EXHAUSTION_V3_MARKET_LIQ_THRESHOLD = 0.94   # market_liquidity_change < 此值（大盘流动性收缩）
+EXHAUSTION_V3_ULCER_THRESHOLD = -0.80       # ulcer_index < 此值（路径A: 经历深度持续回撤）
+EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 1.0      # momentum_peak_decay_3d > 此值（路径B: 动能峰值已过）
+EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD = 0.67  # intra_sector_momentum_rank < 此值（路径C: 行业内部排名垫底）
+# v3 Rule5: 市场熔断 — 安静熊市（dispersion低于均值 + 涨跌比极低），全市场暂停买入
+EXHAUSTION_V3_MKT_DISP_THRESHOLD = 0.98      # mkt_dispersion_shock_v2 < 此值（市场异常安静，无主线）
+EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38       # market_advance_decline_ratio < 此值（涨跌比极差，广度崩溃）
+# v3 Rule6: 近3个交易日有过跌停 → 不买（基于162全样本分析，4/38拦截0误杀）
+ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True       # 是否启用近3日跌停过滤
+# v3 Rule7: 短强但散户资金流出 → 主力出货嫌疑（拦截3笔新大亏，零误杀大赚）
+EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.70    # top10_10d_strength_level_v3 >= 此值（股票处于10日强度top10）
+EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.25    # buy_sm_amount_rate <= 此值（散户资金净流出）
+# v3 Rule8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱 → 热点接力退潮风险
+EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # prev_non_first_limit_up_performance_percentile_20d >= 此值
+EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75                         # kdj_j_9 <= 此值；注意此处为截面robust z-score后的J值
+# v3 Rule9: 当日Top1模型分数相对候选池预测分布偏弱
+EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD = 1.50                  # score_z_in_day <= 此值
+# v3 Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低(<=0.45)
+# 含义：个股高位运行遭遇市场广度崩溃，大概率见顶亏钱
+EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.80  # reg_severe_up_10d_ratio_pct >= 此值(Rule10)
+EXHAUSTION_V3_REG_ADR_THRESHOLD = 0.45                  # market_advance_decline_ratio <= 此值(Rule10)
+# v3 Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
+# 含义：短期极度超买 + 均线系统收敛(趋势动能衰减) → 高位衰竭
+# 拦截4笔增量大亏，0误杀大涨/小赚
+EXHAUSTION_V3_MA5_RAW_THRESHOLD = 9.0              # price_ma5_ratio_raw >= 此值(Rule11)
+EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD = 0.20      # ma_convergence_score >= 此值(Rule11)
+# v3 Rule12: MA5回撤深度极深 + 短期加速上涨 → 高位回撤加速衰竭
+# 含义：个股相对MA5的回撤幅度极深(<=-0.05)且3日vs10日收益加速(>=6) → 高位急跌信号
+EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD = -0.05   # ma5_pullback_depth_10d <= 此值(Rule12)
+EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD = 6.0    # ret_3d_vs_10d_accel >= 此值(Rule12)
+
+# v2 策略参数 (strategy='runup_ma5' / 'runup_or_blowoff')
+EXHAUSTION_RUNUP_MA5_THRESHOLD = 0.8  # runup_ma5_exhaustion > 此值拦截
+EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD = 0.5  # 仅在头部中期强度较高环境下启用runup_ma5拦截
+EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD = 4.15
+EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD = 0.41
+EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD = 5.39559
+
+# v1 策略参数 (strategy='close_below_ma5')
+EXHAUSTION_FILTER_TURNOVER_Z_THRESHOLD = 1.0  # turnover_z_20 > 此值才确认衰竭
 
 # 导入标准化SW编码接口
 from sw_encoding_loader import (
@@ -266,116 +521,37 @@ def _build_or_load_validation_minute_cache_binary(
     minute_data_path: str = "../local_data/minute/",
     build_if_missing: bool = False,
 ) -> Optional[pd.DataFrame]:
+    """
+    使用 minute_train_label_cache 替代旧的 minute_eval_cache。
+    train_label_cache 已包含验证集数据，且正确处理了除权日(adj_factor_changed)。
+    """
     if val_data_raw is None or len(val_data_raw) == 0:
         return None
 
-    from rqalpha_minute_datasource.strategy_backtest_lead_fusion_rank_binary_v2 import (
-        StrategyConfig,
-        StrategyType,
-        build_minute_trade_cache,
-        get_minute_trade_cache_rule_signature,
-    )
+    from minute_label_cache_loader import load_minute_label_cache
 
+    val_dates = pd.to_datetime(val_data_raw['date'])
+    start_ts = val_dates.min()
+    end_ts = val_dates.max()
+
+    # 合并 val/selection/test 的日期范围以覆盖完整持仓窗口
     context_frames = [df for df in [val_data_raw, selection_data_raw, test_data_raw] if df is not None and len(df) > 0]
-    if not context_frames:
+    if context_frames:
+        all_dates = pd.concat([pd.to_datetime(df['date']) for df in context_frames], ignore_index=True)
+        start_ts = min(start_ts, all_dates.min())
+        end_ts = max(end_ts, all_dates.max())
+
+    try:
+        cache_df = load_minute_label_cache(start_ts, end_ts, logger=logger)
+    except (FileNotFoundError, ValueError) as e:
+        logger.warning(f"[MINUTE_CACHE] 加载 minute_train_label_cache 失败: {e}")
         return None
-
-    target_rows = val_data_raw.copy()
-    context_rows = pd.concat(context_frames, ignore_index=True)
-    for df in (target_rows, context_rows):
-        df['date'] = pd.to_datetime(df['date'])
-
-    trading_dates = sorted(pd.to_datetime(context_rows['date']).dt.date.unique().tolist())
-    cfg = StrategyConfig(
-        strategy_type=StrategyType.TOP_1,
-        stock_count=1,
-        enable_dynamic_rank_switch=False,
-        holding_days=int(holding_days),
-        max_concurrent_positions=1,
-        fixed_position_pct=1.0,
-        position_schedule=[1.0]
-    )
-    # todo 20260502 规则变了导致加载不到，所以改成写死
-    # rule_sig = get_minute_trade_cache_rule_signature(cfg)
-    rule_sig = "hd3_entrygap_based_down-0.030_downn-0.050_up0.050_riskt1_low_break_with_high_drawdown_sl-0.050_pb3"
-
-
-    cache_dir = Path(__file__).resolve().parent / "results" / "minute_eval_cache"
-    start_str = pd.to_datetime(target_rows['date']).min().strftime('%Y%m%d')
-    end_str = pd.to_datetime(target_rows['date']).max().strftime('%Y%m%d')
-    cache_path = cache_dir / f"val_minute_cache_{start_str}_{end_str}_{rule_sig}.parquet"
 
     logger.info(
-        f"[MINUTE_CACHE] 二分类脚本目标验证集分钟缓存: rows={len(target_rows):,}, "
-        f"dates={target_rows['date'].nunique()}, path={cache_path}"
+        f"[MINUTE_CACHE] 已加载 minute_train_label_cache: rows={len(cache_df):,}, "
+        f"dates={cache_df['date'].nunique():,}"
     )
-    if cache_path.exists():
-        logger.info(f"[MINUTE_CACHE] 命中已有缓存: {cache_path}")
-        return pd.read_parquet(cache_path)
-
-    shard_pattern = re.compile(
-        rf"^val_minute_cache_(\d{{8}})_(\d{{8}})_{re.escape(rule_sig)}\.parquet$"
-    )
-    shard_files = []
-    for path in cache_dir.glob(f"val_minute_cache_*_{rule_sig}.parquet"):
-        match = shard_pattern.match(path.name)
-        if not match:
-            continue
-        shard_start = pd.to_datetime(match.group(1))
-        shard_end = pd.to_datetime(match.group(2))
-        if shard_end < pd.to_datetime(start_str) or shard_start > pd.to_datetime(end_str):
-            continue
-        shard_files.append((shard_start, shard_end, path))
-
-    if shard_files:
-        shard_files.sort(key=lambda x: (x[0], x[1], str(x[2])))
-        logger.info(f"[MINUTE_CACHE] 二分类脚本尝试拼接 {len(shard_files)} 个分钟缓存分片...")
-        shard_frames = []
-        for _, _, shard_path in shard_files:
-            logger.info(f"[MINUTE_CACHE] 读取分片: {shard_path.name}")
-            shard_df = pd.read_parquet(shard_path)
-            shard_df['date'] = pd.to_datetime(shard_df['date'])
-            shard_df = shard_df[
-                (shard_df['date'] >= pd.to_datetime(start_str)) &
-                (shard_df['date'] <= pd.to_datetime(end_str))
-            ].copy()
-            shard_frames.append(shard_df)
-
-        if shard_frames:
-            merged_df = pd.concat(shard_frames, ignore_index=True)
-            merged_df = (
-                merged_df
-                .sort_values(['date', 'stock_code'])
-                .drop_duplicates(['date', 'stock_code'], keep='last')
-                .reset_index(drop=True)
-            )
-            expected_dates = set(pd.to_datetime(target_rows['date']).dt.normalize().unique().tolist())
-            actual_dates = set(pd.to_datetime(merged_df['date']).dt.normalize().unique().tolist())
-            missing_dates = sorted(expected_dates - actual_dates)
-            if not missing_dates:
-                logger.info(
-                    f"[MINUTE_CACHE] 二分类脚本成功通过增量分片拼接缓存: rows={len(merged_df):,}, dates={len(actual_dates)}"
-                )
-                return merged_df
-            logger.warning(
-                f"[MINUTE_CACHE] 二分类脚本分片缓存仍缺少 {len(missing_dates)} 个交易日: "
-                f"{[d.strftime('%Y-%m-%d') for d in missing_dates[:5]]}"
-            )
-
-    if not build_if_missing:
-        logger.warning("[MINUTE_CACHE] 二分类脚本未命中有效分钟缓存，当前仅尝试读取不自动构建。")
-        return None
-
-    return build_minute_trade_cache(
-        target_prediction_rows=target_rows,
-        context_prediction_data=context_rows,
-        minute_data_path=minute_data_path,
-        trading_dates=trading_dates,
-        cache_path=cache_path,
-        holding_days=int(holding_days),
-        overwrite=False,
-        log_prefix="[MINUTE_CACHE]"
-    )
+    return cache_df
 
 
 def _calc_daily_rank_panel_binary(model, X_eval, y_eval_original, eval_dates, eval_data_raw=None, rank_position=1):
@@ -467,6 +643,103 @@ def _calc_daily_topk_selection_rows_binary(model, X_eval, y_eval_original, eval_
     return pd.DataFrame(selected_rows)
 
 
+def _evaluate_candidate_with_topk_label_return_ratio_binary(
+    model,
+    X_eval,
+    eval_dates,
+    eval_data_raw,
+    label_column='atr_return_label',
+    top_k=5,
+    min_group_size=5,
+):
+    """
+    分钟缓存失效时的轻量兜底评估:
+    用每日Top1标签收益、每日Top1~Top5等权标签收益分别计算
+    算术累计收益 / 算术最大回撤，再按 0.7/0.3 加权。
+    """
+    if (
+        X_eval is None or len(X_eval) == 0
+        or eval_dates is None or len(eval_dates) == 0
+        or eval_data_raw is None or len(eval_data_raw) == 0
+        or label_column not in eval_data_raw.columns
+    ):
+        return None
+
+    try:
+        best_iter = getattr(model, 'best_iteration', None)
+        eval_pred = model.predict(X_eval, num_iteration=best_iter) if best_iter else model.predict(X_eval)
+    except Exception:
+        eval_pred = model.predict(X_eval)
+
+    eval_pred = np.asarray(eval_pred, dtype=float).reshape(-1)
+    label_values = pd.to_numeric(eval_data_raw.reset_index(drop=True)[label_column], errors='coerce').values
+    n = min(len(eval_pred), len(label_values), len(eval_dates))
+    if n <= 0:
+        return None
+
+    df = pd.DataFrame({
+        'date': pd.to_datetime(eval_dates[:n]),
+        'pred': eval_pred[:n],
+        'label_return': label_values[:n],
+    })
+    df = df.dropna(subset=['date', 'pred', 'label_return'])
+
+    daily_rows = []
+    for date_val, group in df.groupby('date', sort=True):
+        if len(group) < max(top_k, min_group_size):
+            continue
+        sorted_group = group.sort_values('pred', ascending=False).reset_index(drop=True)
+        top1_row = sorted_group.iloc[0]
+        topk_group = sorted_group.head(top_k)
+        daily_rows.append({
+            'date': date_val,
+            'top1_return': float(top1_row['label_return']),
+            'topk_return': float(pd.to_numeric(topk_group['label_return'], errors='coerce').mean()),
+        })
+
+    if not daily_rows:
+        return None
+
+    daily_df = pd.DataFrame(daily_rows)
+
+    def _calc_arithmetic_return_drawdown_ratio(return_series):
+        returns = pd.to_numeric(pd.Series(return_series), errors='coerce').dropna().values.astype(float)
+        if len(returns) == 0:
+            return 0.0, 0.0, 0.0
+        cumulative_curve = np.cumsum(returns)
+        cumulative_return = float(cumulative_curve[-1])
+        running_peak = np.maximum.accumulate(np.insert(cumulative_curve, 0, 0.0))[1:]
+        drawdowns = cumulative_curve - running_peak
+        max_drawdown = float(np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+        drawdown_abs = abs(max_drawdown)
+        if drawdown_abs <= 1e-12:
+            profit_drawdown_ratio = float(cumulative_return / 1e-12) if cumulative_return != 0 else 0.0
+        else:
+            profit_drawdown_ratio = float(cumulative_return / drawdown_abs)
+        return cumulative_return, max_drawdown, profit_drawdown_ratio
+
+    top1_cumulative_return, top1_max_drawdown, top1_profit_drawdown_ratio = _calc_arithmetic_return_drawdown_ratio(
+        daily_df['top1_return']
+    )
+    topk_cumulative_return, topk_max_drawdown, topk_profit_drawdown_ratio = _calc_arithmetic_return_drawdown_ratio(
+        daily_df['topk_return']
+    )
+
+    score = float(0.7 * top1_profit_drawdown_ratio + 0.3 * topk_profit_drawdown_ratio)
+    return {
+        'score': score,
+        'top1_cumulative_return': top1_cumulative_return,
+        'top1_max_drawdown': top1_max_drawdown,
+        'top1_profit_drawdown_ratio': top1_profit_drawdown_ratio,
+        'topk_cumulative_return': topk_cumulative_return,
+        'topk_max_drawdown': topk_max_drawdown,
+        'topk_profit_drawdown_ratio': topk_profit_drawdown_ratio,
+        'days': int(len(daily_df)),
+        'top_k': int(top_k),
+        'label_column': label_column,
+    }
+
+
 def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original, eval_dates, eval_data_raw, minute_cache_df):
     if minute_cache_df is None or len(minute_cache_df) == 0:
         return None
@@ -479,7 +752,7 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
         'date', 'stock_code', 'buy_executable', 'skip_reason', 'exit_reason',
         'minute_realized_return', 'minute_min_return', 'minute_max_drawdown',
         'stoploss_hit', 'profit_bearish_hit', 'holding_days_realized',
-        'missing_minute_data'
+        'missing_minute_data', 'adj_factor_changed', 'label_valid'
     ]
     cache_view = minute_cache_df[[c for c in cache_cols if c in minute_cache_df.columns]].copy()
     cache_view['date'] = pd.to_datetime(cache_view['date'])
@@ -489,6 +762,11 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
     top1_merged['missing_minute_data'] = top1_merged['missing_minute_data'].fillna(True).astype(bool)
     top1_merged['stoploss_hit'] = top1_merged['stoploss_hit'].fillna(False).astype(bool)
     top1_merged['profit_bearish_hit'] = top1_merged['profit_bearish_hit'].fillna(False).astype(bool)
+    # 跨除权日的样本收益被污染，视为不可交易
+    if 'adj_factor_changed' in top1_merged.columns:
+        top1_merged.loc[top1_merged['adj_factor_changed'].fillna(False).astype(bool), 'buy_executable'] = False
+    if 'label_valid' in top1_merged.columns:
+        top1_merged.loc[top1_merged['label_valid'].fillna(True).astype(bool) == False, 'buy_executable'] = False
     top1_merged['minute_realized_return'] = pd.to_numeric(top1_merged.get('minute_realized_return', 0.0), errors='coerce').fillna(0.0)
     top1_merged['effective_minute_return'] = np.where(top1_merged['buy_executable'], top1_merged['minute_realized_return'], 0.0)
 
@@ -512,12 +790,17 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
     skip_rate = float(np.mean(~top1_merged['buy_executable'])) if len(top1_merged) > 0 else 0.0
     missing_rate = float(np.mean(top1_merged['missing_minute_data'])) if len(top1_merged) > 0 else 0.0
 
+    # ===== 分段独立评估：核心指标分段算再取平均，防止单一好运段主导总分 =====
     minute_segment_metrics = []
     minute_segment_penalty = 0.0
     minute_positive_segments = 0
     minute_weak_segments = 0
+    # 收集各段核心指标用于取平均
+    seg_sharpes, seg_sortinos, seg_cums, seg_calmars, seg_efficiencies = [], [], [], [], []
+    seg_win_rates, seg_means = [], []
+
     unique_days = np.array(sorted(pd.to_datetime(top1_merged['date']).unique()))
-    minute_day_segments = [seg for seg in np.array_split(unique_days, 3) if len(seg) > 0]
+    minute_day_segments = [seg for seg in np.array_split(unique_days, 6) if len(seg) > 0]
     for seg_idx, seg_days in enumerate(minute_day_segments, 1):
         seg_df = top1_merged[top1_merged['date'].isin(seg_days)].copy()
         seg_rets = seg_df['effective_minute_return'].values.astype(float)
@@ -529,21 +812,32 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
         seg_dd = _calc_max_drawdown(seg_rets)
         seg_cum = float(np.prod(1.0 + seg_rets) - 1.0)
         seg_stoploss = float(np.mean(seg_df['stoploss_hit'])) if len(seg_df) > 0 else 0.0
+        seg_std = float(np.std(seg_rets)) if len(seg_rets) > 1 else 0.0
+        seg_down = seg_rets[seg_rets < 0]
+        seg_down_std = float(np.std(seg_down)) if len(seg_down) > 0 else 0.0
+
+        # 逐段独立计算核心指标
+        seg_sharpes.append(seg_mean / max(seg_std, 0.01))
+        seg_sortinos.append(seg_mean / max(seg_down_std, 0.01))
+        seg_cums.append(seg_cum)
+        seg_calmars.append(seg_cum / max(abs(seg_dd), 0.05))
+        seg_efficiencies.append(seg_cum + seg_dd)
+        seg_win_rates.append(seg_win)
+        seg_means.append(seg_mean)
 
         if seg_cum > 0:
             minute_positive_segments += 1
         if seg_cum < 0 or seg_dd < -0.22 or seg_stoploss > 0.18:
             minute_weak_segments += 1
 
+        # 硬地板：任一段负收益 → 巨额惩罚，确保该参数组合不可能被选中
         seg_penalty = 0.0
-        if seg_cum < 0:
-            seg_penalty += 900.0 * abs(seg_cum)
-        elif seg_cum < 0.03:
-            seg_penalty += 180.0 * (0.03 - seg_cum)
-        if seg_dd < -0.18:
-            seg_penalty += 420.0 * abs(seg_dd + 0.18)
-        if seg_q10 < -0.05:
-            seg_penalty += 220.0 * abs(seg_q10 + 0.05)
+        if seg_cum < -0.05:
+            seg_penalty += 8000.0  # 亏损超5%直接出局
+        elif seg_cum < 0:
+            seg_penalty += 300.0  # 任一负段严重扣分
+        if seg_dd < -0.25:
+            seg_penalty += 400.0  # 回撤超25%不可接受
         if seg_stoploss > 0.12:
             seg_penalty += 180.0 * (seg_stoploss - 0.12)
 
@@ -557,8 +851,20 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
             'q10': seg_q10,
             'max_drawdown': seg_dd,
             'stoploss_rate': seg_stoploss,
+            'sharpe': float(seg_sharpes[-1]),
+            'sortino': float(seg_sortinos[-1]),
             'penalty': float(seg_penalty),
         })
+
+    # 用各段平均替代全局计算——任一段差都会拉低总分
+    _avg = lambda arr: float(np.mean(arr)) if len(arr) > 0 else 0.0
+    avg_sharpe = _avg(seg_sharpes)
+    avg_sortino = _avg(seg_sortinos)
+    avg_cum = _avg(seg_cums)
+    avg_calmar = _avg(seg_calmars)
+    avg_efficiency = _avg(seg_efficiencies)
+    avg_win_rate = _avg(seg_win_rates)
+    avg_mean_return = _avg(seg_means)
 
     topk_cum_returns = {}
     for top_k in (3, 5):
@@ -568,6 +874,11 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
             continue
         merged = selected_rows.merge(cache_view, on=['date', 'stock_code'], how='left')
         merged['buy_executable'] = merged['buy_executable'].fillna(False).astype(bool)
+        # 跨除权日的样本收益被污染，视为不可交易
+        if 'adj_factor_changed' in merged.columns:
+            merged.loc[merged['adj_factor_changed'].fillna(False).astype(bool), 'buy_executable'] = False
+        if 'label_valid' in merged.columns:
+            merged.loc[merged['label_valid'].fillna(True).astype(bool) == False, 'buy_executable'] = False
         merged['minute_realized_return'] = pd.to_numeric(merged.get('minute_realized_return', 0.0), errors='coerce').fillna(0.0)
         merged['effective_minute_return'] = np.where(merged['buy_executable'], merged['minute_realized_return'], 0.0)
         daily_means = merged.groupby('date')['effective_minute_return'].mean()
@@ -588,24 +899,26 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
         minute_segment_penalty += 260.0 * minute_weak_segments
 
     minute_score = (
-        1200.0 * cumulative_return +
-        2200.0 * calmar_like +
-        1600.0 * efficiency_gap +
-        900.0 * sharpe_like +
-        700.0 * sortino_like +
+        # === 核心：分段独立 → 取平均，任一段差都拉低总分，防过拟合 ===
+        3000.0 * avg_sharpe +
+        2500.0 * avg_sortino +
+        600.0 * avg_cum +
+        1000.0 * avg_calmar +
+        1200.0 * avg_efficiency +
+        80.0 * (avg_win_rate - 0.5) +
+        100.0 * avg_mean_return +
+        # === 辅助：全局统计（次要） ===
         180.0 * topk_cum_returns[3] +
         90.0 * topk_cum_returns[5] +
-        80.0 * mean_return +
         40.0 * median_return +
-        35.0 * (win_rate - 0.5) +
         120.0 * q10 -
         180.0 * stoploss_rate -
         90.0 * profit_bearish_rate -
         180.0 * skip_rate -
         180.0 * missing_rate -
         topk_penalty -
-        minute_segment_penalty +
-        minute_consistency_bonus
+        minute_segment_penalty * 1.5 +
+        minute_consistency_bonus * 1.5
     )
     return {
         'score': float(minute_score),
@@ -1425,7 +1738,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子107.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子205_noround.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -1560,7 +1873,7 @@ def _load_factor_cache_data(
             logger.error(f"因子数据缺少基础列: {missing_required}")
             return None
 
-        factor_df = factor_df.copy()
+        # factor_df = factor_df.copy()
         factor_df['date'] = pd.to_datetime(factor_df['date'])
         factor_df.sort_values(['date', 'stock_code'], inplace=True)
         factor_df.drop_duplicates(subset=['date', 'stock_code'], keep='last', inplace=True)
@@ -1576,7 +1889,7 @@ def _load_factor_cache_data(
             stock_factors = _get_model_factors()
             # market_factors = _get_available_market_factors()
             # required_factors = stock_factors + market_factors
-            required_factors = stock_factors
+            required_factors = list(dict.fromkeys(stock_factors + _get_exhaustion_filter_extra_factors()))
         else:
             required_factors = list(dict.fromkeys(required_factors))
             if 'returns_zscore' not in required_factors:
@@ -2039,7 +2352,7 @@ def _calculate_professional_sample_weights(
     is_regression: bool = False,
     y_train_original: np.ndarray = None,
     train_dates: np.ndarray = None,
-    time_decay_half_life: float = 365.0,
+    time_decay_half_life: float = 540.0,
     reference_date: str = None,
     turnover_rate: np.ndarray = None,
     circ_mv: np.ndarray = None,
@@ -2057,7 +2370,7 @@ def _calculate_professional_sample_weights(
     设计原则：
     - 所有乘法分量先构造，再统一做一次均值归一化
     - 最后只做一次 clip，保证最终结果严格落在 [w_min, w_max]
-    - 不再执行“clip 后再次除均值”，避免边界失效
+    - 不再执行"clip 后再次除均值"，避免边界失效
     """
     import numpy as np
     import pandas as pd
@@ -2091,8 +2404,9 @@ def _calculate_professional_sample_weights(
             age_days = np.clip(age_days, 0, None)
             half_life = max(float(time_decay_half_life), 1.0)
             decay_raw = np.exp(-np.log(2) * age_days / half_life)
-            decay = decay_raw / max(float(np.mean(decay_raw)), 1e-12)
-            decay = np.nan_to_num(decay, nan=1.0, posinf=1.0, neginf=1.0)
+            decay = 0.95 + 0.05 * decay_raw
+            # decay = decay_raw / max(float(np.mean(decay_raw)), 1e-12)
+            decay = np.nan_to_num(decay, nan=1.0, posinf=1.2, neginf=0.8)
 
         # if label_rank is not None:
         #     rank_arr = np.asarray(label_rank, dtype=float)
@@ -2115,13 +2429,15 @@ def _calculate_professional_sample_weights(
         w_raw = decay #* label_boost
         w_raw = np.nan_to_num(w_raw, nan=1.0, posinf=w_max, neginf=w_min)
 
-        mean_w = float(np.mean(w_raw)) if len(w_raw) > 0 else 1.0
-        if mean_w > 0:
-            w_final = w_raw / mean_w
-        else:
-            w_final = np.ones(n, dtype=float)
+        # mean_w = float(np.mean(w_raw)) if len(w_raw) > 0 else 1.0
+        # if mean_w > 0:
+        #     w_final = w_raw / mean_w
+        # else:
+        #     w_final = np.ones(n, dtype=float)
 
-        w_final = np.clip(w_final, w_min, w_max)
+        # w_final = np.clip(w_final, w_min, w_max)
+        w_final = w_raw
+        # w_final = np.ones(n, dtype=float)
 
         logger.info(
             f"类别权重统计: pos={n_pos}, neg={n_neg}, pos_weight={pos_weight:.4f}, "
@@ -2707,7 +3023,7 @@ def _perform_parameter_search(X_train, y_train, X_val, y_val, y_val_eval, sample
     def objective(trial):
         """Objective: 探索参数空间"""
         params = {
-            'max_depth': trial.suggest_int("max_depth", 3, 10),
+            'max_depth': trial.suggest_int("max_depth", 6, 10),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
             'subsample': trial.suggest_float('subsample', 0.6, 0.95),
             'colsample_bytree': trial.suggest_float("colsample_bytree", 0.6, 0.95),
@@ -2803,7 +3119,7 @@ def _evaluate_params(params, X_train, y_train, X_val, y_val, y_val_eval, sample_
 
     [TARGET] 设计理念:
        - 参数搜索更贴近实盘目标,优先优化Top-1~Top-5的头部收益
-       - 保留少量Rank IC作为辅助约束,避免模型只会“赌Top1”而整体排序失真
+       - 保留少量Rank IC作为辅助约束,避免模型只会"赌Top1"而整体排序失真
        - 不使用更大范围Top-N收益参与打分,减少对尾部股票表现的关注
 
     过拟合/欠拟合处理:
@@ -3193,35 +3509,13 @@ def _get_lgb_search_space():
     #     'reg_lambda': [5],
     #     'scale_pos_weight': [90] # 处理正负样本不平衡
     # }
+    # 精简搜索空间：只搜正则化参数（防过拟合最关键的三个）
     space = {
-        'learning_rate': [0.02],
-        'num_leaves': [127],
-        'max_depth': [-1],
-        # 'min_data_in_leaf': [50, 100, 300, 500],
-        'min_data_in_leaf': [800,700,900],
-        'feature_fraction': [0.8, 0.9],
-        'bagging_fraction': [0.6, 0.8, 1.0],
-        'reg_alpha': [5, 8, 7, 4, 6, 0.9, 0.5],
-        'reg_lambda': [5, 8, 7, 0.4, 6, 9, 0.5],
-        # 'scale_pos_weight': [35, 45, 50] # 处理正负样本不平衡
-        'scale_pos_weight': [90, 91] # 处理正负样本不平衡
+        'min_data_in_leaf': [50, 100, 200, 400],
+        'reg_alpha': [1, 3, 5, 8],
+        'reg_lambda': [1, 3, 5, 8],
     }
-    # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
-#   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
-#    {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 1.0, 'bagging_fraction': 1.0, 'reg_alpha': 1, 'reg_lambda': 10, 'scale_pos_weight': 60}, top1_return:5237.797392723667
-
-    # space = {
-    #     'learning_rate': [0.05],
-    #     'num_leaves': [15],
-    #     'max_depth': [7],
-    #     'min_data_in_leaf': [500],
-    #     'feature_fraction': [1],
-    #     'bagging_fraction': [1],
-    #     'reg_alpha': [1],
-    #     'reg_lambda': [10],
-    #     'scale_pos_weight': [60] # 处理正负样本不平衡
-    # }
-    return space, [[0]] # 保持返回值个数向后兼容
+    return space, [[0]]  # 保持返回值向后兼容
 
 def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, preprocessed_data=None, optimize_thresholds=False, sw_sector_mapping=None):
     """
@@ -3275,19 +3569,39 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         X_train_scaled = X_train
         X_val_scaled = X_val
 
-        # 清理 NaN 标签
+        # 清理 NaN 标签必须在顺序校验之前执行；LightGBM训练标签使用relevance。
         train_fit_mask = ~pd.isna(y_train)
         if not np.all(train_fit_mask):
+            dropped = int((~train_fit_mask).sum())
+            logger.warning(f"[WARNING] LightGBM训练集relevance存在 {dropped:,} 个NaN样本，已过滤")
             X_train_scaled = X_train_scaled[train_fit_mask]
             y_train = y_train[train_fit_mask]
-            if train_dates is not None: train_dates = train_dates[train_fit_mask]
+            if train_dates is not None:
+                train_dates = train_dates[train_fit_mask]
 
         val_fit_mask = ~pd.isna(y_val)
         if not np.all(val_fit_mask):
+            dropped = int((~val_fit_mask).sum())
+            logger.warning(f"[WARNING] LightGBM验证集relevance存在 {dropped:,} 个NaN样本，已过滤")
             X_val_scaled = X_val_scaled[val_fit_mask]
             y_val = y_val[val_fit_mask]
-            if val_dates is not None: val_dates = val_dates[val_fit_mask]
-            if y_val_original is not None: y_val_original = y_val_original[val_fit_mask]
+            if val_dates is not None:
+                val_dates = val_dates[val_fit_mask]
+            if y_val_original is not None:
+                y_val_original = y_val_original[val_fit_mask]
+
+        # [WRENCH] 关键验证: 检查LightGBM训练集数据顺序
+        if train_dates is not None:
+
+            # 验证数据顺序
+            if y_train is not None and not _validate_data_order(train_dates, y_train, y_train, "LightGBM训练集"):
+                logger.error("[FAIL] LightGBM训练集数据顺序验证失败,程序终止")
+                raise ValueError("LightGBM训练集数据顺序混乱,无法继续训练")
+
+            if val_dates is not None and y_val is not None:
+                if not _validate_data_order(val_dates, y_val, y_val, "LightGBM验证集"):
+                    logger.error("[FAIL] LightGBM验证集数据顺序验证失败,程序终止")
+                    raise ValueError("LightGBM验证集数据顺序混乱,无法继续训练")
 
         sample_weights = preprocessed_data.get('sample_weights')
         val_sample_weights = preprocessed_data.get('val_sample_weights')
@@ -3318,198 +3632,299 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
         base_params = {
             'objective': 'binary',
-            'metric': 'auc',
+            'learning_rate':0.02,
+            # 'metric': 'auc',
+            "metric": ["auc", "binary_logloss"],
+            # 'metric': 'average_precision',
+            'min_sum_hessian_in_leaf': 150,
+            # 'min_gain_to_split': 0.1,
             'boosting_type': 'gbdt',
-            'learning_rate': 0.02,
-            'max_depth': -1,
+            'max_depth': 7,
+            # 'num_leaves': 155,
             'bagging_freq': 1,
             'n_jobs': -1,
+            # 'max_bin': 127,
             'verbosity': -1,
-            'n_estimators': 500,
-            'random_state': 42
+            'path_smooth':10,
+            'n_estimators': 800,
+            # 'scale_pos_weight': 30,
+            'random_state': 42,
+            'extra_trees': False,  
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.9,
         }
 
-        SEARCH_ITER = 6
+        OPTUNA_N_TRIALS = 10
+        OPTUNA_SEARCH_TRAIN_DATE_FRAC = 0.40
+        OPTUNA_SEARCH_VAL_DATE_FRAC = 0.50
+        OPTUNA_SEARCH_MIN_TRAIN_DAYS = 120
+        OPTUNA_SEARCH_MIN_VAL_DAYS = 36
+        OPTUNA_SEARCH_NUM_BOOST_ROUND = 180
+        OPTUNA_FINAL_NUM_BOOST_ROUND = 400
+        OPTUNA_SEARCH_EARLY_STOPPING = 25
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
-        searched_params = set()
         best_minute_diag = None
 
-        search_space, _ = _get_lgb_search_space()
-
+        # 加载分钟缓存
         minute_cache_df = None
         use_minute_primary_eval = False
         try:
             minute_cache_df = _build_or_load_validation_minute_cache_binary(
-                val_data_raw=val_data_raw,
-                selection_data_raw=val_data_raw,
-                test_data_raw=test_data_raw,
-                holding_days=3,
-                build_if_missing=False,
+                val_data_raw=val_data_raw, selection_data_raw=val_data_raw,
+                test_data_raw=test_data_raw, holding_days=3, build_if_missing=False,
             )
             use_minute_primary_eval = minute_cache_df is not None and len(minute_cache_df) > 0
             if use_minute_primary_eval:
-                logger.info(
-                    f"[MINUTE-PRIMARY] 二分类脚本已加载验证集分钟缓存，启用分钟主评估模式: "
-                    f"rows={len(minute_cache_df):,}, dates={minute_cache_df['date'].nunique():,}"
-                )
+                logger.info(f"[MINUTE-PRIMARY] rows={len(minute_cache_df):,}, dates={minute_cache_df['date'].nunique():,}")
             else:
-                logger.warning("[MINUTE-PRIMARY] 二分类脚本未命中有效分钟缓存，回退到日频二分类评估模式")
-        except Exception as minute_cache_error:
-            logger.warning(f"[MINUTE-PRIMARY] 二分类脚本读取分钟缓存失败，回退到日频模式: {minute_cache_error}")
-            minute_cache_df = None
-            use_minute_primary_eval = False
+                logger.warning("[MINUTE-PRIMARY] no minute cache, fallback to Top1/Top5 atr_return_label profit/drawdown eval")
+        except Exception as e:
+            logger.warning(f"[MINUTE-PRIMARY] 读取失败: {e}")
 
-        def calculate_binary_top1_score(model, X_eval, y_eval_original, eval_dates):
-            """用于超参搜索的二分类模型质量评分（不做Top1回测，不引入gate规则）。
+        def _build_recent_date_mask(dates, keep_frac=1.0, min_days=0):
+            if dates is None:
+                return None, None
+            dates_ts = pd.to_datetime(pd.Series(dates))
+            unique_dates = np.array(sorted(dates_ts.dropna().unique()))
+            if len(unique_dates) == 0:
+                return None, None
+            keep_days = max(int(math.ceil(len(unique_dates) * keep_frac)), int(min_days or 0))
+            keep_days = min(len(unique_dates), max(1, keep_days))
+            keep_date_set = set(unique_dates[-keep_days:])
+            mask = dates_ts.isin(keep_date_set).values
+            return mask, unique_dates[-keep_days:]
 
-            目标：挑选“判别力强 + 头部更纯”的模型，便于后续你在其它文件里做gate/仓位策略。
-            评分由：PR-AUC、ROC-AUC、Precision@Top10% 组成，并对预测塌缩做惩罚。
-            在窗口/切片出现单一类别时，指标退化为可定义的值（不再报错/返回-inf）。
-            """
-            import numpy as np
-            import pandas as pd
+        search_train_mask, search_train_days = _build_recent_date_mask(
+            train_dates, keep_frac=OPTUNA_SEARCH_TRAIN_DATE_FRAC, min_days=OPTUNA_SEARCH_MIN_TRAIN_DAYS
+        )
+        search_val_mask, search_val_days = _build_recent_date_mask(
+            val_dates, keep_frac=OPTUNA_SEARCH_VAL_DATE_FRAC, min_days=OPTUNA_SEARCH_MIN_VAL_DAYS
+        )
 
-            if X_eval is None or y_eval_original is None or len(X_eval) == 0:
-                return float("-inf")
+        if search_train_mask is None:
+            search_train_mask = np.ones(len(y_train), dtype=bool)
+            search_train_days = None
+        if search_val_mask is None:
+            search_val_mask = np.ones(len(y_val), dtype=bool)
+            search_val_days = None
 
-            best_iter = getattr(model, "best_iteration", None)
-            try:
-                preds = model.predict(X_eval, num_iteration=best_iter) if best_iter else model.predict(X_eval)
-            except Exception:
-                preds = model.predict(X_eval)
+        X_train_search = X_train_scaled[search_train_mask]
+        y_train_search = y_train[search_train_mask]
+        sample_weights_search = sample_weights[search_train_mask]
+        X_val_search = X_val_scaled[search_val_mask]
+        y_val_search = y_val[search_val_mask]
+        val_sample_weights_search = val_sample_weights[search_val_mask]
+        y_val_original_search = y_val_original[search_val_mask] if y_val_original is not None else None
+        val_dates_search = val_dates[search_val_mask] if val_dates is not None else None
+        val_data_raw_search = val_data_raw.iloc[np.flatnonzero(search_val_mask)].reset_index(drop=True) if val_data_raw is not None else None
+        minute_cache_search = minute_cache_df
+        if minute_cache_df is not None and search_val_days is not None:
+            search_day_set = set(pd.to_datetime(search_val_days))
+            minute_cache_search = minute_cache_df[pd.to_datetime(minute_cache_df['date']).isin(search_day_set)].copy()
 
-            p = np.asarray(preds, dtype=float).reshape(-1)
-            y = np.asarray(y_eval_original).reshape(-1)
-            n = min(len(p), len(y))
-            if n <= 0:
-                return float("-inf")
-            p = p[:n]
-            y = y[:n]
+        logger.info(
+            "[Optuna] 搜索阶段轻量化: "
+            f"train={len(X_train_search):,}/{len(X_train_scaled):,} "
+            f"val={len(X_val_search):,}/{len(X_val_scaled):,} "
+            f"boost_round={OPTUNA_SEARCH_NUM_BOOST_ROUND} "
+            f"early_stop={OPTUNA_SEARCH_EARLY_STOPPING}"
+        )
 
-            # y 归一到 {0,1}
-            if y.dtype.kind in ("f", "c"):
-                y01 = (y > 0).astype(int)
-            else:
-                y01 = y.astype(int)
-                # 兼容 {-1,1}
-                uniq = set(np.unique(y01).tolist())
-                if not uniq.issubset({0,1}):
-                    y01 = (y01 > 0).astype(int)
+        train_data_search = lgb.Dataset(
+            X_train_search, label=y_train_search, weight=sample_weights_search, params={'feature_pre_filter': False}
+        )
+        val_data_search = lgb.Dataset(
+            X_val_search, label=y_val_search, weight=val_sample_weights_search, reference=train_data_search, params={'feature_pre_filter': False}
+        )
 
-            # 头部纯度
-            # todo
-            # top_frac = 0.10
-            top_frac = 0.02
-            k = max(1, int(np.ceil(top_frac * n)))
-            top_idx = np.argsort(-p)[:k]
-            precision_top = float(np.mean(y01[top_idx])) if k > 0 else 0.0
+        # ================================================================
+        # Optuna 贝叶斯搜索 (TPE sampler + Median pruner)
+        # ================================================================
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-            # 防止单类导致AUC异常：单类时 roc_auc 定义为0.5，pr_auc 定义为正类比例
-            pos_rate = float(np.mean(y01)) if n > 0 else 0.0
-            uniq_classes = np.unique(y01[~pd.isna(y01)])
-            if len(uniq_classes) < 2:
-                roc_auc = 0.5
-                pr_auc = pos_rate
-            else:
-                try:
-                    from sklearn.metrics import average_precision_score, roc_auc_score
-                    roc_auc = float(roc_auc_score(y01, p))
-                    pr_auc = float(average_precision_score(y01, p))
-                except Exception:
-                    roc_auc = 0.5
-                    pr_auc = pos_rate
 
-            # 输出塌缩惩罚：p几乎常数说明模型没学到
-            p_std = float(np.std(p))
-            collapse_penalty = 0.10 if p_std < 1e-4 else 0.0
+        lgb_optuna_search_space = {
+            'num_leaves': [31, 63],
+            'min_data_in_leaf': [800, 900, 1000],
+            'reg_alpha': [5, 10, 15,20,25],
+            'reg_lambda': [10, 15,20,25, 30],
+            'scale_pos_weight': [25, 15, 10],
+        }
 
-            # 综合评分（可按你偏好调整权重）
-            score = 0.60 * pr_auc + 0.25 * roc_auc + 0.15 * precision_top - collapse_penalty
-            return float(score)     
-           
-        def _evaluate_params_binary(model, X_eval_scaled, eval_data_raw, eval_dates):
-            score_scale = 10000.0
-            try:
-                y_col = 'atr_return_label' if 'atr_return_label' in eval_data_raw.columns else 'y'
-                y_all = eval_data_raw[y_col].to_numpy()
-                n = min(len(eval_data_raw), len(X_eval_scaled), len(y_all), len(eval_dates))
-                
-                eval_days_d = np.asarray(pd.to_datetime(eval_dates[:n], errors='coerce').values).astype('datetime64[D]')
-                base_mask = np.isfinite(y_all[:n]) & ~pd.isna(eval_days_d)
-                
-                unique_days = np.sort(np.unique(eval_days_d[base_mask]))
-                chunks = [c for c in np.array_split(unique_days, 3) if len(c) > 0]
+        total_lgb_optuna_combinations = (
+            len(lgb_optuna_search_space['num_leaves'])
+            *len(lgb_optuna_search_space['min_data_in_leaf'])
+            * len(lgb_optuna_search_space['reg_alpha'])
+            * len(lgb_optuna_search_space['reg_lambda'])
+            * len(lgb_optuna_search_space['scale_pos_weight'])
+        )
 
-                seg_vals = []
-                for days in chunks:
-                    seg_mask = base_mask & np.isin(eval_days_d, days)
-                    if seg_mask.sum() == 0: continue
-                    s = calculate_binary_top1_score(model, X_eval_scaled[:n][seg_mask], y_all[:n][seg_mask], eval_dates[:n][seg_mask])
-                    if np.isfinite(s): seg_vals.append(s * score_scale)
+        logger.info(f"[Optuna] 开始创建study...")
+        study = optuna.create_study(
+            direction='maximize',
+            sampler=optuna.samplers.GridSampler(lgb_optuna_search_space, seed=42),
+            pruner=optuna.pruners.MedianPruner(n_startup_trials=6, n_warmup_steps=2),
+        )
+        logger.info(
+            f"[Optuna] study创建完成，使用GridSampler避免重复参数；"
+            f"搜索空间共{total_lgb_optuna_combinations}组，开始optimize ({OPTUNA_N_TRIALS} trials)..."
+        )
 
-                if len(seg_vals) == 0: return float('-inf')
-                
-                seg_arr = np.asarray(seg_vals)
-                mean_score = float(np.mean(seg_arr))
-                min_score = float(np.min(seg_arr))
-                std_score = float(np.std(seg_arr))
-                
-                final_score = mean_score - 0.5 * std_score # 【纯粹夏普汇总】不搞主观比重，就用均值减去惩罚其不稳定性
-                logger.info(f"  [汇总] 三段得分: {[round(x, 2) for x in seg_arr]} | 均分:{mean_score:.2f} | 评估总分:{final_score:.2f}")
-                return final_score
-            except Exception as e:
-                return float('-inf')
+        _trial_count = [0]
+        def _objective(trial):
+            nonlocal best_minute_diag, best_top1_return
+            import time as _time
+            _t0 = _time.time()
+            _tn = _trial_count[0] + 1
+            logger.info(f"[Optuna] trial #{trial.number} (第{_tn}个) 开始...")
 
-        for i in range(SEARCH_ITER):
             current_params = base_params.copy()
-            for key, choices in search_space.items():
-                current_params[key] = random.choice(choices)
+            current_params['num_leaves'] = trial.suggest_categorical(
+                'num_leaves', lgb_optuna_search_space['num_leaves']
+            )
+            current_params['min_data_in_leaf'] = trial.suggest_categorical(
+                'min_data_in_leaf', lgb_optuna_search_space['min_data_in_leaf']
+            )
+            current_params['reg_alpha'] = trial.suggest_categorical(
+                'reg_alpha', lgb_optuna_search_space['reg_alpha']
+            )
+            current_params['reg_lambda'] = trial.suggest_categorical(
+                'reg_lambda', lgb_optuna_search_space['reg_lambda']
+            )
+            current_params['scale_pos_weight'] = trial.suggest_categorical(
+                'scale_pos_weight', lgb_optuna_search_space['scale_pos_weight']
+            )
+            logger.info(f"[Optuna] trial #{trial.number} 参数采样完成，开始训练LightGBM...")
 
-            params_tuple = tuple(sorted((k, str(v)) for k, v in current_params.items()))
-            if params_tuple in searched_params: continue
-            searched_params.add(params_tuple)
+            search_eval_result = {}
+            search_callbacks = [
+                lgb.early_stopping(stopping_rounds=OPTUNA_SEARCH_EARLY_STOPPING, first_metric_only=False, verbose=False),
+                lgb.log_evaluation(period=0),
+                lgb.record_evaluation(search_eval_result)
+            ]
 
             model = lgb.train(
-                current_params, train_data, num_boost_round=400,
-                valid_sets=[train_data, val_data], valid_names=['train', 'valid'], callbacks=callbacks
+                current_params, train_data_search, num_boost_round=OPTUNA_SEARCH_NUM_BOOST_ROUND,
+                valid_sets=[train_data_search, val_data_search], valid_names=['train', 'valid'], callbacks=search_callbacks
             )
+            logger.info(f"[Optuna] trial #{trial.number} LightGBM训练完成，开始评估...")
 
-            daily_score = _evaluate_params_binary(model, X_val_scaled, val_data_raw, val_dates)
+            score = float('-inf')
             minute_diag = None
-            effective_score = daily_score
             if use_minute_primary_eval:
                 minute_diag = _evaluate_candidate_with_minute_cache_binary(
-                    model, X_val_scaled, y_val_original, val_dates, val_data_raw, minute_cache_df
+                    model, X_val_search, y_val_original_search, val_dates_search, val_data_raw_search, minute_cache_search
                 )
                 if minute_diag is not None:
-                    effective_score = float(minute_diag['score'])
+                    score = float(minute_diag['score'])
+                    trial.set_user_attr('minute_cum', float(minute_diag.get('cumulative_return', 0.0)))
+                    trial.set_user_attr('minute_dd', float(minute_diag.get('max_drawdown', 0.0)))
+                    best_minute_diag = minute_diag if (best_minute_diag is None or score > best_top1_return) else best_minute_diag
 
-            logger.info(f"==> 第 {i+1}/{SEARCH_ITER} 轮搜索 | 评估得分: {effective_score:.4f}")
-            logger.info(f"==> 参数: {current_params}")
-            if minute_diag is not None:
-                logger.info(
-                    f"    [MINUTE] cum={minute_diag['cumulative_return']:.3%}, dd={minute_diag['max_drawdown']:.2%}, "
-                    f"mean={minute_diag['mean_return']:.3%}, q10={minute_diag['q10']:.3%}, "
-                    f"sharpe={minute_diag.get('sharpe_like', 0.0):.3f}, sortino={minute_diag.get('sortino_like', 0.0):.3f}, "
-                    f"stoploss={minute_diag['stoploss_rate']:.1%}, bearish={minute_diag['profit_bearish_rate']:.1%}, "
-                    f"skip={minute_diag['skip_rate']:.1%}, top3_cum={minute_diag['top3_cum_return']:.3%}, "
-                    f"top5_cum={minute_diag['top5_cum_return']:.3%}, pos_seg={minute_diag.get('positive_segments', 0)}, "
-                    f"weak_seg={minute_diag.get('weak_segments', 0)}, seg_penalty={minute_diag.get('segment_penalty', 0.0):.2f}"
+                def _safe_auc(y_true, y_score):
+                    try:
+                        y_true_arr = np.asarray(y_true)
+                        y_score_arr = np.asarray(y_score)
+                        mask = ~pd.isna(y_true_arr)
+                        y_true_arr = y_true_arr[mask]
+                        y_score_arr = y_score_arr[mask]
+                        if len(np.unique(y_true_arr)) < 2:
+                            return None
+                        return float(roc_auc_score(y_true_arr, y_score_arr))
+                    except Exception:
+                        return None
+
+                try:
+                    best_iter = getattr(model, 'best_iteration', None)
+                    train_pred = model.predict(X_train_search, num_iteration=best_iter) if best_iter else model.predict(X_train_search)
+                    val_pred = model.predict(X_val_search, num_iteration=best_iter) if best_iter else model.predict(X_val_search)
+                    train_auc = _safe_auc(y_train_search, train_pred)
+                    val_auc = _safe_auc(y_val_search, val_pred)
+                    if train_auc is not None and val_auc is not None and score != float('-inf'):
+                        auc_gap = max(0.0, train_auc - val_auc)
+                        # 仅在分钟主评估可用时，保留AUC辅助约束；分钟缓存失效时不再回退到val_auc
+                        score = float(score * max(0.0, 1.0 - min(auc_gap, 0.35)) + 120.0 * (val_auc - 0.5))
+                        trial.set_user_attr('train_auc', float(train_auc))
+                        trial.set_user_attr('val_auc', float(val_auc))
+                        trial.set_user_attr('auc_gap', float(auc_gap))
+                except Exception as e:
+                    logger.debug(f"[Optuna] AUC辅助评估失败: {e}")
+
+            if score == float('-inf'):
+                fallback_diag = _evaluate_candidate_with_topk_label_return_ratio_binary(
+                    model, X_val_search, val_dates_search, val_data_raw_search,
+                    label_column='atr_return_label', top_k=5, min_group_size=5
                 )
-            else:
-                logger.info(f"    [DAILY] 二分类日频诊断分数: {daily_score:.4f}")
-            logger.info("-" * 60)
+                if fallback_diag is not None:
+                    score = float(fallback_diag['score'])
+                    trial.set_user_attr('fallback_top1_cumulative_return', float(fallback_diag['top1_cumulative_return']))
+                    trial.set_user_attr('fallback_top1_max_drawdown', float(fallback_diag['top1_max_drawdown']))
+                    trial.set_user_attr('fallback_top1_profit_drawdown_ratio', float(fallback_diag['top1_profit_drawdown_ratio']))
+                    trial.set_user_attr('fallback_top5_cumulative_return', float(fallback_diag['topk_cumulative_return']))
+                    trial.set_user_attr('fallback_top5_max_drawdown', float(fallback_diag['topk_max_drawdown']))
+                    trial.set_user_attr('fallback_top5_profit_drawdown_ratio', float(fallback_diag['topk_profit_drawdown_ratio']))
+                    logger.info(
+                        f"[Optuna][FALLBACK-TOPK] trial #{trial.number} "
+                        f"score={score:.4f} "
+                        f"label={fallback_diag['label_column']} days={fallback_diag['days']} "
+                        f"top1累计收益={fallback_diag['top1_cumulative_return']:.4%} "
+                        f"top1最大回撤={fallback_diag['top1_max_drawdown']:.4%} "
+                        f"top1盈亏比={fallback_diag['top1_profit_drawdown_ratio']:.4f} "
+                        f"top1~top5累计收益={fallback_diag['topk_cumulative_return']:.4%} "
+                        f"top1~top5最大回撤={fallback_diag['topk_max_drawdown']:.4%} "
+                        f"top1~top5盈亏比={fallback_diag['topk_profit_drawdown_ratio']:.4f} "
+                        f"权重=0.7*top1盈亏比 + 0.3*top1~top5盈亏比"
+                    )
+                else:
+                    logger.warning(f"[Optuna][FALLBACK-TOPK] trial #{trial.number} 无法计算Top1/Top5标签收益盈亏比，score置0")
+                    score = 0.0
 
-            if effective_score > best_top1_return:
-                logger.info(f"更新最佳参数:{current_params}, score:{effective_score}")
-                best_top1_return = effective_score
-                best_model = model
-                best_params_found = current_params.copy()
-                best_minute_diag = minute_diag
+            _trial_count[0] += 1
+            _elapsed = _time.time() - _t0
+            logger.info(
+                f"[Optuna] trial #{trial.number} 完成: "
+                f"score={score:.1f} time={_elapsed:.0f}s "
+                f"min_leaf={current_params['num_leaves']} "
+                f"scale_pos_weight={current_params['scale_pos_weight']} "
+                f"min_leaf={current_params['min_data_in_leaf']} "
+                f"alpha={current_params['reg_alpha']} lambda={current_params['reg_lambda']}"
+            )
+            if score > best_top1_return:
+                best_top1_return = score
+                if use_minute_primary_eval and minute_diag is not None:
+                    best_minute_diag = minute_diag
+            return score
 
-        model = best_model if best_model is not None else model
+        study.optimize(_objective, n_trials=OPTUNA_N_TRIALS, show_progress_bar=False)
+        logger.info(f"[Optuna] optimize完成，共{len(study.trials)}个trial")
+
+        if study.best_trial is not None:
+            best_top1_return = study.best_value
+            best_cum = study.best_trial.user_attrs.get('minute_cum', 0)
+            best_dd = study.best_trial.user_attrs.get('minute_dd', 0)
+            logger.info(
+                f"[Optuna] 最佳 trial #{study.best_trial.number}: "
+                f"score={best_top1_return:.2f} cum={best_cum:.2%} dd={best_dd:.2%}"
+            )
+            # 用最佳参数重新训练
+            best_params_found = base_params.copy()
+            best_params_found['min_data_in_leaf'] = study.best_params['min_data_in_leaf']
+            best_params_found['reg_alpha'] = study.best_params['reg_alpha']
+            best_params_found['reg_lambda'] = study.best_params['reg_lambda']
+            logger.info(f"[Optuna] 最佳参数: {best_params_found}")
+            model = lgb.train(
+                best_params_found, train_data, num_boost_round=OPTUNA_FINAL_NUM_BOOST_ROUND,
+                valid_sets=[train_data, val_data], valid_names=['train', 'valid'], callbacks=callbacks
+            )
+        else:
+            logger.warning("[Optuna] 所有trial失败，使用默认参数")
+            model = lgb.train(
+                base_params, train_data, num_boost_round=OPTUNA_FINAL_NUM_BOOST_ROUND,
+                valid_sets=[train_data, val_data], valid_names=['train', 'valid'], callbacks=callbacks
+            )
 
         try:
             best_iter = getattr(model, 'best_iteration', None)
@@ -5551,6 +5966,482 @@ def _get_new_stock_cache():
 
 
 
+# def _get_zscore_factors():
+#     """
+#     返回需要 z-score 归一化的因子列表（保留幅度信息）
+
+#     适用场景：
+#     - 当因子的绝对幅度包含信息（例如极端正/负幅度代表强势/弱势）
+#     - 典型例子：return_1d, return_5d, 相关性因子, 比率因子
+#     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
+#     """
+#     return [
+#         'range_compression',
+#         'body_efficiency',
+#         # 'shadow_dominance',
+#         'gap_power',
+#         'kdj_golden_cross_strength',
+#         'open_to_high_ratio',
+#         'sector_concentration',
+#         'sector_rank_change_5d',
+#         'sector_breadth',
+#         'intraday_clv',
+#         'amihud_illiquidity',
+#         'abnormal_turnover',
+#         'efficiency_ratio',
+#         'mass_index_reversal',
+#         'price_acceleration',
+#         'ma60_slope',
+#         # 'price_ma60_ratio',
+#         'kdj_diff_9',
+#         'kdj_j_9',
+#         'kdj_k_9',
+#         'stable_momentum',
+#         'momentum_decay',
+#         'turnover_stability',
+#         # 'money_flow_pressure',
+#         'ulcer_index',
+#         # 'max_drawdown_20d',
+#         'max_rally_20d',
+#         'max_rally_10d',
+#         # 'ppo_strength',
+#         'mfi_strength',
+#         'volatility_structure_alpha',
+#         'price_impact',
+#         # 'volume_structure_alpha',
+#         'pct_chg_1d',
+#         'pct_chg_2d',
+#         'regime_aware_reversal_alpha',
+#         'trend_acceleration',
+#         # 'trend_consistency',
+#         'trend_pullback_composite_alpha',
+#         # 'cpv_factor',
+#         'price_ma5_ratio',
+#         'high_volatility_pullback_alpha',
+#         'volume_confirmed_pullback_alpha',
+#         'distance_from_52w_high',
+#         'distance_from_52w_low',
+#         'ma_alignment_score',
+#         # 'stock_volume_ratio_20d',
+#         # 'high_position_volume_surge',
+#         # 'upper_shadow_pressure_5d',
+#         # 'lower_shadow_absorption_5d',
+#         # 'shadow_reversal_volume_pressure',
+#     ]
+
+
+# def _get_rankpct_factors():
+#     """
+#     返回需要横截面分位数归一化的因子列表（映射到 [0, 1]，抗极端值）
+
+#     适用场景：
+#     - 当因子分布极度偏斜、含大量极端值，或不同股票间量纲差异巨大
+#     - 典型例子：PE, PB, 财务比率（分布长尾）、换手率（极端日子）
+#     - 做截面排序/Top-K 时常用横截面 pct
+
+#     输出后缀：
+#     - `_pct`
+
+#     注意：同一因子可以同时出现在 _get_zscore_factors 和 _get_rankpct_factors 中
+#     """
+#     return [
+#         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
+#         'severe_abnormal_pressure_10d',
+#         # 'price_ma5_ratio',
+#         'high_to_close_drawdown',
+#         'cpv_factor',
+#         'ppo_strength',
+#         'return_10d_sector_mean',
+#         # 'return_20d_sector_mean',
+#         # 'return_3d_sector_mean',
+#         # 'return_5d_sector_mean',
+#         'shadow_dominance',
+#         # 'abnormal_turnover',
+#         'volume_structure_alpha',
+#         'money_flow_pressure',
+#         # 'sector_turnover_change_5d_20d',
+#         # 'open_to_high_ratio',
+#         # 'intraday_reversal',
+#         'buy_lg_amount_rate',
+#         'buy_sm_amount_rate',
+#         # 'main_outflow_retail_takeover',
+#     ]
+
+
+
+# def _get_expanding_factors():
+#     """
+#     返回需要 expanding 分位数变换的因子列表。
+
+#     主要用于市场/环境广播因子，按日期生成 [0, 1] 的 expanding percentile，
+#     输出后缀：
+#     - `_exp`
+#     """
+#     return [
+#         # 市场/环境广播因子优先使用 expanding percentile
+#         'mkt_ma5_followthrough_v3',
+#         # 'market_advance_decline_ratio',
+#         # 'market_advance_decline_ratio_percentile_20d',
+#         # 'market_trend_strength',
+#         # 'mkt_regime_trend_pressure_v2',
+#         # 'mkt_dispersion_shock_v2',
+#         # 'mkt_sector_dispersion',
+#         # 'ma5_strength_breadth_v3',
+#         # 'mkt_breadth_thrust_v2',
+#         # 'mkt_liquidity_impulse_v2',
+#         # 'market_volatility_context',
+#         # 'strong_stock_volume_confirmation_v3',
+#         # 'sector_hotspot_concentration_v3',
+#         # 'sector_leadership_persistence_v3',
+#         # 'mkt_emotion_stability_v2',
+#         # 'emotion_quality_balance_v3',
+#         # 'market_60d_new_high_ratio',
+#         # 'top10_10d_strength_level_v3',
+#         # 'top10_10d_recent3_strength_v3',
+#     ]
+
+
+# def _get_stock_factors():
+
+#     all_factors = [
+#         #--原始因子--#
+#         # 'max_rally_20d_raw',
+#         # 'max_rally_10d_raw',
+#         # 'market_prev_60d_new_high_avg_return', 
+#         'log_price_slope_10d',
+#         'log_price_slope_20d',
+#         # 'market_60d_new_high_ratio',
+#         # 'log_price_slope_10d_x_log_circ_mv',                                                                                              
+#         # 'market_60d_new_high_ratio_train_percentile',
+#         # 'abnormal_deviation_3d_ratio',
+#         # 'abnormal_event_count_10d',
+#         'severe_abnormal_pressure_10d',
+#         # 'severe_abnormal_pressure_30d',
+#         # 'limit_up_count_percentile_20d',                                                                                                    
+#         # 'zhaban_count_percentile_20d',                                                                                                     
+#         # 'limit_down_count_percentile_20d',
+#         'limit_up_sw2_concentration',                                                                                                                
+#         'sector_ma5_followthrough_v3',
+#         'sw2_high_low_position_return_spread', 
+#         'beta_20d',
+#         'price_ma5_ratio_raw',
+#         # 'return_5d_cs_rank',
+#         'high_to_close_drawdown',
+#         'market_trend_strength',
+#         'market_liquidity_change',
+#         'market_sentiment_ad',
+#         'market_advance_decline_ratio',
+#         'market_advance_decline_ratio_percentile_20d',
+#         'market_volatility_context',
+#         'mkt_regime_trend_pressure_v2',
+#         'mkt_breadth_thrust_v2',
+#         'mkt_emotion_stability_v2',
+#         'mkt_dispersion_shock_v2',
+#         'mkt_liquidity_impulse_v2',
+#         'mkt_ma5_followthrough_v3',
+#         # 'mkt_ma5_followthrough_v3_expanding_percentile',
+#         'buy_lg_amount_rate',
+#         'buy_sm_amount_rate',
+#         'net_d5_amount_to_turnover',
+#         'main_outflow_retail_takeover',
+#         'sector_leadership_persistence_v3',
+#         'sector_hotspot_concentration_v3',
+#         'ma5_strength_breadth_v3',
+#         'strong_stock_volume_confirmation_v3',
+#         'emotion_quality_balance_v3',
+#         'top10_10d_recent3_strength_v3',
+#         # 'top10_5d_recent3_strength_v3',
+#         # 'top10_3d_recent3_strength_v3',
+#         'top10_10d_strength_level_v3',
+#         'top10_10d_today_return_level_v3',
+#         'pct_chg_sector_mean',
+#         'return_10d_sector_mean',
+#         'return_20d_sector_mean',
+#         'return_3d_sector_mean',
+#         'return_5d_sector_mean',
+#         'sector_momentum_consistency',
+#         'sector_momentum_dispersion_rank',
+#         'value_growth_rotation',
+#         'size_rotation_strength',
+#         'sector_dispersion',
+#         'sector_relative_volatility',
+#         'sector_volatility_5d',
+#         'sw_circ_mv_rank_intra_sector',
+#         'ma_convergence_score',
+#         'ma5_slope',
+#         'ma_alignment_persistence_5d',
+#         # 'ma_ribbon_expansion_3d',
+#         'volume_price_exhaustion',
+#         'failed_breakout_pressure',
+#         # 'ma5_ma10_flattening_after_runup',
+#         'prev_day_blowoff_risk',
+#         'carryover_overheat_risk',
+#         'distribution_after_strength_risk',
+#         'pct_chg_intra_z',
+#         'return_10d_intra_z',
+#         'return_20d_intra_z',
+#         'return_3d_intra_z',
+#         'return_5d_intra_z',
+#         'intra_sector_momentum_rank',
+#         'sector_trend_gated_momentum_intra_z',
+#         'sector_rotation_breakout_intra_z',
+#         'sector_strong_leader_alpha',
+#         'sector_liquidity_gated_turnover_z',
+#         'sector_weak_reversal_alpha',
+#         'sector_momentum_accel_rank',
+#         'sector_turnover_change_5d_20d',
+#         'sector_hhi_change',
+#         'sector_relative_strength_vs_market',
+#         'mkt_sector_dispersion',
+#         'sector_mkt_corr_20d',
+#         'market_vols_adaptive_iv',
+#         'sector_excess_intra_rank',
+#         'sector_vols_divergence_alpha',
+#         'sector_turnover_surge_pv_alpha',
+#         'intraday_reversal',
+#         'sector_limit_overflow_alpha',
+#         'sector_broken_resilience_alpha',
+#         'limit_sustain_alpha',
+#         'market_emotion_resonance_alpha',
+#         'resistance_distance',
+#         'support_distance',
+#         'prior_high_distance_20d',
+#         'prior_high_proximity_20d',
+#         'prior_high_volume_contest_20d',
+#         'coskewness',
+#         'kurtosis_20d',
+#         'skewness_20d',
+#         'alpha_001',
+#         'alpha_002',
+#         'alpha_017',
+#         'downside_beta',
+#         'sector_correlation_20d',
+#         'stock_sector_pos_align',
+
+#     # ===== 按日z-score =====
+#         'range_compression',
+#         'body_efficiency',
+#         'gap_power',
+#         'kdj_golden_cross_strength',
+#         'open_to_high_ratio',
+#         'sector_concentration',
+#         'sector_rank_change_5d',
+#         'sector_breadth',
+#         'intraday_clv',
+#         'amihud_illiquidity',
+#         'abnormal_turnover',
+#         'efficiency_ratio',
+#         'mass_index_reversal',
+#         'price_acceleration',
+#         'ma60_slope',
+#         'price_ma60_ratio',
+#         'kdj_diff_9',
+#         'kdj_j_9',
+#         'kdj_k_9',
+#         'stable_momentum',
+#         'momentum_decay',
+#         'turnover_stability',
+#         'money_flow_pressure',
+#         'ulcer_index',
+#         'max_drawdown_20d',
+#         'max_rally_20d',
+#         'max_rally_10d',
+#         'ppo_strength',
+#         'mfi_strength',
+#         'volatility_structure_alpha',
+#         'price_impact',
+#         'volume_structure_alpha',
+#         'pct_chg_1d',
+#         'pct_chg_2d',
+#         'regime_aware_reversal_alpha',
+#         'trend_acceleration',
+#         'trend_consistency',
+#         'trend_pullback_composite_alpha',
+#         'cpv_factor',
+#         'price_ma5_ratio',
+#         'high_volatility_pullback_alpha',
+#         'volume_confirmed_pullback_alpha',
+#         'distance_from_52w_high',
+#         'distance_from_52w_low',
+#         'ma_alignment_score',
+#         "close_position_20d",
+#         "close_position_60d",
+#         "upper_shadow_ratio_3d_mean",
+#         "upper_shadow_pressure_5d",
+#         "lower_shadow_absorption_5d",
+#         "close_to_high_3d_mean",
+#         "turnover_z_20",
+#         "stock_volume_ratio_20d",
+#         "high_position_volume_surge",
+#         # "high_volume_no_gain_3d",
+#         "pullback_depth_from_10d_high",
+#         # "high_pos_upper_shadow",
+#         # "high_pos_volume_no_gain",
+#         # "high_pos_reversal_volume",
+#         "shadow_reversal_volume_pressure",
+#         # "ret_3d_vs_10d_accel",
+#         # "ret_5d_vs_20d_accel",
+#         "momentum_peak_decay_3d",
+#         # "consecutive_up_days_5d",
+#         # "large_up_days_10d",
+#         # "gap_up_count_5d",
+#         "close_below_ma5_after_runup",
+#         "low_break_prev_low_after_runup",
+#         'runup_ma5_exhaustion',
+#         'runup_low_break',
+        
+#     ]
+
+
+#     return all_factors
+
+
+# def _get_original_factors():
+#     """获取需要保留原始值的因子列表（不进行归一化）
+
+#     这些因子在因子生成时会被计算，但不会进行z-score或rankpct归一化。
+#     在模型训练时，可以选择是否使用这些原始因子。
+
+#     Returns:
+#         list: 原始因子名称列表
+#     """
+#     # 目前没有需要保留原始值的因子
+#     # 如果未来需要，可以在这里添加
+#     return [
+#         'beta_20d',
+#         # 'market_prev_60d_new_high_avg_return',  
+#         'log_price_slope_10d',
+#         'log_price_slope_20d',
+#         'price_ma5_ratio_raw',
+#         # 'log_price_slope_10d_x_log_circ_mv',                                                                                    
+#         # 'market_60d_new_high_ratio_train_percentile',
+#         # 'abnormal_deviation_3d_ratio',
+#         # 'abnormal_event_count_10d',
+#         # 'severe_abnormal_pressure_10d',
+#         # 'severe_abnormal_pressure_30d',
+#         # 'max_rally_20d_raw',
+#         # 'max_rally_10d_raw',
+#         # 'limit_up_count_percentile_20d',                                                                                                             
+#         # 'zhaban_count_percentile_20d',                                                                                                               
+#         # 'limit_down_count_percentile_20d', 
+#         # 'limit_up_sw2_concentration',                                                                                                                
+#         # 'sector_ma5_followthrough_v3',
+#         'sw2_high_low_position_return_spread', 
+#         # 'return_5d_cs_rank',
+#         'high_to_close_drawdown',
+#         'market_trend_strength',
+#         'market_liquidity_change',
+#         'market_sentiment_ad',
+#         'market_advance_decline_ratio',
+#         # 'market_advance_decline_ratio_percentile_20d',
+#         'market_volatility_context',
+#         # 'mkt_regime_trend_pressure_v2',
+#         # 'mkt_breadth_thrust_v2',
+#         # 'mkt_emotion_stability_v2',
+#         # 'mkt_dispersion_shock_v2',
+#         'mkt_liquidity_impulse_v2',
+#         'mkt_ma5_followthrough_v3',
+#         # 'mkt_ma5_followthrough_v3_expanding_percentile',
+#         # 'buy_lg_amount_rate',
+#         # 'buy_sm_amount_rate',
+#         # 'net_d5_amount_to_turnover',
+#         # 'main_outflow_retail_takeover',
+#         'sector_leadership_persistence_v3',
+#         'sector_hotspot_concentration_v3',
+#         # 'ma5_strength_breadth_v3',
+#         'strong_stock_volume_confirmation_v3',
+#         'emotion_quality_balance_v3',
+#         # 'top10_10d_recent3_strength_v3',
+#         # 'top10_5d_recent3_strength_v3',
+#         # 'top10_3d_recent3_strength_v3',
+#         'top10_10d_strength_level_v3',
+#         # 'top10_10d_today_return_level_v3',
+#         'pct_chg_sector_mean',
+#         'return_10d_sector_mean',
+#         'return_20d_sector_mean',
+#         'return_3d_sector_mean',
+#         'return_5d_sector_mean',
+#         'sector_momentum_consistency',
+#         'sector_momentum_dispersion_rank',
+#         'value_growth_rotation',
+#         'size_rotation_strength',
+#         'sector_dispersion',
+#         'sector_relative_volatility',
+#         'sector_volatility_5d',
+#         'sw_circ_mv_rank_intra_sector',
+#         'ma_convergence_score',
+#         'ma5_slope',
+#         'ma_alignment_persistence_5d',
+#         # 'ma_ribbon_expansion_3d',
+#         # 'volume_price_exhaustion',
+#         # 'failed_breakout_pressure',
+#         # 'ma5_ma10_flattening_after_runup',
+#         'prev_day_blowoff_risk',
+#         # 'carryover_overheat_risk',
+#         # 'distribution_after_strength_risk',
+#         'pct_chg_intra_z',
+#         'return_10d_intra_z',
+#         'return_20d_intra_z',
+#         'return_3d_intra_z',
+#         'return_5d_intra_z',
+#         'intra_sector_momentum_rank',
+#         'sector_trend_gated_momentum_intra_z',
+#         'sector_rotation_breakout_intra_z',
+#         'sector_strong_leader_alpha',
+#         'sector_liquidity_gated_turnover_z',
+#         'sector_weak_reversal_alpha',
+#         'sector_momentum_accel_rank',
+#         'sector_turnover_change_5d_20d',
+#         'sector_hhi_change',
+#         'sector_relative_strength_vs_market',
+#         'mkt_sector_dispersion',
+#         'sector_mkt_corr_20d',
+#         'market_vols_adaptive_iv',
+#         'sector_excess_intra_rank',
+#         'sector_vols_divergence_alpha',
+#         'sector_turnover_surge_pv_alpha',
+#         'intraday_reversal',
+#         'sector_limit_overflow_alpha',
+#         'sector_broken_resilience_alpha',
+#         # 'limit_sustain_alpha',
+#         'market_emotion_resonance_alpha',
+#         'resistance_distance',
+#         'support_distance',
+#         'coskewness',
+#         'kurtosis_20d',
+#         'skewness_20d',
+#         'alpha_001',
+#         'alpha_002',
+#         'alpha_017',
+#         'downside_beta',
+#         'sector_correlation_20d',
+#         'stock_sector_pos_align',
+#         # "close_position_20d",
+#         "close_position_60d",
+#         # "upper_shadow_ratio_3d_mean",
+#         # "close_to_high_3d_mean",
+#         "turnover_z_20",
+#         # "high_volume_no_gain_3d",
+#         # "pullback_depth_from_10d_high",
+#         # "high_pos_upper_shadow",
+#         # "high_pos_volume_no_gain",
+#         # "high_pos_reversal_volume",
+#         # "ret_3d_vs_10d_accel",
+#         # "ret_5d_vs_20d_accel",
+#         # "momentum_peak_decay_3d",
+#         'runup_ma5_exhaustion',
+#         # 'runup_low_break',
+#         # "consecutive_up_days_5d",
+#         # "large_up_days_10d",
+#         # "gap_up_count_5d",
+#         # "close_below_ma5_after_runup",
+#         # "low_break_prev_low_after_runup",
+#         # 'prior_high_volume_contest_20d'
+#     ]
+
+
+
+
 def _get_zscore_factors():
     """
     返回需要 z-score 归一化的因子列表（保留幅度信息）
@@ -5561,52 +6452,63 @@ def _get_zscore_factors():
     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
     """
     return [
+        
         'range_compression',
         'body_efficiency',
-        # 'shadow_dominance',
+        'shadow_dominance',
         'gap_power',
+        'overnight_return',
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
         'sector_rank_change_5d',
         'sector_breadth',
         'intraday_clv',
+        'beta_60d',
         'amihud_illiquidity',
-        # 'abnormal_turnover',
+        'abnormal_turnover',
         'efficiency_ratio',
         'mass_index_reversal',
         'price_acceleration',
+        'log_price_slope_5d',
+        'log_price_slope_10d',
+        # 'log_price_slope_20d',
+        # 'log_price_slope_10d_x_log_circ_mv',
         'ma60_slope',
         'price_ma60_ratio',
-        # 'kdj_diff_9',
+        'kdj_diff_9',
         'kdj_j_9',
         'kdj_k_9',
         'stable_momentum',
         'momentum_decay',
         'turnover_stability',
-        # 'money_flow_pressure',
+        'money_flow_pressure',
         'ulcer_index',
         'max_drawdown_20d',
         'max_rally_20d',
         'max_rally_10d',
-        # 'ppo_strength',
+        'ppo_strength',
         'mfi_strength',
+        'relative_strength_20d',
         'volatility_structure_alpha',
         'price_impact',
-        # 'volume_structure_alpha',
+        'volume_structure_alpha',
         'pct_chg_1d',
         'pct_chg_2d',
         'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
         'trend_pullback_composite_alpha',
-        # 'cpv_factor',
-        # 'price_ma5_ratio',
+        'cpv_factor',
+        'price_ma5_ratio',
         'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
+        'post_accumulation_supply_tightness',
+        'true_turnover_10d',
+        'tightness_3d',
     ]
 
 
@@ -5627,14 +6529,14 @@ def _get_rankpct_factors():
     return [
         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
         'severe_abnormal_pressure_10d',
-        'price_ma5_ratio',
         'high_to_close_drawdown',
+        # 'price_ma5_ratio',
         'cpv_factor',
         'ppo_strength',
         'return_10d_sector_mean',
-        # 'return_20d_sector_mean',
-        # 'return_3d_sector_mean',
-        # 'return_5d_sector_mean',
+        'return_20d_sector_mean',
+        'return_3d_sector_mean',
+        'return_5d_sector_mean',
         'shadow_dominance',
         'abnormal_turnover',
         'volume_structure_alpha',
@@ -5644,7 +6546,7 @@ def _get_rankpct_factors():
         # 'intraday_reversal',
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
-        # 'main_outflow_retail_takeover',
+        'main_outflow_retail_takeover',
     ]
 
 
@@ -5684,11 +6586,14 @@ def _get_stock_factors():
         #--原始因子--#
         # 'max_rally_20d_raw',
         # 'max_rally_10d_raw',
-        # 'market_prev_60d_new_high_avg_return', 
-        'log_price_slope_10d',
-        'log_price_slope_20d',
-        # 'market_60d_new_high_ratio',
-        # 'log_price_slope_10d_x_log_circ_mv',                                                                                              
+        'momentum_peak_decay_3d',
+        'prev_non_first_limit_up_performance_percentile_20d',
+        'limit_down_3d',
+        'price_ma5_ratio_raw',
+        'prev_day_blowoff_risk',
+        'market_advance_decline_ratio',
+        # 'market_prev_60d_new_high_avg_return',                                                                                     
+        'market_60d_new_high_ratio',                                                                                                          
         # 'market_60d_new_high_ratio_train_percentile',
         # 'abnormal_deviation_3d_ratio',
         # 'abnormal_event_count_10d',
@@ -5698,7 +6603,7 @@ def _get_stock_factors():
         # 'zhaban_count_percentile_20d',                                                                                                     
         # 'limit_down_count_percentile_20d',
         'limit_up_sw2_concentration',                                                                                                                
-        'sector_ma5_followthrough_v3',
+        # 'sector_ma5_followthrough_v3',
         'sw2_high_low_position_return_spread', 
         'beta_20d',
         # 'return_5d_cs_rank',
@@ -5708,11 +6613,11 @@ def _get_stock_factors():
         'market_sentiment_ad',
         'market_volatility_context',
         'mkt_regime_trend_pressure_v2',
-        'mkt_breadth_thrust_v2',
-        'mkt_emotion_stability_v2',
+        # 'mkt_breadth_thrust_v2',
+        # 'mkt_emotion_stability_v2',
         'mkt_dispersion_shock_v2',
         'mkt_liquidity_impulse_v2',
-        'mkt_ma5_followthrough_v3',
+        # 'mkt_ma5_followthrough_v3',
         # 'mkt_ma5_followthrough_v3_expanding_percentile',
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
@@ -5723,11 +6628,11 @@ def _get_stock_factors():
         'ma5_strength_breadth_v3',
         'strong_stock_volume_confirmation_v3',
         'emotion_quality_balance_v3',
-        'top10_10d_recent3_strength_v3',
+        # 'top10_10d_recent3_strength_v3',
         # 'top10_5d_recent3_strength_v3',
         # 'top10_3d_recent3_strength_v3',
         'top10_10d_strength_level_v3',
-        'top10_10d_today_return_level_v3',
+        # 'top10_10d_today_return_level_v3',
         'pct_chg_sector_mean',
         'return_10d_sector_mean',
         'return_20d_sector_mean',
@@ -5735,6 +6640,7 @@ def _get_stock_factors():
         'return_5d_sector_mean',
         'sector_momentum_consistency',
         'sector_momentum_dispersion_rank',
+        'sector_momentum_interaction',
         'value_growth_rotation',
         'size_rotation_strength',
         'sector_dispersion',
@@ -5742,12 +6648,6 @@ def _get_stock_factors():
         'sector_volatility_5d',
         'sw_circ_mv_rank_intra_sector',
         'ma_convergence_score',
-        'ma5_slope',
-        'ma_alignment_persistence_5d',
-        # 'ma_ribbon_expansion_3d',
-        'volume_price_exhaustion',
-        'failed_breakout_pressure',
-        # 'ma5_ma10_flattening_after_runup',
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
@@ -5756,6 +6656,7 @@ def _get_stock_factors():
         'intra_sector_momentum_rank',
         'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
+        'sector_leader_capture_rank',
         'sector_strong_leader_alpha',
         'sector_liquidity_gated_turnover_z',
         'sector_weak_reversal_alpha',
@@ -5765,10 +6666,14 @@ def _get_stock_factors():
         'sector_relative_strength_vs_market',
         'mkt_sector_dispersion',
         'sector_mkt_corr_20d',
+        'intra_sector_breadth',
         'market_vols_adaptive_iv',
+        'market_trend_adaptive_beta',
         'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
         'sector_turnover_surge_pv_alpha',
+        'sector_dispersion_leader_alpha',
+        'vortex_trend',
         'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
@@ -5784,23 +6689,33 @@ def _get_stock_factors():
         'alpha_017',
         'downside_beta',
         'sector_correlation_20d',
+        'log_price_slope_5d',
+        'log_price_slope_10d',
+    
         'stock_sector_pos_align',
 
     # ===== 按日z-score =====
         'range_compression',
         'body_efficiency',
+        'shadow_dominance',
         'gap_power',
+        'overnight_return',
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
         'sector_rank_change_5d',
         'sector_breadth',
         'intraday_clv',
+        'beta_60d',
         'amihud_illiquidity',
         'abnormal_turnover',
         'efficiency_ratio',
         'mass_index_reversal',
         'price_acceleration',
+        'log_price_slope_5d',
+        'log_price_slope_10d',
+        # 'log_price_slope_20d',
+        # 'log_price_slope_10d_x_log_circ_mv',
         'ma60_slope',
         'price_ma60_ratio',
         'kdj_diff_9',
@@ -5816,6 +6731,7 @@ def _get_stock_factors():
         'max_rally_10d',
         'ppo_strength',
         'mfi_strength',
+        'relative_strength_20d',
         'volatility_structure_alpha',
         'price_impact',
         'volume_structure_alpha',
@@ -5831,7 +6747,11 @@ def _get_stock_factors():
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
-        'ma_alignment_score',
+        'turnover_z_20',
+        'runup_ma5_exhaustion',
+        'post_accumulation_supply_tightness',
+        'true_turnover_10d',
+        'tightness_3d',
 
 
     # ===== 按行业z-score =====
@@ -5857,22 +6777,26 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        'momentum_peak_decay_3d',
+        'prev_non_first_limit_up_performance_percentile_20d',
+        'limit_down_3d',
         'beta_20d',
-        # 'market_prev_60d_new_high_avg_return',  
-        'log_price_slope_10d',
-        'log_price_slope_20d',
-        # 'log_price_slope_10d_x_log_circ_mv',                                                                                    
+        'market_advance_decline_ratio',
+        # 'market_prev_60d_new_high_avg_return',                                                                                                
+        'market_60d_new_high_ratio',        
+        'prev_day_blowoff_risk',                                                                                                         
         # 'market_60d_new_high_ratio_train_percentile',
         # 'abnormal_deviation_3d_ratio',
         # 'abnormal_event_count_10d',
-        # 'severe_abnormal_pressure_10d',
+        'severe_abnormal_pressure_10d',
         # 'severe_abnormal_pressure_30d',
         # 'max_rally_20d_raw',
         # 'max_rally_10d_raw',
+        'price_ma5_ratio_raw',
         # 'limit_up_count_percentile_20d',                                                                                                             
         # 'zhaban_count_percentile_20d',                                                                                                               
         # 'limit_down_count_percentile_20d', 
-        # 'limit_up_sw2_concentration',                                                                                                                
+        'limit_up_sw2_concentration',                                                                                                                
         # 'sector_ma5_followthrough_v3',
         'sw2_high_low_position_return_spread', 
         # 'return_5d_cs_rank',
@@ -5882,25 +6806,25 @@ def _get_original_factors():
         'market_sentiment_ad',
         'market_volatility_context',
         # 'mkt_regime_trend_pressure_v2',
-        # 'mkt_breadth_thrust_v2',
+        'mkt_breadth_thrust_v2',
         # 'mkt_emotion_stability_v2',
-        # 'mkt_dispersion_shock_v2',
-        # 'mkt_liquidity_impulse_v2',
-        # 'mkt_ma5_followthrough_v3',
+        'mkt_dispersion_shock_v2',
+        'mkt_liquidity_impulse_v2',
+        'mkt_ma5_followthrough_v3',
         # 'mkt_ma5_followthrough_v3_expanding_percentile',
-        # 'buy_lg_amount_rate',
-        # 'buy_sm_amount_rate',
+        'buy_lg_amount_rate',
+        'buy_sm_amount_rate',
         'net_d5_amount_to_turnover',
         'main_outflow_retail_takeover',
         'sector_leadership_persistence_v3',
         'sector_hotspot_concentration_v3',
-        # 'ma5_strength_breadth_v3',
+        'ma5_strength_breadth_v3',
         'strong_stock_volume_confirmation_v3',
         'emotion_quality_balance_v3',
         # 'top10_10d_recent3_strength_v3',
         # 'top10_5d_recent3_strength_v3',
         # 'top10_3d_recent3_strength_v3',
-        # 'top10_10d_strength_level_v3',
+        'top10_10d_strength_level_v3',
         # 'top10_10d_today_return_level_v3',
         'pct_chg_sector_mean',
         'return_10d_sector_mean',
@@ -5909,6 +6833,7 @@ def _get_original_factors():
         'return_5d_sector_mean',
         'sector_momentum_consistency',
         'sector_momentum_dispersion_rank',
+        'sector_momentum_interaction',
         'value_growth_rotation',
         'size_rotation_strength',
         'sector_dispersion',
@@ -5916,20 +6841,15 @@ def _get_original_factors():
         'sector_volatility_5d',
         'sw_circ_mv_rank_intra_sector',
         'ma_convergence_score',
-        'ma5_slope',
-        'ma_alignment_persistence_5d',
-        # 'ma_ribbon_expansion_3d',
-        'volume_price_exhaustion',
-        'failed_breakout_pressure',
-        # 'ma5_ma10_flattening_after_runup',
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
         'return_3d_intra_z',
-        # 'return_5d_intra_z',
+        'return_5d_intra_z',
         'intra_sector_momentum_rank',
         'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
+        'sector_leader_capture_rank',
         'sector_strong_leader_alpha',
         'sector_liquidity_gated_turnover_z',
         'sector_weak_reversal_alpha',
@@ -5939,10 +6859,14 @@ def _get_original_factors():
         'sector_relative_strength_vs_market',
         'mkt_sector_dispersion',
         'sector_mkt_corr_20d',
+        'intra_sector_breadth',
         'market_vols_adaptive_iv',
+        'market_trend_adaptive_beta',
         'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
         'sector_turnover_surge_pv_alpha',
+        'sector_dispersion_leader_alpha',
+        'vortex_trend',
         'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
@@ -5958,439 +6882,14 @@ def _get_original_factors():
         'alpha_017',
         'downside_beta',
         'sector_correlation_20d',
+        'log_price_slope_5d',
+        'log_price_slope_10d',
+        'log_price_slope_20d',
+        # 'log_price_slope_10d_x_log_circ_mv',
         'stock_sector_pos_align',
+        'turnover_z_20',
+        'runup_ma5_exhaustion',
     ]
-
-
-
-
-# def _get_zscore_factors():
-#     """
-#     返回需要 z-score 归一化的因子列表（保留幅度信息）
-
-#     适用场景：
-#     - 当因子的绝对幅度包含信息（例如极端正/负幅度代表强势/弱势）
-#     - 典型例子：return_1d, return_5d, 相关性因子, 比率因子
-#     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
-#     """
-#     return [
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'overnight_return',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'beta_60d',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'log_price_slope_5d',
-#         'log_price_slope_10d',
-#         'log_price_slope_20d',
-#         'log_price_slope_10d_x_log_circ_mv',
-#         'ma60_slope',
-#         'price_ma60_ratio',
-#         'kdj_diff_9',
-#         'kdj_j_9',
-#         'kdj_k_9',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_20d',
-#         'max_rally_10d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-#     ]
-
-
-# def _get_rankpct_factors():
-#     """
-#     返回需要横截面分位数归一化的因子列表（映射到 [0, 1]，抗极端值）
-
-#     适用场景：
-#     - 当因子分布极度偏斜、含大量极端值，或不同股票间量纲差异巨大
-#     - 典型例子：PE, PB, 财务比率（分布长尾）、换手率（极端日子）
-#     - 做截面排序/Top-K 时常用横截面 pct
-
-#     输出后缀：
-#     - `_pct`
-
-#     注意：同一因子可以同时出现在 _get_zscore_factors 和 _get_rankpct_factors 中
-#     """
-#     return [
-#         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
-#         'severe_abnormal_pressure_10d',
-#         'high_to_close_drawdown',
-#         'price_ma5_ratio',
-#         'cpv_factor',
-#         'ppo_strength',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'shadow_dominance',
-#         'abnormal_turnover',
-#         'volume_structure_alpha',
-#         'money_flow_pressure',
-#         'sector_turnover_change_5d_20d',
-#         'open_to_high_ratio',
-#         'intraday_reversal',
-#         'buy_lg_amount_rate',
-#         'buy_sm_amount_rate',
-#         'main_outflow_retail_takeover',
-#     ]
-
-
-# def _get_expanding_factors():
-#     """
-#     返回需要 expanding 分位数变换的因子列表。
-
-#     主要用于市场/环境广播因子，按日期生成 [0, 1] 的 expanding percentile，
-#     输出后缀：
-#     - `_exp`
-#     """
-#     return [
-#         # 市场/环境广播因子优先使用 expanding percentile
-#         'mkt_ma5_followthrough_v3',
-#         'market_trend_strength',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_dispersion_shock_v2',
-#         'mkt_sector_dispersion',
-#         'ma5_strength_breadth_v3',
-#         'mkt_breadth_thrust_v2',
-#         'mkt_liquidity_impulse_v2',
-#         'market_volatility_context',
-#         'strong_stock_volume_confirmation_v3',
-#         'sector_hotspot_concentration_v3',
-#         'sector_leadership_persistence_v3',
-#         'mkt_emotion_stability_v2',
-#         'emotion_quality_balance_v3',
-#         'market_60d_new_high_ratio',
-#         'top10_10d_strength_level_v3',
-#         'top10_10d_recent3_strength_v3',
-#     ]
-
-
-# def _get_stock_factors():
-
-#     all_factors = [
-#         #--原始因子--#
-#         'max_rally_20d_raw',
-#         'max_rally_10d_raw',
-#         # 'market_prev_60d_new_high_avg_return',                                                                                     
-#         'market_60d_new_high_ratio',                                                                                                          
-#         'market_60d_new_high_ratio_train_percentile',
-#         # 'abnormal_deviation_3d_ratio',
-#         # 'abnormal_event_count_10d',
-#         'severe_abnormal_pressure_10d',
-#         # 'severe_abnormal_pressure_30d',
-#         # 'limit_up_count_percentile_20d',                                                                                                    
-#         # 'zhaban_count_percentile_20d',                                                                                                     
-#         # 'limit_down_count_percentile_20d',
-#         'limit_up_sw2_concentration',                                                                                                                
-#         'sector_ma5_followthrough_v3',
-#         'sw2_high_low_position_return_spread', 
-#         'beta_20d',
-#         # 'return_5d_cs_rank',
-#         'high_to_close_drawdown',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_breadth_thrust_v2',
-#         'mkt_emotion_stability_v2',
-#         'mkt_dispersion_shock_v2',
-#         'mkt_liquidity_impulse_v2',
-#         'mkt_ma5_followthrough_v3',
-#         # 'mkt_ma5_followthrough_v3_expanding_percentile',
-#         'buy_lg_amount_rate',
-#         'buy_sm_amount_rate',
-#         'net_d5_amount_to_turnover',
-#         'main_outflow_retail_takeover',
-#         'sector_leadership_persistence_v3',
-#         'sector_hotspot_concentration_v3',
-#         'ma5_strength_breadth_v3',
-#         'strong_stock_volume_confirmation_v3',
-#         'emotion_quality_balance_v3',
-#         'top10_10d_recent3_strength_v3',
-#         'top10_5d_recent3_strength_v3',
-#         'top10_3d_recent3_strength_v3',
-#         'top10_10d_strength_level_v3',
-#         'top10_10d_today_return_level_v3',
-#         'pct_chg_sector_mean',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'pct_chg_intra_z',
-#         'return_10d_intra_z',
-#         'return_20d_intra_z',
-#         'return_3d_intra_z',
-#         'return_5d_intra_z',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_turnover_change_5d_20d',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'alpha_001',
-#         'alpha_002',
-#         'alpha_017',
-#         'downside_beta',
-#         'sector_correlation_20d',
-#         'log_price_slope_5d',
-#         'log_price_slope_10d',
-#         'log_price_slope_20d',
-#         'log_price_slope_10d_x_log_circ_mv',
-#         'stock_sector_pos_align',
-
-#     # ===== 按日z-score =====
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'overnight_return',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'beta_60d',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'log_price_slope_5d',
-#         'log_price_slope_10d',
-#         'log_price_slope_20d',
-#         'log_price_slope_10d_x_log_circ_mv',
-#         'ma60_slope',
-#         'price_ma60_ratio',
-#         'kdj_diff_9',
-#         'kdj_j_9',
-#         'kdj_k_9',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_20d',
-#         'max_rally_10d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-
-
-#     # ===== 按行业z-score =====
-       
-    
-#     # ===== 全局rank =====
-        
-#     ]
-
-
-#     return all_factors
-
-
-# def _get_original_factors():
-#     """获取需要保留原始值的因子列表（不进行归一化）
-
-#     这些因子在因子生成时会被计算，但不会进行z-score或rankpct归一化。
-#     在模型训练时，可以选择是否使用这些原始因子。
-
-#     Returns:
-#         list: 原始因子名称列表
-#     """
-#     # 目前没有需要保留原始值的因子
-#     # 如果未来需要，可以在这里添加
-#     return [
-#         'beta_20d',
-#         # 'market_prev_60d_new_high_avg_return',                                                                                                
-#         'market_60d_new_high_ratio',                                                                                                                 
-#         'market_60d_new_high_ratio_train_percentile',
-#         # 'abnormal_deviation_3d_ratio',
-#         # 'abnormal_event_count_10d',
-#         'severe_abnormal_pressure_10d',
-#         # 'severe_abnormal_pressure_30d',
-#         'max_rally_20d_raw',
-#         'max_rally_10d_raw',
-#         # 'limit_up_count_percentile_20d',                                                                                                             
-#         # 'zhaban_count_percentile_20d',                                                                                                               
-#         # 'limit_down_count_percentile_20d', 
-#         'limit_up_sw2_concentration',                                                                                                                
-#         'sector_ma5_followthrough_v3',
-#         'sw2_high_low_position_return_spread', 
-#         # 'return_5d_cs_rank',
-#         'high_to_close_drawdown',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_breadth_thrust_v2',
-#         'mkt_emotion_stability_v2',
-#         'mkt_dispersion_shock_v2',
-#         'mkt_liquidity_impulse_v2',
-#         'mkt_ma5_followthrough_v3',
-#         # 'mkt_ma5_followthrough_v3_expanding_percentile',
-#         'buy_lg_amount_rate',
-#         'buy_sm_amount_rate',
-#         'net_d5_amount_to_turnover',
-#         'main_outflow_retail_takeover',
-#         'sector_leadership_persistence_v3',
-#         'sector_hotspot_concentration_v3',
-#         'ma5_strength_breadth_v3',
-#         'strong_stock_volume_confirmation_v3',
-#         'emotion_quality_balance_v3',
-#         'top10_10d_recent3_strength_v3',
-#         'top10_5d_recent3_strength_v3',
-#         'top10_3d_recent3_strength_v3',
-#         'top10_10d_strength_level_v3',
-#         'top10_10d_today_return_level_v3',
-#         'pct_chg_sector_mean',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'pct_chg_intra_z',
-#         'return_10d_intra_z',
-#         'return_20d_intra_z',
-#         'return_3d_intra_z',
-#         'return_5d_intra_z',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_turnover_change_5d_20d',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'alpha_001',
-#         'alpha_002',
-#         'alpha_017',
-#         'downside_beta',
-#         'sector_correlation_20d',
-#         'log_price_slope_5d',
-#         'log_price_slope_10d',
-#         'log_price_slope_20d',
-#         'log_price_slope_10d_x_log_circ_mv',
-#         'stock_sector_pos_align',
-#     ]
 
 
 
@@ -6436,6 +6935,14 @@ def _get_intra_sector_zscore_factors():
     # 定义需要按日行业内z-score标准化的因子
     # 这些因子通常是需要保持数值连续性，同时消除行业偏误的个股特征因子
     return [
+    ]
+
+
+def _get_exhaustion_filter_extra_factors():
+    """获取买入过滤规则需要、但不作为模型特征强制引入的额外因子。"""
+    return [
+        'prev_non_first_limit_up_performance_percentile_20d',
+        'kdj_j_9',
     ]
 
 
@@ -6813,38 +7320,43 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
 
         logger.info(f"[FILTER] 识别出 {len(filter_stock_date_pairs)} 只新股需要过滤")
 
-        # ===== 第5步：构建向量化过滤掩码（优化版）=====
-        # 5.1 将新股过滤条件转换为DataFrame
-        new_stock_df = pd.DataFrame(filter_stock_date_pairs)
+        # ===== 第5步：构建过滤掩码（内存优化版：字典查找替代merge）=====
+        # 构建新股过滤区间字典: {stock_code: (ipo_ts, filter_end_ts)}
+        new_stock_filter = {}
+        for pair in filter_stock_date_pairs:
+            new_stock_filter[pair['stock_code']] = (
+                pair['ipo_date'].value,  # nanosecond timestamp
+                pair['filter_end_date'].value
+            )
+        del filter_stock_date_pairs  # 释放中间变量
 
-        # 5.2 使用merge快速匹配，避免循环
-        # 重置索引后再merge，避免后续布尔过滤出现索引错位
-        work_df = stock_data.reset_index(drop=True).copy()
-        # 将日期转换为数值便于比较
-        work_df['_date_num'] = work_df['date'].astype(np.int64)
-        new_stock_df['_ipo_num'] = new_stock_df['ipo_date'].astype(np.int64)
-        new_stock_df['_filter_end_num'] = new_stock_df['filter_end_date'].astype(np.int64)
+        # 只对出现在新股列表中的股票做日期比较，避免全量merge
+        new_stock_codes = set(new_stock_filter.keys())
+        is_new_stock_candidate = stock_data['stock_code'].isin(new_stock_codes)
 
-        # 执行merge
-        merged = work_df.merge(
-            new_stock_df[['stock_code', '_ipo_num', '_filter_end_num']],
-            on='stock_code',
-            how='left'
-        )
+        # 初始化全False掩码（默认不过滤）
+        need_filter_mask = pd.Series(False, index=stock_data.index)
 
-        # 5.3 向量化判断：是否需要过滤
-        # 条件：匹配到新股 且 日期在IPO和过滤结束日期之间
-        need_filter_mask = (
-            merged['_ipo_num'].notna() &
-            (merged['_date_num'] >= merged['_ipo_num']) &
-            (merged['_date_num'] <= merged['_filter_end_num'])
-        )
+        # 只对候选行做日期区间判断
+        if is_new_stock_candidate.any():
+            candidate_idx = stock_data.index[is_new_stock_candidate]
+            candidate_dates = stock_data.loc[candidate_idx, 'date'].astype(np.int64)
+            candidate_codes = stock_data.loc[candidate_idx, 'stock_code']
+
+            # 向量化：为每个候选行查找其ipo和filter_end时间戳
+            ipo_ts = candidate_codes.map(lambda c: new_stock_filter.get(c, (0, 0))[0])
+            filter_end_ts = candidate_codes.map(lambda c: new_stock_filter.get(c, (0, 0))[1])
+
+            in_filter_window = (
+                (candidate_dates.values >= ipo_ts.values) &
+                (candidate_dates.values <= filter_end_ts.values)
+            )
+            need_filter_mask.loc[candidate_idx] = in_filter_window
+
+        del new_stock_filter, new_stock_codes, is_new_stock_candidate
 
         # ===== 第6步：执行过滤 =====
-        # 关键修复：直接使用merged来过滤，避免索引不匹配问题
-        # 使用merged的原始列（work_df的列）来过滤
-        original_columns = stock_data.columns.tolist()
-        filtered_data = merged.loc[~need_filter_mask, original_columns].copy()
+        filtered_data = stock_data.loc[~need_filter_mask]
 
         # ===== 第7步：统计结果 =====
         original_count = len(stock_data)
@@ -6855,18 +7367,6 @@ def _filter_new_stocks_batch(stock_data: pd.DataFrame, logger=None) -> pd.DataFr
         logger.info(f"  原始数据: {original_count:,} 条")
         logger.info(f"  过滤后数据: {filtered_count:,} 条")
         logger.info(f"  过滤掉新股数据: {removed_count:,} 条 ({removed_count/original_count*100:.2f}%)")
-
-        # # 详细统计每只新股的过滤情况
-        # for pair in filter_stock_date_pairs:
-        #     stock_code = pair['stock_code']
-        #     ipo_date = pair['ipo_date'].strftime('%Y-%m-%d')
-        #     filter_end = pair['filter_end_date'].strftime('%Y-%m-%d')
-
-        #     original_stock_count = len(stock_data[stock_data['stock_code'] == stock_code])
-        #     filtered_stock_count = len(filtered_data[filtered_data['stock_code'] == stock_code])
-        #     stock_removed = original_stock_count - filtered_stock_count
-
-        #     logger.info(f"  {stock_code}(IPO:{ipo_date}, 过滤至:{filter_end}): 过滤 {stock_removed} 条记录")
 
         return filtered_data
 
@@ -7087,7 +7587,7 @@ def _filter_new_stock_data_vectorized_main(stock_data: pd.DataFrame, new_stocks_
 
 def _filter_st_stocks(data: pd.DataFrame, logger) -> pd.Series:
     """
-    从 ST 股票数据文件中过滤 ST 股票（高效向量化实现）
+    从 ST 股票数据文件中过滤 ST 股票（内存优化版：set查找替代merge）
 
     参数:
     - data: 股票数据DataFrame，必须包含 'date' 和 'stock_code' 列
@@ -7111,12 +7611,6 @@ def _filter_st_stocks(data: pd.DataFrame, logger) -> pd.Series:
             logger.error(f"[FILTER] 数据缺少必要列，可用列: {data.columns.tolist()}")
             return pd.Series(True, index=data.index)
 
-        # 快速日期格式转换（向量化）
-        if pd.api.types.is_datetime64_any_dtype(data['date']):
-            date_str = data['date'].dt.strftime('%Y%m%d')
-        else:
-            date_str = data['date'].astype(str).str.replace('-', '').str[:8]
-
         # 读取 ST 数据（只加载需要的列以提高性能）
         try:
             st_df = pd.read_parquet(st_file, columns=['trade_date', 'ts_code'])
@@ -7129,40 +7623,33 @@ def _filter_st_stocks(data: pd.DataFrame, logger) -> pd.Series:
             logger.error(f"[FILTER] ST数据文件缺少必要列，可用列: {st_df.columns.tolist()}")
             return pd.Series(True, index=data.index)
 
-        # 高效过滤算法：使用 merge + 向量化操作
-        # 步骤1: 准备临时列
-        data['_temp_date'] = date_str
+        # 内存优化：构建 (date_str, stock_code) set，O(1)查找替代merge
+        # 123k条ST记录构建set约几MB，而merge需要2+ GiB
+        st_set = set(zip(st_df['trade_date'].astype(str), st_df['ts_code'].astype(str)))
+        del st_df  # 释放ST DataFrame
 
-        # 步骤2: 使用 merge 快速匹配（比循环+字典查找更快）
-        merged = data.merge(
-            st_df,
-            left_on=['_temp_date', 'stock_code'],
-            right_on=['trade_date', 'ts_code'],
-            how='left',
-            indicator=True
-        )
+        # 日期格式转换
+        if pd.api.types.is_datetime64_any_dtype(data['date']):
+            date_str = data['date'].dt.strftime('%Y%m%d')
+        else:
+            date_str = data['date'].astype(str).str.replace('-', '').str[:8]
 
-        # 步骤3: 向量化判断：只在 ST 数据中的股票被标记为 True
-        is_st = merged['_merge'] == 'both'
+        # 向量化查找：构建 (date, stock_code) 组合键
+        combined_keys = date_str + '_' + data['stock_code'].astype(str)
+        st_keys = {f"{d}_{c}" for d, c in st_set}
+        del st_set  # 释放原始set
 
-        # 步骤4: 创建过滤结果（True = 非ST，False = ST）
+        # 使用 isin 进行向量化匹配
+        is_st = combined_keys.isin(st_keys)
+        del combined_keys, st_keys  # 释放临时变量
+
         st_filter = ~is_st
-
-        # 步骤5: 清理临时列
-        if '_temp_date' in data.columns:
-            del data['_temp_date']
-
-        # ✅ 修复：重置 st_filter 的索引，使其与原始 data 对齐
-        # 因为 merged 的索引是 RangeIndex，而 data 可能有原始索引
-        # 我们需要创建一个与 data 索引对齐的 Series
         st_filter_aligned = pd.Series(st_filter.values, index=data.index)
 
         # 统计和日志
         st_count = (~st_filter_aligned).sum()
         if st_count > 0:
-            # 获取ST股票示例（用于日志）
-            # ✅ 修复：使用 merged 而不是 data，避免索引不对齐问题
-            st_stocks_example = merged.loc[~st_filter, 'stock_code'].unique()[:5]
+            st_stocks_example = data.loc[~st_filter, 'stock_code'].unique()[:5]
             logger.info(f"[FILTER] ST股票过滤: 过滤掉 {st_count} 只ST股票")
             if len(st_stocks_example) > 0:
                 logger.info(f"   ST股票示例: {', '.join(st_stocks_example)} 等{st_count}只")
@@ -7479,11 +7966,11 @@ def _build_valid_cs_mask(stock_data: pd.DataFrame, logger):
     综合生成横截面有效样本掩码 valid_cs_mask（不直接删行）：
 
     - is_st: 复用 _filter_st_stocks 的判定口径（True=非ST）
-    - is_new_stock: 复用 _filter_new_stocks_batch 的判定口径（通过“过滤前后索引差”还原mask）
+    - is_new_stock: 复用 _filter_new_stocks_batch 的判定口径（通过"过滤前后索引差"还原mask）
       （注意：_filter_new_stocks_batch 可能同时过滤成交量为0的数据，这里会同步体现在new_keep里）
 
     返回:
-        valid_cs_mask: pd.Series[bool]，True表示该行可用于“横截面统计/训练/打分”
+        valid_cs_mask: pd.Series[bool]，True表示该行可用于"横截面统计/训练/打分"
         st_keep: pd.Series[bool]，True表示非ST
         new_keep: pd.Series[bool]，True表示非新股期且未被其内部规则过滤
     """
@@ -7499,11 +7986,12 @@ def _build_valid_cs_mask(stock_data: pd.DataFrame, logger):
         logger.warning(f"[FILTER] 生成ST掩码失败，回退为全True: {e}")
         st_keep = pd.Series(True, index=stock_data.index)
 
-    # 2) 新股口径（通过过滤函数“还原”mask，不修改其逻辑）
+    # 2) 新股口径（通过过滤函数"还原"mask，不修改其逻辑）
     try:
         filtered_new = _filter_new_stocks_batch(stock_data, logger)
         # _filter_new_stocks_batch 使用 stock_data[mask].copy()，通常会保留原索引
         new_keep = pd.Series(stock_data.index.isin(filtered_new.index), index=stock_data.index)
+        del filtered_new  # 释放：只需index，完整DataFrame不再需要
     except Exception as e:
         logger.warning(f"[FILTER] 生成新股掩码失败，回退为全True: {e}")
         new_keep = pd.Series(True, index=stock_data.index)
@@ -7541,16 +8029,10 @@ def run_generate_factors_mode(args):
         )
 
         stock_data = data_loader.load_stock_features(extended_start_date, end_date)
-        try:
-            # 修复：板块数据也需要历史窗口（最大需求20天，使用extended_start_date确保足够）
-            sector_data = data_loader.load_sector_features(extended_start_date, end_date)
-        except Exception as exc:
-            logger.warning('sector data loader raised an exception: %s', exc)
-            sector_data = None
 
-        if sector_data is None or sector_data.empty:
-            logger.warning('sector data missing, falling back to local cache')
-            sector_data = _load_sector_features_basic(extended_start_date, end_date)
+        # 板块数据已通过 extra_context['stock_to_sw_sector'] 传入，不再需要单独加载 sector_data
+        sector_data = None
+        logger.info("[INFO] 板块数据通过 extra_context['stock_to_sw_sector'] 传入，跳过单独加载")
 
         try:
             # 修复：市场数据也需要历史窗口（最大需求120天，使用extended_start_date确保足够）
@@ -7573,16 +8055,12 @@ def run_generate_factors_mode(args):
             print('stock data is empty, stop factor generation.')
             return False
 
-        if sector_data is None or sector_data.empty:
-
-            logger.warning('no valid sector data, sector-related factors may be missing')
-
         if market_data is None or market_data.empty:
 
             logger.warning('no valid market data, placeholder values will be used')
 
 
-        for dataset in (stock_data, sector_data, market_data):
+        for dataset in (stock_data, market_data):
 
             if dataset is not None and not dataset.empty and 'date' in dataset.columns:
 
@@ -7590,11 +8068,6 @@ def run_generate_factors_mode(args):
 
         print(f"? 股票记录数: {len(stock_data)}")
 
-        if sector_data is not None and not sector_data.empty:
-            print(f"? 板块记录数: {len(sector_data)}")
-
-        else:
-            print('[warning] sector data missing, using stock-only factors')
         if market_data is not None and not market_data.empty:
             print(f"? 市场记录数: {len(market_data)}")
         else:
@@ -7725,7 +8198,7 @@ def run_generate_factors_mode(args):
         logger.info("🔍 生成valid_cs_mask（综合ST/新股口径）...")
         try:
             valid_cs_mask, st_keep, new_keep = _build_valid_cs_mask(stock_data, logger)
-            # 写入列，供后续 pipeline / 训练时使用（横截面统计也可按此mask做更“干净”的截面）
+            # 写入列，供后续 pipeline / 训练时使用（横截面统计也可按此mask做更"干净"的截面）
             stock_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
 
             st_count = int((~st_keep).sum()) if len(st_keep) else 0
@@ -7864,7 +8337,6 @@ def run_generate_factors_mode(args):
             store=store,
             pipeline=pipeline,
             market_data=market_data,
-            sector_data=sector_data,
             context_extra=extra_context,
             enable_batch_save=enable_batch_save,  # 🆕 分批保存开关
             batch_size=batch_size,  # 🆕 批次大小
@@ -7912,7 +8384,7 @@ def run_generate_factors_mode(args):
 
 
 def run_test_factors_mode(args):
-    """因子测试模式 - 使用 factor_lab 数据集"""
+    """因子测试模式 - 使用日线 VWAP 收益标签"""
     import numpy as np
     import pandas as pd
 
@@ -7936,15 +8408,14 @@ def run_test_factors_mode(args):
             logger.error("无法加载股票基础数据，无法生成标签")
             return False
 
+        stock_data = stock_data.copy()
         if 'date' in stock_data.columns:
             stock_data['date'] = pd.to_datetime(stock_data['date'])
 
-        required_base_columns = ['stock_code', 'date', 'open', 'high', 'low', 'close', 'volume', 'atr14']
+        required_base_columns = ['stock_code', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']
         missing_base_columns = [col for col in required_base_columns if col not in stock_data.columns]
         if missing_base_columns:
             logger.error(f"数据中缺少必要字段: {missing_base_columns}")
-            if 'atr14' in missing_base_columns:
-                logger.error("缺少 atr14 列，无法计算 ATR 止盈止损位")
             return False
 
         factor_data = _load_factor_cache_data(
@@ -7973,10 +8444,7 @@ def run_test_factors_mode(args):
             logger.error("标签源数据为空，请检查基础行情数据")
             return False
 
-        # [WRENCH] 方案C: 使用加权收益率标签
-        # 调用标签生成函数
-        labeled_data_result = _generate_training_labels_for_all_data(
-            label_source,)
+        labeled_data_result = _generate_training_labels_for_all_data(label_source)
         if labeled_data_result is None:
             logger.error("标签生成失败")
             return False
@@ -7985,53 +8453,33 @@ def run_test_factors_mode(args):
         if 'date' in labeled_data.columns:
             labeled_data['date'] = pd.to_datetime(labeled_data['date'])
 
-        # [WRENCH] 检查必要的future_return字段
-        required_return_fields = ['future_return_2d', 'future_return_3d', 'future_return_5d']
-        missing_fields = [field for field in required_return_fields if field not in labeled_data.columns]
-
-        if missing_fields:
-            logger.error(f"标签数据缺少必要字段: {missing_fields}")
+        if 'atr_return_label' not in labeled_data.columns:
+            logger.error("标签数据缺少 atr_return_label，无法继续做因子质量测试")
             return False
 
-        # [WRENCH] 保留基础收益率字段
-        base_columns = ['stock_code', 'date', 'future_return_2d', 'future_return_3d', 'future_return_5d']
-        label_data = labeled_data[base_columns].copy()
+        label_data = labeled_data[['stock_code', 'date', 'atr_return_label']].copy()
+        label_data.rename(columns={'atr_return_label': 'vwap_return_label'}, inplace=True)
+        label_data['vwap_return_label'] = pd.to_numeric(label_data['vwap_return_label'], errors='coerce')
+        label_data = label_data.dropna(subset=['vwap_return_label'])
+        if label_data.empty:
+            logger.error("VWAP收益标签全部为空，无法继续测试")
+            return False
 
-        # [WRENCH] 计算加权收益率标签（用于对比分析）
-        print("\n[WRENCH] 计算加权收益率标签（ATR标准化）...")
-
-        # 检查是否有atr14字段
-        # [WRENCH] 使用原始收益率计算加权标签
-        label_data['weighted_return_2d3d5d'] = (
-            0.4 * label_data['future_return_2d'] +
-            0.4 * label_data['future_return_3d'] +
-            0.2 * label_data['future_return_5d']
-        )
-        print(f"  [OK] weighted_return_2d3d5d: 0.4*future_return_2d + 0.4*future_return_3d + 0.2*future_return_5d")
-
-        # 收集所有标签列（包括单期和加权）
-        label_return_columns = []
-
-        # 单期标签
-        for col in ['future_return_2d', 'future_return_3d', 'future_return_5d']:
-            if col in label_data.columns:
-                label_return_columns.append(col)
-
-        # 加权标签
-        if 'weighted_return_2d3d5d' in label_data.columns:
-            label_return_columns.append('weighted_return_2d3d5d')
-
-        print(f"\n· 可用标签列: {label_return_columns}")
-        for col in label_return_columns:
-            if col in label_data.columns:
-                non_null = label_data[col].notna().sum()
-                print(f"  - {col}：可用样本 {non_null}/{len(label_data)}")
+        print("\n· 标签定义：日线 VWAP 收益率")
+        print(f"  - 可用样本：{len(label_data):,}")
+        print(f"  - 均值：{label_data['vwap_return_label'].mean():.4%}")
+        print(f"  - 中位数：{label_data['vwap_return_label'].median():.4%}")
+        print(f"  - 正收益占比：{(label_data['vwap_return_label'] > 0).mean():.2%}")
 
         factor_features = factor_data.copy()
-        conflicting_return_columns = [col for col in label_return_columns if col in factor_features.columns]
-        if conflicting_return_columns:
-            print(f"· 因子数据中已存在标签列，已剔除：{conflicting_return_columns}")
-            factor_features = factor_features.drop(columns=conflicting_return_columns)
+        conflicting_columns = [
+            col for col in ['vwap_return_label', 'atr_return_label', 'future_ret', 'relevance',
+                            'max_high_return', 'min_low_return']
+            if col in factor_features.columns
+        ]
+        if conflicting_columns:
+            print(f"· 因子数据中已存在标签列，已剔除：{conflicting_columns}")
+            factor_features = factor_features.drop(columns=conflicting_columns)
 
         merged_data = pd.merge(
             factor_features,
@@ -8043,20 +8491,23 @@ def run_test_factors_mode(args):
             logger.error("因子数据与标签无法对齐")
             return False
 
-        print(f"· 合并样本量：{len(merged_data)} 条，字段 {len(merged_data.columns)} 个")
+        merged_data = merged_data.replace([np.inf, -np.inf], np.nan)
+        if {'date', 'stock_code'}.issubset(merged_data.columns):
+            merged_data = merged_data.sort_values(['date', 'stock_code']).reset_index(drop=True)
 
-        final_return_columns = []
-        for col in label_return_columns:
-            if col in merged_data.columns:
-                non_null_count = merged_data[col].notna().sum()
-                if non_null_count > 100:
-                    final_return_columns.append(col)
+        print(f"· 合并样本量：{len(merged_data):,} 条，字段 {len(merged_data.columns)} 个")
+
+        if merged_data['vwap_return_label'].notna().sum() <= 100:
+            logger.error("有效 VWAP 收益标签样本过少，无法做稳定验证")
+            return False
+
+        final_return_columns = ['vwap_return_label']
         print(f"· 有效收益列：{final_return_columns}")
 
-        # [WRENCH] 排除收益率列和其他非因子列
         exclude_columns = {
             'stock_code', 'date', 'date_str', 'exit_day',
-            'atr_return_label',  # 排名标签
+            'atr_return_label', 'vwap_return_label', 'future_ret', 'relevance',
+            'max_high_return', 'min_low_return',
             'min_dist_to_sl', 'min_dist_to_pt',
             'entry_price', 'profit_target', 'stop_loss',
             'pct_chg', 'is_can_buy', 'open', 'high', 'low', 'close',
@@ -8067,9 +8518,12 @@ def run_test_factors_mode(args):
             'volume_weighted_price', 'vol_price_corr_20d', 'risk_reward_ratio',
             'near_support', 'near_resistance', 'short_reversal',
         }
-        exclude_columns.update(label_return_columns)
-        # [WRENCH] 排除所有future_return和weighted_return相关列
-        exclude_columns.update({col for col in merged_data.columns if 'future_return' in col or 'atr_return' in col or 'weighted_return' in col})
+        exclude_columns.update(
+            {
+                col for col in merged_data.columns
+                if 'future_return' in col or 'atr_return' in col or 'weighted_return' in col or 'vwap_return' in col
+            }
+        )
 
         potential_factors = [col for col in merged_data.columns if col not in exclude_columns]
 
@@ -8129,17 +8583,10 @@ def run_test_factors_mode(args):
             if not factor_metrics:
                 continue
             metrics_df = pd.DataFrame(factor_metrics).T
-            # [WRENCH] 适配新标签系统
-            if window_name == 'weighted_return_2d3d5d':
-                metrics_file = output_path / f"factor_metrics_weighted_2d3d5d_{timestamp}.csv"
-            elif window_name.startswith('future_return_') and window_name.endswith('d'):
-                day_num = window_name.replace('future_return_', '').replace('d', '')
-                metrics_file = output_path / f"factor_metrics_single_{day_num}day_{timestamp}.csv"
-            elif 'atr_return_' in window_name and window_name.endswith('d'):
-                day_num = window_name.replace('atr_return_', '').replace('d', '')
-                metrics_file = output_path / f"factor_metrics_layered_{day_num}day_{timestamp}.csv"
+            if window_name == 'vwap_return_label':
+                metrics_file = output_path / f"factor_metrics_vwap_return_{timestamp}.csv"
             elif window_name == 'atr_return_label':
-                metrics_file = output_path / f"factor_metrics_mixed_holding_{timestamp}.csv"
+                metrics_file = output_path / f"factor_metrics_vwap_return_legacy_{timestamp}.csv"
             else:
                 metrics_file = output_path / f"factor_metrics_{window_name}_{timestamp}.csv"
             metrics_df.to_csv(metrics_file, encoding='utf-8')
@@ -8212,104 +8659,6 @@ def _check_factor_data_quality(data: pd.DataFrame, factors: List[str]):
             print("    - 提示: 波动极小，可能需要归一化或剔除")
         else:
             print("    - 状态: 数值分布正常")
-
-
-def _load_sector_features_basic(start_date: str, end_date: str):
-    """从本地缓存的板块文件中加载数据，供因子生成兜底使用"""
-    logger = logging.getLogger(__name__)
-    try:
-        base_dir = Path(__file__).resolve().parent.parent / "local_data" / "sector_features"
-        if not base_dir.exists():
-            logger.warning("sector_features 目录不存在，无法加载板块数据")
-            return None
-
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        frames = []
-
-        for sector_dir in base_dir.iterdir():
-            if not sector_dir.is_dir():
-                continue
-            sector_code = sector_dir.name
-            candidates = [
-                sector_dir / f"{sector_code}_features.parquet",
-                sector_dir / f"{sector_code}.parquet",
-            ]
-            feature_file = next((p for p in candidates if p.exists()), None)
-            if feature_file is None:
-                continue
-
-            try:
-                df = pd.read_parquet(feature_file)
-            except Exception as exc:
-                logger.debug("读取板块文件失败 %s: %s", feature_file, exc)
-                continue
-
-            if 'date' not in df.columns:
-                if 'date_str' in df.columns:
-                    df['date'] = pd.to_datetime(df['date_str'], errors='coerce')
-                else:
-                    logger.debug("板块文件 %s 缺少 date 字段，跳过", feature_file)
-                    continue
-            else:
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-            df = df.dropna(subset=['date'])
-            df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
-            if df.empty:
-                continue
-
-            if 'sector_code' not in df.columns:
-                if 'sector' in df.columns:
-                    df['sector_code'] = df['sector']
-                elif 'sector_name' in df.columns:
-                    df['sector_code'] = df['sector_name']
-                else:
-                    df['sector_code'] = sector_code
-            df['sector_code'] = df['sector_code'].astype(str)
-
-            if 'sector_name' not in df.columns:
-                df['sector_name'] = df.get('sector', df['sector_code'])
-
-            if 'pct_chg' in df.columns:
-                df['return_1d'] = df['pct_chg'].astype(float)
-            elif 'close' in df.columns:
-                df = df.sort_values(['sector_code', 'date'])
-                df['return_1d'] = df.groupby('sector_code')['close'].pct_change() * 100
-            else:
-                df['return_1d'] = 0.0
-
-            df['return'] = df['return_1d']
-            df['daily_return'] = df['return_1d']
-
-            if 'close' in df.columns:
-                df = df.sort_values(['sector_code', 'date'])
-                close_group = df.groupby('sector_code')['close']
-                for window in (3, 5, 10, 20):
-                    col = f'return_{window}d'
-                    if col not in df.columns:
-                        df[col] = close_group.pct_change(window) * 100
-            else:
-                logger.debug("板块文件 %s 缺少 close 列，无法计算多日收益", feature_file)
-
-            for col in ['return_1d', 'return', 'daily_return', 'return_3d', 'return_5d', 'return_10d', 'return_20d']:
-                if col in df.columns:
-                    df[col] = df[col].astype(float).fillna(0.0)
-
-            df['date_str'] = df['date'].dt.strftime('%Y%m%d')
-            frames.append(df)
-
-        if not frames:
-            logger.warning("未在本地板块缓存中找到有效数据")
-            return None
-
-        sector_data = pd.concat(frames, ignore_index=True)
-        sector_data = sector_data.sort_values(['sector_code', 'date']).reset_index(drop=True)
-        return sector_data
-
-    except Exception as exc:
-        logger.warning("板块数据兜底加载失败: %s", exc)
-        return None
 
 
 def analyze_bucket_ranges(board_data, valid_mask):
@@ -8543,342 +8892,146 @@ def analyze_bucket_ranges(board_data, valid_mask):
 
 
 
-# def _generate_training_labels_for_all_data(stock_data):
-#     """
-#     日频 Rank 标签（无 VWAP 版本）
-#     买入：T+1 open
-#     卖出代理：T+2 / T+3 Typical Price
-#     """
-
-#     import numpy as np
-#     import pandas as pd
-
-#     stock_data = stock_data.sort_values(
-#         ['stock_code', 'date']
-#     ).reset_index(drop=True)
-
-#     g = stock_data.groupby('stock_code')
-
-#     # ========= 1. 买入价 =========
-#     buy_price = g['open'].shift(-1)
-#     close_price = g['close'].shift(-1)
-
-#     # ========= 2. 卖出代理价 =========
-#     tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
-#     stock_data['sell'] = tp
-
-#     sell_t2 = g['sell'].shift(-2)
-#     sell_t3 = g['sell'].shift(-3)
-#     # sell_t1 = g['sell'].shift(-1)
-
-#     # 等权平均，表示“2~3 天期望卖出”
-#     # sell_price = 0.8 * sell_t2 + 0.2 * sell_t3
-#     sell_price = 0.5 * close_price + 0.4* sell_t2 + 0.1 * sell_t3
-
-#     # ========= 3. 信息收益 =========
-#     future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
-#     future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
-#     stock_data['atr_return_label'] = future_ret
-
-#     # 防止脏数据，不是风控
-#     future_ret = future_ret.clip(-0.2, 0.2)
-
-#     low_t3 = g["low"].shift(-3)  # T+1 low
-#     dd_t3 = (buy_price - low_t3) / (buy_price + 1e-12)
-#     dd_t3 = dd_t3.clip(lower=0.05)  # 只惩罚回撤大于5%
-#     low_t2 = g["low"].shift(-2)  # T+1 low
-#     dd_t2 = (buy_price - low_t2) / (buy_price + 1e-12)
-#     dd_t2 = dd_t2.clip(lower=0.05)  # 只惩罚回撤大于5%
-#     future_ret = future_ret - float(0.3) * dd_t2 - float(0.2) * dd_t3
-
-#     stock_data['future_ret'] = future_ret
-
-#     # ========= 4. 横截面 Rank → 离散 Label =========
-#     def rank_to_label(x):
-#         x = x.dropna()
-#         if len(x) < 30:
-#             return pd.Series(np.nan, index=x.index)
-
-#         pct = x.rank(pct=True, method='average')
-
-#         return pd.cut(
-#             pct,
-#             bins=[0, 0.3, 0.6, 0.8, 0.93, 0.98, 1.0],
-#             labels=[0, 1, 2, 3, 4, 5]
-#         ).astype(float)
-
-#     stock_data['relevance'] = (
-#         stock_data
-#         .groupby('date')['future_ret']
-#         .transform(rank_to_label)
-#     )
-
-#     mask_untradable = (
-#         (stock_data['is_limit_up'] == 1) |
-#         (stock_data['is_limit_down'] == 1) |
-#         (stock_data['is_zhaban'] == 1) |
-#         (stock_data['is_can_buy'] == 0) |
-#         (stock_data['amount'].fillna(0) < 10000000)
-#     )
-
-#     stock_data.loc[mask_untradable, 'relevance'] = np.nan
-
-#     return stock_data
-
-
-
-# def _generate_training_labels_for_all_data(stock_data):
-#     """
-#     日频 Rank 标签（无 VWAP 版本）
-#     信号日：T
-#     买入：T+1 open（若 T+1 开盘 跌超3% 或 涨超5% 则跳过买入）
-#     卖出代理：0.5 * (T+1 close) + 0.4 * (T+2 typical) + 0.1 * (T+3 typical)
-#     风险惩罚：对齐实盘（你在 T+2/T+3 才开始 5min 风控）
-#       - T+2 开盘 gap-down（相对买入价）
-#       - T+2/T+3 low 的穿价（相对买入价，超过5%才惩罚）
-#     """
-
-#     import numpy as np
-#     import pandas as pd
-
-#     stock_data = stock_data.sort_values(['stock_code', 'date']).reset_index(drop=True)
-#     g = stock_data.groupby('stock_code', sort=False)
-
-#     # ========= 0) 交易制度：按代码推断涨跌幅限制 =========
-#     code = stock_data['stock_code'].astype(str)
-#     is_20 = code.str.startswith('30') | code.str.startswith('688')
-#     limit = np.where(is_20, 0.20, 0.10).astype('float64')
-#     stock_data['limit_pct'] = limit
-
-#     # ========= 1) 买入价（T+1 open） =========
-#     buy_price = g['open'].shift(-1)        # T+1 open
-#     close_t0  = g['close'].shift(0)        # T close（当前行就是T）
-
-#     # ========= 1.1) 买入风控过滤：T+1 开盘相对 T 收盘的涨跌幅 =========
-#     # 你说的“开盘跌超3%、涨超5%跳过买入”，本质就是这个 gap
-#     open_gap_t1 = (buy_price - close_t0) / (close_t0 + 1e-12)
-#     stock_data['open_gap_t1'] = open_gap_t1
-
-#     mask_skip_buy = (open_gap_t1 <= -0.03) | (open_gap_t1 >= 0.05)
-
-#     # ========= 2) 卖出代理价 =========
-#     tp = (stock_data['high'] + stock_data['low'] + stock_data['close']) / 3.0
-#     stock_data['tp'] = tp
-
-#     close_t1 = g['close'].shift(-1)        # T+1 close
-#     sell_t2  = g['tp'].shift(-2)           # T+2 typical
-#     sell_t3  = g['tp'].shift(-3)           # T+3 typical
-
-#     sell_price = 0.5 * close_t1 + 0.4 * sell_t2 + 0.1 * sell_t3
-
-#     # ========= 3) 原始未来收益 =========
-#     future_ret = (sell_price - buy_price) / (buy_price + 1e-12)
-#     future_ret = future_ret.replace([np.inf, -np.inf], np.nan)
-#     stock_data['atr_return_label'] = future_ret
-
-#     # ========= 4) 动态 clip（多日加权：建议 1.8*limit 做硬界） =========
-#     clip_hi = 1.8 * stock_data['limit_pct']
-#     future_ret = future_ret.clip(lower=-clip_hi, upper=clip_hi)
-
-#     # ========= 5) 持仓期风险惩罚（对齐你 T+2/T+3 才开始监控） =========
-#     # --- (A) T+2 开盘 gap-down（相对买入价） ---
-#     open_t2 = g['open'].shift(-2)  # T+2 open
-#     gap_t2 = (open_t2 - buy_price) / (buy_price + 1e-12)
-#     gap_down = (-gap_t2).clip(lower=0.0)
-
-#     # 只惩罚超过 3% 的 gap-down（你也可改成 5%）
-#     pen_gap = (gap_down - 0.05).clip(lower=0.0)
-#     # >8% 的部分额外惩罚（对应“快速下跌滑点更大”）
-#     pen_gap_extra = (gap_down - 0.08).clip(lower=0.0)
-
-#     # --- (B) T+2/T+3 low 穿价惩罚（超过5%才惩罚） ---
-#     low_t2 = g['low'].shift(-2)
-#     low_t3 = g['low'].shift(-3)
-
-#     dd_t2 = ((buy_price - low_t2) / (buy_price + 1e-12)).clip(lower=0.0)
-#     dd_t3 = ((buy_price - low_t3) / (buy_price + 1e-12)).clip(lower=0.0)
-
-#     pen_dd2 = (dd_t2 - 0.05).clip(lower=0.0)
-#     pen_dd3 = (dd_t3 - 0.05).clip(lower=0.0)
-
-#     # 合成惩罚（注意：不要过大，否则标签被风险项主导）
-#     future_ret = (
-#         future_ret
-#         - 0.35 * pen_gap
-#         - 0.50 * pen_gap_extra
-#         - 0.25 * pen_dd2
-#         - 0.15 * pen_dd3
-#     )
-
-#     stock_data['future_ret'] = future_ret
-
-#     # ========= 6) 横截面 Rank → 离散 Label =========
-#     def rank_to_label(x):
-#         x = x.dropna()
-#         if len(x) < 30:
-#             return pd.Series(np.nan, index=x.index)
-
-#         pct = x.rank(pct=True, method='average')
-#         return pd.cut(
-#             pct,
-#             bins=[0, 0.3, 0.6, 0.8, 0.93, 0.98, 1.0],
-#             labels=[0, 1, 2, 3, 4, 5]
-#         ).astype(float)
-
-#     stock_data['relevance'] = stock_data.groupby('date')['future_ret'].transform(rank_to_label)
-
-#     # ========= 7) 不可交易样本置 NaN（加入：买入风控 + 炸板过滤） =========
-#     mask_untradable = (
-#         mask_skip_buy |                               # ✅ 关键：与你实盘一致
-#         (stock_data.get('is_limit_up', 0) == 1) |
-#         (stock_data.get('is_limit_down', 0) == 1) |
-#         (stock_data.get('is_can_buy', 1) == 0) |
-#         (stock_data.get('is_zhaban', 0) == 1) |        # ✅ 炸板过滤
-#         (stock_data.get('amount', 0).fillna(0) < 10000000)
-#     )
-
-#     stock_data.loc[mask_untradable, 'relevance'] = np.nan
-
-#     return stock_data
-
-
 def _generate_training_labels_for_all_data(stock_data):
     """
-    【大师级重构】极值二分类标签（Extreme Binary Classification）
-    
-    信号日：T
-    买入：T+1 open（若 T+1 开盘相对 T 收盘：跌超3% 或 涨超5% 则跳过买入）
-    目标：T+2 或 T+3 的最高价涨幅 > 8%，且 T+1 到 T+3 的最低价回撤不深于 -4%
-    
-    标签字段：
-      - relevance : 二分类标签 (1: 妖股, 0: 平庸/垃圾, NaN: 无效)
-      - atr_return_label : 保留为最大涨幅，用于评估回测潜能
-      - future_ret       : 同上
+    使用 train_minute_label_cache 生成训练标签。
+
+    正标签规则：收益 > 8% 且最大回撤不超过5%
+    - label_return > 0.08 且 minute_max_drawdown >= -0.05 → relevance=1
+    - 其余所有有效缓存数据 → relevance=0（负例）
+    - cache无数据 / 过滤的样本 → NaN（不参与训练）
+    跨除权日样本(adj_factor_changed=True / label_valid=False)的label_return为NaN，自动排除。
     """
-    import numpy as np
-    import pandas as pd
     import logging
+    from minute_label_cache_loader import load_minute_label_cache, DEFAULT_CACHE_COLUMNS
 
-    logger = logging.getLogger(__name__)
-    logger.info("[强化] 开始生成二分类极值标签...")
+    log = logging.getLogger(__name__)
+    if stock_data is None or stock_data.empty:
+        return stock_data.copy() if stock_data is not None else None
 
-    stock_data = stock_data.sort_values(["stock_code", "date"]).reset_index(drop=True)
-    stock_data["is_st_hist"] = _get_historical_st_flag(stock_data, logger=logger).astype(bool)
-    g = stock_data.groupby("stock_code", sort=False)
+    data = stock_data.copy()
+    data["date"] = pd.to_datetime(data["date"]).dt.normalize()
+    data["stock_code"] = data["stock_code"].astype(str)
+    start_ts = data["date"].min()
+    end_ts = data["date"].max()
 
-    # 0) 涨跌幅限制：按代码推断
-    code = stock_data["stock_code"].astype(str)
-    is_20 = code.str.startswith("30") | code.str.startswith("688")
-    stock_data["limit_pct"] = np.where(is_20, 0.20, 0.10).astype("float64")
+    cache_df = load_minute_label_cache(start_ts, end_ts, logger=log)
+    keep_cols = [col for col in DEFAULT_CACHE_COLUMNS if col in cache_df.columns]
+    cache_df = cache_df[keep_cols]
 
-    # 1) 买入价（T+1 open）
-    # buy_price = (g["open"].shift(-1) +g["close"].shift(-1) +g["high"].shift(-1) + g["low"].shift(-1)) / 4.0
-    buy_price = g["open"].shift(-1)
-    
-    # 2) 提取未来两天的极限价格
-    high_t2 = g["high"].shift(-2)
-    high_t3 = g["high"].shift(-3)
-    close_t1 =  g["close"].shift(-1)
-    low_t1 = g["low"].shift(-1)
-    low_t2 = g["low"].shift(-2)
-    low_t3 = g["low"].shift(-3)
+    overlap_cols = [col for col in cache_df.columns if col not in {"date", "stock_code"} and col in data.columns]
+    if overlap_cols:
+        data = data.drop(columns=overlap_cols)
 
-    # 3) 计算期间最大涨幅和最大回撤（相对于买入价）
-    max_high = np.maximum(high_t2.fillna(0), high_t3.fillna(0))
-    # 对于停牌等可能产生的nan处理，保证计算稳健
-    max_high = np.where(high_t2.isna() & high_t3.isna(), np.nan, np.maximum(high_t2.fillna(-np.inf), high_t3.fillna(-np.inf)))
-    # min_low = np.minimum(low_t1.fillna(np.inf), np.minimum(low_t2.fillna(np.inf), low_t3.fillna(np.inf)))
-    min_low = np.minimum(low_t2.fillna(np.inf), low_t3.fillna(np.inf))
-    min_low = np.where(low_t1.isna() & low_t2.isna() & low_t3.isna(), np.nan, min_low)
+    data = data.merge(cache_df, on=["date", "stock_code"], how="left", sort=False, copy=False)
 
-    max_high_return = (max_high - buy_price) / (buy_price + 1e-12)
-    min_low_return = (min_low - buy_price) / (buy_price + 1e-12)
+    return_col = "label_return" if "label_return" in data.columns else "minute_realized_return"
+    if return_col not in data.columns:
+        raise ValueError("minute cache must contain label_return or minute_realized_return")
 
-    # # 4) 生成二分类标签
-    # is_monster = np.where((max_high_return >= 0.15) & (min_low_return >= -0.05), 1.0, 0.0)
-    
-    # # 无效数据处理
-    # invalid_mask = buy_price.isna() | np.isnan(max_high_return) | np.isnan(min_low_return)
-    # is_monster = pd.Series(is_monster, index=stock_data.index)
-    # is_monster[invalid_mask] = np.nan
+    label_return = pd.to_numeric(data[return_col], errors="coerce")
 
-    tp = (stock_data["open"] + stock_data["high"] + stock_data["low"] + stock_data["close"]) / 4.0
-    stock_data["tp"] = tp
-    
-    sell_t2 = g["tp"].shift(-2)
-    sell_t3 = g["tp"].shift(-3)
-    
-    # 7:3 加权：极其看重 T+2 的溢价变现能力
-    sell_price_proxy = 0.7 * sell_t2.fillna(sell_t2) + 0.3 * sell_t3.fillna(sell_t3)
-    
-    realistic_vwap_return = (sell_price_proxy - buy_price) / (buy_price + 1e-12)
+    total = len(data)
+    cache_raw_nan = int(data[return_col].isna().sum())
 
-        # 4) 生成二分类标签
-    is_monster = np.where((realistic_vwap_return >= 0.10) & (min_low_return > -0.05), 1.0, 0.0)
-    # is_monster = np.where((realistic_vwap_return / (np.abs(min_low_return) + 1e-9) > 2.0) & (realistic_vwap_return >= 0.11), 1.0, 0.0)
-    
-    # 无效数据处理
-    invalid_mask = buy_price.isna() | np.isnan(max_high_return) | np.isnan(min_low_return)
-    is_monster = pd.Series(is_monster, index=stock_data.index)
-    is_monster[invalid_mask] = np.nan
+    # 逐层统计每个过滤器的拦截量
+    after_raw = data[return_col].notna()  # cache有一条完整记录
+    label_valid_mask = pd.Series(True, index=data.index)
+    if "label_valid" in data.columns:
+        label_valid_mask = data["label_valid"].fillna(False).astype(bool)
+    adj_filtered = pd.Series(False, index=data.index)
+    if "adj_factor_changed" in data.columns:
+        adj_filtered = data["adj_factor_changed"].fillna(False).astype(bool)
+    label_valid_lost = int((after_raw & ~label_valid_mask).sum())
+    adj_changed_lost = int((after_raw & adj_filtered).sum())
+    label_or_adj_lost = int((after_raw & (~label_valid_mask | adj_filtered)).sum())
 
-    
-    # 覆盖回测评估基准
-    stock_data["atr_return_label"] = realistic_vwap_return
-    stock_data["future_ret"] = realistic_vwap_return
-    stock_data["max_high_return"] = max_high_return # 记录最大涨幅（供分析用）
-    stock_data["min_low_return"] = min_low_return   # 记录最大跌幅（供分析用）
-    stock_data["relevance"] = is_monster
+    # 涨跌停/成交额/ST等额外过滤
+    extra_filter_mask = pd.Series(True, index=data.index)
+    if "valid_cs_mask" in data.columns:
+        extra_filter_mask &= data["valid_cs_mask"].fillna(False).astype(bool)
+    for flag_col, bad_value in [
+        ("is_limit_up", 1), ("is_limit_down", 1), ("is_zhaban", 1), ("is_can_buy", 0),
+    ]:
+        if flag_col in data.columns:
+            extra_filter_mask &= data[flag_col].fillna(0).ne(bad_value)
+    if "amount" in data.columns:
+        extra_filter_mask &= pd.to_numeric(data["amount"], errors="coerce").fillna(0) >= 10_000_000
+    extra_filter_lost = int((after_raw & ~extra_filter_mask & ~(~label_valid_mask | adj_filtered)).sum())
 
-    # 5) 历史ST窗口屏蔽：当天 / T+1 / T+2 / T+3 任一天为ST，均视为无效标签
-    st_t1 = g["is_st_hist"].shift(-1).fillna(False).astype(bool)
-    st_t2 = g["is_st_hist"].shift(-2).fillna(False).astype(bool)
-    st_t3 = g["is_st_hist"].shift(-3).fillna(False).astype(bool)
-    mask_st_window = stock_data["is_st_hist"] | st_t1 | st_t2 | st_t3
-    st_window_count = int(mask_st_window.sum())
-    if st_window_count > 0:
-        logger.info(
-            f"[LABEL] ST窗口屏蔽样本: {st_window_count:,}/{len(stock_data):,} "
-            f"({st_window_count / max(len(stock_data), 1):.2%})"
-        )
-        stock_data.loc[
-            mask_st_window,
-            ["atr_return_label", "future_ret", "max_high_return", "min_low_return"]
-        ] = np.nan
-        stock_data.loc[mask_st_window, "relevance"] = np.nan
-
-    # 6) 过滤实盘不可交易的样本
-    _valid_cs_mask = stock_data.get("valid_cs_mask", True)
-    if isinstance(_valid_cs_mask, pd.Series):
-        valid_cs_mask = _valid_cs_mask.reindex(stock_data.index).fillna(False).astype(bool)
-    else:
-        valid_cs_mask = pd.Series(_valid_cs_mask, index=stock_data.index).astype(bool)
-
-    amount = stock_data.get("amount", 0)
-    amount_val = amount.fillna(0) if hasattr(amount, "fillna") else amount
-
-    mask_untradable = (
-        (stock_data.get("is_limit_up", 0) == 1)
-        | (stock_data.get("is_limit_down", 0) == 1)
-        | (stock_data.get("is_can_buy", 1) == 0)
-        | (stock_data.get("is_zhaban", 0) == 1)
-        | (amount_val < 10_000_000)
-        | (~valid_cs_mask)
+    log.info(
+        "[LABEL-MISS-DETAIL] 总样本=%s | cache无数据(NaN)=%s | label_valid/adj过滤=%s "
+        "| 额外过滤(涨跌停/成交额)=%s",
+        f"{total:,}", f"{cache_raw_nan:,}", f"{label_or_adj_lost:,}",
+        f"{extra_filter_lost:,}",
     )
 
-    # 不可交易样本：relevance 置 NaN
-    stock_data.loc[mask_untradable, "relevance"] = np.nan
-    stock_data.loc[mask_untradable, "atr_return_label"] = np.nan
-    stock_data.loc[mask_untradable, "future_ret"] = np.nan
+    # 有效性过滤：label_valid=False 或 adj_factor_changed=True 的样本排除
+    cache_valid = after_raw & label_valid_mask & ~adj_filtered & extra_filter_mask
 
-    monster_count = (stock_data["relevance"] == 1).sum()
-    total_valid = stock_data["relevance"].notna().sum()
-    if total_valid > 0:
-        logger.info(f"[OK] 二分类标签生成完毕。正样本数: {monster_count}, 负样本数: {total_valid - monster_count}, 比例: {monster_count/total_valid:.2%}")
+    label_return = label_return.where(cache_valid)
+
+    # 最大回撤（负值，如 -0.03 表示回撤3%）
+    max_drawdown = pd.Series(np.nan, index=data.index, dtype="float64")
+    if "minute_max_drawdown" in data.columns:
+        max_drawdown = pd.to_numeric(data["minute_max_drawdown"], errors="coerce").where(cache_valid)
+
+    # ===== 二分类标签：正例=收益>8%且最大回撤<=5%，其余所有有效数据均为负例 =====
+    relevance = pd.Series(np.nan, index=data.index, dtype="float64")
+    # 正标签：收益>8% 且 最大回撤不超过5%
+    pos_mask = (label_return >= 0.08)
+    neg_mask = (label_return <= 0.00)
+    relevance.loc[pos_mask] = 1.0
+    # 负标签：所有有效缓存数据中不满足正标签的，均为负例
+    # neg_mask = cache_valid & ~pos_mask
+    relevance.loc[neg_mask] = 0.0
+    # 仅cache无数据的样本保持NaN，不参与训练
+
+    # 兼容列
+    data["atr_return_label"] = label_return
+    data["future_ret"] = label_return
+    data["relevance"] = relevance
+    data["max_high_return"] = pd.to_numeric(data.get("minute_realized_return", label_return), errors="coerce").where(cache_valid)
+    data["min_low_return"] = pd.to_numeric(data.get("minute_min_return", np.nan), errors="coerce").where(cache_valid)
+    if "minute_max_drawdown" in data.columns:
+        data["minute_max_drawdown_label"] = max_drawdown
+
+    pos_count = int((relevance == 1.0).sum())
+    neg_count = int((relevance == 0.0).sum())
+    valid_count = int(relevance.notna().sum())
+    final_nan = int(label_return.isna().sum())
+
+    # 正负标签的label_return分布
+    pos_returns_local = pd.to_numeric(label_return.loc[pos_mask], errors="coerce").dropna()
+    neg_returns_local = pd.to_numeric(label_return.loc[neg_mask], errors="coerce").dropna()
+    def _fmt(v):
+        return f"{v:.4%}"
+    log.info("[LABEL-STATS] ===== 妖股规则正负标签收益分布 =====")
+    if len(pos_returns_local) > 0:
+        log.info("[LABEL-STATS] 正标签(>8%%&dd<=5%%): n=%s, mean=%s, median=%s, max=%s, min=%s",
+                 f"{len(pos_returns_local):,}", _fmt(pos_returns_local.mean()), _fmt(pos_returns_local.median()),
+                 _fmt(pos_returns_local.max()), _fmt(pos_returns_local.min()))
+    else:
+        log.warning("[LABEL-STATS] 正标签(>8%%&dd<=5%%): 无样本")
+    if len(neg_returns_local) > 0:
+        log.info("[LABEL-STATS] 负标签(非正例): n=%s, mean=%s, median=%s, max=%s, min=%s",
+                 f"{len(neg_returns_local):,}", _fmt(neg_returns_local.mean()), _fmt(neg_returns_local.median()),
+                 _fmt(neg_returns_local.max()), _fmt(neg_returns_local.min()))
+    else:
+        log.warning("[LABEL-STATS] 负标签(非正例): 无样本")
+
+    log.info(
+        "[MINUTE-LABEL] 妖股规则标签: rows=%s, final_nan=%s, valid_train=%s, pos=%s(>8%%&dd<=5%%), neg=%s(非正例), pos_ratio=%.2f%%",
+        f"{total:,}",
+        f"{final_nan:,}",
+        f"{valid_count:,}",
+        f"{pos_count:,}",
+        f"{neg_count:,}",
+        (pos_count / valid_count * 100.0) if valid_count else 0.0,
+    )
+    return data
 
 
-
-    return stock_data
 
 def _extract_and_validate_labels(labeled_data, label_column='atr_return_label'):
     """
@@ -9095,6 +9248,145 @@ def _prepare_feature_data(input_data, feature_columns, data_type="特征数据")
         logger.error(f"详细错误: {traceback.format_exc()}")
         return None, None
 
+
+def _round_prediction_feature_matrix(X, feature_columns, logger=None, context="预测", decimals=None):
+    """Round selected prediction features to reduce float-tail threshold flips."""
+    if not ENABLE_PREDICTION_FEATURE_ROUNDING:
+        return X, []
+
+    if X is None or feature_columns is None:
+        return X, []
+
+    decimals = PREDICTION_FEATURE_ROUND_DECIMALS if decimals is None else int(decimals)
+    feature_to_idx = {name: idx for idx, name in enumerate(feature_columns)}
+    target_features = [
+        name for name in PREDICTION_FEATURE_ROUND_COLUMNS
+        if name in feature_to_idx
+    ]
+
+    if not target_features:
+        if logger is not None:
+            logger.info(f"[ROUND] {context}: 未命中需round的预测特征")
+        return X, []
+
+    X_rounded = np.array(X, copy=True)
+    for feature in target_features:
+        idx = feature_to_idx[feature]
+        X_rounded[:, idx] = np.round(X_rounded[:, idx], decimals=decimals)
+
+    if logger is not None:
+        logger.info(
+            f"[ROUND] {context}: 已对 {len(target_features)} 个预测特征执行 round({decimals}): "
+            f"{', '.join(target_features)}"
+        )
+
+    return X_rounded, target_features
+
+
+def _predict_model_for_backtest(model, X, model_type):
+    """Run prediction for the model variants used by this script."""
+    if model_type == 'lightgbm':
+        return model.predict(X, num_iteration=getattr(model, 'best_iteration', None))
+
+    if hasattr(model, 'predict') and hasattr(model, 'get_score'):
+        import xgboost as xgb
+        return model.predict(xgb.DMatrix(X))
+
+    return model.predict(X)
+
+
+def _aggregate_model_predictions(prediction_list, model_performances, logger):
+    """Aggregate single/ensemble predictions using the existing RankIC weighting logic."""
+    if len(prediction_list) == 1:
+        return prediction_list[0], np.zeros_like(prediction_list[0])
+
+    model_performances_clean = [p if p is not None else 0.0 for p in model_performances]
+    mse_array = np.array(model_performances_clean)
+    if mse_array.sum() != 0:
+        weights = mse_array / mse_array.sum()
+    else:
+        weights = np.ones(len(prediction_list)) / len(prediction_list)
+
+    logger.info(f"[CHART] 模型权重: {weights}")
+    y_pred = np.average(prediction_list, axis=0, weights=weights)
+    std_pred = np.std(prediction_list, axis=0)
+    return y_pred, std_pred
+
+
+def _log_top1_rounding_sensitivity(test_data, baseline_pred, rounded_pred, window_name, logger):
+    """Compare daily filtered Top1 before/after prediction-feature rounding."""
+    try:
+        if baseline_pred is None or rounded_pred is None:
+            return
+        if len(baseline_pred) != len(rounded_pred) or len(baseline_pred) != len(test_data):
+            logger.warning("[ROUND] Top1敏感性统计跳过：预测长度与测试数据不一致")
+            return
+        if 'date' not in test_data.columns or 'stock_code' not in test_data.columns:
+            logger.warning("[ROUND] Top1敏感性统计跳过：缺少date/stock_code列")
+            return
+
+        work = test_data.copy()
+        work['_pred_before_round'] = np.asarray(baseline_pred, dtype=float)
+        work['_pred_after_round'] = np.asarray(rounded_pred, dtype=float)
+
+        changes = []
+        compared_days = 0
+        for date, date_data in work.groupby('date', sort=True):
+            before_sorted = date_data.sort_values('_pred_before_round', ascending=False)
+            after_sorted = date_data.sort_values('_pred_after_round', ascending=False)
+
+            def _filtered_top1(df, pred_col):
+                filtered = df
+                for col in ['is_limit_up', 'is_limit_down', 'is_zhaban']:
+                    if col in filtered.columns:
+                        filtered = filtered[filtered[col] != 1]
+                if filtered.empty:
+                    return None
+                row = filtered.iloc[0]
+                return {
+                    'stock_code': row['stock_code'],
+                    'score': float(row[pred_col]),
+                    'atr_return_label': (
+                        float(row['atr_return_label'])
+                        if 'atr_return_label' in row and pd.notna(row['atr_return_label'])
+                        else np.nan
+                    ),
+                }
+
+            before_top = _filtered_top1(before_sorted, '_pred_before_round')
+            after_top = _filtered_top1(after_sorted, '_pred_after_round')
+            if before_top is None or after_top is None:
+                continue
+
+            compared_days += 1
+            if before_top['stock_code'] != after_top['stock_code']:
+                changes.append({
+                    'date': pd.to_datetime(date).strftime('%Y-%m-%d') if pd.notna(date) else str(date),
+                    'before_top1': before_top['stock_code'],
+                    'after_top1': after_top['stock_code'],
+                    'before_score': before_top['score'],
+                    'after_score': after_top['score'],
+                    'before_atr_return_label': before_top['atr_return_label'],
+                    'after_atr_return_label': after_top['atr_return_label'],
+                })
+
+        change_count = len(changes)
+        change_rate = change_count / compared_days if compared_days else 0.0
+        logger.info(
+            f"[ROUND] {window_name} Top1敏感性: round前后可比较 {compared_days} 天, "
+            f"Top1替换 {change_count} 天 ({change_rate:.2%})"
+        )
+
+        if changes:
+            results_dir = Path("results")
+            results_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            out_path = results_dir / f"top1_rounding_sensitivity_{window_name}_{timestamp}.csv"
+            pd.DataFrame(changes).to_csv(out_path, index=False, encoding='utf-8-sig')
+            logger.info(f"[ROUND] Top1替换明细已保存: {out_path}")
+            logger.info(f"[ROUND] Top1替换样例: {changes[:5]}")
+    except Exception as e:
+        logger.warning(f"[ROUND] Top1敏感性统计失败: {e}")
 
 
 def _save_model_results(model_results, feature_names, pca_models=None, model_type='xgboost', timestamp=None):
@@ -10578,6 +10870,8 @@ def _run_minute_level_backtest(
     logger = logging.getLogger(__name__)
     window_prefix = f"[{window_name}] " if window_name else ""
 
+    # Exhaustion filter: 不再预过滤候选池，改为在策略买入时检查Top1实际选中的股票
+    # 配置通过 minte_strategy_overrides 传递给策略层
     try:
         # 导入5分钟回测模块
         from rqalpha_minute_datasource.minute_backtest_top1_gate_ma5 import MinuteLevelStockSelector
@@ -10624,6 +10918,45 @@ def _run_minute_level_backtest(
             "profit_bearish_activation_return": PROFIT_BEARISH_ACTIVATION_RETURN,
             "enable_top1_state_machine_risk": ENABLE_TOP1_STATE_MACHINE_RISK,
             "enable_dynamic_rank_switch": bool(use_live_default_scheme),
+            # Exhaustion filter: 在策略层检查Top1实际选中股票（不预过滤候选池）
+            "enable_exhaustion_filter": ENABLE_EXHAUSTION_BUY_FILTER,
+            "exhaustion_filter_strategy": EXHAUSTION_FILTER_STRATEGY,
+            # v3 thresholds (three_rule_v3)
+            "exhaustion_v3_cpv_threshold": EXHAUSTION_V3_CPV_THRESHOLD,
+            "exhaustion_v3_blowoff_threshold": EXHAUSTION_V3_BLOWOFF_THRESHOLD,
+            "exhaustion_v3_sector_accel_threshold": EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD,
+            "exhaustion_v3_sector_leadership_threshold": EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD,
+            "exhaustion_v3_return_20d_intra_z_threshold": EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD,
+            "exhaustion_v3_market_liq_threshold": EXHAUSTION_V3_MARKET_LIQ_THRESHOLD,
+            "exhaustion_v3_ulcer_threshold": EXHAUSTION_V3_ULCER_THRESHOLD,
+            "exhaustion_v3_mom_peak_threshold": EXHAUSTION_V3_MOM_PEAK_THRESHOLD,
+            "exhaustion_v3_intra_sector_rank_threshold": EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD,
+            "exhaustion_v3_mkt_disp_threshold": EXHAUSTION_V3_MKT_DISP_THRESHOLD,
+            "exhaustion_v3_mkt_adr_threshold": EXHAUSTION_V3_MKT_ADR_THRESHOLD,
+            "enable_exhaustion_limit_down_3d": ENABLE_EXHAUSTION_LIMIT_DOWN_3D,
+            "exhaustion_v3_top10_strength_threshold": EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD,
+            "exhaustion_v3_buy_sm_amount_threshold": EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD,
+            "exhaustion_v3_non_first_limit_up_perf_pct20_threshold": EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD,
+            "exhaustion_v3_kdj_j_z_threshold": EXHAUSTION_V3_KDJ_J_Z_THRESHOLD,
+            "exhaustion_v3_score_z_in_day_threshold": EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD,
+            "exhaustion_v3_reg_severe_up_10d_pct_threshold": EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD,
+            "exhaustion_v3_reg_adr_threshold": EXHAUSTION_V3_REG_ADR_THRESHOLD,
+            "exhaustion_v3_ma5_raw_threshold": EXHAUSTION_V3_MA5_RAW_THRESHOLD,
+            "exhaustion_v3_ma_convergence_threshold": EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD,
+            "exhaustion_v3_ma5_pullback_depth_threshold": EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD,
+            "exhaustion_v3_ret_3d_vs_10d_accel_threshold": EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD,
+            # 日内拆分入场实验已停用：恢复为开盘按目标仓位一次性买入
+            "enable_intraday_split_entry": False,
+            "intraday_split_first15_threshold": 0.0,
+            "intraday_split_confirm_cap": 0.015,
+            "intraday_split_tail_stop": 0.05,
+            # v2 thresholds (runup_ma5 / runup_or_blowoff)
+            "exhaustion_runup_ma5_threshold": EXHAUSTION_RUNUP_MA5_THRESHOLD,
+            "exhaustion_top10_10d_strength_threshold": EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD,
+            "exhaustion_prev_day_blowoff_threshold": EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD,
+            "exhaustion_sector_momentum_accel_weak_threshold": EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD,
+            "exhaustion_market_advance_decline_ratio_threshold": EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD,
+            "exhaustion_filter_turnover_z_threshold": EXHAUSTION_FILTER_TURNOVER_Z_THRESHOLD,
         }
         entry_filter_desc = (
             "open<ma5_skip + gap_up>5% skip"
@@ -10657,7 +10990,36 @@ def _run_minute_level_backtest(
             f"two_branch_gate={USE_TOP1_TWO_BRANCH_GATE}, "
             f"sector_mom_accel_threshold={TOP1_SECTOR_MOMENTUM_ACCEL_GATE_THRESHOLD:.3f}, "
             f"market_vol_threshold={TOP1_MARKET_VOLATILITY_CONTEXT_GATE_THRESHOLD:.3f}, "
-            f"ma_alignment_threshold={TOP1_MA_ALIGNMENT_PERSISTENCE_GATE_THRESHOLD:.2f}"
+            f"ma_alignment_threshold={TOP1_MA_ALIGNMENT_PERSISTENCE_GATE_THRESHOLD:.2f}, "
+            f"exhaustion_filter={ENABLE_EXHAUSTION_BUY_FILTER}("
+            f"strategy={EXHAUSTION_FILTER_STRATEGY}, "
+            f"runup_ma5_th={EXHAUSTION_RUNUP_MA5_THRESHOLD}, "
+            f"top10_10d_th={EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD}, "
+            f"v3_cpv_th={EXHAUSTION_V3_CPV_THRESHOLD}, "
+            f"v3_blowoff_th={EXHAUSTION_V3_BLOWOFF_THRESHOLD}, "
+            f"v3_sector_accel_th={EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD}, "
+            f"v3_sector_leadership_th={EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD}, "
+            f"return20d_intra_z_th={EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD}, "
+            f"market_liq_th={EXHAUSTION_V3_MARKET_LIQ_THRESHOLD}, "
+            f"ulcer_th={EXHAUSTION_V3_ULCER_THRESHOLD}, "
+            f"mom_peak_th={EXHAUSTION_V3_MOM_PEAK_THRESHOLD}, "
+            f"sector_rank_th={EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD}, "
+            f"mkt_disp_th={EXHAUSTION_V3_MKT_DISP_THRESHOLD}, "
+            f"mkt_adr_th={EXHAUSTION_V3_MKT_ADR_THRESHOLD}, "
+            f"limit_down_3d={ENABLE_EXHAUSTION_LIMIT_DOWN_3D}, "
+            f"v3_top10_th={EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}, "
+            f"v3_buy_sm_th={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}, "
+            f"v3_non_first_limit_pct20_th={EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}, "
+            f"v3_kdj_j_z_th={EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}, "
+            f"v3_score_z_in_day_th={EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}, "
+            f"v3_reg_severe_pct_th={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}, "
+            f"v3_reg_adr_th={EXHAUSTION_V3_REG_ADR_THRESHOLD}, "
+            f"v3_ma5_raw_th={EXHAUSTION_V3_MA5_RAW_THRESHOLD}, "
+            f"v3_ma_convergence_th={EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD}, "
+            f"v3_ma5_pullback_depth_th={EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD}, "
+            f"v3_ret_3d_vs_10d_accel_th={EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD}, "
+            f"market_ad_ratio_th={EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD}, "
+            f"tz_th={EXHAUSTION_FILTER_TURNOVER_Z_THRESHOLD})"
         )
         # 运行5分钟级别回测
         result = selector.run_minute_level_backtest(
@@ -10730,13 +11092,16 @@ def _run_minute_level_backtest(
                 logger.info(f"{window_prefix}🔍 [DEBUG-2] selected_result的键: {list(selected_result.keys()) if isinstance(selected_result, dict) else 'N/A'}")
                 trades = selected_result.get('trades', None)
                 skipped = selected_result.get('skipped_buy_attempts', None)
+                shadow = selected_result.get('shadow_skipped_opportunity_trades', None)
                 logger.info(f"{window_prefix}🔍 [DEBUG-2] trades存在: {trades is not None}, 类型: {type(trades)}, 长度: {len(trades) if trades else 'N/A'}")
                 logger.info(f"{window_prefix}🔍 [DEBUG-2] skipped_buy_attempts存在: {skipped is not None}, 类型: {type(skipped)}, 长度: {len(skipped) if skipped else 'N/A'}")
+                logger.info(f"{window_prefix}🔍 [DEBUG-2] shadow_skipped_opportunity_trades存在: {shadow is not None}, 类型: {type(shadow)}, 长度: {len(shadow) if shadow else 'N/A'}")
 
             if selected_result:
                 trades_count = len(selected_result.get('trades', []))
                 skipped_count = len(selected_result.get('skipped_buy_attempts', []))
-                logger.info(f"{window_prefix}📊 Top{selected_rank}策略数据检查: 交易记录={trades_count}, 被跳过买入={skipped_count}")
+                shadow_count = len(selected_result.get('shadow_skipped_opportunity_trades', []))
+                logger.info(f"{window_prefix}📊 Top{selected_rank}策略数据检查: 交易记录={trades_count}, 被跳过买入={skipped_count}, 影子满仓机会={shadow_count}")
 
             # # 修改条件：只要有交易记录或被跳过的买入，就绘制Top1资金曲线
             # if top1_result and (top1_result.get('trades') or top1_result.get('skipped_buy_attempts')):
@@ -10926,19 +11291,6 @@ def _run_stock_selection_backtest(
     # 只按日期排序，保持每日内股票的原始预测概率分布
     backtest_data = backtest_data.sort_values('date')
 
-    # 🆕 批量过滤新股（在日期循环之外）- 先过滤北交所，再过滤新股
-    logger.info(f"\n{window_prefix}[FILTER] 开始批量北交所过滤...")
-    original_count = len(backtest_data)
-    if 'stock_code' in backtest_data.columns:
-        bj_filter = ~backtest_data['stock_code'].str.endswith(('.BJ', '.bj'), na=False)
-        backtest_data = backtest_data[bj_filter].copy()
-        after_bj_count = len(backtest_data)
-        bj_filtered_count = original_count - after_bj_count
-        logger.info(f"{window_prefix}[FILTER] 批量北交所过滤完成: {original_count} -> {after_bj_count} (过滤掉 {bj_filtered_count} 只北交所股票)")
-    else:
-        after_bj_count = original_count
-        bj_filtered_count = 0
-        logger.info(f"{window_prefix}[FILTER] 无stock_code列，跳过北交所过滤")
 
     # 然后过滤新股
     logger.info(f"{window_prefix}[FILTER] 开始批量新股过滤...")
@@ -11734,25 +12086,25 @@ def run_test_model_mode(args):
         logger.info(f"数据日期范围: {factor_data['date'].min()} 到 {factor_data['date'].max()}")
 
         # 🆕 加载市场数据（用于市场状态判断）
-        logger.info("\n[REFRESH] 加载市场数据（用于市场状态自适应）...")
-        try:
-            from data_loader import IntegratedDataLoader
-            loader = IntegratedDataLoader()
-            start_date_str = factor_data['date'].min().strftime('%Y%m%d')
-            end_date_str = factor_data['date'].max().strftime('%Y%m%d')
-            _, _, market_data = loader.load_all_data(start_date_str, end_date_str, extend_history_days=20)
+        # logger.info("\n[REFRESH] 加载市场数据（用于市场状态自适应）...")
+        # try:
+        #     from data_loader import IntegratedDataLoader
+        #     loader = IntegratedDataLoader()
+        #     start_date_str = factor_data['date'].min().strftime('%Y%m%d')
+        #     end_date_str = factor_data['date'].max().strftime('%Y%m%d')
+        #     _, _, market_data = loader.load_all_data(start_date_str, end_date_str, extend_history_days=20)
 
-            if market_data is None or market_data.empty:
-                logger.warning("[WARNING] 市场数据加载失败，将使用默认震荡市状态")
-                market_data = None
-            else:
-                # 确保date列是datetime类型
-                if 'date' in market_data.columns:
-                    market_data['date'] = pd.to_datetime(market_data['date'])
-                logger.info(f"[OK] 市场数据加载成功: {len(market_data)}条记录")
-        except Exception as e:
-            logger.warning(f"[WARNING] 市场数据加载失败: {e}，将使用默认震荡市状态")
-            market_data = None
+        #     if market_data is None or market_data.empty:
+        #         logger.warning("[WARNING] 市场数据加载失败，将使用默认震荡市状态")
+        #         market_data = None
+        #     else:
+        #         # 确保date列是datetime类型
+        #         if 'date' in market_data.columns:
+        #             market_data['date'] = pd.to_datetime(market_data['date'])
+        #         logger.info(f"[OK] 市场数据加载成功: {len(market_data)}条记录")
+        # except Exception as e:
+        #     logger.warning(f"[WARNING] 市场数据加载失败: {e}，将使用默认震荡市状态")
+        #     market_data = None
 
         # 3.5. 跳过交互特征计算，直接使用基础特征
         logger.info("[REFRESH] 使用基础特征进行预测...")
@@ -12267,7 +12619,7 @@ def run_test_model_mode(args):
 
         try:
             # 🆕 市场状态判断
-            market_state = _get_market_state(market_data, lookback=20, logger=logger)
+            market_state = _get_market_state(None, lookback=20, logger=logger)
 
             # 🆕 根据市场状态调整置信度阈值分位数
             if market_state == 'bull':
@@ -12435,7 +12787,7 @@ def run_test_model_mode(args):
             logger.info("=" * 60)
 
         # 输出对比结果
-        logger.info("\n[CHART] “唯一口径”选股策略回测结果对比:")
+        logger.info('\n[CHART] 选股策略回测结果对比:')
         logger.info("=" * 150)
         logger.info(f"{'策略':<10} {'总收益':<10} {'净收益(扣成本)':<15} {'年化收益':<10} {'最大回撤':<10} {'胜率':<8} {'盈亏比':<8} {'持仓天数':<10} {'总交易次数':<12}")
         logger.info("=" * 150)
@@ -14730,16 +15082,19 @@ def run_test_model_walkforward_mode(args):
             #     'test_start': '2025-06-05',    # 测试集开始2025-08-21 2025-11-21
             #     'test_end': '2026-04-16'       # 测试集结束 (3个月)2025-12-16
             # }
+# 训练集: 2023-06-01 ~ 2025-03-01
+# 验证集: 2025-03-07 ~ 2025-07-25
+# 测试集: 2025-08-05 ~ 2026-04-20
             {
                 'name': 'Window 3',
                 'train_start': '2023-06-01',
                 'train_end': '2025-03-01',
                 #  'train_end': '2025-02-25',
                 'val_start': '2025-03-07',
-                'val_end': '2025-07-25',
+                'val_end': '2025-10-25',
                 # 'val_end': '2025-05-25',
-                'test_start': '2025-08-05',
-                'test_end': '2026-04-26'
+                'test_start': '2025-11-01',
+                'test_end': '2026-05-18'
                 # 'val_start': '2025-03-01',
                 # 'val_end': '2025-06-02',
                 # 'test_start': '2025-06-06',
@@ -14862,7 +15217,7 @@ def run_test_model_walkforward_mode(args):
             # 修复：selections是字典格式，需要以窗口为单位存储
             all_selections.append({
                 'window_name': window['name'],
-                'selections': window_result['selections']  # {1: [...], 2: [...], 3: [...], 5: [...]}
+                'selections': window_result['selections']
             })
             all_window_metrics.append({
                 'window_name': window['name'],
@@ -14870,7 +15225,15 @@ def run_test_model_walkforward_mode(args):
                 **window_result['metrics']
             })
 
+            # 释放窗口结果内存
+            del window_result
+            import gc; gc.collect()
+
             logger.info(f"[OK] {window['name']} 处理完成")
+
+        # 释放 factor_data（全量因子数据 ~5 GiB）
+        del factor_data
+        import gc; gc.collect()
 
         # 汇总所有窗口的结果
         logger.info("\n" + "=" * 80)
@@ -15066,6 +15429,15 @@ def run_pred_stocks_mode(args):
             # 按预测值降序排列
             processed_data = processed_data.sort_values('prediction', ascending=False)
 
+            # 只对排序结果做默认过滤判断，不改变候选池和Top1排序
+            if ENABLE_EXHAUSTION_BUY_FILTER and len(processed_data) > 0:
+                exhaustion_flags = processed_data.apply(_is_exhaustion_filtered_row, axis=1)
+                processed_data['exhaustion_filtered'] = exhaustion_flags.map(lambda x: x[0])
+                processed_data['exhaustion_filter_reason'] = exhaustion_flags.map(lambda x: x[1])
+            else:
+                processed_data['exhaustion_filtered'] = False
+                processed_data['exhaustion_filter_reason'] = ''
+
             logger.info(f"预测完成，共预测 {len(predictions)} 只股票")
             print(f"预测完成，共预测 {len(predictions)} 只股票")
 
@@ -15077,15 +15449,33 @@ def run_pred_stocks_mode(args):
         # 6. 输出Top5结果
         logger.info("步骤6: 生成预测结果")
         top5_stocks = processed_data.head(5)
+        top1_row = processed_data.iloc[0] if len(processed_data) > 0 else None
 
         # 加载SW行业映射用于结果显示
         from sw_encoding_loader import get_sw_mapping_for_model
         sw_mapping = get_sw_mapping_for_model()
         stock_to_industry = sw_mapping.get('stock_to_industry_name', {})
 
+        if top1_row is not None:
+            top1_tradeable = not bool(top1_row.get('exhaustion_filtered', False))
+            top1_reason = top1_row.get('exhaustion_filter_reason', '')
+            logger.info(
+                f"[Top1交易判断] stock={top1_row['stock_code']} tradeable={top1_tradeable} "
+                f"strategy={EXHAUSTION_FILTER_STRATEGY} reason={top1_reason if top1_reason else 'PASS'}"
+            )
+            print("\nTop1交易判断:")
+            print("-" * 80)
+            print(f"股票代码: {top1_row['stock_code']}")
+            print(f"预测值: {top1_row['prediction']:.6f}")
+            print(f"是否可交易: {'是' if top1_tradeable else '否'}")
+            print(f"默认过滤策略: {EXHAUSTION_FILTER_STRATEGY}")
+            print(f"判断原因: {top1_reason if top1_reason else 'PASS'}")
+            print(f"判断原因: {top1_reason}")
+            print("-" * 80)
+
         print(f"\nTop 5 预测结果 ({prediction_date}):")
         print("=" * 80)
-        print(f"{'排名':<4} {'股票代码':<12} {'股票名称':<16} {'SW行业':<12} {'预测值':<12}")
+        print(f"{'排名':<4} {'股票代码':<12} {'股票名称':<16} {'SW行业':<12} {'预测值':<12} {'可交易':<8}")
         print("-" * 80)
 
         for rank, (_, row) in enumerate(top5_stocks.iterrows(), 1):
@@ -15095,7 +15485,8 @@ def run_pred_stocks_mode(args):
             # 获取真实的SW行业名称
             sw_sector_name = stock_to_industry.get(stock_code, '未知')
 
-            print(f"{rank:<4} {stock_code:<12} {'未知':<16} {sw_sector_name:<12} {prediction:<12.6f}")
+            tradeable_text = '否' if bool(row.get('exhaustion_filtered', False)) else '是'
+            print(f"{rank:<4} {stock_code:<12} {'未知':<16} {sw_sector_name:<12} {prediction:<12.6f} {tradeable_text:<8}")
 
         print("=" * 80)
 
@@ -15159,6 +15550,313 @@ def _load_factor_data_for_prediction(prediction_date: str) -> Optional[pd.DataFr
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
         return None
+
+
+def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
+    strategy = EXHAUSTION_FILTER_STRATEGY
+
+    if strategy == 'three_rule_v3':
+        # ================================================================
+        # 规则1: runup_ma5_exhaustion > 0.8 AND cpv_factor <= -0.4
+        # 含义：个股高位衰竭 + 量价背离 → 见顶派发
+        # ================================================================
+        rma_val = row.get('runup_ma5_exhaustion', np.nan)
+        cpv_val = row.get('cpv_factor', np.nan)
+        rule1_hit = (
+            pd.notna(rma_val) and pd.notna(cpv_val)
+            and rma_val > EXHAUSTION_RUNUP_MA5_THRESHOLD
+            and cpv_val <= EXHAUSTION_V3_CPV_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则2: prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.30
+        # 含义：前日强势后放量分歧 + 行业动量减速 → 接力失败
+        # 扩展XR2a: blowoff极端(>5.0)时 sector可放宽到0.50（极端分歧本身即危险）
+        # 扩展XR2b: sector极端(<=0.15)时 blowoff可放宽到1.0（板块已崩，稍有分歧即危险）
+        # ================================================================
+        blowoff_val = row.get('prev_day_blowoff_risk', np.nan)
+        sector_val = row.get('sector_momentum_accel_rank', np.nan)
+        rule2_hit = (
+            pd.notna(blowoff_val) and pd.notna(sector_val)
+            and (
+                (blowoff_val >= EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD)
+                or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a: blowoff极端
+                or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b: sector极端
+            )
+        )
+
+        # ================================================================
+        # 规则3: sector_leadership_persistence_v3 <= -0.18 AND return_20d_intra_z <= 0.40
+        # 含义：板块领涨结构反转，且个股近20日相对板块强度也偏弱
+        # 用途：只拦截“板块弱 + 个股也弱”的真衰竭，避免误杀仍然具备独立强度的个股
+        # ================================================================
+        sl_val = row.get('sector_leadership_persistence_v3', np.nan)
+        ret20_val = row.get('return_20d_intra_z', np.nan)
+        rule3_hit = (
+            pd.notna(sl_val) and pd.notna(ret20_val)
+            and sl_val <= EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD
+            and ret20_val <= EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则4: market_liquidity_change < 0.94 AND (三路径至少其一)
+        #   路径A: ulcer_index < -0.80（经历深度持续回撤）
+        #   路径B: momentum_peak_decay_3d > 1.0（动能峰值已过，正在衰减）
+        #   路径C: intra_sector_momentum_rank < 0.67（行业内部排名垫底）
+        # 含义：大盘流动性收缩 + 个股存在结构性脆弱 → 弱市不买弱股
+        # 基于162/175日志+影子机会+600584误杀修正，零误杀大赚
+        # ================================================================
+        liq_val = row.get('market_liquidity_change', np.nan)
+        ulcer_val = row.get('ulcer_index', np.nan)
+        mom_peak_val = row.get('momentum_peak_decay_3d', np.nan)
+        sector_rank_val = row.get('intra_sector_momentum_rank', np.nan)
+        rule4_hit = (
+            pd.notna(liq_val)
+            and liq_val < EXHAUSTION_V3_MARKET_LIQ_THRESHOLD
+            and (
+                (pd.notna(ulcer_val) and ulcer_val < EXHAUSTION_V3_ULCER_THRESHOLD)
+                or (pd.notna(mom_peak_val) and mom_peak_val > EXHAUSTION_V3_MOM_PEAK_THRESHOLD)
+                or (pd.notna(sector_rank_val) and sector_rank_val < EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD)
+            )
+        )
+
+        # ================================================================
+        # 规则5: mkt_dispersion_shock_v2 < 0.98 AND market_advance_decline_ratio < 0.38
+        # 含义：市场异常安静(dispersion低于均值) + 涨跌比极低(广度崩溃) → 温水煮青蛙式熊市
+        # 全市场熔断，当天所有股票暂停买入。基于162日志鲁棒性分析，零误杀大赚
+        # ================================================================
+        disp_val = row.get('mkt_dispersion_shock_v2', np.nan)
+        adr_val = row.get('market_advance_decline_ratio', np.nan)
+        rule5_hit = (
+            pd.notna(disp_val) and pd.notna(adr_val)
+            and disp_val < EXHAUSTION_V3_MKT_DISP_THRESHOLD
+            and adr_val < EXHAUSTION_V3_MKT_ADR_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则6: limit_down_3d == 1（近3个交易日有过跌停）
+        # 含义：最近跌停过的股票短期风险极高 → 不买
+        # 基于162全样本分析，4/38拦截0误杀
+        # ================================================================
+        rule6_hit = (
+            ENABLE_EXHAUSTION_LIMIT_DOWN_3D
+            and row.get('limit_down_3d', 0) == 1
+        )
+
+        # ================================================================
+        # 规则7: top10_10d_strength_level_v3 >= 0.70 AND buy_sm_amount_rate <= -1.25
+        # 含义：短期强势股但散户资金净流出 → 主力出货嫌疑
+        # 拦截3笔新大亏（含184日志DD集群），零误杀大赚
+        # ================================================================
+        top10_val = row.get('top10_10d_strength_level_v3', np.nan)
+        buy_sm_val = row.get('buy_sm_amount_rate', np.nan)
+        rule7_hit = (
+            pd.notna(top10_val) and pd.notna(buy_sm_val)
+            and top10_val >= EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD
+            and buy_sm_val <= EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则8: prev_non_first_limit_up_performance_percentile_20d >= 0.80
+        #        AND kdj_j_9 <= 0.75
+        # 含义：连板股次日表现处在近20日高分位，市场接力情绪偏热；
+        #      但个股KDJ-J截面robust z-score不强，属于热环境下个股动能不足。
+        # ================================================================
+        non_first_pct20_val = row.get('prev_non_first_limit_up_performance_percentile_20d', np.nan)
+        kdj_j_val = row.get('kdj_j_9', np.nan)
+        rule8_hit = (
+            pd.notna(non_first_pct20_val) and pd.notna(kdj_j_val)
+            and non_first_pct20_val >= EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD
+            and kdj_j_val <= EXHAUSTION_V3_KDJ_J_Z_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则9: score_z_in_day <= 1.50
+        # 含义：模型Top1分数相对当日候选池预测分布不够突出，属于”勉强第一”。
+        # ================================================================
+        score_z_val = row.get('score_z_in_day', np.nan)
+        rule9_hit = (
+            pd.notna(score_z_val)
+            and score_z_val <= EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则10: reg_severe_up_10d_ratio_pct >= 0.80 AND market_advance_decline_ratio <= 0.45
+        # 含义：个股近10日超额涨幅处于全市场高位(80分位以上) + 全市场涨跌比极低
+        #       → 个股高位运行遭遇市场广度崩溃，大概率见顶亏钱
+        # ================================================================
+        reg_severe_pct_val = row.get('reg_severe_up_10d_ratio_pct', np.nan)
+        rule10_hit = (
+            pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
+            and reg_severe_pct_val >= EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD
+            and adr_val <= EXHAUSTION_V3_REG_ADR_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则11: price_ma5_ratio_raw >= 9.0 AND ma_convergence_score >= 0.20
+        # 含义：短期极度超买(MA5乖离>=9%) + 均线系统收敛(趋势动能衰减)
+        #       → 高位衰竭信号
+        # 拦截4笔增量大亏，0误杀大涨/小赚
+        # ================================================================
+        ma5_raw_val = row.get('price_ma5_ratio_raw', np.nan)
+        ma_conv_val = row.get('ma_convergence_score', np.nan)
+        rule11_hit = (
+            pd.notna(ma5_raw_val) and pd.notna(ma_conv_val)
+            and ma5_raw_val >= EXHAUSTION_V3_MA5_RAW_THRESHOLD
+            and ma_conv_val >= EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD
+        )
+
+        # ================================================================
+        # 规则12: ma5_pullback_depth_10d <= -0.05 AND ret_3d_vs_10d_accel >= 6
+        # 含义：个股相对MA5的回撤幅度极深 + 3日vs10日收益加速
+        #       → 高位回撤加速衰竭信号
+        # ================================================================
+        ma5_pullback_val = row.get('ma5_pullback_depth_10d', np.nan)
+        ret_accel_val = row.get('ret_3d_vs_10d_accel', np.nan)
+        rule12_hit = (
+            pd.notna(ma5_pullback_val) and pd.notna(ret_accel_val)
+            and ma5_pullback_val <= EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD
+            and ret_accel_val >= EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD
+        )
+
+        if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit or rule11_hit or rule12_hit:
+            parts = []
+            if rule1_hit:
+                parts.append(
+                    f"runup_ma5_exhaustion({rma_val:.2f})>{EXHAUSTION_RUNUP_MA5_THRESHOLD} "
+                    f"AND cpv_factor({cpv_val:.2f})<={EXHAUSTION_V3_CPV_THRESHOLD}"
+                )
+            if rule2_hit:
+                if blowoff_val >= EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD:
+                    r2_reason = f"prev_day_blowoff_risk({blowoff_val:.2f})>={EXHAUSTION_V3_BLOWOFF_THRESHOLD} AND sector_momentum_accel_rank({sector_val:.2f})<={EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD}"
+                elif blowoff_val > 5.0:
+                    r2_reason = f"XR2a: blowoff({blowoff_val:.2f})>5.0(extreme) AND sector_accel({sector_val:.2f})<=0.50(relaxed)"
+                else:
+                    r2_reason = f"XR2b: blowoff({blowoff_val:.2f})>1.0(relaxed) AND sector_accel({sector_val:.2f})<=0.15(extreme)"
+                parts.append(r2_reason)
+            if rule3_hit:
+                parts.append(
+                    f"sector_leadership_persistence_v3({sl_val:.2f})<={EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD} "
+                    f"AND return_20d_intra_z({ret20_val:.2f})<={EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD}"
+                )
+            if rule4_hit:
+                r4_reasons = []
+                if pd.notna(ulcer_val) and ulcer_val < EXHAUSTION_V3_ULCER_THRESHOLD:
+                    r4_reasons.append('ulcer=%.2f' % ulcer_val)
+                if pd.notna(mom_peak_val) and mom_peak_val > EXHAUSTION_V3_MOM_PEAK_THRESHOLD:
+                    r4_reasons.append('mom_peak=%.1f' % mom_peak_val)
+                if pd.notna(sector_rank_val) and sector_rank_val < EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD:
+                    r4_reasons.append('sector_rank=%.2f' % sector_rank_val)
+                parts.append(
+                    f"liq({liq_val:.2f})<{EXHAUSTION_V3_MARKET_LIQ_THRESHOLD}"
+                    f" & ({'+'.join(r4_reasons)})"
+                )
+            if rule5_hit:
+                parts.append(
+                    f"mkt_dispersion_shock_v2({disp_val:.2f})<{EXHAUSTION_V3_MKT_DISP_THRESHOLD} "
+                    f"AND market_advance_decline_ratio({adr_val:.2f})<{EXHAUSTION_V3_MKT_ADR_THRESHOLD}"
+                )
+            if rule6_hit:
+                parts.append("limit_down_3d=1")
+            if rule7_hit:
+                parts.append(
+                    f"top10_strength({top10_val:.2f})>={EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}"
+                    f" AND buy_sm_amount({buy_sm_val:.2f})<={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}"
+                )
+            if rule8_hit:
+                parts.append(
+                    f"non_first_limit_perf_pct20({non_first_pct20_val:.2f})>={EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}"
+                    f" AND kdj_j_9_z({kdj_j_val:.2f})<={EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}"
+                )
+            if rule9_hit:
+                parts.append(
+                    f"score_z_in_day({score_z_val:.2f})<={EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}"
+                )
+            if rule10_hit:
+                parts.append(
+                    f"reg_severe_up_10d_ratio_pct({reg_severe_pct_val:.2f})>={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
+                    f" AND market_advance_decline_ratio({adr_val:.2f})<={EXHAUSTION_V3_REG_ADR_THRESHOLD}"
+                )
+            if rule11_hit:
+                parts.append(
+                    f"price_ma5_ratio_raw({ma5_raw_val:.2f})>={EXHAUSTION_V3_MA5_RAW_THRESHOLD}"
+                    f" AND ma_convergence_score({ma_conv_val:.2f})>={EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD}"
+                )
+            if rule12_hit:
+                parts.append(
+                    f"ma5_pullback_depth_10d({ma5_pullback_val:.4f})<={EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD}"
+                    f" AND ret_3d_vs_10d_accel({ret_accel_val:.2f})>={EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD}"
+                )
+            return True, " OR ".join(parts)
+        return False, ""
+
+    if strategy in ('runup_ma5', 'runup_or_blowoff'):
+        rma_val = row.get('runup_ma5_exhaustion', np.nan)
+        top10_val = row.get('top10_10d_strength_level_v3', np.nan)
+        runup_hit = (
+            pd.notna(rma_val)
+            and pd.notna(top10_val)
+            and rma_val > EXHAUSTION_RUNUP_MA5_THRESHOLD
+            and top10_val >= EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD
+        )
+        if strategy == 'runup_ma5' and runup_hit:
+            return True, (
+                f"runup_ma5_exhaustion({rma_val:.2f})>{EXHAUSTION_RUNUP_MA5_THRESHOLD} "
+                f"AND top10_10d_strength_level_v3({top10_val:.2f})>={EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD}"
+            )
+
+        if strategy == 'runup_or_blowoff':
+            blowoff_val = row.get('prev_day_blowoff_risk', np.nan)
+            sector_val = row.get('sector_momentum_accel_rank', np.nan)
+            blowoff_hit = (
+                pd.notna(blowoff_val)
+                and pd.notna(sector_val)
+                and blowoff_val >= EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD
+                and sector_val <= EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD
+            )
+            market_ad_val = row.get('market_advance_decline_ratio', np.nan)
+            market_ad_hit = (
+                pd.notna(market_ad_val)
+                and market_ad_val >= EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD
+            )
+            prior_high_volume_contest_20d = row.get('prior_high_volume_contest_20d',np.nan)
+            stock_volume_ratio_20d = row.get('stock_volume_ratio_20d', np.nan)
+            volume_hit = (
+                pd.notna(prior_high_volume_contest_20d)
+                and pd.notna(stock_volume_ratio_20d)
+                and prior_high_volume_contest_20d <= -0.170934
+                and stock_volume_ratio_20d  >= 1.78077
+            )
+            if runup_hit or blowoff_hit or market_ad_hit or volume_hit:
+            # if True:
+                parts = []
+                if volume_hit:
+                    parts.append(f"prior_high_volume_contest_20d:{prior_high_volume_contest_20d},stock_volume_ratio_20d:{stock_volume_ratio_20d}")
+                if runup_hit:
+                    parts.append(
+                        f"runup_ma5_exhaustion({rma_val:.2f})>{EXHAUSTION_RUNUP_MA5_THRESHOLD} "
+                        f"AND top10_10d_strength_level_v3({top10_val:.2f})>={EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD}"
+                    )
+                if blowoff_hit:
+                    parts.append(
+                        f"prev_day_blowoff_risk({blowoff_val:.2f})>={EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD} "
+                        f"AND sector_momentum_accel_rank({sector_val:.2f})<={EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD}"
+                    )
+                if market_ad_hit:
+                    parts.append(
+                        f"market_advance_decline_ratio({market_ad_val:.2f})>={EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD}"
+                    )
+                return True, " OR ".join(parts)
+
+    if strategy == 'close_below_ma5':
+        flag_val = row.get('close_below_ma5_after_runup', np.nan)
+        tz_val = row.get('turnover_z_20', np.nan)
+        if pd.notna(flag_val) and flag_val == 1 and pd.notna(tz_val) and tz_val > EXHAUSTION_FILTER_TURNOVER_Z_THRESHOLD:
+            return True, (
+                f"close_below_ma5_after_runup==1 AND turnover_z_20({tz_val:.2f})>{EXHAUSTION_FILTER_TURNOVER_Z_THRESHOLD}"
+            )
+
+    return False, ""
 
 
 def _prepare_prediction_data(factor_data: pd.DataFrame, feature_columns: list, logger) -> tuple:
@@ -15730,6 +16428,39 @@ def _save_walkforward_results(all_window_metrics, all_selections):
 
         logger.info(f"[OK] 选股结果已保存: {selections_file.name}")
 
+        shadow_records = []
+        for window_metrics in all_window_metrics:
+            window_name = window_metrics.get('window_name', 'Unknown')
+            shadow_by_rank = window_metrics.get('shadow_trades', {}) or {}
+
+            if not shadow_by_rank and window_metrics.get('all_results'):
+                shadow_by_rank = {
+                    rank: result.get('shadow_skipped_opportunity_trades', [])
+                    for rank, result in window_metrics['all_results'].items()
+                    if isinstance(result, dict)
+                }
+
+            for stock_count, records in shadow_by_rank.items():
+                for record in records or []:
+                    row = dict(record)
+                    row['window_name'] = window_name
+                    row['stock_count'] = stock_count
+                    shadow_records.append(row)
+
+        if shadow_records:
+            shadow_json_file = results_dir / f"walkforward_shadow_skipped_opportunities_{timestamp}.json"
+            with open(shadow_json_file, 'w', encoding='utf-8') as f:
+                json.dump(shadow_records, f, ensure_ascii=False, indent=2, default=str)
+
+            shadow_csv_file = results_dir / f"walkforward_shadow_skipped_opportunities_{timestamp}.csv"
+            pd.DataFrame(shadow_records).to_csv(shadow_csv_file, index=False, encoding='utf-8-sig')
+            logger.info(
+                f"[OK] 影子满仓机会已保存: {shadow_json_file.name}, "
+                f"{shadow_csv_file.name} ({len(shadow_records)}笔)"
+            )
+        else:
+            logger.info("[INFO] 本次没有影子满仓机会记录")
+
         # 显示每日选股详情
         _display_daily_stock_selections(all_selections, results_dir, timestamp, all_window_metrics)
 
@@ -16113,14 +16844,23 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             logger.error("[FAIL] 验证数据缺少atr_return_label列")
             return None
 
-        # [OK] 过滤掉标签为NaN的样本
-        train_valid_mask = train_data['atr_return_label'].notna()
+        if 'relevance' not in train_data.columns or 'relevance' not in val_data.columns:
+            logger.error("[FAIL] 训练/验证数据缺少relevance列,无法训练LightGBM二分类模型")
+            return None
+
+        # [OK] 过滤掉标签为NaN的样本。
+        # LightGBM实际训练使用relevance，atr_return_label仅用于IC/收益评估；
+        # 两者任一缺失都会导致特征、标签或评估数据错位。
+        train_valid_mask = train_data['atr_return_label'].notna() & train_data['relevance'].notna()
         train_data_valid = train_data[train_valid_mask].copy()
 
-        val_valid_mask = val_data['atr_return_label'].notna()
+        val_valid_mask = val_data['atr_return_label'].notna() & val_data['relevance'].notna()
         val_data_valid = val_data[val_valid_mask].copy()
 
-        test_valid_mask = test_data['atr_return_label'].notna()
+        if 'relevance' in test_data.columns:
+            test_valid_mask = test_data['atr_return_label'].notna() & test_data['relevance'].notna()
+        else:
+            test_valid_mask = test_data['atr_return_label'].notna()
         test_data_valid = test_data[test_valid_mask].copy()
 
         if len(train_data_valid) == 0:
@@ -16133,6 +16873,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
 
         logger.info(f"[CHART] 有效训练样本: {len(train_data_valid):,}/{len(train_data):,} ({len(train_data_valid)/len(train_data)*100:.1f}%)")
         logger.info(f"[CHART] 有效验证样本: {len(val_data_valid):,}/{len(val_data):,} ({len(val_data_valid)/len(val_data)*100:.1f}%)")
+
+        # 释放父DataFrame节省内存（_valid副本已创建）
+        del train_valid_mask, val_valid_mask, test_valid_mask
+        del train_data, val_data
 
         # 🆕 排序模型要求数据按日期排序,确保训练集和验证集按日期升序排列
         # [强化] 关键修复: 必须同时按date和stock_code排序,确保同一天内股票顺序确定
@@ -16593,64 +17337,75 @@ def _backtest_on_window(test_data, model_result, window, args):
 
         logger.info(f"[CHART] 使用{len(models)}个模型进行集成预测")
 
+        X_test_prediction, rounded_features = _round_prediction_feature_matrix(
+            X_test_aligned,
+            feature_columns,
+            logger=logger,
+            context=f"{window['name']}测试集预测",
+        )
+        run_rounding_diagnostic = ENABLE_PREDICTION_FEATURE_ROUNDING and bool(rounded_features)
+
         # 对每个模型进行预测
         all_predictions = []
+        all_predictions_before_round = []
         for i, (model, scaler, model_type) in enumerate(zip(models, scalers, model_types)):
             # [WRENCH] 修复：不再使用StandardScaler，直接使用Winsorization后的特征
             # 因子在计算时已经进行了时间序列标准化（如zscore、rank）
-            X_test_scaled = X_test_aligned
+            X_test_scaled = X_test_prediction
 
-            # 根据模型类型进行预测
+            if run_rounding_diagnostic:
+                y_pred_single_before_round = _predict_model_for_backtest(model, X_test_aligned, model_type)
+                all_predictions_before_round.append(y_pred_single_before_round)
+
+            y_pred_single = _predict_model_for_backtest(model, X_test_scaled, model_type)
             if model_type == 'lightgbm':
-                # LightGBM模型
-                y_pred_single = model.predict(X_test_scaled, num_iteration=model.best_iteration)
                 logger.info(f"  [OK] 模型{i+1}(LightGBM)预测完成")
             elif hasattr(model, 'predict') and hasattr(model, 'get_score'):
-                # XGBoost Booster对象
-                import xgboost as xgb
-                dtest = xgb.DMatrix(X_test_scaled)
-                y_pred_single = model.predict(dtest)
                 logger.info(f"  [OK] 模型{i+1}(XGBoost Booster)预测完成")
             else:
-                # XGBRegressor对象
-                y_pred_single = model.predict(X_test_scaled)
                 logger.info(f"  [OK] 模型{i+1}(XGBoost Regressor)预测完成")
 
             all_predictions.append(y_pred_single)
 
-        # 计算加权平均预测(基于RankIC)
+        y_pred, std_pred = _aggregate_model_predictions(all_predictions, model_performances, logger)
         if len(all_predictions) > 1:
-            # 多模型集成
-            # [WRENCH] 修复: 处理None值,将None替换为0
-            model_performances_clean = [p if p is not None else 0.0 for p in model_performances]
-            mse_array = np.array(model_performances_clean)
-
-            # [强化] 排序模型使用RankIC作为权重,RankIC越大权重越高
-            if np.all(mse_array > 0):
-                # 使用RankIC作为权重(RankIC越大权重越高)
-                weights = mse_array / mse_array.sum()
-            else:
-                # 如果RankIC无效或为负,使用均等权重
-                logger.warning("[WARNING] 部分模型RankIC无效或为负,使用均等权重")
-                weights = np.ones(len(all_predictions)) / len(all_predictions)
-
-            logger.info(f"[CHART] 模型权重: {weights}")
-
-            # 加权平均
-            y_pred = np.average(all_predictions, axis=0, weights=weights)
-
-            # 计算预测分歧度(用于置信度过滤)
-            std_pred = np.std(all_predictions, axis=0)
             logger.info(f"[CHART] 预测分歧度: 均值={std_pred.mean():.4f}, 最大={std_pred.max():.4f}")
-        else:
-            # 单模型
-            y_pred = all_predictions[0]
-            std_pred = np.zeros_like(y_pred)  # 单模型无分歧度
+
+        if run_rounding_diagnostic and all_predictions_before_round:
+            y_pred_before_round, _ = _aggregate_model_predictions(
+                all_predictions_before_round,
+                model_performances,
+                logger,
+            )
+            pred_abs_diff = np.abs(np.asarray(y_pred, dtype=float) - np.asarray(y_pred_before_round, dtype=float))
+            logger.info(
+                f"[ROUND] round前后预测分差: mean={pred_abs_diff.mean():.8f}, "
+                f"p95={np.percentile(pred_abs_diff, 95):.8f}, max={pred_abs_diff.max():.8f}"
+            )
+            _log_top1_rounding_sensitivity(
+                test_data,
+                y_pred_before_round,
+                y_pred,
+                window['name'],
+                logger,
+            )
 
         # 添加预测结果到测试数据
         test_data_with_pred = test_data.copy()
         test_data_with_pred['predicted_return'] = y_pred
         test_data_with_pred['std_pred'] = std_pred
+        if 'date' in test_data_with_pred.columns:
+            daily_pred_mean = test_data_with_pred.groupby('date')['predicted_return'].transform('mean')
+            daily_pred_std = test_data_with_pred.groupby('date')['predicted_return'].transform(
+                lambda s: float(np.nanstd(pd.to_numeric(s, errors='coerce'), ddof=0))
+            )
+            test_data_with_pred['score_z_in_day'] = np.where(
+                daily_pred_std > 0,
+                (test_data_with_pred['predicted_return'] - daily_pred_mean) / daily_pred_std,
+                np.nan,
+            )
+        else:
+            test_data_with_pred['score_z_in_day'] = np.nan
 
         # 🆕 诊断日志：预测值统计
         logger.info(f"\n{'='*60}")
@@ -16797,7 +17552,7 @@ def _backtest_on_window(test_data, model_result, window, args):
             # 按日期分组计算topk
             for date in test_data_with_pred['date'].unique():
                 date_data = test_data_with_pred[test_data_with_pred['date'] == date]
-                logger.info(f"日期:{date}股票:{len(date_data)}")
+                # logger.info(f"日期:{date}股票:{len(date_data)}")
 
                 if len(date_data) >= 5:  # 确保有足够的股票
                     # 按预测值降序排列
@@ -17113,6 +17868,11 @@ def _backtest_on_window(test_data, model_result, window, args):
                 return None
             all_trades = {k: v.get('trades', []) for k, v in all_results.items()}
             summary_stats = {}
+        shadow_trades = {
+            k: v.get('shadow_skipped_opportunity_trades', [])
+            for k, v in all_results.items()
+            if isinstance(v, dict)
+        }
 
         primary_rank = 1 if 1 in all_results else min(all_results.keys())
         primary_metrics = all_results.get(primary_rank, {})
@@ -17131,6 +17891,7 @@ def _backtest_on_window(test_data, model_result, window, args):
             # [OK] 所有Top-k档位的完整结果
             'all_results': all_results,  # {1: {...}, 2: {...}, 3: {...}, 5: {...}}
             'detailed_trades': all_trades,  # {1: [...], 2: [...], 3: [...], 5: [...]}
+            'shadow_trades': shadow_trades,  # 满仓跳过的影子机会，不参与真实收益统计
             'summary_stats': summary_stats
         }
 
@@ -17160,48 +17921,26 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
     logger = logging.getLogger(__name__)
 
     try:
-        # 0. 加载市场数据（用于XGBoost计算group权重）
-        logger.info(f"\n[REFRESH] 步骤0: 加载市场数据")
-        market_data = None
-        try:
-            from data_loader import IntegratedDataLoader
-            loader = IntegratedDataLoader()
-            start_date_str = factor_data['date'].min().strftime('%Y%m%d')
-            end_date_str = factor_data['date'].max().strftime('%Y%m%d')
-            _, _, market_data = loader.load_all_data(start_date_str, end_date_str, extend_history_days=20)
 
-            if market_data is None or market_data.empty:
-                logger.warning("[WARNING] 市场数据加载失败，XGBoost将使用均匀group权重")
-                market_data = None
-            else:
-                # 确保date列是datetime类型
-                if 'date' in market_data.columns:
-                    market_data['date'] = pd.to_datetime(market_data['date'])
-                logger.info(f"[OK] 市场数据加载成功: {len(market_data)}条记录")
-        except Exception as e:
-            logger.warning(f"[WARNING] 市场数据加载失败: {e}，XGBoost将使用均匀group权重")
-            market_data = None
-
-        # 1. 划分数据
+        # 1. 划分数据（延迟拷贝：切片不主动 .copy()，由后续逻辑按需拷贝）
         logger.info(f"\n[CHART] 步骤1: 划分数据集")
 
-        # 训练集
-        train_data = factor_data[
-            (factor_data['date'] >= pd.to_datetime(window['train_start'])) &
-            (factor_data['date'] <= pd.to_datetime(window['train_end']))
-        ].copy()
+        train_start = pd.to_datetime(window['train_start'])
+        train_end = pd.to_datetime(window['train_end'])
+        val_start = pd.to_datetime(window['val_start'])
+        val_end = pd.to_datetime(window['val_end'])
+        test_start = pd.to_datetime(window['test_start'])
+        test_end = pd.to_datetime(window['test_end'])
 
-        # 验证集
-        val_data = factor_data[
-            (factor_data['date'] >= pd.to_datetime(window['val_start'])) &
-            (factor_data['date'] <= pd.to_datetime(window['val_end']))
-        ].copy()
+        train_mask = (factor_data['date'] >= train_start) & (factor_data['date'] <= train_end)
+        val_mask = (factor_data['date'] >= val_start) & (factor_data['date'] <= val_end)
+        test_mask = (factor_data['date'] >= test_start) & (factor_data['date'] <= test_end)
 
-        # 测试集
-        test_data = factor_data[
-            (factor_data['date'] >= pd.to_datetime(window['test_start'])) &
-            (factor_data['date'] <= pd.to_datetime(window['test_end']))
-        ].copy()
+        _factor_date_index = factor_data.index  # 后续按data.index对齐时使用
+
+        train_data = factor_data.loc[train_mask].copy()
+        val_data = factor_data.loc[val_mask].copy()
+        test_data = factor_data.loc[test_mask].copy()
 
         logger.info(f"   训练集: {len(train_data):,}条 ({window['train_start']} ~ {window['train_end']})")
         logger.info(f"   验证集: {len(val_data):,}条 ({window['val_start']} ~ {window['val_end']})")
@@ -17259,8 +17998,11 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
             logger.info(f"\n🏷️ 步骤1.5: 生成valid_cs_mask并生成标签（ST/新股不参与横截面rank）")
 
-            # 使用连续时间区间生成标签，避免 train/val/test 直接拼接后存在日期断档，
-            # 导致 groupby().shift(-2/-3) 跨缺口跳到更远日期，放大尾部样本标签。
+            # 释放初始切片（将在本块末尾重建），减轻 factor_data 拷贝阶段的内存压力
+            del train_data, val_data, test_data, train_mask, val_mask, test_mask
+            import gc; gc.collect()
+
+            # .copy() 是必要的：factor_data[mask] 返回碎片化视图，排序需要连续内存
             label_start = pd.to_datetime(window['train_start'])
             combined_data = factor_data[
                 factor_data['date'] >= label_start
@@ -17280,6 +18022,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                 if bj_cnt > 0:
                     logger.warning(f"   [FILTER] 发现北交所样本 {bj_cnt:,} 条，已在标签生成前剔除（因子库应已不包含.BJ）")
                     combined_data = combined_data.loc[~bj_mask].copy()
+                del bj_mask  # 释放中间Series
 
             # 生成 valid_cs_mask（不删行）
             logger.info("   [REFRESH] 生成valid_cs_mask（综合ST/新股口径，不删行）...")
@@ -17287,6 +18030,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                 valid_cs_mask, st_keep, new_keep = _build_valid_cs_mask(combined_data, logger)
                 combined_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
                 invalid_cnt = int((~combined_data["valid_cs_mask"]).sum())
+                del st_keep, new_keep, valid_cs_mask  # 释放中间Series
                 logger.info(f"   [OK] valid_cs_mask 生成完成: 无效样本 {invalid_cnt:,}/{len(combined_data):,}")
             except Exception as e:
                 logger.warning(f"   [WARNING] valid_cs_mask 生成失败，回退为全True: {e}")
@@ -17296,30 +18040,29 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
             logger.info("   [REFRESH] 生成标签...")
             combined_data = _generate_training_labels_for_all_data(combined_data)
 
-            # 划分训练/验证/测试（含标签）
+            # 划分训练/验证/测试（含标签）—— 提取后立即释放 combined_data
             train_data = combined_data[
-                (combined_data['date'] >= pd.to_datetime(window['train_start'])) &
-                (combined_data['date'] <= pd.to_datetime(window['train_end']))
+                (combined_data['date'] >= train_start) &
+                (combined_data['date'] <= train_end)
             ].copy()
             val_data = combined_data[
-                (combined_data['date'] >= pd.to_datetime(window['val_start'])) &
-                (combined_data['date'] <= pd.to_datetime(window['val_end']))
+                (combined_data['date'] >= val_start) &
+                (combined_data['date'] <= val_end)
             ].copy()
             test_data = combined_data[
-                (combined_data['date'] >= pd.to_datetime(window['test_start'])) &
-                (combined_data['date'] <= pd.to_datetime(window['test_end']))
+                (combined_data['date'] >= test_start) &
+                (combined_data['date'] <= test_end)
             ].copy()
+
+            # 释放 combined_data（约5 GiB）
+            del combined_data
+            import gc; gc.collect()
 
             # 排序保证一致性
             train_data = train_data.sort_values(['date', 'stock_code']).reset_index(drop=True)
             val_data = val_data.sort_values(['date', 'stock_code']).reset_index(drop=True)
             test_data = test_data.sort_values(['date', 'stock_code']).reset_index(drop=True)
 
-            # [训练/验证] relevance 为空的样本不会进入训练（包括ST/新股、不交易样本、末端无未来数据样本）
-            # NOTE: 不在 DataFrame 层 dropna(relevance)，由后续模型输入 mask 控制
-            train_data = train_data
-            # NOTE: 不在 DataFrame 层 dropna(relevance)，由后续模型输入 mask 控制
-            val_data = val_data
             logger.info(f"   [OK] 标签生成完成")
             if 'atr_return_label' in train_data.columns:
                 logger.info(f"   训练集有效样本: {train_data['atr_return_label'].notna().sum():,}/{len(train_data):,} ,最小值：{train_data['atr_return_label'].min():.6f}最大值：{train_data['atr_return_label'].max():.6f}")
@@ -17356,7 +18099,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260429_202824.pkl"
-        # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260411_180603.pkl"
@@ -17457,7 +18200,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
             model_result = _train_final_model_for_window(
                 full_train_data, full_val_data, full_test_data, best_params, window_idx,
                 use_lightgbm=use_lightgbm,
-                market_data=market_data,  # [强化] 传递market_data用于XGBoost计算group权重
+                market_data=None,  # [强化] 传递market_data用于XGBoost计算group权重
                 optimize_thresholds=args.optimize_thresholds,  # [强化] 传递止盈止损优化参数
                 sw_sector_mapping=sw_sector_mapping  # [SW行业编码] 传递SW行业数据用于分类特征
             )
@@ -17518,6 +18261,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                 # [OK] 所有Top-k档位的完整结果
                 'all_results': backtest_result.get('all_results', {}),
                 'detailed_trades': backtest_result.get('detailed_trades', {}),
+                'shadow_trades': backtest_result.get('shadow_trades', {}),
                 'summary_stats': backtest_result.get('summary_stats', {})
             }
         }

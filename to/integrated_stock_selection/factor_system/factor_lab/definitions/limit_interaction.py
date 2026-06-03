@@ -89,6 +89,50 @@ def _safe_zscore(series: pd.Series) -> pd.Series:
     return (s - s.mean()) / (std + 1e-8)
 
 
+
+
+def _cross_sectional_robust_zscore(series: pd.Series, dates: pd.Series) -> pd.Series:
+    """
+    横截面 Robust Z-Score（无未来信息泄露）
+
+    使用 median + MAD：
+        z = (x - median) / (1.4826 * MAD)
+
+    相比全局 std：
+    - 不使用未来 regime 波动结构
+    - 对 A 股涨停/炸板极值更稳定
+    - 更适合横截面排序模型
+    """
+
+    s = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+    def _robust(x: pd.Series) -> pd.Series:
+        med = x.median()
+        mad = (x - med).abs().median()
+
+        if pd.isna(mad) or mad < 1e-12:
+            return pd.Series(0.0, index=x.index)
+
+        return (x - med) / (1.4826 * mad + 1e-9)
+
+    return s.groupby(dates).transform(_robust)
+
+
+def _rolling_percentile_self(series: pd.Series, window: int = 20, min_periods: int = 10) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).reset_index(drop=True)
+    values: list[float] = []
+    for i, cur in enumerate(s):
+        if pd.isna(cur):
+            values.append(np.nan)
+            continue
+        hist = s.iloc[max(0, i - window + 1): i + 1].dropna()
+        if len(hist) < min_periods:
+            values.append(np.nan)
+            continue
+        values.append(float((hist <= cur).mean()))
+    return pd.Series(values, index=series.index, dtype="float64")
+
+
 def _to_ts(date_series: pd.Series) -> pd.Series:
     """
     将 date 列稳健转换为 pandas Timestamp（支持 'YYYY-MM-DD' / 'YYYYMMDD' / int）
@@ -246,6 +290,26 @@ class _LimitInteractionHelper:
             raw_factor = env * alpha
             need_sector_neutral = False
 
+        elif factor_name == "prev_first_limit_up_performance":
+            # 市场环境变量：昨日首板涨停今日平均表现，直接广播
+            raw_factor = self.first_limit_up_perf_broadcast.reindex(rows.index).fillna(0)
+            need_sector_neutral = False
+
+        elif factor_name == "prev_first_limit_up_performance_percentile_20d":
+            # 市场环境变量：昨日首板涨停今日平均表现的20日滚动分位数，直接广播
+            raw_factor = self.first_limit_up_perf_percentile_20d_broadcast.reindex(rows.index).fillna(0)
+            need_sector_neutral = False
+
+        elif factor_name == "prev_non_first_limit_up_performance":
+            # 市场环境变量：昨日非首板涨停今日平均表现，直接广播
+            raw_factor = self.non_first_limit_up_perf_broadcast.reindex(rows.index).fillna(0)
+            need_sector_neutral = False
+
+        elif factor_name == "prev_non_first_limit_up_performance_percentile_20d":
+            # 市场环境变量：昨日非首板涨停今日平均表现的20日滚动分位数，直接广播
+            raw_factor = self.non_first_limit_up_perf_percentile_20d_broadcast.reindex(rows.index).fillna(0)
+            need_sector_neutral = False
+
         else:
             raise ValueError(f"Unknown factor: {factor_name}")
 
@@ -281,6 +345,54 @@ class _LimitInteractionHelper:
         prev_limit_up = self.data.groupby("stock_code")["is_limit_up"].shift(1).fillna(0)
         self.data["is_prev_limit_up"] = prev_limit_up
 
+        # 昨日首板涨停标识：昨日涨停且前日非涨停（区分首板与连板）
+        prev_prev_limit_up = self.data.groupby("stock_code")["is_limit_up"].shift(2).fillna(0)
+        self.data["is_prev_first_limit_up"] = ((prev_limit_up == 1) & (prev_prev_limit_up == 0)).astype(int)
+        self.data["is_prev_non_first_limit_up"] = ((prev_limit_up == 1) & (prev_prev_limit_up == 1)).astype(int)
+
+        # 昨日首板涨停今日平均表现（市场环境变量，按日聚合后广播给所有股票）
+        first_limit_up_perf = (
+            self.data[self.data["is_prev_first_limit_up"] == 1]
+            .groupby("date")["pct_chg"]
+            .mean()
+        )
+        # 无首板涨停股的日期填0（市场冰点无信号）
+        self.first_limit_up_perf_broadcast = self.data["date"].map(first_limit_up_perf).fillna(0)
+
+        daily_perf = self.data[["date"]].drop_duplicates().sort_values("date")
+        daily_perf["first_limit_up_perf"] = daily_perf["date"].map(first_limit_up_perf).fillna(0.0)
+        daily_perf["first_limit_up_perf_percentile_20d"] = _rolling_percentile_self(
+            daily_perf["first_limit_up_perf"],
+            window=20,
+            min_periods=10,
+        )
+        pct_map = pd.Series(
+            daily_perf["first_limit_up_perf_percentile_20d"].values,
+            index=daily_perf["date"],
+        )
+        self.first_limit_up_perf_percentile_20d_broadcast = self.data["date"].map(pct_map).fillna(0)
+
+        # 昨日非首板涨停今日平均表现（连板股次日表现，按日聚合后广播给所有股票）
+        non_first_limit_up_perf = (
+            self.data[self.data["is_prev_non_first_limit_up"] == 1]
+            .groupby("date")["pct_chg"]
+            .mean()
+        )
+        self.non_first_limit_up_perf_broadcast = self.data["date"].map(non_first_limit_up_perf).fillna(0)
+
+        daily_non_first_perf = self.data[["date"]].drop_duplicates().sort_values("date")
+        daily_non_first_perf["non_first_limit_up_perf"] = daily_non_first_perf["date"].map(non_first_limit_up_perf).fillna(0.0)
+        daily_non_first_perf["non_first_limit_up_perf_percentile_20d"] = _rolling_percentile_self(
+            daily_non_first_perf["non_first_limit_up_perf"],
+            window=20,
+            min_periods=10,
+        )
+        non_first_pct_map = pd.Series(
+            daily_non_first_perf["non_first_limit_up_perf_percentile_20d"].values,
+            index=daily_non_first_perf["date"],
+        )
+        self.non_first_limit_up_perf_percentile_20d_broadcast = self.data["date"].map(non_first_pct_map).fillna(0)
+
         # 昨日涨停溢价：只取 is_prev_limit_up == 1 的样本
         limit_up_premium = self.data[self.data["is_prev_limit_up"] == 1].groupby("date")["pct_chg"].mean()
 
@@ -299,16 +411,22 @@ class _LimitInteractionHelper:
             self.data["turnover_z"] = self.data["active_z"]
 
         # C3. 日内强度
-        prev_close = self.data.groupby("stock_code")["close"].shift(1)
-        self.data["intraday_strength"] = (self.data["close"] - self.data["open"]) / (prev_close + 1e-8)
+        if {"open", "close"}.issubset(self.data.columns):
+            prev_close = self.data.groupby("stock_code")["close"].shift(1)
+            self.data["intraday_strength"] = (self.data["close"] - self.data["open"]) / (prev_close + 1e-8)
+        else:
+            self.data["intraday_strength"] = 0.0
 
         # C4. CLV / Resilience（修复一字板）
-        range_len = self.data["high"] - self.data["low"]
-        clv = (self.data["close"] - self.data["low"]) / (range_len + 1e-8)
+        if {"high", "low", "close"}.issubset(self.data.columns):
+            range_len = self.data["high"] - self.data["low"]
+            clv = (self.data["close"] - self.data["low"]) / (range_len + 1e-8)
 
-        is_flat = range_len < 1e-5
-        mask_one_bar_limit_up = is_flat & (self.data["is_limit_up"] == 1)
-        self.data["clv"] = np.where(mask_one_bar_limit_up, 1.0, clv)
+            is_flat = range_len < 1e-5
+            mask_one_bar_limit_up = is_flat & (self.data["is_limit_up"] == 1)
+            self.data["clv"] = np.where(mask_one_bar_limit_up, 1.0, clv)
+        else:
+            self.data["clv"] = 0.0
 
         self.data["resilience_z"] = self._intra_sector_standardize(self.data["clv"])
 
@@ -320,24 +438,54 @@ class _LimitInteractionHelper:
         # A. 填充空值：共振因子 NaN -> 0 意味“无共振”
         joined_res = raw_factor.fillna(0)
 
+        if factor_name in {
+            "prev_first_limit_up_performance",
+            "prev_first_limit_up_performance_percentile_20d",
+            "prev_non_first_limit_up_performance",
+            "prev_non_first_limit_up_performance_percentile_20d",
+        }:
+            # 市场环境变量：同一天所有股票取同一个广播值。
+            # 截面 robust z-score 会因为日内截面无离散度而退化为全 0；
+            # FrozenClip 也会削弱“首板次日平均涨跌幅”的原始量纲含义。
+            return joined_res.reindex(self.original_index).fillna(0).astype("float64")
+
         # B. Frozen MAD Clip（训练期拟合阈值）
         clipped_res = self._frozen_clip(factor_name, joined_res, n_mad=3.0)
 
         # C. 标准化分流
         if need_sector_neutral:
             final_res = self.data.assign(res=clipped_res).groupby(["date", "sector_code"])["res"].transform(_safe_zscore)
+        elif factor_name == "limit_sustain_alpha":
+            # 方案A: 仅"昨日涨停股"子集内做截面z-score
+            # 非涨停股天然为0（中性，不参与排序竞争），涨停股之间比较日内接力强度
+            mask = self.data["is_prev_limit_up"] == 1
+            final_res = pd.Series(0.0, index=self.data.index, dtype="float64")
+            if mask.sum() >= 3:  # 最少3只涨停股截面才稳定
+                subset_series = clipped_res[mask]
+                subset_dates = self.data.loc[mask, "date"]
+                final_res.loc[subset_series.index] = _cross_sectional_robust_zscore(
+                    subset_series, subset_dates
+                ).astype("float64")
         else:
-            global_std = clipped_res.std()
-            if global_std == 0 or np.isnan(global_std):
-                final_res = clipped_res
-            else:
-                final_res = clipped_res / global_std
+            final_res = _cross_sectional_robust_zscore(
+                clipped_res,
+                self.data["date"]
+            )
 
         return final_res.reindex(self.original_index).fillna(0).astype("float64")
 
     def compute_target(self, factor_name: str, target_index: pd.Index) -> pd.Series:
         target_data = self.data.loc[target_index].copy()
         raw_target, need_sector_neutral = self._build_raw_factor(factor_name, target_data)
+
+        if factor_name in {
+            "prev_first_limit_up_performance",
+            "prev_first_limit_up_performance_percentile_20d",
+            "prev_non_first_limit_up_performance",
+            "prev_non_first_limit_up_performance_percentile_20d",
+        }:
+            # 市场环境变量：同一天所有股票取同一个广播值，直接保留原始广播值。
+            return raw_target.reindex(target_index).fillna(0).astype("float64")
 
         # 拟合/读取 frozen 参数时，仍以全历史 raw 为背景；输出只保留目标日期
         raw_full, _ = self._build_raw_factor(factor_name)
@@ -351,13 +499,20 @@ class _LimitInteractionHelper:
                 .groupby(["date", "sector_code"])["res"]
                 .transform(_safe_zscore)
             )
+        elif factor_name == "limit_sustain_alpha":
+            mask = target_data["is_prev_limit_up"] == 1
+            final_res = pd.Series(0.0, index=target_data.index, dtype="float64")
+            if mask.sum() >= 3:
+                subset_series = clipped_target[mask]
+                subset_dates = target_data.loc[mask, "date"]
+                final_res.loc[subset_series.index] = _cross_sectional_robust_zscore(
+                    subset_series, subset_dates
+                ).astype("float64")
         else:
-            clipped_full = clipper.transform(raw_full.fillna(0))
-            global_std = clipped_full.std()
-            if global_std == 0 or np.isnan(global_std):
-                final_res = clipped_target
-            else:
-                final_res = clipped_target / global_std
+            final_res = _cross_sectional_robust_zscore(
+                clipped_target,
+                target_data["date"]
+            )
 
         return final_res.reindex(target_index).fillna(0).astype("float64")
 
@@ -379,6 +534,10 @@ def _c_overflow(d, c): return _get_helper(d, c).get_factor("sector_limit_overflo
 def _c_resilience(d, c): return _get_helper(d, c).get_factor("sector_broken_resilience_alpha")
 def _c_sustain(d, c): return _get_helper(d, c).get_factor("limit_sustain_alpha")
 def _c_resonance(d, c): return _get_helper(d, c).get_factor("market_emotion_resonance_alpha")
+def _c_prev_first_limit_up_perf(d, c): return _get_helper(d, c).get_factor("prev_first_limit_up_performance")
+def _c_prev_first_limit_up_perf_pct20(d, c): return _get_helper(d, c).get_factor("prev_first_limit_up_performance_percentile_20d")
+def _c_prev_non_first_limit_up_perf(d, c): return _get_helper(d, c).get_factor("prev_non_first_limit_up_performance")
+def _c_prev_non_first_limit_up_perf_pct20(d, c): return _get_helper(d, c).get_factor("prev_non_first_limit_up_performance_percentile_20d")
 def _target_factor(name):
     return lambda d, ti, c: _get_helper(d, c).compute_target(name, ti)
 
@@ -427,9 +586,57 @@ market_emotion_resonance_alpha = register_factor(FactorDefinition(
     description="市场情绪共振因子(昨日涨停溢价x个股活跃) - FrozenClip"
 ))
 
+prev_first_limit_up_performance = register_factor(FactorDefinition(
+    name="prev_first_limit_up_performance",
+    required_columns={"stock_code", "date", "is_limit_up", "pct_chg"},
+    requires_sector_data=False,
+    lookback_days=10,
+    calculator=_c_prev_first_limit_up_perf,
+    calculation_scope='daily_broadcast',
+    target_calculator=_target_factor("prev_first_limit_up_performance"),
+    description="昨日首板涨停今日平均表现(市场环境变量,按日广播,保留原始涨跌幅均值)"
+))
+
+prev_first_limit_up_performance_percentile_20d = register_factor(FactorDefinition(
+    name="prev_first_limit_up_performance_percentile_20d",
+    required_columns={"stock_code", "date", "is_limit_up", "pct_chg"},
+    requires_sector_data=False,
+    lookback_days=25,
+    calculator=_c_prev_first_limit_up_perf_pct20,
+    calculation_scope='daily_broadcast',
+    target_calculator=_target_factor("prev_first_limit_up_performance_percentile_20d"),
+    description="昨日首板涨停今日平均表现位于过去20日窗口的滚动分位数(按日广播)"
+))
+
+prev_non_first_limit_up_performance = register_factor(FactorDefinition(
+    name="prev_non_first_limit_up_performance",
+    required_columns={"stock_code", "date", "is_limit_up", "pct_chg"},
+    requires_sector_data=False,
+    lookback_days=10,
+    calculator=_c_prev_non_first_limit_up_perf,
+    calculation_scope='daily_broadcast',
+    target_calculator=_target_factor("prev_non_first_limit_up_performance"),
+    description="昨日非首板涨停今日平均表现(连板股市场环境变量,按日广播,保留原始涨跌幅均值)"
+))
+
+prev_non_first_limit_up_performance_percentile_20d = register_factor(FactorDefinition(
+    name="prev_non_first_limit_up_performance_percentile_20d",
+    required_columns={"stock_code", "date", "is_limit_up", "pct_chg"},
+    requires_sector_data=False,
+    lookback_days=25,
+    calculator=_c_prev_non_first_limit_up_perf_pct20,
+    calculation_scope='daily_broadcast',
+    target_calculator=_target_factor("prev_non_first_limit_up_performance_percentile_20d"),
+    description="昨日非首板涨停今日平均表现位于过去20日窗口的滚动分位数(按日广播)"
+))
+
 __all__ = [
     "sector_limit_overflow_alpha",
     "sector_broken_resilience_alpha",
     "limit_sustain_alpha",
     "market_emotion_resonance_alpha",
+    "prev_first_limit_up_performance",
+    "prev_first_limit_up_performance_percentile_20d",
+    "prev_non_first_limit_up_performance",
+    "prev_non_first_limit_up_performance_percentile_20d",
 ]

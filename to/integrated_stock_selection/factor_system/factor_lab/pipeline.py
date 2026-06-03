@@ -128,7 +128,6 @@ class FactorPipeline:
         # 准备 Context
         ctx = FactorContext(
             market_data=_prepare_optional_df(market_data),
-            sector_data=_prepare_optional_df(sector_data),
             extra=extra,
         )
 
@@ -242,22 +241,6 @@ class FactorPipeline:
         * 不再填充缺失值
         * 不再做预先 Winsorize
         """
-        processed = {}
-        
-        # 1. 基础清洗：Inf -> NaN
-        for name, series in computed.items():
-            # processed[name] = series.replace([np.inf, -np.inf], np.nan)
-            s = series.replace([np.inf, -np.inf], np.nan)
-
-            # 2. 最终兜底填充
-            s = s.fillna(0.0)
-
-            # 3. 强制 float32
-            s = s.astype('float32')
-
-            processed[name] = s
-
-        # 2. 归一化
         normalized = {}
         zscore_factors = set(config.get('zscore_factors', []))
         rankpct_factors = set(config.get('rankpct_factors', []))
@@ -270,9 +253,12 @@ class FactorPipeline:
         # 这里的 enable_intelligent_clipping 由参数直接传入，不再从 config 读取
         # 保持与 commands.py 的控制一致
 
-        for name, series in processed.items():
+        # 单遍清洗 + 归一化，避免同时持有 processed 与 normalized 两份完整因子表。
+        for name, series in computed.items():
+            s = series.replace([np.inf, -np.inf], np.nan).fillna(0.0).astype('float32')
+
             if name in config.get('original_factors', []):
-                normalized[name] = series
+                normalized[name] = s
             elif name in zscore_factors or (
                 name not in rankpct_factors
                 and name not in expanding_factors
@@ -280,15 +266,15 @@ class FactorPipeline:
                 and name not in intra_sector_zscore_factors
             ):
                 normalized[name] = self._zscore_normalize_with_clipping(
-                    series, data, enable_intelligent_clipping
+                    s, data, enable_intelligent_clipping
                 )
 
             if name in rankpct_factors:
-                normalized[f"{name}_pct"] = self._rankpct_normalize(series, data)
+                normalized[f"{name}_pct"] = self._rankpct_normalize(s, data)
 
             if name in expanding_factors:
                 normalized[f"{name}_exp"] = self._expanding_percentile_normalize(
-                    series,
+                    s,
                     data,
                     factor_name=name,
                     history_data=expanding_history,
@@ -297,18 +283,18 @@ class FactorPipeline:
 
             if name in intra_sector_rank_factors:
                 if sw_sector_mapping:
-                    normalized[f"{name}_intra_rank"] = self._intra_sector_rank_normalize(series, data, sw_sector_mapping)
+                    normalized[f"{name}_intra_rank"] = self._intra_sector_rank_normalize(s, data, sw_sector_mapping)
                 else:
-                    normalized[f"{name}_intra_rank"] = self._rankpct_normalize(series, data)
+                    normalized[f"{name}_intra_rank"] = self._rankpct_normalize(s, data)
 
             if name in intra_sector_zscore_factors:
                 if sw_sector_mapping:
                     normalized[f"{name}_intra_z"] = self._intra_sector_zscore_normalize_with_clipping(
-                        series, data, sw_sector_mapping, enable_intelligent_clipping
+                        s, data, sw_sector_mapping, enable_intelligent_clipping
                     )
                 else:
                     normalized[f"{name}_intra_z"] = self._zscore_normalize_with_clipping(
-                        series, data, enable_intelligent_clipping
+                        s, data, enable_intelligent_clipping
                     )
 
         return normalized, {}

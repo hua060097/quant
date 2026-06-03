@@ -60,6 +60,10 @@ TOP1_MA_ALIGNMENT_PERSISTENCE_GATE_THRESHOLD = 1.0
 REFERENCE_RETURN_MODEL_SELECTIONS_JSON = r"results/walkforward_selections_20260430_221549.json"
 REFERENCE_RETURN_MODEL_PKL = r"results/lightgbm_model_window3_20260427_231053.pkl"
 
+# 并行风险模型正类: 收益模型alpha候选的标签收益小于该阈值。
+# 当前目标是识别显著大亏，而不是所有负收益。
+RISK_MODEL_LABEL_RETURN_THRESHOLD = -0.07
+
 # Top1 开关专用买入过滤模式
 # 'gap6' -> 低开超过6%跳过，同时保留 gap_up > 5% 跳过（默认）
 # 'ma5'  -> 开盘价低于开盘MA5跳过，同时保留 gap_up > 5% 跳过（备选）
@@ -1404,7 +1408,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_风险模型6.log',
+        'stock_selection_test_mode_walkforward_风险模型17.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3155,16 +3159,16 @@ def _get_lgb_search_space():
     # }
     space = {
         'learning_rate': [0.02],
-        'num_leaves': [31, 127],
+        'num_leaves': [7, 15, 31],
         'max_depth': [-1],
-        # 'min_data_in_leaf': [50, 100, 300, 500],
-        'min_data_in_leaf': [200, 300, 380, 400, 520],
+        # 'min_data_in_leaf': [20, 50, 100],
+        'min_data_in_leaf': [5,10,20,30,50],
         'feature_fraction': [0.6, 0.7, 0.8],
         'bagging_fraction': [0.6, 0.8, 1.0],
-        'reg_alpha': [5, 10, 20, 30, 40],
-        'reg_lambda': [5, 10, 20, 30, 40],
+        'reg_alpha': [0.5, 0.1, 0.3, 0.8, 0.4],
+        'reg_lambda': [2, 1, 3, 8, 4],
         # 'scale_pos_weight': [35, 45, 50] # 处理正负样本不平衡
-        'scale_pos_weight': [10, 15, 30] # 处理正负样本不平衡
+        'scale_pos_weight': [0.9, 1,2,5] # 处理正负样本不平衡
     }
     # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
@@ -3208,6 +3212,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             y_val_original = preprocessed_data.get('y_val_original', preprocessed_data.get('y_val'))
 
             test_dates = preprocessed_data.get('test_dates')
+            train_data_raw = preprocessed_data.get('train_data_raw')
             val_data_raw = preprocessed_data.get('val_data_raw')
             test_data_raw = preprocessed_data.get('test_data_raw')
             train_dates = preprocessed_data.get('train_dates')
@@ -3241,6 +3246,8 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             X_train_scaled = X_train_scaled[train_fit_mask]
             y_train = y_train[train_fit_mask]
             if train_dates is not None: train_dates = train_dates[train_fit_mask]
+            if train_data_raw is not None and hasattr(train_data_raw, 'iloc'):
+                train_data_raw = train_data_raw.iloc[train_fit_mask].copy()
 
         val_fit_mask = ~pd.isna(y_val)
         if not np.all(val_fit_mask):
@@ -3263,7 +3270,56 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             val_sample_weights = np.ones(len(y_val), dtype=float)
 
         try:
-            val_reference_top1_df = _build_reference_return_model_top1_candidates(val_data_raw, phase_name="验证集")
+            is_reference_alpha_top10_domain = bool(preprocessed_data.get('is_reference_alpha_top10_domain', False))
+            if train_data_raw is None or val_data_raw is None:
+                logger.warning("[RISK-TOP10] 缺少train_data_raw/val_data_raw，保持原始全样本风险模型训练逻辑")
+                val_reference_top1_df = _build_reference_return_model_top1_candidates(val_data_raw, phase_name="验证集")
+            elif is_reference_alpha_top10_domain:
+                logger.info(
+                    "[RISK-TOP10] 输入数据已在walkforward预处理阶段收敛到alpha每日Top10，"
+                    "训练入口不再重复过滤"
+                )
+                y_train = (
+                    pd.to_numeric(train_data_raw['atr_return_label'], errors='coerce').values
+                    < RISK_MODEL_LABEL_RETURN_THRESHOLD
+                ).astype(int)
+                y_val = (
+                    pd.to_numeric(val_data_raw['atr_return_label'], errors='coerce').values
+                    < RISK_MODEL_LABEL_RETURN_THRESHOLD
+                ).astype(int)
+                y_val_original = pd.to_numeric(val_data_raw['atr_return_label'], errors='coerce').values
+                val_reference_top1_df = _build_reference_return_model_top1_candidates(val_data_raw, phase_name="验证集Top10内")
+                logger.info(
+                    "[RISK-TOP10] LightGBM训练域确认: "
+                    f"label_threshold={RISK_MODEL_LABEL_RETURN_THRESHOLD:.2%} | "
+                    f"训练Top10样本={len(y_train):,}, days={pd.to_datetime(train_data_raw['date']).dt.normalize().nunique():,}, "
+                    f"risk_pos={int(y_train.sum()):,}({float(np.mean(y_train)):.2%}) | "
+                    f"验证Top10样本={len(y_val):,}, days={pd.to_datetime(val_data_raw['date']).dt.normalize().nunique():,}, "
+                    f"risk_pos={int(y_val.sum()):,}({float(np.mean(y_val)):.2%})"
+                )
+            else:
+                (
+                    X_train_scaled, y_train, train_dates, sample_weights, train_data_raw, train_top10_diag
+                ) = _filter_to_reference_alpha_topk_and_relabel_risk(
+                    X_train_scaled, train_data_raw, train_dates, sample_weights,
+                    phase_name="训练集", top_k=10
+                )
+                (
+                    X_val_scaled, y_val, val_dates, val_sample_weights, val_data_raw, val_top10_diag
+                ) = _filter_to_reference_alpha_topk_and_relabel_risk(
+                    X_val_scaled, val_data_raw, val_dates, val_sample_weights,
+                    phase_name="验证集", top_k=10
+                )
+                y_val_original = pd.to_numeric(val_data_raw['atr_return_label'], errors='coerce').values
+                val_reference_top1_df = _build_reference_return_model_top1_candidates(val_data_raw, phase_name="验证集Top10内")
+                logger.info(
+                    "[RISK-TOP10] 已切换为alpha每日Top10专用训练域: "
+                    f"参考模型={Path(REFERENCE_RETURN_MODEL_PKL).name} | "
+                    f"训练Top10样本={train_top10_diag['n']:,}, days={train_top10_diag['days']:,}, "
+                    f"risk_pos={train_top10_diag['pos']:,}({train_top10_diag['pos_rate']:.2%}) | "
+                    f"验证Top10样本={val_top10_diag['n']:,}, days={val_top10_diag['days']:,}, "
+                    f"risk_pos={val_top10_diag['pos']:,}({val_top10_diag['pos_rate']:.2%})"
+                )
             if val_reference_top1_df is None or val_reference_top1_df.empty:
                 logger.error("[FAIL] 无法构造验证集参考收益模型 Top1 候选，风险模型无法按目标场景选模")
                 return None
@@ -3311,7 +3367,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'scale_pos_weight': scale_pos_weight,
         }
 
-        SEARCH_ITER = 5
+        SEARCH_ITER = 10
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
@@ -3455,11 +3511,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 eval_df['predicted_risk'] = np.asarray(preds, dtype=float).reshape(-1)
                 eval_df['bigloss5'] = (
                     (pd.to_numeric(eval_rows.get('min_low_return'), errors='coerce') <= -0.05) |
-                    (pd.to_numeric(eval_rows.get('realistic_vwap_return'), errors='coerce') <= -0.05)
+                    (pd.to_numeric(eval_rows.get('atr_return_label'), errors='coerce') <= -0.05)
                 ).astype(int)
                 eval_df['bigloss7'] = (
                     (pd.to_numeric(eval_rows.get('min_low_return'), errors='coerce') <= -0.07) |
-                    (pd.to_numeric(eval_rows.get('realistic_vwap_return'), errors='coerce') <= -0.07)
+                    (pd.to_numeric(eval_rows.get('atr_return_label'), errors='coerce') <= -0.07)
                 ).astype(int)
                 eval_df = eval_df.dropna(subset=['pred_date', 'predicted_risk'])
                 if eval_df.empty:
@@ -3473,34 +3529,19 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 if aligned_df.empty:
                     return float('-inf')
 
-                unique_days = np.sort(aligned_df['pred_date'].dropna().unique())
-                day_chunks = [c for c in np.array_split(unique_days, 3) if len(c) > 0]
-                seg_scores = []
-                for idx, days in enumerate(day_chunks, start=1):
-                    seg_df = aligned_df[aligned_df['pred_date'].isin(days)].copy()
-                    seg_score, seg_metrics = _compute_top1_alignment_score(seg_df)
-                    if np.isfinite(seg_score):
-                        seg_scores.append(seg_score)
-
                 overall_score, overall_metrics = _compute_top1_alignment_score(aligned_df)
                 if not np.isfinite(overall_score):
                     return float('-inf')
 
-                global_score, global_metrics = _compute_global_risk_score(model, X_eval_scaled, eval_rows['relevance'].values, eval_rows['date'].values)
+                y_global = eval_rows['risk_label'].values if 'risk_label' in eval_rows.columns else eval_rows['relevance'].values
+                global_score, global_metrics = _compute_global_risk_score(model, X_eval_scaled, y_global, eval_rows['date'].values)
                 if not np.isfinite(global_score):
                     return float('-inf')
-
-                if len(seg_scores) == 0:
-                    seg_penalty = 0.0
-                else:
-                    seg_arr = np.asarray(seg_scores, dtype=float)
-                    seg_penalty = 0.15 * float(np.std(seg_arr))
 
                 # 全验证集主导，Top1对齐辅助，避免Top1小样本过拟合
                 final_score = float(
                     0.70 * global_score +
-                    0.30 * overall_score -
-                    seg_penalty
+                    0.30 * overall_score
                 )
                 logger.info(
                     "  [RISK-MIX验证] "
@@ -3510,7 +3551,6 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     f"n={overall_metrics['n']}, pos5={overall_metrics['pos5']}, pos7={overall_metrics['pos7']} | "
                     f"AUC5={overall_metrics['auc5']:.4f}, AP5={overall_metrics['ap5']:.4f}, "
                     f"P10_7={overall_metrics['p10_7']:.4f}, R10_7={overall_metrics['r10_7']:.4f} | "
-                    f"seg_std={seg_penalty / 0.15 if seg_penalty > 0 else 0.0:.4f} | "
                     f"score={final_score:.4f}"
                 )
                 return final_score
@@ -3631,6 +3671,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'model_params': best_params_found if best_params_found else base_params,
             'feature_importance': dict(zip(feature_columns, feature_importance)),
             'model_type': 'lightgbm',
+            'risk_alpha_top10_test_data': test_data_raw.copy() if test_data_raw is not None else None,
         }
 
         return model_results
@@ -5591,52 +5632,52 @@ def _get_zscore_factors():
     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
     """
     return [
-        'range_compression',
-        'body_efficiency',
-        # 'shadow_dominance',
-        'gap_power',
-        'kdj_golden_cross_strength',
-        'open_to_high_ratio',
-        'sector_concentration',
-        'sector_rank_change_5d',
-        'sector_breadth',
-        'intraday_clv',
-        'amihud_illiquidity',
-        'abnormal_turnover',
-        'efficiency_ratio',
-        'mass_index_reversal',
-        'price_acceleration',
-        'ma60_slope',
-        'price_ma60_ratio',
-        'kdj_diff_9',
-        'kdj_j_9',
-        'kdj_k_9',
-        'stable_momentum',
-        'momentum_decay',
-        'turnover_stability',
+        # 'range_compression',
+        # 'body_efficiency',
+        # # 'shadow_dominance',
+        # 'gap_power',
+        # 'kdj_golden_cross_strength',
+        # 'open_to_high_ratio',
+        # 'sector_concentration',
+        # 'sector_rank_change_5d',
+        # 'sector_breadth',
+        # 'intraday_clv',
+        # 'amihud_illiquidity',
+        # 'abnormal_turnover',
+        # 'efficiency_ratio',
+        # 'mass_index_reversal',
+        # 'price_acceleration',
+        # 'ma60_slope',
+        # 'price_ma60_ratio',
+        # 'kdj_diff_9',
+        # 'kdj_j_9',
+        # 'kdj_k_9',
+        # 'stable_momentum',
+        # 'momentum_decay',
+        # 'turnover_stability',
         # 'money_flow_pressure',
         'ulcer_index',
-        'max_drawdown_20d',
-        'max_rally_20d',
-        'max_rally_10d',
+        # 'max_drawdown_20d',
+        # 'max_rally_20d',
+        # 'max_rally_10d',
         # 'ppo_strength',
-        'mfi_strength',
-        'volatility_structure_alpha',
-        'price_impact',
+        # 'mfi_strength',
+        # 'volatility_structure_alpha',
+        # 'price_impact',
         # 'volume_structure_alpha',
         'pct_chg_1d',
-        'pct_chg_2d',
-        'regime_aware_reversal_alpha',
-        'trend_acceleration',
-        'trend_consistency',
-        'trend_pullback_composite_alpha',
-        # 'cpv_factor',
-        'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
-        'volume_confirmed_pullback_alpha',
-        'distance_from_52w_high',
-        'distance_from_52w_low',
-        'ma_alignment_score',
+        # 'pct_chg_2d',
+        # 'regime_aware_reversal_alpha',
+        # 'trend_acceleration',
+        # 'trend_consistency',
+        # 'trend_pullback_composite_alpha',
+        'cpv_factor',
+        # 'price_ma5_ratio',
+        # 'high_volatility_pullback_alpha',
+        # 'volume_confirmed_pullback_alpha',
+        # 'distance_from_52w_high',
+        # 'distance_from_52w_low',
+        # 'ma_alignment_score',
     ]
 
 
@@ -5656,24 +5697,24 @@ def _get_rankpct_factors():
     """
     return [
         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
-        'severe_abnormal_pressure_10d',
-        'price_ma5_ratio',
-        'high_to_close_drawdown',
-        'cpv_factor',
-        'ppo_strength',
-        'return_10d_sector_mean',
+        # 'severe_abnormal_pressure_10d',
+        # 'price_ma5_ratio',
+        # 'high_to_close_drawdown',
+        # 'cpv_factor',
+        # 'ppo_strength',
+        # 'return_10d_sector_mean',
         # 'return_20d_sector_mean',
         # 'return_3d_sector_mean',
         # 'return_5d_sector_mean',
-        'shadow_dominance',
+        # 'shadow_dominance',
         # 'abnormal_turnover',
-        'volume_structure_alpha',
-        'money_flow_pressure',
+        # 'volume_structure_alpha',
+        # 'money_flow_pressure',
         # 'sector_turnover_change_5d_20d',
         # 'open_to_high_ratio',
         # 'intraday_reversal',
-        'buy_lg_amount_rate',
-        'buy_sm_amount_rate',
+        # 'buy_lg_amount_rate',
+        # 'buy_sm_amount_rate',
         # 'main_outflow_retail_takeover',
     ]
 
@@ -5688,7 +5729,7 @@ def _get_expanding_factors():
     """
     return [
         # 市场/环境广播因子优先使用 expanding percentile
-        'mkt_ma5_followthrough_v3',
+        # 'mkt_ma5_followthrough_v3',
         # 'market_trend_strength',
         # 'mkt_regime_trend_pressure_v2',
         # 'mkt_dispersion_shock_v2',
@@ -5715,8 +5756,12 @@ def _get_stock_factors():
         # 'max_rally_20d_raw',
         # 'max_rally_10d_raw',
         # 'market_prev_60d_new_high_avg_return', 
+        'momentum_peak_decay_3d',
+        'price_ma5_ratio_raw',
         'log_price_slope_10d',
         'log_price_slope_20d',
+        'market_advance_decline_ratio',
+        'prev_day_blowoff_risk',
         # 'market_60d_new_high_ratio',
         # 'log_price_slope_10d_x_log_circ_mv',                                                                                              
         # 'market_60d_new_high_ratio_train_percentile',
@@ -5858,6 +5903,11 @@ def _get_stock_factors():
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
+        'close_below_ma5_after_runup',
+        "low_break_prev_low_after_runup",
+        'runup_ma5_exhaustion',
+        'runup_low_break',
+        'buy_sm_amount_rate',
 
 
     # ===== 按行业z-score =====
@@ -5883,10 +5933,10 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
-        'beta_20d',
+        # 'beta_20d',
         # 'market_prev_60d_new_high_avg_return',  
-        'log_price_slope_10d',
-        'log_price_slope_20d',
+        # 'log_price_slope_10d',
+        # 'log_price_slope_20d',
         # 'log_price_slope_10d_x_log_circ_mv',                                                                                    
         # 'market_60d_new_high_ratio_train_percentile',
         # 'abnormal_deviation_3d_ratio',
@@ -5900,87 +5950,97 @@ def _get_original_factors():
         # 'limit_down_count_percentile_20d', 
         # 'limit_up_sw2_concentration',                                                                                                                
         # 'sector_ma5_followthrough_v3',
-        'sw2_high_low_position_return_spread', 
+        # 'sw2_high_low_position_return_spread', 
         # 'return_5d_cs_rank',
         'high_to_close_drawdown',
-        'market_trend_strength',
+        'momentum_peak_decay_3d',
+        # 'market_trend_strength',
         'market_liquidity_change',
-        'market_sentiment_ad',
+        'prev_day_blowoff_risk',
+        # 'market_sentiment_ad',
         'market_volatility_context',
+        # 'close_below_ma5_after_runup',
+        # "low_break_prev_low_after_runup",
+        'runup_ma5_exhaustion',
+        # 'runup_low_break',
         # 'mkt_regime_trend_pressure_v2',
         # 'mkt_breadth_thrust_v2',
         # 'mkt_emotion_stability_v2',
-        # 'mkt_dispersion_shock_v2',
+        'mkt_dispersion_shock_v2',
         # 'mkt_liquidity_impulse_v2',
         # 'mkt_ma5_followthrough_v3',
         # 'mkt_ma5_followthrough_v3_expanding_percentile',
         # 'buy_lg_amount_rate',
         # 'buy_sm_amount_rate',
-        'net_d5_amount_to_turnover',
-        'main_outflow_retail_takeover',
+        # 'net_d5_amount_to_turnover',
+        # 'main_outflow_retail_takeover',
         'sector_leadership_persistence_v3',
-        'sector_hotspot_concentration_v3',
+        # 'sector_hotspot_concentration_v3',
         # 'ma5_strength_breadth_v3',
-        'strong_stock_volume_confirmation_v3',
-        'emotion_quality_balance_v3',
+        # 'strong_stock_volume_confirmation_v3',
+        # 'emotion_quality_balance_v3',
         # 'top10_10d_recent3_strength_v3',
         # 'top10_5d_recent3_strength_v3',
         # 'top10_3d_recent3_strength_v3',
-        # 'top10_10d_strength_level_v3',
+        'top10_10d_strength_level_v3',
+        'buy_sm_amount_rate',
+        # 'price_ma5_ratio_raw',
         # 'top10_10d_today_return_level_v3',
-        'pct_chg_sector_mean',
-        'return_10d_sector_mean',
-        'return_20d_sector_mean',
-        'return_3d_sector_mean',
-        'return_5d_sector_mean',
-        'sector_momentum_consistency',
-        'sector_momentum_dispersion_rank',
-        'value_growth_rotation',
-        'size_rotation_strength',
-        'sector_dispersion',
-        'sector_relative_volatility',
-        'sector_volatility_5d',
-        'sw_circ_mv_rank_intra_sector',
-        'ma_convergence_score',
-        'ma_alignment_persistence_5d',
-        'ma_ribbon_expansion_3d',
-        'pct_chg_intra_z',
-        'return_10d_intra_z',
-        'return_20d_intra_z',
-        'return_3d_intra_z',
-        'return_5d_intra_z',
+        # 'pct_chg_sector_mean',
+        # 'return_10d_sector_mean',
+        # 'return_20d_sector_mean',
+        # 'return_3d_sector_mean',
+        # 'return_5d_sector_mean',
+        # 'sector_momentum_consistency',
+        # 'sector_momentum_dispersion_rank',
+        # 'value_growth_rotation',
+        # 'size_rotation_strength',
+        # 'sector_dispersion',
+        # 'sector_relative_volatility',
+        # 'sector_volatility_5d',
+        # 'sw_circ_mv_rank_intra_sector',
+        # 'ma_convergence_score',
+        # 'ma_alignment_persistence_5d',
+        # 'ma_ribbon_expansion_3d',
+        # 'pct_chg_intra_z',
+        # 'return_10d_intra_z',
+        # 'return_20d_intra_z',
+        # 'return_3d_intra_z',
+        # 'return_5d_intra_z',
         'intra_sector_momentum_rank',
-        'sector_trend_gated_momentum_intra_z',
-        'sector_rotation_breakout_intra_z',
-        'sector_strong_leader_alpha',
-        'sector_liquidity_gated_turnover_z',
-        'sector_weak_reversal_alpha',
+        # 'sector_trend_gated_momentum_intra_z',
+        # 'sector_rotation_breakout_intra_z',
+        # 'sector_strong_leader_alpha',
+        # 'sector_liquidity_gated_turnover_z',
+        # 'sector_weak_reversal_alpha',
         'sector_momentum_accel_rank',
-        'sector_turnover_change_5d_20d',
-        'sector_hhi_change',
-        'sector_relative_strength_vs_market',
-        'mkt_sector_dispersion',
-        'sector_mkt_corr_20d',
-        'market_vols_adaptive_iv',
-        'sector_excess_intra_rank',
-        'sector_vols_divergence_alpha',
-        'sector_turnover_surge_pv_alpha',
-        'intraday_reversal',
-        'sector_limit_overflow_alpha',
-        'sector_broken_resilience_alpha',
-        'limit_sustain_alpha',
-        'market_emotion_resonance_alpha',
-        'resistance_distance',
-        'support_distance',
-        'coskewness',
-        'kurtosis_20d',
-        'skewness_20d',
-        'alpha_001',
-        'alpha_002',
-        'alpha_017',
-        'downside_beta',
-        'sector_correlation_20d',
-        'stock_sector_pos_align',
+        'market_advance_decline_ratio',
+        # 'sector_turnover_change_5d_20d',
+        # 'sector_hhi_change',
+        # 'sector_relative_strength_vs_market',
+        # 'mkt_sector_dispersion',
+        # 'sector_mkt_corr_20d',
+        # 'market_vols_adaptive_iv',
+        # 'sector_excess_intra_rank',
+        # 'sector_vols_divergence_alpha',
+        # 'sector_turnover_surge_pv_alpha',
+        # 'intraday_reversal',
+        # 'sector_limit_overflow_alpha',
+        # 'sector_broken_resilience_alpha',
+        # 'limit_sustain_alpha',
+        # 'market_emotion_resonance_alpha',
+        # 'resistance_distance',
+        # 'support_distance',
+        # 'coskewness',
+        # 'kurtosis_20d',
+        # 'skewness_20d',
+        # 'alpha_001',
+        # 'alpha_002',
+        # 'alpha_017',
+        # 'downside_beta',
+        # 'sector_correlation_20d',
+        # 'stock_sector_pos_align',
+
     ]
 
 
@@ -8836,19 +8896,20 @@ def _generate_training_labels_for_all_data(stock_data):
     
     realistic_vwap_return = (sell_price_proxy - buy_price) / (buy_price + 1e-12)
 
-        # 4) 生成风险二分类标签
-    risk_event_5pct = (min_low_return <= -0.05) #| (realistic_vwap_return <= -0.05)
-    risk_event_7pct = (min_low_return <= -0.07) #| (realistic_vwap_return <= -0.07)
+        # 4) 生成风险二分类标签（路径回撤 OR 终端亏损，匹配实盘止损逻辑）
+    risk_event_5pct = (min_low_return <= -0.05) | (realistic_vwap_return <= -0.05)
+    risk_event_7pct = (min_low_return <= -0.07) | (realistic_vwap_return <= -0.07)
     is_risk = np.where(risk_event_7pct, 1.0, 0.0)
-    
+
     # 无效数据处理
-    invalid_mask = buy_price.isna() | np.isnan(max_high_return) | np.isnan(min_low_return)
+    invalid_mask = buy_price.isna() | np.isnan(max_high_return) | np.isnan(min_low_return) | np.isnan(realistic_vwap_return)
     is_risk = pd.Series(is_risk, index=stock_data.index)
     is_risk[invalid_mask] = np.nan
 
-    
+
     # 覆盖回测评估基准
     stock_data["atr_return_label"] = realistic_vwap_return
+    stock_data["realistic_vwap_return"] = realistic_vwap_return
     stock_data["future_ret"] = realistic_vwap_return
     stock_data["max_high_return"] = max_high_return # 记录最大涨幅（供分析用）
     stock_data["min_low_return"] = min_low_return   # 记录最大跌幅（供分析用）
@@ -8869,7 +8930,7 @@ def _generate_training_labels_for_all_data(stock_data):
         )
         stock_data.loc[
             mask_st_window,
-            ["atr_return_label", "future_ret", "max_high_return", "min_low_return"]
+            ["atr_return_label", "realistic_vwap_return", "future_ret", "max_high_return", "min_low_return"]
         ] = np.nan
         stock_data.loc[mask_st_window, "relevance"] = np.nan
 
@@ -16066,6 +16127,39 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             val_data_valid = val_data_valid.sort_values('date').reset_index(drop=True)
             logger.info("[OK] 验证集已按date升序排序（排序模型要求）")
 
+        if 'date' in test_data_valid.columns and 'stock_code' in test_data_valid.columns:
+            test_data_valid = test_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
+            logger.info("[OK] 测试集已按[date, stock_code]升序排序（风险模型Top10域要求）")
+        elif 'date' in test_data_valid.columns:
+            test_data_valid = test_data_valid.sort_values('date').reset_index(drop=True)
+            logger.info("[OK] 测试集已按date升序排序（风险模型Top10域要求）")
+
+        try:
+            train_data_valid, train_top10_diag = _filter_raw_rows_to_reference_alpha_topk_domain(
+                train_data_valid, phase_name="训练集", top_k=10
+            )
+            val_data_valid, val_top10_diag = _filter_raw_rows_to_reference_alpha_topk_domain(
+                val_data_valid, phase_name="验证集", top_k=10
+            )
+            test_data_valid, test_top10_diag = _filter_raw_rows_to_reference_alpha_topk_domain(
+                test_data_valid, phase_name="测试集", top_k=10
+            )
+            logger.info(
+                "[RISK-TOP10] walkforward三段数据已提前收敛到alpha每日Top10: "
+                f"label_threshold={RISK_MODEL_LABEL_RETURN_THRESHOLD:.2%}; "
+                f"训练={train_top10_diag['n']:,}样本/{train_top10_diag['days']:,}天, "
+                f"pos={train_top10_diag['pos']:,}({train_top10_diag['pos_rate']:.2%}); "
+                f"验证={val_top10_diag['n']:,}样本/{val_top10_diag['days']:,}天, "
+                f"pos={val_top10_diag['pos']:,}({val_top10_diag['pos_rate']:.2%}); "
+                f"测试={test_top10_diag['n']:,}样本/{test_top10_diag['days']:,}天, "
+                f"pos={test_top10_diag['pos']:,}({test_top10_diag['pos_rate']:.2%})"
+            )
+        except Exception as e:
+            logger.error(f"[FAIL] 构造alpha每日Top10风险模型数据域失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
         # 🆕 提取relevance标签(用于LightGBM训练)和relevance_30标签(用于XGBoost训练)和原始收益率标签(用于IC计算)
         train_labels = train_data_valid['atr_return_label']
         val_labels = val_data_valid['atr_return_label']
@@ -16280,8 +16374,10 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             'val_circ_mv': val_circ_mv,  # 🆕 添加验证集流通市值
             'sample_weights': unified_sample_weights,  # 🆕 添加统一计算的样本权重
             'val_sample_weights': unified_val_weights,  # 🆕 添加验证集样本权重
+            'train_data_raw': train_data_valid,  # walkforward风险模型专用：用于alpha Top10训练域过滤
+            'val_data_raw': val_data_valid,  # walkforward风险模型专用：用于alpha Top10验证域过滤
             'test_data_raw': test_data_valid, #test_data  # ✅ 新增：测试集原始数据（包含 open, close 等基础数据）
-            'val_data_raw':val_data_valid
+            'is_reference_alpha_top10_domain': True,
         }
 
         logger.info(f"[OK] 预处理完成: 训练集{len(X_train_processed):,}样本, 验证集{len(X_val_processed):,}样本")
@@ -16460,38 +16556,119 @@ def _load_reference_return_model_bundle():
     return _load_reference_return_model_bundle._cache
 
 
-def _build_reference_return_model_top1_candidates(eval_data_raw, phase_name="验证集"):
-    """用参考收益模型在给定数据集上生成每天 Top1 候选。"""
-    if eval_data_raw is None or len(eval_data_raw) == 0:
-        return None
+def _get_reference_return_model_feature_names(model_bundle, model_path):
+    """只从参考alpha模型文件中读取其训练时特征名，不走风险模型_get_model_factors。"""
+    feature_names = model_bundle.get('feature_names')
+    if feature_names is None:
+        feature_names = model_bundle.get('feature_columns')
+    if feature_names is None:
+        raise ValueError(f"参考alpha模型缺少 feature_names/feature_columns: {model_path}")
 
-    model_bundle, model_path = _load_reference_return_model_bundle()
-    feature_names = list(model_bundle.get('feature_names', []))
+    feature_names = list(feature_names)
     if not feature_names:
-        raise ValueError(f"参考收益模型缺少 feature_names: {model_path}")
+        raise ValueError(f"参考alpha模型特征列表为空: {model_path}")
+    return feature_names
 
+
+def _prepare_reference_return_model_features(eval_data_raw, phase_name="验证集"):
+    """
+    为参考alpha模型准备特征矩阵。
+    流程:
+    1) 从alpha模型pkl中读取其训练时feature_names
+    2) 通过 _load_factor_cache_data(required_factors=feature_names) 从因子库加载这些列
+    3) 按 date/stock_code 与当前数据合并，生成alpha模型可直接预测的特征矩阵
+
+    这样可以与风险模型自己的 _get_model_factors 完全分离。
+    """
+    model_bundle, model_path = _load_reference_return_model_bundle()
+    feature_names = _get_reference_return_model_feature_names(model_bundle, model_path)
+
+    if eval_data_raw is None or len(eval_data_raw) == 0:
+        raise ValueError(f"{phase_name}数据为空，无法准备参考alpha模型特征")
     if 'date' not in eval_data_raw.columns or 'stock_code' not in eval_data_raw.columns:
-        raise ValueError(f"{phase_name}数据缺少 date/stock_code 列，无法生成参考 Top1")
+        raise ValueError(f"{phase_name}数据缺少 date/stock_code 列，无法准备参考alpha模型特征")
 
-    X_ref, available_features = _prepare_feature_data(
-        eval_data_raw,
-        feature_names,
-        data_type=f"{phase_name}参考收益模型特征"
+    date_series = pd.to_datetime(eval_data_raw['date'], errors='coerce')
+    start_date = date_series.min()
+    end_date = date_series.max()
+    if pd.isna(start_date) or pd.isna(end_date):
+        raise ValueError(f"{phase_name}数据日期无效，无法加载参考alpha模型因子")
+
+    factor_data = _load_factor_cache_data(
+        required_factors=feature_names,
+        start_date=start_date.strftime('%Y-%m-%d'),
+        end_date=end_date.strftime('%Y-%m-%d'),
+        include_label_generation_features=False,
     )
-    if X_ref is None or len(available_features) != len(feature_names):
+    if factor_data is None or factor_data.empty:
+        raise ValueError(f"{phase_name}参考alpha模型因子数据加载失败: {Path(REFERENCE_RETURN_MODEL_PKL).name}")
+
+    factor_feature_cols = [col for col in feature_names if col in factor_data.columns]
+    missing_features = [col for col in feature_names if col not in factor_data.columns]
+    if missing_features:
         raise ValueError(
-            f"{phase_name}参考收益模型特征准备失败，"
-            f"需要{len(feature_names)}个特征，实际{0 if available_features is None else len(available_features)}个"
+            f"{phase_name}因子库缺少参考alpha模型特征 {len(missing_features)}/{len(feature_names)} 个，"
+            f"示例: {missing_features[:20]}"
         )
 
+    ref_features = factor_data[['date', 'stock_code'] + factor_feature_cols].copy()
+    ref_features['date'] = pd.to_datetime(ref_features['date'], errors='coerce')
+    base = eval_data_raw.copy()
+    base['date'] = pd.to_datetime(base['date'], errors='coerce')
+    merged = base.merge(ref_features, on=['date', 'stock_code'], how='left', suffixes=('', '_cache'))
+
+    for feature in feature_names:
+        cache_col = f'{feature}_cache'
+        if cache_col in merged.columns:
+            if feature in merged.columns:
+                merged[feature] = merged[cache_col].combine_first(merged[feature])
+            else:
+                merged[feature] = merged[cache_col]
+            merged.drop(columns=[cache_col], inplace=True)
+
+    missing_after_merge = [col for col in feature_names if col not in merged.columns]
+    if missing_after_merge:
+        raise ValueError(
+            f"{phase_name}参考alpha模型特征合并失败，仍缺少 {len(missing_after_merge)} 个特征: "
+            f"{missing_after_merge[:20]}"
+        )
+
+    X_ref = merged[feature_names].values.astype(np.float32)
+    logger.info(
+        f"[RISK-ALPHA-FEATURES] {phase_name}: "
+        f"已通过_load_factor_cache_data精确加载 {len(feature_names)} 个alpha特征，"
+        f"参考模型={Path(REFERENCE_RETURN_MODEL_PKL).name}"
+    )
+    return X_ref, feature_names, model_bundle, model_path, merged
+
+
+def _predict_reference_return_model(eval_data_raw, phase_name="验证集"):
+    """使用参考alpha模型自己的特征列表生成预测分。"""
+    X_ref, feature_names, model_bundle, model_path, merged = _prepare_reference_return_model_features(
+        eval_data_raw, phase_name=phase_name
+    )
     ref_model = model_bundle['model']
     best_iter = getattr(ref_model, 'best_iteration', None)
     try:
         ref_pred = ref_model.predict(X_ref, num_iteration=best_iter) if best_iter else ref_model.predict(X_ref)
     except Exception:
         ref_pred = ref_model.predict(X_ref)
+    return np.asarray(ref_pred).reshape(-1), feature_names, model_path, merged
 
-    candidate_df = eval_data_raw[['date', 'stock_code']].copy()
+
+def _build_reference_return_model_top1_candidates(eval_data_raw, phase_name="验证集"):
+    """用参考收益模型在给定数据集上生成每天 Top1 候选。"""
+    if eval_data_raw is None or len(eval_data_raw) == 0:
+        return None
+
+    if 'date' not in eval_data_raw.columns or 'stock_code' not in eval_data_raw.columns:
+        raise ValueError(f"{phase_name}数据缺少 date/stock_code 列，无法生成参考 Top1")
+
+    ref_pred, feature_names, model_path, merged_eval = _predict_reference_return_model(
+        eval_data_raw, phase_name=f"{phase_name}参考alpha Top1"
+    )
+
+    candidate_df = merged_eval[['date', 'stock_code']].copy()
     candidate_df['pred_date'] = pd.to_datetime(candidate_df['date'], errors='coerce').dt.normalize()
     candidate_df['reference_return_score'] = pd.to_numeric(np.asarray(ref_pred).reshape(-1), errors='coerce')
     candidate_df = candidate_df.dropna(subset=['pred_date', 'reference_return_score'])
@@ -16504,6 +16681,162 @@ def _build_reference_return_model_top1_candidates(eval_data_raw, phase_name="验
         .reset_index(drop=True)
     )
     return top1_df
+
+
+def _build_reference_return_model_topk_candidates(eval_data_raw, phase_name="训练集", top_k=10):
+    """用参考alpha收益模型在给定数据集上生成每天TopK候选，并保留原始行位置。"""
+    if eval_data_raw is None or len(eval_data_raw) == 0:
+        return None
+
+    required_cols = {'date', 'stock_code', 'atr_return_label'}
+    missing_cols = [c for c in required_cols if c not in eval_data_raw.columns]
+    if missing_cols:
+        raise ValueError(f"{phase_name}数据缺少 {missing_cols}，无法生成参考Top{top_k}训练域")
+
+    raw_aligned = eval_data_raw.reset_index(drop=True).copy()
+    raw_aligned['_row_pos'] = np.arange(len(raw_aligned))
+    ref_pred, feature_names, model_path, merged_eval = _predict_reference_return_model(
+        raw_aligned, phase_name=f"{phase_name}参考alpha Top{top_k}"
+    )
+
+    n = min(len(merged_eval), len(ref_pred))
+    candidate_df = merged_eval.loc[:n - 1, ['_row_pos', 'date', 'stock_code', 'atr_return_label']].copy()
+    candidate_df['pred_date'] = pd.to_datetime(candidate_df['date'], errors='coerce').dt.normalize()
+    candidate_df['reference_return_score'] = pd.to_numeric(np.asarray(ref_pred).reshape(-1)[:n], errors='coerce')
+    candidate_df['atr_return_label'] = pd.to_numeric(candidate_df['atr_return_label'], errors='coerce')
+    candidate_df = candidate_df.dropna(subset=['pred_date', 'reference_return_score', 'atr_return_label'])
+    if candidate_df.empty:
+        return None
+
+    topk_df = (
+        candidate_df.sort_values(['pred_date', 'reference_return_score'], ascending=[True, False])
+        .groupby('pred_date', group_keys=False)
+        .head(int(top_k))
+        .copy()
+    )
+    topk_df['reference_return_rank'] = topk_df.groupby('pred_date')['reference_return_score'].rank(
+        method='first', ascending=False
+    ).astype(int)
+    return topk_df.reset_index(drop=True)
+
+
+def _filter_to_reference_alpha_topk_and_relabel_risk(X_data, raw_rows, dates, weights, phase_name="训练集", top_k=10):
+    """
+    walkforward风险模型专用:
+    只保留指定alpha模型每日TopK样本，并用TopK内atr_return_label重打标。
+    风险模型正类定义为 atr_return_label < RISK_MODEL_LABEL_RETURN_THRESHOLD。
+    """
+    if raw_rows is None or len(raw_rows) == 0:
+        raise ValueError(f"{phase_name}缺少原始行，无法构造alpha Top{top_k}训练域")
+
+    raw_aligned = raw_rows.reset_index(drop=True).iloc[:len(X_data)].copy()
+    topk_df = _build_reference_return_model_topk_candidates(raw_aligned, phase_name=phase_name, top_k=top_k)
+    if topk_df is None or topk_df.empty:
+        raise ValueError(f"{phase_name}无法生成alpha每日Top{top_k}候选")
+
+    selected_pos = topk_df['_row_pos'].astype(int).drop_duplicates().sort_values().values
+    if len(selected_pos) == 0:
+        raise ValueError(f"{phase_name}alpha Top{top_k}候选为空")
+
+    selected_raw = raw_aligned.iloc[selected_pos].copy()
+    score_cols = topk_df.drop_duplicates('_row_pos').set_index('_row_pos')[
+        ['reference_return_score', 'reference_return_rank']
+    ]
+    selected_raw['reference_return_score'] = selected_pos
+    selected_raw['reference_return_score'] = selected_raw.index.map(
+        lambda idx: score_cols.loc[idx, 'reference_return_score'] if idx in score_cols.index else np.nan
+    )
+    selected_raw['reference_return_rank'] = selected_raw.index.map(
+        lambda idx: score_cols.loc[idx, 'reference_return_rank'] if idx in score_cols.index else np.nan
+    )
+
+    label_return = pd.to_numeric(selected_raw['atr_return_label'], errors='coerce')
+    min_low = pd.to_numeric(selected_raw.get('min_low_return', pd.Series([np.nan]*len(selected_raw))), errors='coerce')
+    valid_label_mask = label_return.notna().values & min_low.notna().values
+    selected_pos = selected_pos[valid_label_mask]
+    selected_raw = selected_raw.iloc[valid_label_mask].copy()
+    y_new = (
+        (pd.to_numeric(selected_raw['atr_return_label'], errors='coerce').values
+         < RISK_MODEL_LABEL_RETURN_THRESHOLD) |
+        (pd.to_numeric(selected_raw['min_low_return'], errors='coerce').values
+         <= RISK_MODEL_LABEL_RETURN_THRESHOLD)
+    ).astype(int)
+    selected_raw['risk_label'] = y_new
+
+    X_new = X_data[selected_pos]
+    dates_new = dates[selected_pos] if dates is not None else None
+    weights_new = np.asarray(weights)[selected_pos] if weights is not None else np.ones(len(y_new), dtype=float)
+
+    diag = {
+        'n': int(len(y_new)),
+        'days': int(pd.to_datetime(selected_raw['date'], errors='coerce').dt.normalize().nunique()),
+        'pos': int(y_new.sum()),
+        'neg': int(len(y_new) - y_new.sum()),
+        'pos_rate': float(np.mean(y_new)) if len(y_new) > 0 else 0.0,
+    }
+    if diag['pos'] == 0 or diag['neg'] == 0:
+        raise ValueError(
+            f"{phase_name}alpha Top{top_k}重打标后只有单一类别: pos={diag['pos']}, neg={diag['neg']}"
+        )
+
+    return X_new, y_new, dates_new, weights_new, selected_raw.reset_index(drop=True), diag
+
+
+def _filter_raw_rows_to_reference_alpha_topk_domain(raw_rows, phase_name="训练集", top_k=10):
+    """
+    walkforward风险模型原始数据域过滤:
+    先用参考alpha模型每日TopK收敛样本，再用atr_return_label阈值生成风险标签。
+    """
+    if raw_rows is None or len(raw_rows) == 0:
+        raise ValueError(f"{phase_name}原始数据为空，无法构造alpha Top{top_k}数据域")
+
+    raw_aligned = raw_rows.reset_index(drop=True).copy()
+    topk_df = _build_reference_return_model_topk_candidates(raw_aligned, phase_name=phase_name, top_k=top_k)
+    if topk_df is None or topk_df.empty:
+        raise ValueError(f"{phase_name}无法生成alpha每日Top{top_k}候选")
+
+    topk_order = (
+        topk_df.sort_values(['pred_date', 'reference_return_rank', '_row_pos'])
+        .drop_duplicates('_row_pos', keep='first')
+    )
+    selected_pos = topk_order['_row_pos'].astype(int).values
+    selected_raw = raw_aligned.iloc[selected_pos].copy()
+
+    meta = topk_order.set_index('_row_pos')[['reference_return_score', 'reference_return_rank']]
+    selected_raw['reference_return_score'] = [
+        float(meta.loc[pos, 'reference_return_score']) if pos in meta.index else np.nan
+        for pos in selected_pos
+    ]
+    selected_raw['reference_return_rank'] = [
+        int(meta.loc[pos, 'reference_return_rank']) if pos in meta.index else np.nan
+        for pos in selected_pos
+    ]
+
+    label_return = pd.to_numeric(selected_raw['atr_return_label'], errors='coerce')
+    min_low = pd.to_numeric(selected_raw.get('min_low_return', pd.Series([np.nan]*len(selected_raw))), errors='coerce')
+    valid_mask = label_return.notna() & min_low.notna()
+    selected_raw = selected_raw[valid_mask].copy()
+    label_return = label_return[valid_mask]
+    min_low = min_low[valid_mask]
+    y_new = (
+        (label_return.values < RISK_MODEL_LABEL_RETURN_THRESHOLD) |
+        (min_low.values <= RISK_MODEL_LABEL_RETURN_THRESHOLD)
+    ).astype(int)
+    selected_raw['risk_label'] = y_new
+    selected_raw['relevance'] = y_new
+
+    diag = {
+        'n': int(len(selected_raw)),
+        'days': int(pd.to_datetime(selected_raw['date'], errors='coerce').dt.normalize().nunique()),
+        'pos': int(y_new.sum()),
+        'neg': int(len(y_new) - y_new.sum()),
+        'pos_rate': float(np.mean(y_new)) if len(y_new) > 0 else 0.0,
+    }
+    if diag['n'] == 0 or diag['pos'] == 0 or diag['neg'] == 0:
+        raise ValueError(
+            f"{phase_name}alpha Top{top_k}数据域标签异常: n={diag['n']}, pos={diag['pos']}, neg={diag['neg']}"
+        )
+    return selected_raw.reset_index(drop=True), diag
 
 
 def _load_reference_return_model_top1_trades(window_name):
@@ -16613,6 +16946,246 @@ def _compute_binary_risk_metrics(y_true, y_score, threshold_label):
     return result
 
 
+def _summarize_top1_risk_veto_misfire(aligned, window_name):
+    """
+    评估如果按每日Top10内风险排名硬剔除Top1交易，会误伤多少好交易。
+    使用每日Top10内的排名（risk_rank_in_alpha_top10），避免跨日比较的look-ahead bias。
+    """
+    if aligned is None or aligned.empty or 'predicted_risk' not in aligned.columns:
+        return []
+
+    eval_df = aligned.copy()
+    if 'bigloss7' in eval_df.columns:
+        eval_df['label_loss7'] = pd.to_numeric(eval_df['bigloss7'], errors='coerce').astype(bool)
+    elif 'risk_event_7pct' in eval_df.columns:
+        eval_df['label_loss7'] = pd.to_numeric(eval_df['risk_event_7pct'], errors='coerce').astype(bool)
+    else:
+        eval_df['label_loss7'] = (pd.to_numeric(eval_df.get('atr_return_label', eval_df['actual_return']), errors='coerce') <= RISK_MODEL_LABEL_RETURN_THRESHOLD)
+
+    if 'bigloss5' in eval_df.columns:
+        eval_df['label_loss5'] = pd.to_numeric(eval_df['bigloss5'], errors='coerce').astype(bool)
+    else:
+        eval_df['label_loss5'] = (pd.to_numeric(eval_df.get('atr_return_label', eval_df['actual_return']), errors='coerce') <= -0.05)
+
+    eval_df['actual_return_veto'] = pd.to_numeric(eval_df.get('actual_return'), errors='coerce')
+    eval_df['predicted_risk'] = pd.to_numeric(eval_df['predicted_risk'], errors='coerce')
+    eval_df = eval_df.dropna(subset=['predicted_risk'])
+    if eval_df.empty:
+        return []
+
+    # 按时间排序（保持交易时序）
+    sort_cols = ['buy_date'] if 'buy_date' in eval_df.columns else ['pred_date']
+    eval_df = eval_df.sort_values(sort_cols).reset_index(drop=True)
+
+    actual_ret = eval_df['actual_return_veto']
+    base_n = len(eval_df)
+    base_actual_cum = float(actual_ret.sum()) if actual_ret.notna().any() else float('nan')
+    base_loss7 = int(eval_df['label_loss7'].sum())
+    base_loss5 = int(eval_df['label_loss5'].sum())
+
+    # 确保有每日Top10内排名
+    if 'risk_rank_in_alpha_top10' not in eval_df.columns:
+        logger.warning(f"[RISK] [{window_name}] 缺少risk_rank_in_alpha_top10，跳过误伤评估")
+        return []
+    daily_rank = pd.to_numeric(eval_df['risk_rank_in_alpha_top10'], errors='coerce')
+
+    logger.info(
+        f"[RISK] [{window_name}] Top1误伤评估基准(每日Top10内排名): n={base_n}, "
+        f"actual_cum={base_actual_cum:.2%}, "
+        f"label<=-5%={base_loss5}({base_loss5/max(base_n,1):.2%}), "
+        f"label<=-7%={base_loss7}({base_loss7/max(base_n,1):.2%})"
+    )
+
+    rows = []
+    # 每日Top10内风险排名: rank=1=最危险, rank=10=最安全
+    for veto_rank in [1, 2, 3]:
+        skip_mask = daily_rank <= veto_rank
+        keep_mask = ~skip_mask
+        if skip_mask.sum() == 0:
+            continue
+        skip_actual = actual_ret[skip_mask]
+        keep_actual = actual_ret[keep_mask]
+        caught_loss7 = int(eval_df.loc[skip_mask, 'label_loss7'].sum())
+        caught_loss5 = int(eval_df.loc[skip_mask, 'label_loss5'].sum())
+        skip_actual_sum = float(skip_actual.sum()) if skip_actual.notna().any() else float('nan')
+        kept_actual_cum = float(keep_actual.sum()) if keep_actual.notna().any() else float('nan')
+
+        row = {
+            'veto_rank': veto_rank,
+            'skip_n': int(skip_mask.sum()),
+            'skip_rate': float(skip_mask.mean()),
+            'caught_loss7': caught_loss7,
+            'caught_loss7_recall': float(caught_loss7 / base_loss7) if base_loss7 > 0 else float('nan'),
+            'caught_loss5': caught_loss5,
+            'caught_loss5_recall': float(caught_loss5 / base_loss5) if base_loss5 > 0 else float('nan'),
+            'misfire_positive_rate': float((skip_actual > 0).mean()),
+            'misfire_gain_5p_rate': float((skip_actual >= 0.05).mean()),
+            'misfire_gain_10p_rate': float((skip_actual >= 0.10).mean()),
+            'skip_actual_sum': skip_actual_sum,
+            'kept_actual_cum': kept_actual_cum,
+            'kept_actual_delta': (
+                float(kept_actual_cum - base_actual_cum)
+                if np.isfinite(kept_actual_cum) and np.isfinite(base_actual_cum)
+                else float('nan')
+            ),
+        }
+        rows.append(row)
+        logger.info(
+            f"[RISK] [{window_name}] 若剔除每日Top10内风险排名<={veto_rank}: "
+            f"跳过{row['skip_n']}/{base_n}({row['skip_rate']:.2%}), "
+            f"命中label<=-5% {caught_loss5}/{base_loss5}({row['caught_loss5_recall']:.2%}), "
+            f"命中label<=-7% {caught_loss7}/{base_loss7}({row['caught_loss7_recall']:.2%}), "
+            f"误伤正收益={row['misfire_positive_rate']:.2%}, "
+            f"误伤>=5%={row['misfire_gain_5p_rate']:.2%}, "
+            f"误伤>=10%={row['misfire_gain_10p_rate']:.2%}, "
+            f"剔除后actual_cum={kept_actual_cum:.2%}({row['kept_actual_delta']:+.2%})"
+        )
+
+    return rows
+
+
+def _max_drawdown_from_simple_returns(returns):
+    """用单笔收益率序列计算非复利累计收益曲线的最大回撤。"""
+    ret = pd.to_numeric(pd.Series(returns), errors='coerce').fillna(0.0).astype(float)
+    if ret.empty:
+        return 0.0
+    curve = ret.cumsum()
+    running_max = curve.cummax()
+    drawdown = curve - running_max
+    return float(drawdown.min())
+
+
+def _summarize_top1_risk_policy_impact(aligned, window_name):
+    """
+    评估风险模型对 Top1 交易的决策影响（全部基于每日Top10内排名，无look-ahead bias）:
+    1) 硬过滤视角: 每日Top10内风险排名<=N时跳过当日Top1
+    2) 仓位调节视角: 按每日Top10内风险分位数调节仓位（推荐）
+    """
+    if aligned is None or aligned.empty or 'predicted_risk' not in aligned.columns:
+        return []
+
+    eval_df = aligned.copy()
+    eval_df['actual_return_eval'] = pd.to_numeric(eval_df.get('actual_return'), errors='coerce')
+    eval_df['predicted_risk'] = pd.to_numeric(eval_df['predicted_risk'], errors='coerce')
+    eval_df = eval_df.dropna(subset=['predicted_risk', 'actual_return_eval'])
+    if eval_df.empty:
+        return []
+
+    sort_cols = ['buy_date'] if 'buy_date' in eval_df.columns else ['pred_date']
+    eval_df = eval_df.sort_values(sort_cols).reset_index(drop=True)
+    actual_ret = eval_df['actual_return_eval']
+
+    base_n = len(eval_df)
+    base_actual_cum = float(actual_ret.sum()) if actual_ret.notna().any() else float('nan')
+    base_actual_dd = _max_drawdown_from_simple_returns(actual_ret) if actual_ret.notna().any() else float('nan')
+
+    # 统一标签
+    if 'bigloss7' in eval_df.columns:
+        loss_flag = pd.to_numeric(eval_df['bigloss7'], errors='coerce').astype(bool)
+    elif 'risk_event_7pct' in eval_df.columns:
+        loss_flag = pd.to_numeric(eval_df['risk_event_7pct'], errors='coerce').astype(bool)
+    else:
+        loss_flag = actual_ret <= RISK_MODEL_LABEL_RETURN_THRESHOLD
+    loss7_total = int(loss_flag.sum())
+
+    # 确保有每日Top10内排名
+    has_daily_rank = 'risk_rank_in_alpha_top10' in eval_df.columns
+    has_daily_pct = 'risk_pct_in_alpha_top10' in eval_df.columns
+
+    logger.info(
+        f"[RISK-POLICY] [{window_name}] 基准Top1全买: n={base_n}, "
+        f"actual_cum={base_actual_cum:.2%}, actual_maxDD={base_actual_dd:.2%}, "
+        f"loss<=-7%={loss7_total}/{base_n}({loss7_total/max(base_n,1):.2%})"
+    )
+
+    rows = []
+
+    # ===== 视角1: 硬过滤 (每日Top10内排名) =====
+    if has_daily_rank:
+        daily_rank = pd.to_numeric(eval_df['risk_rank_in_alpha_top10'], errors='coerce')
+        for veto_rank in [1, 2, 3]:
+            skip_mask = daily_rank <= veto_rank
+            keep_mask = ~skip_mask
+            if skip_mask.sum() == 0:
+                continue
+            skip_actual = actual_ret[skip_mask]
+            keep_actual = actual_ret[keep_mask]
+
+            caught_loss7 = int(loss_flag[skip_mask].sum())
+            skipped_positive = int((skip_actual > 0).sum())
+            skipped_gain5 = int((skip_actual >= 0.05).sum())
+            skipped_gain10 = int((skip_actual >= 0.10).sum())
+            kept_actual_cum = float(keep_actual.sum()) if keep_actual.notna().any() else float('nan')
+            kept_actual_dd = _max_drawdown_from_simple_returns(keep_actual) if keep_actual.notna().any() else float('nan')
+
+            row = {
+                'policy_type': 'hard_veto',
+                'policy_name': f'每日Top10内风险排名<={veto_rank}则跳过',
+                'skip_n': int(skip_mask.sum()),
+                'trade_n': int(keep_mask.sum()),
+                'skip_rate': float(skip_mask.mean()),
+                'caught_loss7': caught_loss7,
+                'caught_loss7_recall': float(caught_loss7 / loss7_total) if loss7_total > 0 else float('nan'),
+                'skipped_positive_rate': float((skip_actual > 0).mean()),
+                'skipped_gain5': skipped_gain5,
+                'skipped_gain10': skipped_gain10,
+                'skipped_gain5_rate': float((skip_actual >= 0.05).mean()),
+                'skipped_gain10_rate': float((skip_actual >= 0.10).mean()),
+                'kept_actual_cum': kept_actual_cum,
+                'kept_actual_delta': float(kept_actual_cum - base_actual_cum) if np.isfinite(kept_actual_cum) and np.isfinite(base_actual_cum) else float('nan'),
+                'kept_actual_dd': kept_actual_dd,
+            }
+            rows.append(row)
+            logger.info(
+                f"[RISK-POLICY] [{window_name}] [硬过滤] 每日Top10内风险排名<={veto_rank}则跳过: "
+                f"跳过{row['skip_n']}/{base_n}({row['skip_rate']:.2%}), "
+                f"抓到loss7 {caught_loss7}/{loss7_total}({row['caught_loss7_recall']:.2%}), "
+                f"跳过正收益={row['skipped_positive_rate']:.2%}, "
+                f"误杀>=5%={skipped_gain5}({row['skipped_gain5_rate']:.2%}), "
+                f"误杀>=10%={skipped_gain10}({row['skipped_gain10_rate']:.2%}), "
+                f"交易后actual_cum={kept_actual_cum:.2%}({row['kept_actual_delta']:+.2%}), "
+                f"actual_maxDD={kept_actual_dd:.2%}"
+            )
+    else:
+        logger.warning(f"[RISK-POLICY] [{window_name}] 缺少risk_rank_in_alpha_top10，跳过硬过滤评估")
+
+    # ===== 视角2: 仓位调节 (每日Top10内风险分位数，推荐) =====
+    if has_daily_pct:
+        daily_risk_pct = pd.to_numeric(eval_df['risk_pct_in_alpha_top10'], errors='coerce')
+        for sizing_mode, weight_series in [
+            ('线性递减', 1.0 - 0.5 * daily_risk_pct),           # 最危险→0.5仓
+            ('激进递减', 1.0 - 0.75 * daily_risk_pct),          # 最危险→0.25仓
+            ('温和递减', np.clip(1.2 - 1.0 * daily_risk_pct, 0.3, 1.0)),  # 最危险→0.3仓
+        ]:
+            weights = pd.to_numeric(weight_series, errors='coerce').fillna(1.0).values
+            weighted_ret = actual_ret.values * weights
+            weighted_cum = float(np.sum(weighted_ret))
+            weighted_dd = _max_drawdown_from_simple_returns(weighted_ret)
+            avg_weight = float(np.mean(weights))
+            row = {
+                'policy_type': 'position_sizing',
+                'policy_name': f'仓位调节({sizing_mode})',
+                'avg_weight': avg_weight,
+                'weighted_cum': weighted_cum,
+                'weighted_delta': float(weighted_cum - base_actual_cum) if np.isfinite(base_actual_cum) else float('nan'),
+                'weighted_dd': weighted_dd,
+                'dd_change': float(weighted_dd - base_actual_dd) if np.isfinite(base_actual_dd) else float('nan'),
+                'risk_adj_return': float(weighted_cum / avg_weight) if avg_weight > 0 else 0.0,
+            }
+            rows.append(row)
+            logger.info(
+                f"[RISK-POLICY] [{window_name}] [仓位调节] {sizing_mode}: "
+                f"avg_weight={avg_weight:.2%}, "
+                f"weighted_cum={weighted_cum:.2%}({row['weighted_delta']:+.2%}), "
+                f"maxDD={weighted_dd:.2%}({row['dd_change']:+.2%}), "
+                f"风险调整收益={row['risk_adj_return']:.2%}"
+            )
+    else:
+        logger.warning(f"[RISK-POLICY] [{window_name}] 缺少risk_pct_in_alpha_top10，跳过仓位调节评估")
+
+    return rows
+
+
 def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
     """
     只看收益模型真正会买的 Top1 交易，在这些候选内部验证风险分是否能识别大亏。
@@ -16629,10 +17202,26 @@ def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
     risk_df = test_data_with_pred.copy()
     risk_df['pred_date'] = pd.to_datetime(risk_df['date']).dt.normalize()
     risk_df = risk_df.rename(columns={'predicted_return': 'predicted_risk'})
+    risk_df['risk_rank_in_alpha_top10'] = (
+        risk_df.groupby('pred_date')['predicted_risk']
+        .rank(method='first', ascending=False)
+    )
+    risk_df['risk_pct_in_alpha_top10'] = (
+        risk_df.groupby('pred_date')['predicted_risk']
+        .rank(method='average', ascending=True, pct=True)
+    )
 
-    merge_columns = ['pred_date', 'stock_code', 'predicted_risk']
+    merge_columns = [
+        'pred_date',
+        'stock_code',
+        'predicted_risk',
+        'risk_rank_in_alpha_top10',
+        'risk_pct_in_alpha_top10',
+    ]
     optional_columns = [
-        c for c in ['risk_event_5pct', 'risk_event_7pct', 'future_ret', 'atr_return_label']
+        c for c in ['risk_event_5pct', 'risk_event_7pct', 'future_ret',
+                     'atr_return_label', 'min_low_return',
+                     'reference_return_score', 'reference_return_rank']
         if c in risk_df.columns
     ]
     aligned = ref_df.merge(
@@ -16644,13 +17233,34 @@ def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
         logger.warning(f"[RISK] [{window_name}] 无法将风险模型测试集与参考Top1交易对齐")
         return None
 
-    aligned['bigloss5'] = aligned['actual_return'] <= -0.05
-    aligned['bigloss7'] = aligned['actual_return'] <= -0.07
+    # [UNIFIED] bigloss 统一使用组合条件（路径回撤 OR 终端亏损），和训练标签一致
+    has_atr = 'atr_return_label' in aligned.columns
+    has_minlow = 'min_low_return' in aligned.columns
+    if has_atr and has_minlow:
+        aligned['bigloss5'] = (
+            (pd.to_numeric(aligned['atr_return_label'], errors='coerce') <= -0.05) |
+            (pd.to_numeric(aligned['min_low_return'], errors='coerce') <= -0.05)
+        ).astype(int)
+        aligned['bigloss7'] = (
+            (pd.to_numeric(aligned['atr_return_label'], errors='coerce') <= -0.07) |
+            (pd.to_numeric(aligned['min_low_return'], errors='coerce') <= -0.07)
+        ).astype(int)
+    elif has_atr:
+        aligned['bigloss5'] = (pd.to_numeric(aligned['atr_return_label'], errors='coerce') <= -0.05).astype(int)
+        aligned['bigloss7'] = (pd.to_numeric(aligned['atr_return_label'], errors='coerce') <= -0.07).astype(int)
+    else:
+        aligned['bigloss5'] = (aligned['actual_return'] <= -0.05).astype(int)
+        aligned['bigloss7'] = (aligned['actual_return'] <= -0.07).astype(int)
+
+    # 保留 actual_return 作为补充参考
+    aligned['actual_bigloss7'] = aligned['actual_return'] <= -0.07
 
     metrics_5 = _compute_binary_risk_metrics(aligned['bigloss5'].values, aligned['predicted_risk'].values, '<=-5%')
     metrics_7 = _compute_binary_risk_metrics(aligned['bigloss7'].values, aligned['predicted_risk'].values, '<=-7%')
 
     aligned = aligned.sort_values('predicted_risk', ascending=False).reset_index(drop=True)
+    misfire_rows = _summarize_top1_risk_veto_misfire(aligned, window_name)
+    policy_rows = _summarize_top1_risk_policy_impact(aligned, window_name)
 
     bucket_rows = []
     try:
@@ -16672,6 +17282,41 @@ def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
     except Exception:
         pass
 
+    # [INCREMENTAL] 评估风险模型是否提供Alpha模型评分之外的增量信息
+    incremental_info = None
+    if 'reference_return_score' in aligned.columns:
+        try:
+            from scipy.stats import spearmanr
+            alpha_scores = pd.to_numeric(aligned['reference_return_score'], errors='coerce')
+            risk_scores = pd.to_numeric(aligned['predicted_risk'], errors='coerce')
+            valid = alpha_scores.notna() & risk_scores.notna()
+            if valid.sum() >= 10:
+                corr, corr_p = spearmanr(alpha_scores[valid], risk_scores[valid])
+                # 双变量分桶: alpha分(高/低) × 风险分(高/低)
+                alpha_med = alpha_scores[valid].median()
+                risk_med = risk_scores[valid].median()
+                hi_alpha = alpha_scores >= alpha_med
+                lo_alpha = alpha_scores < alpha_med
+                hi_risk = risk_scores >= risk_med
+                lo_risk = risk_scores < risk_med
+                quadrants = {
+                    'alpha_hi_risk_hi': (hi_alpha & hi_risk),
+                    'alpha_hi_risk_lo': (hi_alpha & lo_risk),
+                    'alpha_lo_risk_hi': (lo_alpha & hi_risk),
+                    'alpha_lo_risk_lo': (lo_alpha & lo_risk),
+                }
+                incremental_info = {'spearman_corr': float(corr), 'spearman_p': float(corr_p), 'quadrants': {}}
+                for label, mask in quadrants.items():
+                    if mask.sum() == 0:
+                        continue
+                    incremental_info['quadrants'][label] = {
+                        'n': int(mask.sum()),
+                        'mean_ret': float(aligned.loc[valid][mask]['actual_return'].mean()),
+                        'loss7_rate': float(aligned.loc[valid][mask]['bigloss7'].mean()),
+                    }
+        except Exception:
+            pass
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_dir = Path("results")
     results_dir.mkdir(exist_ok=True)
@@ -16681,17 +17326,26 @@ def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
     logger.info(f"[RISK] [{window_name}] 参考收益模型文件: {reference_path.name}")
     logger.info(f"[RISK] [{window_name}] 对齐后的收益模型Top1交易: {len(aligned)}/{len(ref_df)}")
     logger.info(
-        f"[RISK] [{window_name}] <=-5%: ROC-AUC={metrics_5.get('roc_auc', float('nan')):.4f}, "
+        f"[RISK] [{window_name}] [统一标签] <=-5%: ROC-AUC={metrics_5.get('roc_auc', float('nan')):.4f}, "
         f"PR-AUC={metrics_5.get('pr_auc', float('nan')):.4f}, "
         f"P@Top10%={metrics_5.get('precision_top10', float('nan')):.4f}, "
         f"R@Top10%={metrics_5.get('recall_top10', float('nan')):.4f}"
     )
     logger.info(
-        f"[RISK] [{window_name}] <=-7%: ROC-AUC={metrics_7.get('roc_auc', float('nan')):.4f}, "
+        f"[RISK] [{window_name}] [统一标签] <=-7%: ROC-AUC={metrics_7.get('roc_auc', float('nan')):.4f}, "
         f"PR-AUC={metrics_7.get('pr_auc', float('nan')):.4f}, "
         f"P@Top10%={metrics_7.get('precision_top10', float('nan')):.4f}, "
         f"R@Top10%={metrics_7.get('recall_top10', float('nan')):.4f}"
     )
+    if incremental_info:
+        logger.info(
+            f"[RISK] [{window_name}] [增量信息] 风险分 vs Alpha分 Spearman r={incremental_info['spearman_corr']:.4f}"
+            f" (p={incremental_info['spearman_p']:.4f})"
+        )
+        for label, info in incremental_info['quadrants'].items():
+            logger.info(
+                f"  [{label}]: n={info['n']}, mean_ret={info['mean_ret']:.4f}, loss7={info['loss7_rate']:.2%}"
+            )
     if bucket_rows:
         logger.info(f"[RISK] [{window_name}] 收益模型Top1候选按风险分五分位分桶:")
         for row in bucket_rows:
@@ -16710,6 +17364,9 @@ def _evaluate_risk_model_on_reference_top1(test_data_with_pred, window_name):
         'metrics_bigloss5': metrics_5,
         'metrics_bigloss7': metrics_7,
         'bucket_stats': bucket_rows,
+        'misfire_stats': misfire_rows,
+        'policy_stats': policy_rows,
+        'incremental_info': incremental_info,
         'aligned_file': str(aligned_file),
         'aligned_records': aligned.to_dict(orient='records'),
     }
@@ -16720,6 +17377,28 @@ def _backtest_on_window(test_data, model_result, window, args):
     logger = logging.getLogger(__name__)
 
     try:
+        top10_test_data = model_result.get('risk_alpha_top10_test_data') if isinstance(model_result, dict) else None
+        if top10_test_data is not None and len(top10_test_data) > 0:
+            logger.info(
+                f"[RISK-TOP10] [{window['name']}] 回测输入改用alpha每日Top10测试域: "
+                f"{len(test_data):,} -> {len(top10_test_data):,}"
+            )
+            test_data = top10_test_data.copy()
+        elif test_data is not None and len(test_data) > 0:
+            try:
+                filtered_test_data, test_top10_diag = _filter_raw_rows_to_reference_alpha_topk_domain(
+                    test_data, phase_name=f"测试集-{window['name']}", top_k=10
+                )
+                logger.info(
+                    f"[RISK-TOP10] [{window['name']}] 回测输入已过滤为alpha每日Top10测试域: "
+                    f"{len(test_data):,} -> {len(filtered_test_data):,}, "
+                    f"days={test_top10_diag['days']:,}, pos={test_top10_diag['pos']:,}({test_top10_diag['pos_rate']:.2%})"
+                )
+                test_data = filtered_test_data
+            except Exception as e:
+                logger.error(f"[RISK-TOP10] [{window['name']}] 测试集Top10过滤失败: {e}")
+                raise
+
         # [WRENCH] 修复：直接使用训练时的特征列表，而不是重新提取
         # 原因：确保训练和测试使用完全相同的特征
         feature_columns = model_result['feature_names']

@@ -27,9 +27,51 @@ class FactorDatasetStore:
             return pd.DataFrame(columns=self.index_columns)
         return pd.read_parquet(self.path)
 
+    def load_excluding_dates(self, start_date, end_date) -> pd.DataFrame:
+        """加载排除指定日期范围的数据，使用pyarrow过滤器避免全量加载到内存再过滤。
+
+        Args:
+            start_date: 排除范围的起始日期
+            end_date: 排除范围的结束日期
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        if not self.exists():
+            return pd.DataFrame(columns=self.index_columns)
+        try:
+            import pyarrow.parquet as pq
+            start_pd = pd.Timestamp(start_date)
+            end_pd = pd.Timestamp(end_date)
+            table = pq.read_table(
+                self.path,
+                filters=[
+                    [('date', '<', start_pd)],
+                    [('date', '>', end_pd)],
+                ],
+            )
+            result = table.to_pandas()
+            logger.info(f"[按日期过滤加载] 排除 {start_pd} ~ {end_pd}, 读取 {len(result):,} 行")
+            return result
+        except Exception as e:
+            logger.warning(f"[按日期过滤加载] pyarrow过滤失败，回退全量加载: {e}")
+            df = self.load()
+            if 'date' in df.columns:
+                mask = (df['date'] < pd.Timestamp(start_date)) | (df['date'] > pd.Timestamp(end_date))
+                return df[mask]
+            return df
+
     def save(self, df: pd.DataFrame) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(self.path, index=False)
+        temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        try:
+            df.to_parquet(temp_path, index=False)
+            os.replace(temp_path, self.path)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
     def merge_incremental(self, new_data: pd.DataFrame) -> pd.DataFrame:
         if new_data is None or new_data.empty:
@@ -173,6 +215,12 @@ class FactorDatasetStore:
         base = self.load_raw()
         logger.debug(f"[增量合并] 加载现有数据 - 形状: {base.shape}")
 
+        if base.empty and not self.raw_exists():
+            logger.info("[增量合并] 临时原始因子文件不存在，直接创建首批 raw 数据")
+            self.save_raw(new_data)
+            logger.debug(f"[增量合并] 首批保存成功 - 文件大小: {self.raw_path.stat().st_size / (1024*1024):.2f} MB")
+            return new_data
+
         if not base.empty:
             # 检查现有数据质量
             base_factor_cols = [c for c in base.columns if c not in self.index_columns]
@@ -181,7 +229,7 @@ class FactorDatasetStore:
 
         # 合并数据
         try:
-            combined = _merge_frames(base, new_data, self.index_columns)
+            combined = _merge_frames(base, new_data, self.index_columns, store_path=str(self.raw_path))
             logger.debug(f"[增量合并] 合并成功 - 结果形状: {combined.shape}")
 
             # 检查合并后数据质量
@@ -209,9 +257,14 @@ class FactorDatasetStore:
                     if problematic_factors:
                         logger.error(f"[增量合并] 发现 {len(problematic_factors)} 个问题因子: {[f[0] for f in problematic_factors[:5]]}")
 
-            # 保存合并后的数据
-            self.save_raw(combined)
-            logger.debug(f"[增量合并] 保存成功 - 文件大小: {self.raw_path.stat().st_size / (1024*1024):.2f} MB")
+            # 流式合并已直接替换磁盘文件，不能再用返回的批次壳覆盖 raw 文件。
+            if hasattr(combined, 'attrs') and (
+                combined.attrs.get('_already_saved') or combined.attrs.get('_stream_merged')
+            ):
+                logger.debug("[增量合并] 流式合并已写入磁盘，跳过二次保存")
+            else:
+                self.save_raw(combined)
+                logger.debug(f"[增量合并] 保存成功 - 文件大小: {self.raw_path.stat().st_size / (1024*1024):.2f} MB")
         except Exception as e:
             logger.error(f"[增量合并] 合并失败: {e}")
             logger.error(f"[增量合并] 错误类型: {type(e)}")
@@ -266,7 +319,8 @@ def _smart_merge_dataframes(
     new_data: pd.DataFrame,
     index_columns: Sequence[str],
     overlap_mode: str = 'merge',
-    add_factor_mode: bool = False  # ✅ 添加add_factor_mode参数
+    add_factor_mode: bool = False,  # ✅ 添加add_factor_mode参数
+    store_path: str = None  # ⭐ parquet文件路径
 ) -> pd.DataFrame:
     """
     🆕 优化的内存安全合并函数
@@ -278,6 +332,7 @@ def _smart_merge_dataframes(
         add_factor_mode: 是否为新增因子模式
             - True: 列合并（因子维度增量），删除重复因子列
             - False: 行合并（时间维度增量），保留所有因子列
+        store_path: parquet文件路径，增量合并时用pyarrow按日期过滤加载
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -291,24 +346,32 @@ def _smart_merge_dataframes(
         raise ValueError("index_columns cannot be empty")
 
     # 保持与原函数相同的空数据处理
-    if existing_data.empty:
+    # ⭐ 有store_path时，existing_data可能只是空壳（仅用于列信息），不能直接返回新数据
+    if existing_data.empty and not store_path:
         logger.info("现有数据为空，直接返回新数据副本")
         return new_data.copy()
 
     if new_data.empty:
+        if store_path:
+            logger.info("新数据为空，从store_path加载现有数据")
+            return pd.read_parquet(store_path)
         logger.info("新数据为空，直接返回现有数据副本")
         return existing_data.copy()
 
-    # 保持与原函数相同的统计信息记录
-    logger.info(f"合并前统计 - 现有数据: {len(existing_data):,}条, 新数据: {len(new_data):,}条")
+    # 统计信息记录
+    if store_path and existing_data.empty:
+        logger.info(f"合并前统计 - 现有数据从store_path加载, 新数据: {len(new_data):,}条")
+    else:
+        logger.info(f"合并前统计 - 现有数据: {len(existing_data):,}条, 新数据: {len(new_data):,}条")
 
-    if 'date' in existing_data.columns and 'date' in new_data.columns:
-        existing_min_date = existing_data['date'].min()
-        existing_max_date = existing_data['date'].max()
+    if 'date' in new_data.columns:
         new_min_date = new_data['date'].min()
         new_max_date = new_data['date'].max()
-        logger.info(f"现有数据日期范围: {existing_min_date} ~ {existing_max_date}")
         logger.info(f"新数据日期范围: {new_min_date} ~ {new_max_date}")
+        if not existing_data.empty and 'date' in existing_data.columns:
+            existing_min_date = existing_data['date'].min()
+            existing_max_date = existing_data['date'].max()
+            logger.info(f"现有数据日期范围: {existing_min_date} ~ {existing_max_date}")
 
     # 🎯 核心优化：调用优化版本的合并函数
     try:
@@ -317,11 +380,18 @@ def _smart_merge_dataframes(
         logger.debug(f"[优化] 调用分块优化合并函数 - 数据量: {len(existing_data):,} + {len(new_data):,}")
         result_df = smart_merge_dataframes_fixed(
             existing_data, new_data, index_columns, overlap_mode,
-            add_factor_mode=add_factor_mode  # ✅ 传递参数
+            add_factor_mode=add_factor_mode,
+            store_path=store_path  # ✅ 传递store_path
         )
 
         # 保持与原函数相同的最终统计记录
-        logger.info(f"合并完成 - 最终数据: {len(result_df):,}条记录")
+        if hasattr(result_df, 'attrs') and result_df.attrs.get('_stream_merged'):
+            total_rows = result_df.attrs.get('_stream_total_rows', len(result_df))
+            logger.info(f"合并完成 - 最终数据: {total_rows:,}条记录 (流式合并，文件已直接写入)")
+            # 流式合并已在磁盘完成，不需要再次save
+            result_df.attrs['_already_saved'] = True
+        else:
+            logger.info(f"合并完成 - 最终数据: {len(result_df):,}条记录")
 
         if 'date' in result_df.columns:
             final_min_date = result_df['date'].min()
@@ -333,24 +403,113 @@ def _smart_merge_dataframes(
     except Exception as e:
         logger.error(f"[优化] 分块合并失败，降级到简单处理: {e}")
 
-        # 🛡️ 降级处理：如果优化版本失败，使用最简单的合并方式
-        logger.warning("[降级] 使用简单的concat+去重方式作为备选方案")
+        if store_path and not add_factor_mode and 'date' in new_data.columns:
+            raise RuntimeError(
+                "索引级流式增量合并失败。为避免按日期范围粗粒度覆盖导致因子数据损坏，"
+                "已中止保存，原 parquet 文件保持不变。"
+            ) from e
 
+        # 降级处理：根据合并模式选择不同策略
         try:
-            # 简单拼接
-            result_df = pd.concat([existing_data, new_data], axis=0, ignore_index=True)
-
-            # 去重（保留新数据）
-            result_df = result_df.drop_duplicates(subset=index_columns, keep='last')
-
-            # 排序
-            if len(index_columns) > 1:
-                sort_columns = index_columns
+            if add_factor_mode:
+                # 列合并模式：只在索引列上merge避免全量拷贝
+                logger.warning("[降级] add_factor模式：使用merge进行列合并")
+                existing_factors = set(existing_data.columns) - set(index_columns)
+                new_factors = set(new_data.columns) - set(index_columns)
+                new_cols_to_add = [c for c in new_factors if c in new_data.columns]
+                if new_cols_to_add:
+                    aligned = existing_data[list(index_columns)].merge(
+                        new_data[list(index_columns) + new_cols_to_add],
+                        on=list(index_columns), how='left'
+                    )
+                    for col in new_cols_to_add:
+                        existing_data[col] = aligned[col].values
+                    result_df = existing_data
+                else:
+                    result_df = existing_data
             else:
-                sort_columns = index_columns[0]
-
-            result_df = result_df.sort_values(sort_columns, kind='mergesort')
-            result_df = result_df.reset_index(drop=True)
+                # 行合并模式：分批流式合并，避免全量加载到内存
+                if 'date' in new_data.columns and store_path:
+                    new_min_date = new_data['date'].min()
+                    new_max_date = new_data['date'].max()
+                    new_min_ts = pd.Timestamp(new_min_date)
+                    new_max_ts = pd.Timestamp(new_max_date)
+                    try:
+                        import pyarrow.parquet as pq, pyarrow as pa, os, gc
+                        from .store_merge_fix import optimize_dtypes
+                        temp_path = str(store_path) + ".tmp_fallback"
+                        pf = pq.ParquetFile(store_path)
+                        # 从原文件schema派生float32版本
+                        orig_schema = pf.schema_arrow
+                        fields_32 = []
+                        for field in orig_schema:
+                            if field.type == pa.float64() or str(field.type) == 'float':
+                                fields_32.append(pa.field(field.name, pa.float32()))
+                            else:
+                                fields_32.append(field)
+                        schema_32 = pa.schema(fields_32)
+                        kept_rows = 0; first_batch = True
+                        for batch in pf.iter_batches(batch_size=200000):
+                            df_batch = batch.to_pandas()
+                            optimize_dtypes(df_batch)
+                            mask = (df_batch['date'] < new_min_ts) | (df_batch['date'] > new_max_ts)
+                            filtered = df_batch[mask]
+                            if len(filtered) > 0:
+                                rb = pa.RecordBatch.from_pandas(filtered, schema=schema_32)
+                                if first_batch:
+                                    writer = pq.ParquetWriter(temp_path, schema_32, compression='snappy')
+                                    first_batch = False
+                                writer.write_batch(rb)
+                                kept_rows += len(filtered)
+                            del df_batch, filtered
+                        gc.collect()
+                        new_data_opt = new_data.copy(); optimize_dtypes(new_data_opt)
+                        if first_batch:
+                            writer = pq.ParquetWriter(temp_path, schema_32, compression='snappy')
+                            first_batch = False
+                        writer.write_batch(pa.RecordBatch.from_pandas(new_data_opt, schema=schema_32))
+                        writer.close(); del new_data_opt
+                        pf = None; gc.collect()
+                        os.replace(temp_path, store_path)
+                        logger.warning(f"[降级] 分批流式合并完成: 保留{kept_rows:,}行 + 新增{len(new_data):,}行")
+                        result_df = new_data.copy()
+                    except Exception as pa_err:
+                        logger.warning(f"[降级] 流式合并失败: {pa_err}")
+                        if 'date' in existing_data.columns and not existing_data.empty:
+                            from .store_merge_fix import _key_index
+                            new_dedup = new_data.drop_duplicates(subset=list(index_columns), keep='last')
+                            new_index = _key_index(new_dedup, index_columns)
+                            existing_index = _key_index(existing_data, index_columns)
+                            overlap_mask = existing_index.isin(new_index)
+                            existing_non_overlap = existing_data[~overlap_mask]
+                            logger.warning(f"[降级] 回退索引过滤+concat: 排除{overlap_mask.sum():,}行")
+                            result_df = pd.concat([existing_non_overlap, new_dedup], axis=0, ignore_index=True)
+                            result_df = result_df.reset_index(drop=True)
+                        else:
+                            result_df = pd.concat([existing_data, new_data], axis=0, ignore_index=True)
+                            result_df = result_df.drop_duplicates(subset=index_columns, keep='last')
+                            logger.warning(f"[降级] concat+去重: {len(result_df):,}行")
+                elif 'date' in new_data.columns and 'date' in existing_data.columns and not existing_data.empty:
+                    from .store_merge_fix import _key_index
+                    new_dedup = new_data.drop_duplicates(subset=list(index_columns), keep='last')
+                    new_index = _key_index(new_dedup, index_columns)
+                    existing_index = _key_index(existing_data, index_columns)
+                    overlap_mask = existing_index.isin(new_index)
+                    existing_non_overlap = existing_data[~overlap_mask]
+                    logger.warning(f"[降级] 使用索引过滤+concat方式: 排除{overlap_mask.sum():,}行重叠数据")
+                    result_df = pd.concat([existing_non_overlap, new_dedup], axis=0, ignore_index=True)
+                    result_df = result_df.reset_index(drop=True)
+                else:
+                    # 无date列时回退到concat+去重
+                    logger.warning("[降级] 使用简单的concat+去重方式作为备选方案")
+                    result_df = pd.concat([existing_data, new_data], axis=0, ignore_index=True)
+                    result_df = result_df.drop_duplicates(subset=index_columns, keep='last')
+                    if len(index_columns) > 1:
+                        sort_columns = index_columns
+                    else:
+                        sort_columns = index_columns[0]
+                    result_df = result_df.sort_values(sort_columns, kind='quicksort')
+                    result_df = result_df.reset_index(drop=True)
 
             logger.info(f"[降级] 简单合并完成: {len(result_df):,}条记录")
             return result_df
@@ -360,12 +519,13 @@ def _smart_merge_dataframes(
             raise ValueError(f"所有合并策略都失败了: 原始错误={e}, 降级错误={fallback_e}")
 
 
-def _merge_frames(base: pd.DataFrame, new: pd.DataFrame, index_cols: Sequence[str], overlap_mode: str = 'auto') -> pd.DataFrame:
+def _merge_frames(base: pd.DataFrame, new: pd.DataFrame, index_cols: Sequence[str], overlap_mode: str = 'auto', store_path: str = None) -> pd.DataFrame:
     """
     🆕 智能合并函数，自动判断合并模式
 
     Args:
         overlap_mode: 'auto'（自动判断）, 'merge'（增量合并）, 'batch'（分批保存）
+        store_path: parquet文件路径，增量合并时用pyarrow按日期过滤加载
     """
     from .store_merge_fix import smart_merge_dataframes_fixed
     import logging
@@ -393,4 +553,4 @@ def _merge_frames(base: pd.DataFrame, new: pd.DataFrame, index_cols: Sequence[st
             logger.debug(f"[智能合并] 自动判断为增量合并模式 - 行数不同: {len(base)} vs {len(new)}")
 
     logger.debug(f"[智能合并] 使用 {overlap_mode} 模式进行合并")
-    return smart_merge_dataframes_fixed(base, new, index_cols, overlap_mode)
+    return smart_merge_dataframes_fixed(base, new, index_cols, overlap_mode, store_path=store_path)

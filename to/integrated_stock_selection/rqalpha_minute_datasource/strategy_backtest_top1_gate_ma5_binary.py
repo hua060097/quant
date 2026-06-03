@@ -137,6 +137,59 @@ class StrategyConfig:
     profit_bearish_activation_return: float = 0.05
     enable_top1_state_machine_risk: bool = False
 
+    # Exhaustion factor buy filter (高位衰竭因子买入过滤)
+    # strategy: 'three_rule_v3' (默认) | 'runup_or_blowoff' | 'runup_ma5' | 'close_below_ma5'
+    enable_exhaustion_filter: bool = False
+    exhaustion_filter_strategy: str = 'three_rule_v3'
+    # v3: three_rule_v3 基于50+162双日志鲁棒性分析
+    exhaustion_v3_cpv_threshold: float = -0.4                # cpv_factor <= 此值（配合runup>0.8）
+    exhaustion_v3_blowoff_threshold: float = 2.0              # prev_day_blowoff_risk >= 此值
+    exhaustion_v3_sector_accel_threshold: float = 0.30        # sector_momentum_accel_rank <= 此值
+    exhaustion_v3_sector_leadership_threshold: float = -0.18  # sector_leadership_persistence_v3 <= 此值
+    exhaustion_v3_return_20d_intra_z_threshold: float = 0.40  # R3仅在个股20日相对强度也偏弱时触发
+    # v3 Rule4: 大盘流动性弱 + 个股三项至少其一
+    exhaustion_v3_market_liq_threshold: float = 0.94  # market_liquidity_change < 此值
+    exhaustion_v3_ulcer_threshold: float = -0.80       # ulcer_index < 此值 (路径A)
+    exhaustion_v3_mom_peak_threshold: float = 1.0      # momentum_peak_decay_3d > 此值 (路径B)
+    exhaustion_v3_intra_sector_rank_threshold: float = 0.67  # intra_sector_momentum_rank < 此值 (路径C)
+    # v3 Rule5: 市场熔断 — 安静熊市
+    exhaustion_v3_mkt_disp_threshold: float = 0.98    # mkt_dispersion_shock_v2 < 此值
+    exhaustion_v3_mkt_adr_threshold: float = 0.38     # market_advance_decline_ratio < 此值
+    # v3 Rule6: 近3日跌停过滤
+    enable_exhaustion_limit_down_3d: bool = True       # 是否启用近3日跌停过滤
+    # v3 Rule7: 短强但散户资金流出
+    exhaustion_v3_top10_strength_threshold: float = 0.70    # top10_10d_strength_level_v3 >= 此值
+    exhaustion_v3_buy_sm_amount_threshold: float = -1.25    # buy_sm_amount_rate <= 此值
+    # v3 Rule8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
+    exhaustion_v3_non_first_limit_up_perf_pct20_threshold: float = 0.80
+    exhaustion_v3_kdj_j_z_threshold: float = 0.75
+    # v3 Rule9: 当日Top1模型分数相对候选池预测分布偏弱
+    exhaustion_v3_score_z_in_day_threshold: float = 1.50
+    # v3 Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低
+    exhaustion_v3_reg_severe_up_10d_pct_threshold: float = 0.80  # reg_severe_up_10d_ratio_pct >= 此值
+    exhaustion_v3_reg_adr_threshold: float = 0.45  # market_advance_decline_ratio <= 此值
+    # v3 Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20 → 高位衰竭
+    exhaustion_v3_ma5_raw_threshold: float = 9.0   # price_ma5_ratio_raw >= 此值
+    exhaustion_v3_ma_convergence_threshold: float = 0.20  # ma_convergence_score >= 此值
+    # v3 Rule12: MA5回撤深度极深 + 短期加速上涨 → 高位回撤加速衰竭
+    exhaustion_v3_ma5_pullback_depth_threshold: float = -0.05  # ma5_pullback_depth_10d <= 此值
+    exhaustion_v3_ret_3d_vs_10d_accel_threshold: float = 6.0   # ret_3d_vs_10d_accel >= 此值
+    # 日内拆分入场（无未来函数版本）
+    enable_intraday_split_entry: bool = False          # 是否启用日内拆分入场
+    intraday_split_first15_threshold: float = 0.0      # 保留兼容；当前无未来版本用首根5分钟K close > open 做确认
+    intraday_split_confirm_cap: float = 0.015          # 兼容旧参数；当前不再用作补仓涨幅上限
+    intraday_split_limit_up_buffer: float = 0.005      # 估算涨停价缓冲，避免接近/达到涨停时假设可买
+    intraday_split_max_buy_premium: float = 0.15       # 第二笔相对首笔买入价的异常保护上限
+    intraday_split_tail_stop: float = 0.05             # 尾盘止损线（从open算起的最大跌幅）
+    # v2: runup_ma5 / runup_or_blowoff
+    exhaustion_runup_ma5_threshold: float = 0.8
+    exhaustion_top10_10d_strength_threshold: float = 0.5
+    exhaustion_prev_day_blowoff_threshold: float = 4.15
+    exhaustion_sector_momentum_accel_weak_threshold: float = 0.41
+    exhaustion_market_advance_decline_ratio_threshold: float = 5.39559
+    # v1: close_below_ma5
+    exhaustion_filter_turnover_z_threshold: float = 1.0
+
 @dataclass
 class Position:
     """持仓记录类 - 解决之前字典结构不一致的问题"""
@@ -229,6 +282,7 @@ class BacktestStrategy:
         self.daily_returns: List[float] = [0.0]
         self.trading_dates_list: List[datetime.date] = []  # 保存交易日期列表，用于绘图
         self.skipped_buy_attempts: List[Dict] = []  # 保存被跳过的买入尝试（开盘风控等），用于绘图
+        self.shadow_skipped_opportunity_trades: List[Dict] = []  # 满仓等原因跳过时的影子机会交易，不影响组合净值
 
         # 数据缓存
         self.minute_data_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -2328,7 +2382,10 @@ class BacktestStrategy:
             logger.error(f"❌ 买入成本超支: 成本={actual_cost:.2f}, 可用现金={self.cash:.2f}")
             return None
 
-        logger.info(f"💵 资金使用情况: 分配金额={position_amount:.2f}, 买入数量={quantity}股, 实际花费={actual_cost:.2f}")
+        logger.info(
+            f"💵 资金使用情况: 分配金额={position_amount:.2f}, 买入数量={quantity}股, "
+            f"实际花费={actual_cost:.2f}"
+        )
         logger.info(f"💰 买入后现金: {self.cash - actual_cost:.2f} (买入前: {self.cash:.2f})")
 
         effective_holding_days = int(holding_days_override or self.config.holding_days)
@@ -2379,8 +2436,9 @@ class BacktestStrategy:
             strict_risk_mode=bool(strict_risk_mode)
         )
 
-        self.current_holdings[stock_code] = position
         self.cash -= buy_price * quantity
+
+        self.current_holdings[stock_code] = position
 
         self.last_buy_date = buy_date
         self.current_buy_cycle_date = buy_date
@@ -2506,6 +2564,617 @@ class BacktestStrategy:
             logger.error(f"❌ 买入判断逻辑异常: {e}")
             # 异常情况下默认不允许买入，避免错误状态
             return {'should_buy': False, 'reason': f'逻辑异常: {e}', 'prediction_date': None}
+
+    def _get_latest_prediction_date_before(self, trade_date: datetime.date) -> Optional[datetime.date]:
+        prediction_dates = pd.to_datetime(self.prediction_data['date']).dt.date
+        prediction_dates = sorted(set(prediction_dates.tolist()))
+        earlier_dates = [d for d in prediction_dates if d < trade_date]
+        return max(earlier_dates) if earlier_dates else None
+
+    def _select_target_stock_for_date(
+        self,
+        prediction_date: datetime.date,
+        log_prefix: str = "",
+    ) -> tuple[Optional[pd.Series], Optional[pd.DataFrame], str]:
+        """按真实买入逻辑选择指定T日的目标股票。"""
+        prediction_date_str = prediction_date.strftime('%Y-%m-%d')
+        top_k_stocks = self.required_stocks_by_date.get(prediction_date_str, [])
+        if not top_k_stocks:
+            return None, None, f"{prediction_date} 无预分析Top-K股票"
+
+        daily_predictions = self.prediction_data[
+            (self.prediction_data['date'] == prediction_date) &
+            (self.prediction_data['stock_code'].isin(top_k_stocks))
+        ]
+        if daily_predictions.empty:
+            return None, None, f"{prediction_date} Top-K股票无预测数据"
+
+        daily_predictions = self._attach_score_z_in_day(daily_predictions)
+        selected_stocks = daily_predictions.sort_values('predicted_return', ascending=False)
+        target_rank = self.config.stock_count
+        regime_override_active = False
+
+        if 'regime_skip_buy' in selected_stocks.columns:
+            skip_series = selected_stocks['regime_skip_buy']
+            if len(skip_series) > 0:
+                first_skip = skip_series.iloc[0]
+                regime_skip_buy = bool(first_skip) if pd.notna(first_skip) else False
+                if regime_skip_buy:
+                    return None, selected_stocks, f"{prediction_date} regime_skip_buy=True"
+
+        if (
+            self.config.enable_dynamic_rank_switch and
+            'regime_target_rank' in selected_stocks.columns
+        ):
+            regime_rank_series = pd.to_numeric(
+                selected_stocks['regime_target_rank'], errors='coerce'
+            ).dropna()
+            if not regime_rank_series.empty:
+                target_rank = int(np.clip(regime_rank_series.iloc[0], 1, len(selected_stocks)))
+                regime_override_active = True
+
+        if len(selected_stocks) < target_rank:
+            return None, selected_stocks, f"候选股票数{len(selected_stocks)}不足目标排名{target_rank}"
+
+        if self.config.enable_dynamic_rank_switch and target_rank == 1 and not regime_override_active:
+            target_stock = self._select_target_stock_for_top1_fusion(selected_stocks, alpha=0.1)
+            if target_stock is None:
+                return None, selected_stocks, "候选股票为空"
+        else:
+            target_stock = selected_stocks.iloc[target_rank - 1]
+
+        if log_prefix:
+            logger.info(
+                f"{log_prefix}目标股票: {target_stock['stock_code']}, "
+                f"prediction_date={prediction_date}, target_rank={target_rank}"
+            )
+        return target_stock, selected_stocks, ""
+
+    def _attach_score_z_in_day(self, daily_predictions: pd.DataFrame) -> pd.DataFrame:
+        """补齐当日候选池内预测分数z-score，供Rule9使用。"""
+        daily_predictions = daily_predictions.copy()
+        if 'score_z_in_day' in daily_predictions.columns and daily_predictions['score_z_in_day'].notna().any():
+            return daily_predictions
+        scores = pd.to_numeric(daily_predictions.get('predicted_return', np.nan), errors='coerce')
+        score_std = float(np.nanstd(scores, ddof=0))
+        if score_std > 0:
+            daily_predictions['score_z_in_day'] = (scores - float(np.nanmean(scores))) / score_std
+        else:
+            daily_predictions['score_z_in_day'] = np.nan
+        return daily_predictions
+
+    def _evaluate_exhaustion_for_stock(self, stock: pd.Series) -> Dict[str, Any]:
+        strategy = self.config.exhaustion_filter_strategy
+        if not self.config.enable_exhaustion_filter:
+            return {
+                'blocked': False,
+                'strategy': strategy,
+                'reason': '',
+                'rule1_hit': False,
+                'rule2_hit': False,
+                'rule3_hit': False,
+                'rule4_hit': False,
+                'rule5_hit': False,
+                'rule6_hit': False,
+                'rule7_hit': False,
+                'rule8_hit': False,
+                'rule9_hit': False,
+                'rule10_hit': False,
+                'rule11_hit': False,
+                'rule12_hit': False,
+            }
+
+        if strategy == 'three_rule_v3':
+            th = self.config.exhaustion_runup_ma5_threshold
+            cpv_th = self.config.exhaustion_v3_cpv_threshold
+            rma_val = stock.get('runup_ma5_exhaustion', np.nan)
+            cpv_val = stock.get('cpv_factor', np.nan)
+            rule1_hit = (
+                pd.notna(rma_val) and pd.notna(cpv_val)
+                and rma_val > th
+                and cpv_val <= cpv_th
+            )
+
+            blowoff_th = self.config.exhaustion_v3_blowoff_threshold
+            sector_th = self.config.exhaustion_v3_sector_accel_threshold
+            blowoff_val = stock.get('prev_day_blowoff_risk', np.nan)
+            sector_val = stock.get('sector_momentum_accel_rank', np.nan)
+            rule2_hit = (
+                pd.notna(blowoff_val) and pd.notna(sector_val)
+                and (
+                    (blowoff_val >= blowoff_th and sector_val <= sector_th)
+                    or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a
+                    or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b
+                )
+            )
+
+            sl_th = self.config.exhaustion_v3_sector_leadership_threshold
+            ret20_th = self.config.exhaustion_v3_return_20d_intra_z_threshold
+            sl_val = stock.get('sector_leadership_persistence_v3', np.nan)
+            ret20_val = stock.get('return_20d_intra_z', np.nan)
+            rule3_hit = (
+                pd.notna(sl_val) and pd.notna(ret20_val)
+                and sl_val <= sl_th
+                and ret20_val <= ret20_th
+            )
+
+            # Rule 4: 大盘流动性弱 + 个股三项至少其一
+            liq_th = self.config.exhaustion_v3_market_liq_threshold
+            ulcer_th = self.config.exhaustion_v3_ulcer_threshold
+            mom_peak_th = self.config.exhaustion_v3_mom_peak_threshold
+            sector_rank_th = self.config.exhaustion_v3_intra_sector_rank_threshold
+            liq_val = stock.get('market_liquidity_change', np.nan)
+            ulcer_val = stock.get('ulcer_index', np.nan)
+            mom_peak_val = stock.get('momentum_peak_decay_3d', np.nan)
+            sector_rank_val = stock.get('intra_sector_momentum_rank', np.nan)
+            rule4_hit = (
+                pd.notna(liq_val)
+                and liq_val < liq_th
+                and (
+                    (pd.notna(ulcer_val) and ulcer_val < ulcer_th)
+                    or (pd.notna(mom_peak_val) and mom_peak_val > mom_peak_th)
+                    or (pd.notna(sector_rank_val) and sector_rank_val < sector_rank_th)
+                )
+            )
+
+            # Rule 6: 近3日有过跌停
+            rule6_hit = (
+                self.config.enable_exhaustion_limit_down_3d
+                and stock.get('limit_down_3d', 0) == 1
+            )
+
+            # Rule 7: 短强但散户资金流出 — 主力出货嫌疑
+            top10_th = self.config.exhaustion_v3_top10_strength_threshold
+            buy_sm_th = self.config.exhaustion_v3_buy_sm_amount_threshold
+            top10_val = stock.get('top10_10d_strength_level_v3', np.nan)
+            buy_sm_val = stock.get('buy_sm_amount_rate', np.nan)
+            rule7_hit = (
+                pd.notna(top10_val) and pd.notna(buy_sm_val)
+                and top10_val >= top10_th
+                and buy_sm_val <= buy_sm_th
+            )
+
+            # Rule 8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
+            non_first_pct20_th = self.config.exhaustion_v3_non_first_limit_up_perf_pct20_threshold
+            kdj_j_th = self.config.exhaustion_v3_kdj_j_z_threshold
+            non_first_pct20_val = stock.get('prev_non_first_limit_up_performance_percentile_20d', np.nan)
+            kdj_j_val = stock.get('kdj_j_9', np.nan)
+            rule8_hit = (
+                pd.notna(non_first_pct20_val) and pd.notna(kdj_j_val)
+                and non_first_pct20_val >= non_first_pct20_th
+                and kdj_j_val <= kdj_j_th
+            )
+
+            # Rule 9: 当日Top1模型分数相对候选池预测分布偏弱
+            score_z_th = self.config.exhaustion_v3_score_z_in_day_threshold
+            score_z_val = stock.get('score_z_in_day', np.nan)
+            rule9_hit = (
+                pd.notna(score_z_val)
+                and score_z_val <= score_z_th
+            )
+
+            # Rule 10: 个股近10日超额涨幅 + 全市场涨跌比极低
+            reg_severe_pct_th = self.config.exhaustion_v3_reg_severe_up_10d_pct_threshold
+            reg_adr_th = self.config.exhaustion_v3_reg_adr_threshold
+            reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
+            rule10_hit = (
+                pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
+                and reg_severe_pct_val >= reg_severe_pct_th
+                and adr_val <= reg_adr_th
+            )
+            # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
+            ma5_raw_th = self.config.exhaustion_v3_ma5_raw_threshold
+            ma_conv_th = self.config.exhaustion_v3_ma_convergence_threshold
+            ma5_raw_val = stock.get('price_ma5_ratio_raw', np.nan)
+            ma_conv_val = stock.get('ma_convergence_score', np.nan)
+            rule11_hit = (
+                pd.notna(ma5_raw_val) and pd.notna(ma_conv_val)
+                and ma5_raw_val >= ma5_raw_th
+                and ma_conv_val >= ma_conv_th
+            )
+            # Rule12: MA5回撤深度极深 + 短期加速上涨 → 高位回撤加速衰竭
+            ma5_pullback_th = self.config.exhaustion_v3_ma5_pullback_depth_threshold
+            ret_accel_th = self.config.exhaustion_v3_ret_3d_vs_10d_accel_threshold
+            ma5_pullback_val = stock.get('ma5_pullback_depth_10d', np.nan)
+            ret_accel_val = stock.get('ret_3d_vs_10d_accel', np.nan)
+            rule12_hit = (
+                pd.notna(ma5_pullback_val) and pd.notna(ret_accel_val)
+                and ma5_pullback_val <= ma5_pullback_th
+                and ret_accel_val >= ret_accel_th
+            )
+
+            # Rule 5: 市场熔断 — 安静熊市(dispersion低于均值+涨跌比极低)
+            disp_th = self.config.exhaustion_v3_mkt_disp_threshold
+            adr_th = self.config.exhaustion_v3_mkt_adr_threshold
+            disp_val = stock.get('mkt_dispersion_shock_v2', np.nan)
+            adr_val = stock.get('market_advance_decline_ratio', np.nan)
+            rule5_hit = (
+                pd.notna(disp_val) and pd.notna(adr_val)
+                and disp_val < disp_th
+                and adr_val < adr_th
+            )
+
+            parts = []
+            if rule1_hit:
+                parts.append(f'runup({rma_val:.2f})>{th} & cpv({cpv_val:.2f})<={cpv_th}')
+            if rule2_hit:
+                if blowoff_val >= blowoff_th and sector_val <= sector_th:
+                    parts.append(f'blowoff({blowoff_val:.2f})>={blowoff_th} & sector_accel({sector_val:.2f})<={sector_th}')
+                elif blowoff_val > 5.0:
+                    parts.append(f'XR2a:blowoff({blowoff_val:.2f})>5.0 & sector_accel({sector_val:.2f})<=0.50')
+                else:
+                    parts.append(f'XR2b:blowoff({blowoff_val:.2f})>1.0 & sector_accel({sector_val:.2f})<=0.15')
+            if rule3_hit:
+                parts.append(
+                    f'sector_leadership({sl_val:.2f})<={sl_th} '
+                    f'& return_20d_intra_z({ret20_val:.2f})<={ret20_th}'
+                )
+            if rule4_hit:
+                r4_reasons = []
+                if pd.notna(ulcer_val) and ulcer_val < ulcer_th:
+                    r4_reasons.append('ulcer=%.2f' % ulcer_val)
+                if pd.notna(mom_peak_val) and mom_peak_val > mom_peak_th:
+                    r4_reasons.append('mom_peak=%.1f' % mom_peak_val)
+                if pd.notna(sector_rank_val) and sector_rank_val < sector_rank_th:
+                    r4_reasons.append('sector_rank=%.2f' % sector_rank_val)
+                parts.append(f'liq({liq_val:.2f})<{liq_th} & ({"/".join(r4_reasons)})')
+            if rule5_hit:
+                parts.append(f'disp({disp_val:.2f})<{disp_th} & adr({adr_val:.2f})<{adr_th}')
+            if rule6_hit:
+                parts.append('limit_down_3d=1')
+            if rule7_hit:
+                parts.append(f'top10({top10_val:.2f})>={top10_th} & buy_sm({buy_sm_val:.2f})<={buy_sm_th}')
+            if rule8_hit:
+                parts.append(f'non_first_limit_pct20({non_first_pct20_val:.2f})>={non_first_pct20_th} & kdj_j_9_z({kdj_j_val:.2f})<={kdj_j_th}')
+            if rule9_hit:
+                parts.append(f'score_z_in_day({score_z_val:.2f})<={score_z_th}')
+            if rule10_hit:
+                parts.append(
+                    f'reg_severe_pct({reg_severe_pct_val:.2f})>={reg_severe_pct_th}'
+                    f' & adr({adr_val:.2f})<={reg_adr_th}'
+                )
+            if rule11_hit:
+                parts.append(
+                    f'ma5_raw({ma5_raw_val:.2f})>={ma5_raw_th}'
+                    f' & ma_conv({ma_conv_val:.2f})>={ma_conv_th}'
+                )
+            if rule12_hit:
+                parts.append(
+                    f'ma5_pullback({ma5_pullback_val:.4f})<={ma5_pullback_th}'
+                    f' & ret_accel({ret_accel_val:.2f})>={ret_accel_th}'
+                )
+
+            composite = np.nan
+            if pd.notna(sl_val) and pd.notna(ret20_val):
+                composite = max(0.0, -float(sl_val)) * max(0.0, float(ret20_th) - float(ret20_val))
+
+            return {
+                'blocked': bool(rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit or rule11_hit or rule12_hit),
+                'strategy': strategy,
+                'reason': ' | '.join(parts),
+                'rule1_hit': bool(rule1_hit),
+                'rule2_hit': bool(rule2_hit),
+                'rule3_hit': bool(rule3_hit),
+                'rule4_hit': bool(rule4_hit),
+                'rule5_hit': bool(rule5_hit),
+                'rule6_hit': bool(rule6_hit),
+                'rule7_hit': bool(rule7_hit),
+                'rule8_hit': bool(rule8_hit),
+                'rule9_hit': bool(rule9_hit),
+                'rule10_hit': bool(rule10_hit),
+                'rule11_hit': bool(rule11_hit),
+                'rule12_hit': bool(rule12_hit),
+                'runup_ma5_exhaustion': rma_val,
+                'cpv_factor': cpv_val,
+                'prev_day_blowoff_risk': blowoff_val,
+                'sector_momentum_accel_rank': sector_val,
+                'sector_leadership_persistence_v3': sl_val,
+                'return_20d_intra_z': ret20_val,
+                'sector_leadership_break_no_alpha': composite,
+                'score_z_in_day': score_z_val,
+            }
+
+        return {
+            'blocked': False,
+            'strategy': strategy,
+            'reason': '',
+            'rule1_hit': False,
+            'rule2_hit': False,
+            'rule3_hit': False,
+            'rule4_hit': False,
+            'rule5_hit': False,
+            'rule6_hit': False,
+            'rule7_hit': False,
+            'rule8_hit': False,
+            'rule9_hit': False,
+        }
+
+    def _build_shadow_trade_record(
+        self,
+        position: Position,
+        sell_date: datetime.date,
+        exit_reason: str,
+        exit_price: Optional[float] = None,
+        exit_time: Optional[datetime] = None,
+        trading_dates: Optional[List[datetime.date]] = None,
+    ) -> Dict[str, Any]:
+        """构造影子交易记录，不更新现金、持仓或真实交易列表。"""
+        if exit_time is not None:
+            sell_datetime = exit_time
+        elif exit_price is None:
+            stock_data = self.get_stock_data(position.stock_code, sell_date)
+            if stock_data.empty:
+                exit_price = position.buy_price * 0.98
+                sell_datetime = datetime.combine(sell_date, datetime.min.time())
+            else:
+                exit_price = float(stock_data.iloc[-1]['close'])
+                raw_sell_datetime = stock_data.iloc[-1]['datetime']
+                sell_datetime = self._to_python_datetime(raw_sell_datetime)
+        else:
+            sell_datetime = datetime.combine(sell_date, datetime.min.time())
+
+        actual_return = (float(exit_price) - position.buy_price) / position.buy_price
+        realized_holding_days = (sell_date - position.buy_date).days
+        if trading_dates is not None:
+            try:
+                buy_idx = trading_dates.index(position.buy_date)
+                sell_idx = trading_dates.index(sell_date)
+                realized_holding_days = sell_idx - buy_idx + 1
+            except ValueError:
+                realized_holding_days = (sell_date - position.buy_date).days
+
+        return {
+            'stock_code': position.stock_code,
+            'buy_datetime': position.buy_datetime,
+            'sell_datetime': sell_datetime,
+            'buy_price': position.buy_price,
+            'sell_price': float(exit_price),
+            'quantity': position.quantity,
+            'predicted_return': position.predicted_return,
+            'actual_return': actual_return,
+            'profit_loss': (float(exit_price) - position.buy_price) * position.quantity,
+            'profit_loss_pct': actual_return * 100,
+            'holding_days': int(realized_holding_days),
+            'entry_reason': position.entry_reason,
+            'exit_reason': exit_reason,
+            'strategy_type': f"Top-{self.config.stock_count}",
+        }
+
+    def _simulate_shadow_position_trade(
+        self,
+        stock: pd.Series,
+        stock_code: str,
+        prediction_date: datetime.date,
+        trade_date: datetime.date,
+        trading_dates: List[datetime.date],
+        buy_price: float,
+        buy_datetime: datetime,
+        prev_close: Optional[float],
+        shadow_skip_reason: str,
+        entry_check: Dict[str, Any],
+        exhaustion_info: Dict[str, Any],
+        strict_risk_mode: bool = False,
+    ) -> Dict[str, Any]:
+        effective_holding_days = max(1, int(self.config.holding_days))
+        holding_end_date = self.add_trading_days(trade_date, effective_holding_days - 1, trading_dates)
+        if holding_end_date is None:
+            holding_end_date = trade_date + timedelta(days=effective_holding_days - 1)
+
+        virtual_notional = max(float(self.config.initial_capital) * float(self.config.fixed_position_pct), buy_price * 100.0)
+        quantity = max(100, int(virtual_notional / buy_price / 100) * 100)
+        t1_day_lowest_price = 0.0
+        if self.config.risk_control_strategy == RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN:
+            t1_day_lowest = self._get_daily_low(stock_code, trade_date)
+            t1_day_lowest_price = float(t1_day_lowest) if t1_day_lowest is not None else 0.0
+
+        shadow_position = Position(
+            stock_code=stock_code,
+            buy_date=trade_date,
+            buy_datetime=buy_datetime,
+            buy_price=float(buy_price),
+            highest_price_since_buy=float(buy_price),
+            quantity=int(quantity),
+            predicted_return=float(stock.get('predicted_return', np.nan)),
+            holding_end_date=holding_end_date,
+            entry_reason=f"shadow:{shadow_skip_reason}",
+            holding_days=effective_holding_days,
+            slot_index=-1,
+            t1_day_lowest_price=t1_day_lowest_price,
+            last_valid_mark_price=float(buy_price),
+            strict_risk_mode=bool(strict_risk_mode),
+        )
+
+        buy_idx = trading_dates.index(trade_date)
+        for check_date in trading_dates[buy_idx:]:
+            risk_check = self.check_position_risk(shadow_position, check_date, trading_dates)
+            if risk_check.get('should_exit'):
+                trade_record = self._build_shadow_trade_record(
+                    shadow_position,
+                    check_date,
+                    f"风控: {risk_check.get('reason', '')}",
+                    risk_check.get('exit_price'),
+                    exit_time=risk_check.get('exit_time'),
+                    trading_dates=trading_dates,
+                )
+                break
+            if check_date >= holding_end_date:
+                trade_record = self._build_shadow_trade_record(
+                    shadow_position,
+                    check_date,
+                    "到期",
+                    trading_dates=trading_dates,
+                )
+                break
+        else:
+            trade_record = self._build_shadow_trade_record(
+                shadow_position,
+                trading_dates[-1],
+                "到期",
+                trading_dates=trading_dates,
+            )
+
+        trade_record.update({
+            'shadow_trade': True,
+            'shadow_skip_reason': shadow_skip_reason,
+            'shadow_prediction_date': prediction_date,
+            'shadow_attempt_buy_date': trade_date,
+            'entry_can_buy': bool(entry_check.get('can_buy', False)),
+            'entry_reason_detail': entry_check.get('reason', ''),
+            'entry_gap_ratio': entry_check.get('gap_ratio', np.nan),
+            'prev_close': prev_close,
+            'exhaustion_blocked': bool(exhaustion_info.get('blocked', False)),
+            'exhaustion_strategy': exhaustion_info.get('strategy', ''),
+            'exhaustion_reason': exhaustion_info.get('reason', ''),
+            'exhaustion_rule1_hit': bool(exhaustion_info.get('rule1_hit', False)),
+            'exhaustion_rule2_hit': bool(exhaustion_info.get('rule2_hit', False)),
+            'exhaustion_rule3_hit': bool(exhaustion_info.get('rule3_hit', False)),
+            'exhaustion_rule4_hit': bool(exhaustion_info.get('rule4_hit', False)),
+            'exhaustion_rule5_hit': bool(exhaustion_info.get('rule5_hit', False)),
+            'exhaustion_rule6_hit': bool(exhaustion_info.get('rule6_hit', False)),
+            'exhaustion_rule7_hit': bool(exhaustion_info.get('rule7_hit', False)),
+            'exhaustion_rule8_hit': bool(exhaustion_info.get('rule8_hit', False)),
+            'exhaustion_rule9_hit': bool(exhaustion_info.get('rule9_hit', False)),
+            'runup_ma5_exhaustion': exhaustion_info.get('runup_ma5_exhaustion', np.nan),
+            'cpv_factor': exhaustion_info.get('cpv_factor', np.nan),
+            'prev_day_blowoff_risk': exhaustion_info.get('prev_day_blowoff_risk', np.nan),
+            'sector_momentum_accel_rank': exhaustion_info.get('sector_momentum_accel_rank', np.nan),
+            'sector_leadership_persistence_v3': exhaustion_info.get('sector_leadership_persistence_v3', np.nan),
+            'return_20d_intra_z': exhaustion_info.get('return_20d_intra_z', np.nan),
+            'sector_leadership_break_no_alpha': exhaustion_info.get('sector_leadership_break_no_alpha', np.nan),
+            'score_z_in_day': exhaustion_info.get('score_z_in_day', np.nan),
+        })
+        return trade_record
+
+    def _record_full_position_shadow_opportunity(
+        self,
+        trade_date: datetime.date,
+        trading_dates: List[datetime.date],
+        shadow_skip_reason: str,
+    ) -> None:
+        """满仓跳过时记录Top1影子机会，不占仓位、不消耗现金、不改变组合结果。"""
+        if trade_date >= trading_dates[-1]:
+            return
+        prediction_date = self._get_latest_prediction_date_before(trade_date)
+        if prediction_date is None:
+            return
+
+        target_stock, selected_stocks, select_reason = self._select_target_stock_for_date(
+            prediction_date,
+            log_prefix="🧪 [SHADOW] ",
+        )
+        if target_stock is None:
+            self.shadow_skipped_opportunity_trades.append({
+                'shadow_trade': True,
+                'shadow_status': 'selection_skipped',
+                'shadow_skip_reason': shadow_skip_reason,
+                'shadow_prediction_date': prediction_date,
+                'shadow_attempt_buy_date': trade_date,
+                'skip_reason': select_reason,
+            })
+            return
+
+        stock_code = target_stock['stock_code']
+        logger.info(
+            f"🧪 [SHADOW] 满仓跳过机会评估: {stock_code}, "
+            f"T日={prediction_date}, T+1日={trade_date}"
+        )
+        self._preload_stocks_data([prediction_date, trade_date], [stock_code])
+
+        prediction_day_data = self.get_stock_data(stock_code, prediction_date)
+        prev_close = None
+        if not prediction_day_data.empty:
+            prev_close = float(prediction_day_data.iloc[-1]['close'])
+
+        execution_day_data = self.get_stock_data(stock_code, trade_date)
+        if execution_day_data.empty:
+            self.shadow_skipped_opportunity_trades.append({
+                'shadow_trade': True,
+                'shadow_status': 'no_minute_data',
+                'stock_code': stock_code,
+                'shadow_skip_reason': shadow_skip_reason,
+                'shadow_prediction_date': prediction_date,
+                'shadow_attempt_buy_date': trade_date,
+                'predicted_return': target_stock.get('predicted_return', np.nan),
+            })
+            return
+
+        buy_open = float(execution_day_data.iloc[0]['open'])
+        entry_check = self.check_entry_signal(
+            stock_code, trade_date, prev_close, buy_open, target_rank=self.config.stock_count
+        )
+        exhaustion_info = self._evaluate_exhaustion_for_stock(target_stock)
+
+        delayed_entry = self._resolve_delayed_entry(stock_code, trade_date, execution_day_data)
+        if not delayed_entry.get('can_buy', False):
+            self.shadow_skipped_opportunity_trades.append({
+                'shadow_trade': True,
+                'shadow_status': 'delayed_entry_rejected',
+                'stock_code': stock_code,
+                'shadow_skip_reason': shadow_skip_reason,
+                'shadow_prediction_date': prediction_date,
+                'shadow_attempt_buy_date': trade_date,
+                'buy_open': buy_open,
+                'prev_close': prev_close,
+                'predicted_return': target_stock.get('predicted_return', np.nan),
+                'entry_can_buy': bool(entry_check.get('can_buy', False)),
+                'entry_reason_detail': entry_check.get('reason', ''),
+                'skip_reason': delayed_entry.get('reason', ''),
+                'exhaustion_blocked': bool(exhaustion_info.get('blocked', False)),
+                'exhaustion_reason': exhaustion_info.get('reason', ''),
+            })
+            return
+
+        buy_price = float(delayed_entry['buy_price'])
+        buy_datetime = delayed_entry['buy_datetime']
+        strict_risk_mode = False
+        if self.config.enable_gate_hit_strict_mode and prev_close not in (None, 0):
+            strict_gap_ratio = (buy_price - float(prev_close)) / float(prev_close)
+            if strict_gap_ratio > self.config.gate_hit_entry_gap_up_threshold:
+                self.shadow_skipped_opportunity_trades.append({
+                    'shadow_trade': True,
+                    'shadow_status': 'strict_gap_rejected',
+                    'stock_code': stock_code,
+                    'shadow_skip_reason': shadow_skip_reason,
+                    'shadow_prediction_date': prediction_date,
+                    'shadow_attempt_buy_date': trade_date,
+                    'buy_price': buy_price,
+                    'prev_close': prev_close,
+                    'predicted_return': target_stock.get('predicted_return', np.nan),
+                    'entry_can_buy': bool(entry_check.get('can_buy', False)),
+                    'entry_reason_detail': entry_check.get('reason', ''),
+                    'exhaustion_blocked': bool(exhaustion_info.get('blocked', False)),
+                    'exhaustion_reason': exhaustion_info.get('reason', ''),
+                })
+                return
+
+        trade_record = self._simulate_shadow_position_trade(
+            stock=target_stock,
+            stock_code=stock_code,
+            prediction_date=prediction_date,
+            trade_date=trade_date,
+            trading_dates=trading_dates,
+            buy_price=buy_price,
+            buy_datetime=buy_datetime,
+            prev_close=prev_close,
+            shadow_skip_reason=shadow_skip_reason,
+            entry_check=entry_check,
+            exhaustion_info=exhaustion_info,
+            strict_risk_mode=strict_risk_mode,
+        )
+        trade_record['shadow_status'] = (
+            'entry_rejected_but_simulated'
+            if not entry_check.get('can_buy', False)
+            else 'exhaustion_blocked_but_simulated'
+            if exhaustion_info.get('blocked', False)
+            else 'simulated'
+        )
+        self.shadow_skipped_opportunity_trades.append(trade_record)
+        logger.info(
+            f"🧪 [SHADOW] {stock_code} 满仓机会收益: "
+            f"{trade_record.get('actual_return', np.nan) * 100:.2f}%, "
+            f"status={trade_record['shadow_status']}, "
+            f"exhaustion={trade_record.get('exhaustion_reason', '') or 'PASS'}"
+        )
 
     def execute_sell(self, position: Position, sell_date: datetime.date,
                      exit_reason: str, exit_price: Optional[float] = None,
@@ -2634,6 +3303,13 @@ class BacktestStrategy:
             # 先按早盘状态决定是否买入。A股是T+1，当天9:35可用于买入的资金只能来自早盘可用现金，
             # 不能使用同日盘中风控/到期卖出后才释放的资金。
             # 因此买入必须发生在当日卖出逻辑之前，且只允许使用当日开盘前本来就空着的槽位。
+            if day_start_open_slots <= 0:
+                logger.info(f"⏸️ 开盘前无可用槽位(持仓{day_start_holdings_count}/{self.config.max_concurrent_positions}), 跳过买入")
+                self._record_full_position_shadow_opportunity(
+                    trade_date=trade_date,
+                    trading_dates=trading_dates,
+                    shadow_skip_reason=f"开盘前无可用槽位(持仓{day_start_holdings_count}/{self.config.max_concurrent_positions})",
+                )
             if day_start_open_slots > 0 and i < len(trading_dates) - 1 and day_start_free_slot_index is not None:
                 try:
                     # 检查是否是正确的买入时机
@@ -2671,6 +3347,7 @@ class BacktestStrategy:
                         logger.warning(f"⚠️ {prediction_date} Top-K股票无预测数据，跳过")
                         raise _SkipBuyDay()
 
+                    daily_predictions = self._attach_score_z_in_day(daily_predictions)
                     logger.info(f"📊 {prediction_date} Top-K预测数据: {len(daily_predictions)}只股票")
 
                     # 直接使用预分析的排序结果，无需重新过滤和排序
@@ -2822,43 +3499,341 @@ class BacktestStrategy:
                     logger.info(f"🚦 {stock_code} 买入信号: {entry_check['can_buy']}, 原因: {entry_check['reason']}")
 
                     if entry_check['can_buy']:
-                        base_position_pct = self._resolve_position_pct(day_start_free_slot_index)
-                        regime_position_scale = self._resolve_position_scale(selected_stocks)
-                        strict_risk_mode = False
-                        if 'regime_strict_risk_mode' in selected_stocks.columns:
-                            strict_series = selected_stocks['regime_strict_risk_mode']
-                            if len(strict_series) > 0:
-                                first_strict = strict_series.iloc[0]
-                                strict_risk_mode = bool(first_strict) if pd.notna(first_strict) else False
-                        final_position_pct = base_position_pct * regime_position_scale
-                        entry_reason = "normal"
-                        logger.info(
-                            f"🧭 分层并行仓位生效: {stock_code} 使用 {final_position_pct:.0%} 仓位, "
-                            f"(基础槽位={base_position_pct:.0%}, 日级缩放={regime_position_scale:.2f}), "
-                            f"严格风控={strict_risk_mode}, "
-                            f"分配到槽位={day_start_free_slot_index + 1}/{self.config.max_concurrent_positions}, "
-                            f"开盘前持仓数={day_start_holdings_count}/{self.config.max_concurrent_positions}"
-                        )
+                        # ================================================================
+                        # Exhaustion filter: 检查模型Top1选中的股票是否触发高位衰竭信号
+                        # 注意：仅检查具体选中的股票，不预过滤候选池，避免模型选第二名
+                        # ================================================================
+                        if self.config.enable_exhaustion_filter:
+                            strategy = self.config.exhaustion_filter_strategy
+                            blocked = False
+                            block_reason = ''
 
-                        holding_days_override = self.config.holding_days
-                        logger.info(f"🧭 固定持仓天数生效: {stock_code} 使用 {holding_days_override} 天持仓")
+                            if strategy == 'three_rule_v3':
+                                # ========================================================
+                                # v3: 三规则过滤 (基于Top-1鲁棒性分析)
+                                # ========================================================
+                                th = self.config.exhaustion_runup_ma5_threshold
+                                cpv_th = self.config.exhaustion_v3_cpv_threshold
+                                rma_val = stock.get('runup_ma5_exhaustion', 0)
+                                cpv_val = stock.get('cpv_factor', 0)
+                                rule1_hit = (
+                                    pd.notna(rma_val) and pd.notna(cpv_val)
+                                    and rma_val > th
+                                    and cpv_val <= cpv_th
+                                )
 
-                        position = self.execute_buy(
-                            stock_code, trade_date, stock['predicted_return'], trading_dates,
-                            position_pct=final_position_pct,
-                            entry_reason=entry_reason,
-                            holding_days_override=holding_days_override,
-                            day_start_cash=day_start_cash,
-                            day_start_equity=day_start_equity,
-                            slot_index=day_start_free_slot_index,
-                            strict_risk_mode=strict_risk_mode,
-                            prev_close=prev_close
-                        )
-                        if position:
-                            self.positions.append(position)
-                            logger.info(f"✅ {stock_code} 买入成功，添加到持仓列表")
-                        else:
-                            logger.warning(f"❌ {stock_code} 买入失败，execute_buy返回None")
+                                blowoff_th = self.config.exhaustion_v3_blowoff_threshold
+                                sector_th = self.config.exhaustion_v3_sector_accel_threshold
+                                blowoff_val = stock.get('prev_day_blowoff_risk', 0)
+                                sector_val = stock.get('sector_momentum_accel_rank', 0)
+                                rule2_hit = (
+                                    pd.notna(blowoff_val) and pd.notna(sector_val)
+                                    and (
+                                        (blowoff_val >= blowoff_th and sector_val <= sector_th)
+                                        or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a
+                                        or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b
+                                    )
+                                )
+
+                                sl_th = self.config.exhaustion_v3_sector_leadership_threshold
+                                ret20_th = self.config.exhaustion_v3_return_20d_intra_z_threshold
+                                sl_val = stock.get('sector_leadership_persistence_v3', 0)
+                                ret20_val = stock.get('return_20d_intra_z', np.nan)
+                                rule3_hit = (
+                                    pd.notna(sl_val) and pd.notna(ret20_val)
+                                    and sl_val <= sl_th
+                                    and ret20_val <= ret20_th
+                                )
+
+                                # Rule 4: 大盘流动性弱 + 个股三项至少其一
+                                liq_th = self.config.exhaustion_v3_market_liq_threshold
+                                ulcer_th = self.config.exhaustion_v3_ulcer_threshold
+                                mom_peak_th = self.config.exhaustion_v3_mom_peak_threshold
+                                sector_rank_th = self.config.exhaustion_v3_intra_sector_rank_threshold
+                                liq_val = stock.get('market_liquidity_change', np.nan)
+                                ulcer_val = stock.get('ulcer_index', np.nan)
+                                mom_peak_val = stock.get('momentum_peak_decay_3d', np.nan)
+                                sector_rank_val = stock.get('intra_sector_momentum_rank', np.nan)
+                                rule4_hit = (
+                                    pd.notna(liq_val)
+                                    and liq_val < liq_th
+                                    and (
+                                        (pd.notna(ulcer_val) and ulcer_val < ulcer_th)
+                                        or (pd.notna(mom_peak_val) and mom_peak_val > mom_peak_th)
+                                        or (pd.notna(sector_rank_val) and sector_rank_val < sector_rank_th)
+                                    )
+                                )
+
+                                # Rule 5: 市场熔断 — 安静熊市
+                                disp_th = self.config.exhaustion_v3_mkt_disp_threshold
+                                adr_th = self.config.exhaustion_v3_mkt_adr_threshold
+                                disp_val = stock.get('mkt_dispersion_shock_v2', np.nan)
+                                adr_val = stock.get('market_advance_decline_ratio', np.nan)
+                                rule5_hit = (
+                                    pd.notna(disp_val) and pd.notna(adr_val)
+                                    and disp_val < disp_th
+                                    and adr_val < adr_th
+                                )
+
+                                # Rule 6: 近3日有过跌停
+                                rule6_hit = (
+                                    self.config.enable_exhaustion_limit_down_3d
+                                    and stock.get('limit_down_3d', 0) == 1
+                                )
+
+                                # Rule 7: 短强但散户资金流出
+                                top10_th = self.config.exhaustion_v3_top10_strength_threshold
+                                buy_sm_th = self.config.exhaustion_v3_buy_sm_amount_threshold
+                                top10_val = stock.get('top10_10d_strength_level_v3', np.nan)
+                                buy_sm_val = stock.get('buy_sm_amount_rate', np.nan)
+                                rule7_hit = (
+                                    pd.notna(top10_val) and pd.notna(buy_sm_val)
+                                    and top10_val >= top10_th
+                                    and buy_sm_val <= buy_sm_th
+                                )
+
+                                # Rule 8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
+                                non_first_pct20_th = self.config.exhaustion_v3_non_first_limit_up_perf_pct20_threshold
+                                kdj_j_th = self.config.exhaustion_v3_kdj_j_z_threshold
+                                non_first_pct20_val = stock.get('prev_non_first_limit_up_performance_percentile_20d', np.nan)
+                                kdj_j_val = stock.get('kdj_j_9', np.nan)
+                                rule8_hit = (
+                                    pd.notna(non_first_pct20_val) and pd.notna(kdj_j_val)
+                                    and non_first_pct20_val >= non_first_pct20_th
+                                    and kdj_j_val <= kdj_j_th
+                                )
+
+                                # Rule 9: 当日Top1模型分数相对候选池预测分布偏弱
+                                score_z_th = self.config.exhaustion_v3_score_z_in_day_threshold
+                                score_z_val = stock.get('score_z_in_day', np.nan)
+                                rule9_hit = (
+                                    pd.notna(score_z_val)
+                                    and score_z_val <= score_z_th
+                                )
+
+                                if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit:
+                                    blocked = True
+                                    parts = []
+                                    if rule1_hit:
+                                        parts.append(f'runup({rma_val:.2f})>{th} & cpv({cpv_val:.2f})<={cpv_th}')
+                                    if rule2_hit:
+                                        if blowoff_val >= blowoff_th and sector_val <= sector_th:
+                                            parts.append(f'blowoff({blowoff_val:.2f})>={blowoff_th} & sector_accel({sector_val:.2f})<={sector_th}')
+                                        elif blowoff_val > 5.0:
+                                            parts.append(f'XR2a:blowoff({blowoff_val:.2f})>5.0 & sector_accel({sector_val:.2f})<=0.50')
+                                        else:
+                                            parts.append(f'XR2b:blowoff({blowoff_val:.2f})>1.0 & sector_accel({sector_val:.2f})<=0.15')
+                                    if rule3_hit:
+                                        parts.append(
+                                            f'sector_leadership({sl_val:.2f})<={sl_th} '
+                                            f'& return_20d_intra_z({ret20_val:.2f})<={ret20_th}'
+                                        )
+                                    if rule4_hit:
+                                        r4_reasons = []
+                                        if pd.notna(ulcer_val) and ulcer_val < ulcer_th:
+                                            r4_reasons.append('ulcer=%.2f' % ulcer_val)
+                                        if pd.notna(mom_peak_val) and mom_peak_val > mom_peak_th:
+                                            r4_reasons.append('mom_peak=%.1f' % mom_peak_val)
+                                        if pd.notna(sector_rank_val) and sector_rank_val < sector_rank_th:
+                                            r4_reasons.append('sector_rank=%.2f' % sector_rank_val)
+                                        parts.append(f'liq({liq_val:.2f})<{liq_th} & ({"/".join(r4_reasons)})')
+                                    if rule5_hit:
+                                        parts.append(f'disp({disp_val:.2f})<{disp_th} & adr({adr_val:.2f})<{adr_th}')
+                                    if rule6_hit:
+                                        parts.append('limit_down_3d=1')
+                                    if rule7_hit:
+                                        parts.append(f'top10({top10_val:.2f})>={top10_th} & buy_sm({buy_sm_val:.2f})<={buy_sm_th}')
+                                    if rule8_hit:
+                                        parts.append(f'non_first_limit_pct20({non_first_pct20_val:.2f})>={non_first_pct20_th} & kdj_j_9_z({kdj_j_val:.2f})<={kdj_j_th}')
+                                    if rule9_hit:
+                                        parts.append(f'score_z_in_day({score_z_val:.2f})<={score_z_th}')
+                                    block_reason = ' | '.join(parts)
+
+                            elif strategy in ('runup_ma5', 'runup_or_blowoff'):
+                                # v2: 连续因子 + 头部中期强度环境确认
+                                th = self.config.exhaustion_runup_ma5_threshold
+                                top10_th = self.config.exhaustion_top10_10d_strength_threshold
+                                val = stock.get('runup_ma5_exhaustion', 0)
+                                top10_val = stock.get('top10_10d_strength_level_v3', 0)
+                                runup_hit = (
+                                    pd.notna(val)
+                                    and pd.notna(top10_val)
+                                    and val > th
+                                    and top10_val >= top10_th
+                                )
+                                if strategy == 'runup_ma5' and runup_hit:
+                                    blocked = True
+                                    block_reason = (
+                                        f'runup_ma5_exhaustion({val:.2f})>{th} '
+                                        f'AND top10_10d_strength_level_v3({top10_val:.2f})>={top10_th}'
+                                    )
+                                elif strategy == 'runup_or_blowoff':
+                                    blowoff_th = self.config.exhaustion_prev_day_blowoff_threshold
+                                    sector_weak_th = self.config.exhaustion_sector_momentum_accel_weak_threshold
+                                    blowoff_val = stock.get('prev_day_blowoff_risk', 0)
+                                    sector_val = stock.get('sector_momentum_accel_rank', 0)
+                                    blowoff_hit = (
+                                        pd.notna(blowoff_val)
+                                        and pd.notna(sector_val)
+                                        and blowoff_val >= blowoff_th
+                                        and sector_val <= sector_weak_th
+                                    )
+                                    market_ad_th = self.config.exhaustion_market_advance_decline_ratio_threshold
+                                    market_ad_val = stock.get('market_advance_decline_ratio', np.nan)
+                                    market_ad_hit = (
+                                        pd.notna(market_ad_val)
+                                        and market_ad_val >= market_ad_th
+                                    )
+                                    if runup_hit or blowoff_hit or market_ad_hit:
+                                        blocked = True
+                                        parts = []
+                                        if runup_hit:
+                                            parts.append(
+                                                f'runup_ma5_exhaustion({val:.2f})>{th} '
+                                                f'AND top10_10d_strength_level_v3({top10_val:.2f})>={top10_th}'
+                                            )
+                                        if blowoff_hit:
+                                            parts.append(
+                                                f'prev_day_blowoff_risk({blowoff_val:.2f})>={blowoff_th} '
+                                                f'AND sector_momentum_accel_rank({sector_val:.2f})<={sector_weak_th}'
+                                            )
+                                        if market_ad_hit:
+                                            parts.append(
+                                                f'market_advance_decline_ratio({market_ad_val:.2f})>={market_ad_th}'
+                                            )
+                                        block_reason = ' OR '.join(parts)
+                            else:
+                                # v1: close_below_ma5 AND turnover_z 双重确认
+                                has_flag = False
+                                flag_val = stock.get('close_below_ma5_after_runup', 0)
+                                if pd.notna(flag_val) and flag_val == 1:
+                                    has_flag = True
+                                tz_th = self.config.exhaustion_filter_turnover_z_threshold
+                                tz_val = stock.get('turnover_z_20', 0)
+                                has_tz = pd.notna(tz_val) and tz_val > tz_th
+                                if has_flag and has_tz:
+                                    blocked = True
+                                    block_reason = f'close_below_ma5=1 AND tz({tz_val:.2f})>{tz_th}'
+
+                            if blocked:
+                                entry_check = {
+                                    'can_buy': False,
+                                    'reason': f'高位衰竭({strategy}): {block_reason}',
+                                    'skip_category': '高位衰竭过滤'
+                                }
+                                logger.info(
+                                    f"🛡️ {stock_code} exhaustion BLOCKED [{strategy}]: {block_reason}"
+                                )
+                            else:
+                                # 通过过滤也打印因子值，便于观察
+                                if strategy == 'three_rule_v3':
+                                    rma_val = stock.get('runup_ma5_exhaustion', None)
+                                    cpv_val = stock.get('cpv_factor', None)
+                                    blowoff_val = stock.get('prev_day_blowoff_risk', None)
+                                    sector_val = stock.get('sector_momentum_accel_rank', None)
+                                    sl_val = stock.get('sector_leadership_persistence_v3', None)
+                                    ret20_val = stock.get('return_20d_intra_z', None)
+                                    liq_val = stock.get('market_liquidity_change', None)
+                                    mfp_pct_val = stock.get('money_flow_pressure_pct', None)
+                                    parts = []
+                                    if rma_val is not None and pd.notna(rma_val):
+                                        parts.append(f"runup={rma_val:.2f}")
+                                    if cpv_val is not None and pd.notna(cpv_val):
+                                        parts.append(f"cpv={cpv_val:.2f}")
+                                    if blowoff_val is not None and pd.notna(blowoff_val):
+                                        parts.append(f"blowoff={blowoff_val:.2f}")
+                                    if sector_val is not None and pd.notna(sector_val):
+                                        parts.append(f"sector_accel={sector_val:.2f}")
+                                    if sl_val is not None and pd.notna(sl_val):
+                                        parts.append(f"sector_leadership={sl_val:.2f}")
+                                    if ret20_val is not None and pd.notna(ret20_val):
+                                        parts.append(f"return_20d_intra_z={ret20_val:.2f}")
+                                    disp_val = stock.get('mkt_dispersion_shock_v2', None)
+                                    adr_val = stock.get('market_advance_decline_ratio', None)
+                                    if liq_val is not None and pd.notna(liq_val):
+                                        parts.append(f"liq={liq_val:.2f}")
+                                    sector_rank_pass_val = stock.get('intra_sector_momentum_rank', None)
+                                    if sector_rank_pass_val is not None and pd.notna(sector_rank_pass_val):
+                                        parts.append(f"sector_rank={sector_rank_pass_val:.2f}")
+                                    ulcer_pass_val = stock.get('ulcer_index', None)
+                                    if ulcer_pass_val is not None and pd.notna(ulcer_pass_val):
+                                        parts.append(f"ulcer={ulcer_pass_val:.2f}")
+                                    mom_pass_val = stock.get('momentum_peak_decay_3d', None)
+                                    if mom_pass_val is not None and pd.notna(mom_pass_val):
+                                        parts.append(f"mom_peak={mom_pass_val:.2f}")
+                                    if disp_val is not None and pd.notna(disp_val):
+                                        parts.append(f"disp={disp_val:.2f}")
+                                    if adr_val is not None and pd.notna(adr_val):
+                                        parts.append(f"adr={adr_val:.2f}")
+                                    lim3d_pass = stock.get('limit_down_3d', 0)
+                                    if lim3d_pass:
+                                        parts.append("limit_3d=1")
+                                    top10_pass = stock.get('top10_10d_strength_level_v3', None)
+                                    buy_sm_pass = stock.get('buy_sm_amount_rate', None)
+                                    if top10_pass is not None and pd.notna(top10_pass):
+                                        parts.append(f"top10={top10_pass:.2f}")
+                                    if buy_sm_pass is not None and pd.notna(buy_sm_pass):
+                                        parts.append(f"buy_sm={buy_sm_pass:.2f}")
+                                    logger.info(
+                                        f"✅ {stock_code} exhaustion PASS "
+                                        f"[{', '.join(parts)}]"
+                                    )
+                                else:
+                                    rma_val = stock.get('runup_ma5_exhaustion', None)
+                                    top10_val = stock.get('top10_10d_strength_level_v3', None)
+                                    market_ad_val = stock.get('market_advance_decline_ratio', None)
+                                    if rma_val is not None and pd.notna(rma_val):
+                                        top10_text = f"{top10_val:.2f}" if top10_val is not None and pd.notna(top10_val) else "NaN"
+                                        market_ad_text = (
+                                            f"{market_ad_val:.2f}"
+                                            if market_ad_val is not None and pd.notna(market_ad_val)
+                                            else "NaN"
+                                        )
+                                        logger.info(
+                                            f"✅ {stock_code} exhaustion PASS "
+                                            f"[runup_ma5_exhaustion={rma_val:.2f}, "
+                                            f"top10_10d_strength_level_v3={top10_text}, "
+                                            f"market_advance_decline_ratio={market_ad_text}]"
+                                        )
+                        # ================================================================
+                        if entry_check['can_buy']:
+                            base_position_pct = self._resolve_position_pct(day_start_free_slot_index)
+                            regime_position_scale = self._resolve_position_scale(selected_stocks)
+                            strict_risk_mode = False
+                            if 'regime_strict_risk_mode' in selected_stocks.columns:
+                                strict_series = selected_stocks['regime_strict_risk_mode']
+                                if len(strict_series) > 0:
+                                    first_strict = strict_series.iloc[0]
+                                    strict_risk_mode = bool(first_strict) if pd.notna(first_strict) else False
+                            final_position_pct = base_position_pct * regime_position_scale
+                            entry_reason = "normal"
+                            logger.info(
+                                f"🧭 分层并行仓位生效: {stock_code} 使用 {final_position_pct:.0%} 仓位, "
+                                f"(基础槽位={base_position_pct:.0%}, 日级缩放={regime_position_scale:.2f}), "
+                                f"严格风控={strict_risk_mode}, "
+                                f"分配到槽位={day_start_free_slot_index + 1}/{self.config.max_concurrent_positions}, "
+                                f"开盘前持仓数={day_start_holdings_count}/{self.config.max_concurrent_positions}"
+                            )
+
+                            holding_days_override = self.config.holding_days
+                            logger.info(f"🧭 固定持仓天数生效: {stock_code} 使用 {holding_days_override} 天持仓")
+
+                            position = self.execute_buy(
+                                stock_code, trade_date, stock['predicted_return'], trading_dates,
+                                position_pct=final_position_pct,
+                                entry_reason=entry_reason,
+                                holding_days_override=holding_days_override,
+                                day_start_cash=day_start_cash,
+                                day_start_equity=day_start_equity,
+                                slot_index=day_start_free_slot_index,
+                                strict_risk_mode=strict_risk_mode,
+                                prev_close=prev_close
+                            )
+                            if position:
+                                self.positions.append(position)
+                                logger.info(f"✅ {stock_code} 买入成功，添加到持仓列表")
+                            else:
+                                logger.warning(f"❌ {stock_code} 买入失败，execute_buy返回None")
                     else:
                         logger.info(f"🚫 {stock_code} 买入被拒绝: {entry_check['reason']}")
                         skipped_record = {
@@ -2962,6 +3937,7 @@ class BacktestStrategy:
             'daily_returns': self.daily_returns,
             'trading_dates': self.trading_dates_list,  # 添加交易日期列表
             'skipped_buy_attempts': self.skipped_buy_attempts,  # 添加被跳过的买入尝试
+            'shadow_skipped_opportunity_trades': self.shadow_skipped_opportunity_trades,
             'final_positions': list(self.current_holdings.values()),
             'summary_stats': summary_stats  # 🆕 添加风控统计
         }
@@ -2973,6 +3949,7 @@ class BacktestStrategy:
         logger.info(f"   夏普比率: {result['sharpe_ratio']:.3f}")
         logger.info(f"   交易次数: {total_trades}")
         logger.info(f"   胜率: {win_rate:.1f}%")
+        logger.info(f"   🧪 影子满仓机会: {len(self.shadow_skipped_opportunity_trades)}笔")
 
         # 添加风控统计输出
         if summary_stats:
@@ -3112,6 +4089,7 @@ class BacktestStrategy:
         # 统计各类风控跳过次数
         stats = {
             'skipped_positions': len(self.skipped_buy_attempts),  # 总跳过次数
+            'shadow_skipped_opportunities': len(self.shadow_skipped_opportunity_trades),
             'gap_down_3_skipped': 0,  # 跌空超过3%
             'gap_up_5_skipped': 0,  # 高开超过5%
             'overlay_skipped': 0,  # Top1 overlay主动跳过
@@ -3234,6 +4212,24 @@ def get_minute_trade_cache_rule_signature(config: Optional[StrategyConfig] = Non
         f"_pbp{cfg.profit_bearish_min_peak_return:.3f}"
         f"_pbd{cfg.profit_bearish_trailing_drawdown:.3f}"
         f"_pbc{cfg.profit_bearish_min_current_return:.3f}"
+        f"_exf{int(cfg.enable_exhaustion_filter)}"
+        f"_exs{cfg.exhaustion_filter_strategy}"
+        f"_exv3c{cfg.exhaustion_v3_cpv_threshold:.3f}"
+        f"_exv3b{cfg.exhaustion_v3_blowoff_threshold:.3f}"
+        f"_exv3a{cfg.exhaustion_v3_sector_accel_threshold:.3f}"
+        f"_exv3l{cfg.exhaustion_v3_sector_leadership_threshold:.3f}"
+        f"_exv3r20{cfg.exhaustion_v3_return_20d_intra_z_threshold:.3f}"
+        f"_exv3sz{cfg.exhaustion_v3_score_z_in_day_threshold:.3f}"
+        f"_exr{cfg.exhaustion_runup_ma5_threshold:.3f}"
+        f"_ext{cfg.exhaustion_top10_10d_strength_threshold:.3f}"
+        f"_exb{cfg.exhaustion_prev_day_blowoff_threshold:.3f}"
+        f"_exw{cfg.exhaustion_sector_momentum_accel_weak_threshold:.3f}"
+        f"_exm{cfg.exhaustion_market_advance_decline_ratio_threshold:.3f}"
+        f"_exz{cfg.exhaustion_filter_turnover_z_threshold:.3f}"
+        f"_isplit{int(cfg.enable_intraday_split_entry)}"
+        f"_isbuf{cfg.intraday_split_limit_up_buffer:.3f}"
+        f"_isbuy{cfg.intraday_split_max_buy_premium:.3f}"
+        f"_istail{cfg.intraday_split_tail_stop:.3f}"
     )
 
 

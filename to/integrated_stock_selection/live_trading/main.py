@@ -3,7 +3,7 @@
 
 支持多种模式:
 1. 选股模式: python main.py --mode select --date 20250109 --num_stocks 3
-2. 交易模式: python main.py --mode trade --date 20250109 --total_amount 30000 --num_stocks 3
+2. 交易模式: python main.py --mode trade --date 20250109
 3. 手动模式: python main.py --mode manual --operation buy --stock 600000.SH --amount 50000
 4. 同步模式: python main.py --mode sync --date 20260422
 """
@@ -13,6 +13,9 @@ import json
 import time
 import argparse
 import logging
+import os
+import signal
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional
@@ -49,6 +52,10 @@ from live_trading.model_loader import ModelLoader
 from live_trading.stock_selector import StockSelector
 
 
+_SHUTDOWN_EVENT = threading.Event()
+_SIGINT_COUNT = 0
+
+
 def setup_logging():
     """配置日志"""
     log_file = PathConfig.LOG_DIR / f"live_trading_{datetime.now().strftime('%Y%m%d')}.log"
@@ -61,6 +68,25 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
+
+
+def _install_interrupt_handlers(logger: logging.Logger) -> None:
+    """让 Ctrl+C 具备可预测的退出路径。第二次中断直接强退。"""
+    def _handler(signum, frame):
+        global _SIGINT_COUNT
+        _SIGINT_COUNT += 1
+        if _SIGINT_COUNT >= 2:
+            logger.warning("收到重复中断信号，强制退出")
+            os._exit(130)
+        logger.warning("收到中断信号，开始停止流程；再次按 Ctrl+C 将强制退出")
+        _SHUTDOWN_EVENT.set()
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGINT, _handler)
+        signal.signal(signal.SIGTERM, _handler)
+    except Exception as e:
+        logger.warning(f"安装中断处理失败: {e}")
 
 
 def load_factor_data(date: str):
@@ -497,122 +523,6 @@ def run_select_mode(args):
     logger.info("=" * 60)
 
     if result['stocks']:
-        extra_scheme_choices = {}
-        try:
-            extra_scheme_choices = _build_select_scheme_choices(args.date, factor_data, result['stocks'])
-        except Exception as e:
-            logger.warning(f"计算扩展开关方案失败: {e}")
-
-        if extra_scheme_choices:
-            try:
-                _persist_select_scheme_choices(args.date, result, extra_scheme_choices)
-            except Exception as e:
-                logger.warning(f"写入多方案选股结果失败: {e}")
-
-            def _fmt_optional(value, precision=6):
-                if value is None:
-                    return "NA"
-                try:
-                    return f"{float(value):.{precision}f}"
-                except Exception:
-                    return str(value)
-
-            def _format_market_state(info):
-                state_value = info.get('state_signal_value')
-                state_threshold = info.get('state_threshold')
-                if state_value is None or state_threshold is None:
-                    return None
-                try:
-                    weak_env = float(state_value) < float(state_threshold)
-                    relation = "<" if weak_env else ">="
-                    env_name = "弱环境" if weak_env else "强/非弱环境"
-                    state_factor = info.get('state_factor_name') or 'market_state'
-                    return (
-                        f"市场环境={env_name}"
-                        f"({state_factor}: {_fmt_optional(state_value)} {relation} q30={_fmt_optional(state_threshold)})"
-                    )
-                except Exception:
-                    return (
-                        f"市场环境=NA"
-                        f"(state_value={_fmt_optional(state_value)}, state_threshold={_fmt_optional(state_threshold)})"
-                    )
-
-            def _format_scheme_message(info, indent="  "):
-                action = info.get('action', 'buy')
-                chosen_rank = info.get('chosen_rank', 1)
-                target_text = f"Top{chosen_rank}" if action != 'cash' else "CASH"
-                name = info.get('name', 'unknown')
-
-                is_reg_pct_switch = name.startswith('switch_reg_pct_mktstate_hi95_lo85')
-                if is_reg_pct_switch:
-                    threshold = info.get('second_threshold', info.get('threshold'))
-                    top1_reg = info.get('top1_second_signal_value', info.get('signal_value'))
-                    top2_reg = info.get('top2_second_signal_value')
-                    selected_reg = info.get('second_signal_value')
-                    switch_relation = ">=" if (
-                        top1_reg is not None and threshold is not None and float(top1_reg) >= float(threshold)
-                    ) else "<"
-                    switch_text = "切Top2" if chosen_rank == 2 and action != 'cash' else ("空仓" if action == 'cash' else "保持Top1")
-                    parts = [
-                        f"{indent}{name}: {target_text}",
-                    ]
-                    market_desc = _format_market_state(info)
-                    if market_desc:
-                        parts.append(market_desc)
-                    parts.extend([
-                        f"Top1监管pct={_fmt_optional(top1_reg)} {switch_relation} 切换阈值={_fmt_optional(threshold)} -> {switch_text}",
-                        f"选中票监管pct={_fmt_optional(selected_reg)}",
-                    ])
-                    if top2_reg is not None:
-                        parts.append(f"Top2监管pct={_fmt_optional(top2_reg)}")
-                    if info.get('veto_cpv_value') is not None or info.get('veto_h2c_value') is not None:
-                        parts.append(
-                            "veto条件="
-                            f"cpv({_fmt_optional(info.get('veto_cpv_value'))} >= {_fmt_optional(info.get('veto_cpv_threshold'))})"
-                            " 且 "
-                            f"h2c({_fmt_optional(info.get('veto_h2c_value'))} <= {_fmt_optional(info.get('veto_h2c_threshold'))})"
-                            f", veto_triggered={bool(info.get('veto_triggered'))}"
-                        )
-                    return ", ".join(parts)
-
-                parts = [
-                    f"{indent}{name}: {target_text}",
-                    f"阈值={_fmt_optional(info.get('threshold'))}" if info.get('threshold') is not None else None,
-                    f"当日值={_fmt_optional(info.get('signal_value'))}" if info.get('signal_value') is not None else None,
-                ]
-                market_desc = _format_market_state(info)
-                if market_desc:
-                    parts.append(market_desc)
-                if info.get('second_threshold') is not None:
-                    parts.append(f"次因子阈值={_fmt_optional(info.get('second_threshold'))}")
-                if info.get('second_signal_value') is not None:
-                    parts.append(f"次因子当日值={_fmt_optional(info.get('second_signal_value'))}")
-                if info.get('top2_second_signal_value') is not None:
-                    parts.append(f"top2次因子值={_fmt_optional(info.get('top2_second_signal_value'))}")
-                if info.get('veto_triggered'):
-                    parts.append("veto_triggered=True")
-                return ", ".join([p for p in parts if p])
-
-            preferred_key = result.get('preferred_gate') or 'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto'
-            preferred_info = extra_scheme_choices.get(preferred_key) or {}
-            if preferred_info:
-                logger.info("默认策略选择: " + _format_scheme_message(preferred_info, indent=""))
-
-            logger.info("其他开关方案选择:")
-            scheme_order = [
-                'mkt_q40',
-                'mkt_exp_q30_shift1',
-                'mkt_exp_q30_reg10_raw_0p40_to_top2',
-                'mkt_exp_q30_top1_hi98_to_top2',
-                'switch_reg_pct_mktstate_hi95_lo85',
-                'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto',
-                'dual_gate',
-            ]
-            for scheme_key in scheme_order:
-                info = extra_scheme_choices.get(scheme_key)
-                if not info:
-                    continue
-                logger.info(_format_scheme_message(info))
         # 加载SW行业映射用于显示
         try:
             import json
@@ -626,64 +536,52 @@ def run_select_mode(args):
                     sw_sector_data = json.load(f)
                 stock_to_industry = sw_sector_data
 
-                scheme_code_map = {}
-                for scheme_key, info in extra_scheme_choices.items():
-                    code = info.get('selected_code')
-                    if code:
-                        scheme_code_map.setdefault(code, []).append(scheme_key)
-
-                logger.info(f"{'排名':<4} {'股票代码':<12} {'预测值(ATR)':<15} {'SW行业':<20} {'Q40':<6} {'EXPQ30':<8} {'REG040':<8} {'REG98':<8} {'PCT':<6} {'PCTV':<6} {'DUAL':<6}")
+                logger.info(f"{'排名':<4} {'股票代码':<12} {'预测值(ATR)':<15} {'SW行业':<20} {'可交易':<8}")
                 logger.info("-" * 60)
                 for stock in result['stocks']:
                     industry = stock_to_industry.get(stock['code'], '未知')
-                    q40_tag = 'Y' if stock.get('q40_selected') else ''
-                    exp_tag = 'Y' if 'mkt_exp_q30_shift1' in scheme_code_map.get(stock['code'], []) else ''
-                    reg040_tag = 'Y' if 'mkt_exp_q30_reg10_raw_0p40_to_top2' in scheme_code_map.get(stock['code'], []) else ''
-                    reg_tag = 'Y' if 'mkt_exp_q30_top1_hi98_to_top2' in scheme_code_map.get(stock['code'], []) else ''
-                    pct_tag = 'Y' if 'switch_reg_pct_mktstate_hi95_lo85' in scheme_code_map.get(stock['code'], []) else ''
-                    pctv_tag = 'Y' if 'switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto' in scheme_code_map.get(stock['code'], []) else ''
-                    dual_tag = 'Y' if 'dual_gate' in scheme_code_map.get(stock['code'], []) else ''
-                    logger.info(f"{stock['rank']:<4} {stock['code']:<12} {stock['score']:<15.3f} {industry:<20} {q40_tag:<6} {exp_tag:<8} {reg040_tag:<8} {reg_tag:<8} {pct_tag:<6} {pctv_tag:<6} {dual_tag:<6}")
+                    tradeable_tag = 'Y' if stock.get('tradeable', True) else 'N'
+                    logger.info(f"{stock['rank']:<4} {stock['code']:<12} {stock['score']:<15.3f} {industry:<20} {tradeable_tag:<8}")
+                chosen_stock = result['stocks'][0]
+                logger.info(
+                    f"Top1交易判断: {chosen_stock['code']} score={chosen_stock['score']:.3f} "
+                    f"tradeable={chosen_stock.get('tradeable', True)} "
+                    f"strategy={StrategyConfig.EXHAUSTION_FILTER_STRATEGY} "
+                    f"result={chosen_stock.get('exhaustion_filter_reason', 'PASS') if chosen_stock.get('exhaustion_filtered') else 'PASS'} "
+                    f"detail={chosen_stock.get('exhaustion_filter_detail', 'NA')}"
+                )
             else:
                 logger.warning(f"SW行业映射文件不存在: {sw_sector_file}")
                 for stock in result['stocks']:
                     markers = []
-                    if stock.get('q40_selected'):
-                        markers.append('Q40')
-                    if extra_scheme_choices.get('mkt_exp_q30_shift1', {}).get('selected_code') == stock.get('code'):
-                        markers.append('EXPQ30')
-                    if extra_scheme_choices.get('mkt_exp_q30_reg10_raw_0p40_to_top2', {}).get('selected_code') == stock.get('code'):
-                        markers.append('REG040')
-                    if extra_scheme_choices.get('mkt_exp_q30_top1_hi98_to_top2', {}).get('selected_code') == stock.get('code'):
-                        markers.append('REG98')
-                    if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85', {}).get('selected_code') == stock.get('code'):
-                        markers.append('PCT')
-                    if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto', {}).get('selected_code') == stock.get('code'):
-                        markers.append('PCTV')
-                    if extra_scheme_choices.get('dual_gate', {}).get('selected_code') == stock.get('code'):
-                        markers.append('DUAL')
+                    if not stock.get('tradeable', True):
+                        markers.append('BLOCK')
                     marker_text = f" <<{','.join(markers)}" if markers else ''
                     logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}{marker_text}")
+                chosen_stock = result['stocks'][0]
+                logger.info(
+                    f"Top1交易判断: {chosen_stock['code']} score={chosen_stock['score']:.3f} "
+                    f"tradeable={chosen_stock.get('tradeable', True)} "
+                    f"strategy={StrategyConfig.EXHAUSTION_FILTER_STRATEGY} "
+                    f"result={chosen_stock.get('exhaustion_filter_reason', 'PASS') if chosen_stock.get('exhaustion_filtered') else 'PASS'} "
+                    f"detail={chosen_stock.get('exhaustion_filter_detail', 'NA')}"
+                )
         except Exception as e:
             logger.warning(f"无法加载SW行业映射: {e}")
             for stock in result['stocks']:
                 markers = []
-                if stock.get('q40_selected'):
-                    markers.append('Q40')
-                if extra_scheme_choices.get('mkt_exp_q30_shift1', {}).get('selected_code') == stock.get('code'):
-                    markers.append('EXPQ30')
-                if extra_scheme_choices.get('mkt_exp_q30_reg10_raw_0p40_to_top2', {}).get('selected_code') == stock.get('code'):
-                    markers.append('REG040')
-                if extra_scheme_choices.get('mkt_exp_q30_top1_hi98_to_top2', {}).get('selected_code') == stock.get('code'):
-                    markers.append('REG98')
-                if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85', {}).get('selected_code') == stock.get('code'):
-                    markers.append('PCT')
-                if extra_scheme_choices.get('switch_reg_pct_mktstate_hi95_lo85_cpv_h2c_veto', {}).get('selected_code') == stock.get('code'):
-                    markers.append('PCTV')
-                if extra_scheme_choices.get('dual_gate', {}).get('selected_code') == stock.get('code'):
-                    markers.append('DUAL')
+                if not stock.get('tradeable', True):
+                    markers.append('BLOCK')
                 marker_text = f" <<{','.join(markers)}" if markers else ''
                 logger.info(f"  {stock['rank']}. {stock['code']} - 分数: {stock['score']:.3f}{marker_text}")
+            chosen_stock = result['stocks'][0]
+            logger.info(
+                f"Top1交易判断: {chosen_stock['code']} score={chosen_stock['score']:.3f} "
+                f"tradeable={chosen_stock.get('tradeable', True)} "
+                f"strategy={StrategyConfig.EXHAUSTION_FILTER_STRATEGY} "
+                f"result={chosen_stock.get('exhaustion_filter_reason', 'PASS') if chosen_stock.get('exhaustion_filtered') else 'PASS'} "
+                f"detail={chosen_stock.get('exhaustion_filter_detail', 'NA')}"
+            )
     else:
         logger.warning("  无符合条件的股票")
 
@@ -705,26 +603,10 @@ def _get_trade_candidate(selection_entry: Dict) -> Optional[Dict]:
     if not stocks:
         return None
 
-    if StrategyConfig.ENABLE_DYNAMIC_RANK_SWITCH:
-        q40_info = selection_entry.get('q40') or {}
-        if q40_info.get('action') == 'cash':
-            return None
-        chosen_code = q40_info.get('selected_code')
-        chosen_rank = q40_info.get('chosen_rank', 1)
-        state_threshold = q40_info.get('state_threshold')
-        state_signal_value = q40_info.get('state_signal_value')
-        for stock in stocks:
-            if stock.get('code') == chosen_code or stock.get('q40_selected'):
-                chosen = dict(stock)
-                chosen['target_rank'] = int(chosen_rank)
-                chosen['is_weak_market_env'] = bool(
-                    state_threshold is not None
-                    and state_signal_value is not None
-                    and float(state_signal_value) < float(state_threshold)
-                )
-                return chosen
-
     chosen = dict(stocks[0])
+    if chosen.get('exhaustion_filtered'):
+        chosen['blocked_by_default_filter'] = True
+        return chosen
     chosen['target_rank'] = 1
     chosen['is_weak_market_env'] = False
     return chosen
@@ -765,13 +647,12 @@ def _calculate_target_volume(trader, stock_code: str, target_amount: float) -> t
 
 
 def run_trade_mode(args):
-    """运行实盘交易模式：固定/动态 rank + 2 槽位并行 + 5分钟监控。"""
+    """运行实盘交易模式：只负责T+1开仓，监控由monitor模式独立承担。"""
     from live_trading.trader import XtQuantTrader, TradingScheduler
-    from live_trading.monitor import PositionMonitor5Min
 
     logger = logging.getLogger(__name__)
     logger.info("=" * 60)
-    logger.info("交易模式（槽位版）")
+    logger.info("交易模式（仅T+1买入）")
     logger.info("=" * 60)
     logger.info(f"选股日期(T日): {args.date}")
 
@@ -804,6 +685,13 @@ def run_trade_mode(args):
         logger.info(
             f"今日候选: {candidate.get('code')} rank={candidate.get('target_rank', 1)} score={candidate.get('score', 0):.3f}"
         )
+        if candidate.get('blocked_by_default_filter'):
+            logger.warning(
+                f"默认过滤规则阻止交易: {candidate.get('code')} "
+                f"strategy={StrategyConfig.EXHAUSTION_FILTER_STRATEGY} "
+                f"reason={candidate.get('exhaustion_filter_reason', 'NA')}"
+            )
+            candidate = None
     else:
         logger.warning("今日无可交易候选")
 
@@ -839,6 +727,7 @@ def run_trade_mode(args):
                 if execution_result:
                     filled_volume = int(execution_result.get('filled_volume', 0) or 0)
                     entry_price = float(execution_result.get('avg_price', 0.0) or 0.0)
+                    open_price = float(execution_result.get('open_price', 0.0) or 0.0)
                     entry_date = execution_result.get('first_fill_date') or today_str
                     last_order_id = execution_result.get('last_order_id')
                     order_ids = {candidate_code: last_order_id} if last_order_id else {}
@@ -855,6 +744,7 @@ def run_trade_mode(args):
                         planned_amount=planned_amount,
                         strategy_capital=float(StrategyConfig.STRATEGY_CAPITAL),
                         target_rank=target_rank,
+                        open_price=open_price,
                     )
                     logger.info(
                         f"✅ 买入成功: {candidate_code}, filled={filled_volume}/{target_volume}, "
@@ -867,7 +757,9 @@ def run_trade_mode(args):
     elif not free_slots:
         logger.info("当前无空闲槽位，跳过新开仓")
 
-    return _run_monitoring_session(trader, scheduler, logger, session_name="交易模式")
+    logger.info("交易模式只负责本次买入流程，不再启动持仓监控；请独立运行 --mode monitor 负责风控")
+    trader.disconnect()
+    return True
 
 
 def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监控模式") -> bool:
@@ -892,13 +784,14 @@ def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监�
 
         entry_date = buy_record['entry_date']
         entry_price = buy_record.get('entry_price', 0)
+        open_price = float(buy_record.get('open_price', 0) or 0.0)
         slot_index = buy_record.get('slot_index')
         target_pct = buy_record.get('target_pct')
         holding_days = scheduler.calculate_holding_days(entry_date)
 
         logger.info(
             f"持仓监控准备: {pos.stock_code}, entry_date={entry_date}, entry_price={entry_price}, "
-            f"holding_days={holding_days}, slot={slot_index}"
+            f"open_price={open_price if open_price > 0 else 'N/A'}, holding_days={holding_days}, slot={slot_index}"
         )
 
         if holding_days == 0:
@@ -915,6 +808,7 @@ def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监�
             slot_index=slot_index,
             target_pct=target_pct,
             enable_closing_sell=(holding_days >= 2),
+            open_price=open_price if open_price > 0 else None,
         )
         monitored_count += 1
 
@@ -927,8 +821,8 @@ def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监�
     logger.info(f"✅ 5分钟监控已启动，监控持仓数: {monitored_count}")
 
     try:
-        while monitor_5m.is_monitoring:
-            time.sleep(5)
+        while monitor_5m.is_monitoring and not _SHUTDOWN_EVENT.is_set():
+            time.sleep(1)
     except KeyboardInterrupt:
         logger.info("收到中断信号，停止监控")
     finally:
@@ -1247,6 +1141,7 @@ def _execute_manual_buy(args, trader, scheduler):
     if execution_result:
         filled_volume = int(execution_result.get('filled_volume', 0) or 0)
         entry_price = float(execution_result.get('avg_price', 0.0) or 0.0)
+        open_price = float(execution_result.get('open_price', 0.0) or 0.0)
         entry_date = execution_result.get('first_fill_date') or datetime.now().strftime('%Y-%m-%d')
         last_order_id = execution_result.get('last_order_id')
         logger.info(f"✅ 买入成功: {stock_code}")
@@ -1263,7 +1158,8 @@ def _execute_manual_buy(args, trader, scheduler):
             ({stock_code: last_order_id} if last_order_id else {}),
             entry_date=entry_date,
             entry_price=entry_price,
-            volume=filled_volume
+            volume=filled_volume,
+            open_price=open_price,
         )
 
         logger.info(f"\n买入记录已保存:")
@@ -1464,6 +1360,7 @@ def main():
     setup_logging()
 
     logger = logging.getLogger(__name__)
+    _install_interrupt_handlers(logger)
     logger.info(f"实盘交易系统启动 - 模式: {args.mode}")
 
     try:
@@ -1486,10 +1383,19 @@ def main():
         else:
             logger.error("❌ 执行失败")
 
+    except KeyboardInterrupt:
+        logger.info("收到中断信号，程序退出")
+        success = False
     except Exception as e:
         logger.error(f"执行异常: {e}")
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
+    finally:
+        if _SHUTDOWN_EVENT.is_set():
+            try:
+                time.sleep(0.2)
+            finally:
+                os._exit(130)
 
 
 if __name__ == '__main__':

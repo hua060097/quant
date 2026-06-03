@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
-from .config import PathConfig
+from .config import PathConfig, StrategyConfig
 
 
 class ModelLoader:
@@ -125,13 +125,20 @@ class ModelLoader:
 
             # 如果没有指定模型路径，查找最新的LightGBM模型
             if model_path is None:
-                lgb_files = list(model_dir.glob("lightgbm_model_window3_20260107_033514.pkl"))
-                if not lgb_files:
-                    self.logger.error("未找到LightGBM模型文件")
-                    return False
-                # 按修改时间排序，取最新的
-                model_path = max(lgb_files, key=lambda f: f.stat().st_mtime)
-                self.logger.info(f"自动选择最新LightGBM模型: {model_path.name}")
+                preferred_model = model_dir / StrategyConfig.DEFAULT_LIGHTGBM_MODEL_FILE
+                if preferred_model.exists():
+                    model_path = preferred_model
+                    self.logger.info(f"使用默认LightGBM模型: {model_path.name}")
+                else:
+                    lgb_files = list(model_dir.glob("lightgbm_model_window3_*.pkl"))
+                    if not lgb_files:
+                        self.logger.error("未找到LightGBM模型文件")
+                        return False
+                    # 按修改时间排序，取最新的
+                    model_path = max(lgb_files, key=lambda f: f.stat().st_mtime)
+                    self.logger.warning(
+                        f"默认模型 {StrategyConfig.DEFAULT_LIGHTGBM_MODEL_FILE} 不存在，回退到最新窗口3模型: {model_path.name}"
+                    )
 
             if not model_path.exists():
                 self.logger.error(f"模型文件不存在: {model_path}")
@@ -178,4 +185,3 @@ class ModelLoader:
             'has_label_transformer': any(lt is not None for lt in self.label_transformers),
             'has_winsorization': bool(self.winsorization_thresholds)
         }
-

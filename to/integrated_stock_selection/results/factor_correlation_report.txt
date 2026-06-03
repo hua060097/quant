@@ -2,9 +2,9 @@ ATR三分类标签系统 - 因子Spearman秩相关性分析报告
 ============================================================
 
 分析方法: Spearman秩相关(对异常值鲁棒,量化标准方法)
-分析时间: 2023-06-01 00:00:00 至 2026-04-28 00:00:00
-数据量: 3,436,318 条记录
-分析因子数量: 124
+分析时间: 2023-06-01 00:00:00 至 2026-04-30 00:00:00
+数据量: 3,446,143 条记录
+分析因子数量: 133
 相关性阈值: 0.7
 
 分析因子列表:
@@ -78,62 +78,71 @@ ATR三分类标签系统 - 因子Spearman秩相关性分析报告
   68. downside_beta
   69. sector_correlation_20d
   70. stock_sector_pos_align
-  71. range_compression
-  72. body_efficiency
-  73. gap_power
-  74. kdj_golden_cross_strength
-  75. open_to_high_ratio
-  76. sector_concentration
-  77. sector_rank_change_5d
-  78. sector_breadth
-  79. intraday_clv
-  80. amihud_illiquidity
-  81. abnormal_turnover
-  82. efficiency_ratio
-  83. mass_index_reversal
-  84. price_acceleration
-  85. ma60_slope
-  86. price_ma60_ratio
-  87. kdj_diff_9
-  88. kdj_j_9
-  89. kdj_k_9
-  90. stable_momentum
-  91. momentum_decay
-  92. turnover_stability
-  93. ulcer_index
-  94. max_drawdown_20d
-  95. max_rally_20d
-  96. max_rally_10d
-  97. mfi_strength
-  98. volatility_structure_alpha
-  99. price_impact
-  100. pct_chg_1d
-  101. pct_chg_2d
-  102. regime_aware_reversal_alpha
-  103. trend_acceleration
-  104. trend_consistency
-  105. trend_pullback_composite_alpha
-  106. price_ma5_ratio
-  107. high_volatility_pullback_alpha
-  108. volume_confirmed_pullback_alpha
-  109. distance_from_52w_high
-  110. distance_from_52w_low
-  111. ma_alignment_score
-  112. severe_abnormal_pressure_10d_pct
-  113. price_ma5_ratio_pct
-  114. high_to_close_drawdown_pct
-  115. cpv_factor_pct
-  116. ppo_strength_pct
-  117. return_10d_sector_mean_pct
-  118. shadow_dominance_pct
-  119. abnormal_turnover_pct
-  120. volume_structure_alpha_pct
-  121. money_flow_pressure_pct
-  122. buy_lg_amount_rate_pct
-  123. buy_sm_amount_rate_pct
-  124. mkt_ma5_followthrough_v3_exp
+  71. close_position_20d
+  72. close_position_60d
+  73. upper_shadow_ratio_3d_mean
+  74. close_to_high_3d_mean
+  75. turnover_z_20
+  76. pullback_depth_from_10d_high
+  77. momentum_peak_decay_3d
+  78. close_below_ma5_after_runup
+  79. low_break_prev_low_after_runup
+  80. range_compression
+  81. body_efficiency
+  82. gap_power
+  83. kdj_golden_cross_strength
+  84. open_to_high_ratio
+  85. sector_concentration
+  86. sector_rank_change_5d
+  87. sector_breadth
+  88. intraday_clv
+  89. amihud_illiquidity
+  90. abnormal_turnover
+  91. efficiency_ratio
+  92. mass_index_reversal
+  93. price_acceleration
+  94. ma60_slope
+  95. price_ma60_ratio
+  96. kdj_diff_9
+  97. kdj_j_9
+  98. kdj_k_9
+  99. stable_momentum
+  100. momentum_decay
+  101. turnover_stability
+  102. ulcer_index
+  103. max_drawdown_20d
+  104. max_rally_20d
+  105. max_rally_10d
+  106. mfi_strength
+  107. volatility_structure_alpha
+  108. price_impact
+  109. pct_chg_1d
+  110. pct_chg_2d
+  111. regime_aware_reversal_alpha
+  112. trend_acceleration
+  113. trend_consistency
+  114. trend_pullback_composite_alpha
+  115. price_ma5_ratio
+  116. high_volatility_pullback_alpha
+  117. volume_confirmed_pullback_alpha
+  118. distance_from_52w_high
+  119. distance_from_52w_low
+  120. ma_alignment_score
+  121. severe_abnormal_pressure_10d_pct
+  122. price_ma5_ratio_pct
+  123. high_to_close_drawdown_pct
+  124. cpv_factor_pct
+  125. ppo_strength_pct
+  126. return_10d_sector_mean_pct
+  127. shadow_dominance_pct
+  128. abnormal_turnover_pct
+  129. volume_structure_alpha_pct
+  130. money_flow_pressure_pct
+  131. buy_lg_amount_rate_pct
+  132. buy_sm_amount_rate_pct
+  133. mkt_ma5_followthrough_v3_exp
 
-高相关性因子对 (60对):
+高相关性因子对 (68对):
    1. ma5_slope ↔ return_5d_intra_z: 1.000 (正相关)
    2. abnormal_turnover ↔ abnormal_turnover_pct: 0.999 (正相关)
    3. price_ma5_ratio ↔ price_ma5_ratio_pct: 0.999 (正相关)
@@ -142,58 +151,66 @@ ATR三分类标签系统 - 因子Spearman秩相关性分析报告
    6. regime_aware_reversal_alpha ↔ price_ma5_ratio_pct: -0.921 (负相关)
    7. kdj_golden_cross_strength ↔ kdj_diff_9: 0.910 (正相关)
    8. sector_vols_divergence_alpha ↔ max_drawdown_20d: -0.906 (负相关)
-   9. log_price_slope_20d ↔ return_20d_intra_z: 0.878 (正相关)
-  10. pct_chg_intra_z ↔ intraday_reversal: 0.875 (正相关)
-  11. sector_broken_resilience_alpha ↔ intraday_clv: 0.872 (正相关)
-  12. kdj_j_9 ↔ kdj_k_9: 0.864 (正相关)
-  13. log_price_slope_10d ↔ return_10d_intra_z: 0.863 (正相关)
-  14. body_efficiency ↔ open_to_high_ratio: 0.854 (正相关)
-  15. kdj_k_9 ↔ stable_momentum: 0.849 (正相关)
-  16. sector_relative_strength_vs_market ↔ sector_breadth: 0.825 (正相关)
-  17. kdj_diff_9 ↔ kdj_j_9: 0.802 (正相关)
-  18. intra_sector_momentum_rank ↔ momentum_decay: 0.793 (正相关)
-  19. stable_momentum ↔ ppo_strength_pct: 0.789 (正相关)
-  20. max_rally_20d ↔ max_rally_10d: 0.788 (正相关)
-  21. ma5_slope ↔ intra_sector_momentum_rank: 0.787 (正相关)
-  22. return_5d_intra_z ↔ intra_sector_momentum_rank: 0.787 (正相关)
-  23. high_to_close_drawdown ↔ high_to_close_drawdown_pct: 0.784 (正相关)
-  24. return_3d_intra_z ↔ regime_aware_reversal_alpha: -0.777 (负相关)
-  25. sw_circ_mv_rank_intra_sector ↔ amihud_illiquidity: -0.774 (负相关)
-  26. beta_20d ↔ downside_beta: 0.772 (正相关)
-  27. intra_sector_momentum_rank ↔ kdj_j_9: 0.763 (正相关)
-  28. kdj_k_9 ↔ ppo_strength_pct: 0.761 (正相关)
-  29. intra_sector_momentum_rank ↔ price_ma5_ratio: 0.754 (正相关)
-  30. intra_sector_momentum_rank ↔ price_ma5_ratio_pct: 0.753 (正相关)
-  31. kdj_diff_9 ↔ momentum_decay: 0.752 (正相关)
-  32. sector_relative_volatility ↔ downside_beta: 0.750 (正相关)
-  33. market_sentiment_ad ↔ return_3d_sector_mean: 0.747 (正相关)
-  34. body_efficiency ↔ intraday_clv: 0.747 (正相关)
-  35. ma60_slope ↔ price_ma60_ratio: 0.747 (正相关)
-  36. sector_trend_gated_momentum_intra_z ↔ momentum_decay: 0.740 (正相关)
-  37. max_rally_20d ↔ ppo_strength_pct: 0.740 (正相关)
-  38. market_vols_adaptive_iv ↔ downside_beta: -0.739 (负相关)
-  39. return_3d_intra_z ↔ price_ma5_ratio: 0.732 (正相关)
-  40. price_ma60_ratio ↔ ma_alignment_score: 0.727 (正相关)
-  41. ma5_slope ↔ sector_trend_gated_momentum_intra_z: 0.726 (正相关)
-  42. return_3d_intra_z ↔ price_ma5_ratio_pct: 0.726 (正相关)
-  43. return_5d_intra_z ↔ sector_trend_gated_momentum_intra_z: 0.726 (正相关)
-  44. return_3d_sector_mean ↔ return_5d_sector_mean: 0.726 (正相关)
-  45. price_acceleration ↔ momentum_decay: 0.725 (正相关)
-  46. sector_trend_gated_momentum_intra_z ↔ kdj_j_9: 0.722 (正相关)
-  47. return_10d_intra_z ↔ stable_momentum: 0.721 (正相关)
-  48. sector_liquidity_gated_turnover_z ↔ abnormal_turnover: 0.720 (正相关)
-  49. sector_liquidity_gated_turnover_z ↔ abnormal_turnover_pct: 0.720 (正相关)
-  50. beta_20d ↔ market_vols_adaptive_iv: -0.716 (负相关)
-  51. price_ma60_ratio ↔ ppo_strength_pct: 0.715 (正相关)
-  52. ma5_slope ↔ return_3d_intra_z: 0.713 (正相关)
-  53. return_3d_intra_z ↔ return_5d_intra_z: 0.713 (正相关)
-  54. kdj_golden_cross_strength ↔ momentum_decay: 0.710 (正相关)
-  55. intraday_reversal ↔ body_efficiency: 0.706 (正相关)
-  56. sector_trend_gated_momentum_intra_z ↔ price_ma5_ratio: 0.706 (正相关)
-  57. sector_trend_gated_momentum_intra_z ↔ price_ma5_ratio_pct: 0.705 (正相关)
-  58. kdj_j_9 ↔ max_rally_10d: 0.703 (正相关)
-  59. intra_sector_momentum_rank ↔ max_rally_10d: 0.703 (正相关)
-  60. intra_sector_momentum_rank ↔ regime_aware_reversal_alpha: -0.702 (负相关)
+   9. sector_liquidity_gated_turnover_z ↔ turnover_z_20: 0.893 (正相关)
+  10. log_price_slope_20d ↔ return_20d_intra_z: 0.878 (正相关)
+  11. pct_chg_intra_z ↔ intraday_reversal: 0.875 (正相关)
+  12. sector_broken_resilience_alpha ↔ intraday_clv: 0.872 (正相关)
+  13. kdj_j_9 ↔ kdj_k_9: 0.864 (正相关)
+  14. log_price_slope_10d ↔ return_10d_intra_z: 0.863 (正相关)
+  15. body_efficiency ↔ open_to_high_ratio: 0.854 (正相关)
+  16. kdj_k_9 ↔ stable_momentum: 0.849 (正相关)
+  17. sector_relative_strength_vs_market ↔ sector_breadth: 0.825 (正相关)
+  18. kdj_diff_9 ↔ kdj_j_9: 0.802 (正相关)
+  19. intra_sector_momentum_rank ↔ momentum_decay: 0.794 (正相关)
+  20. return_10d_intra_z ↔ close_position_20d: 0.790 (正相关)
+  21. stable_momentum ↔ ppo_strength_pct: 0.789 (正相关)
+  22. max_rally_20d ↔ max_rally_10d: 0.788 (正相关)
+  23. ma5_slope ↔ intra_sector_momentum_rank: 0.788 (正相关)
+  24. return_5d_intra_z ↔ intra_sector_momentum_rank: 0.788 (正相关)
+  25. high_to_close_drawdown ↔ high_to_close_drawdown_pct: 0.785 (正相关)
+  26. return_3d_intra_z ↔ regime_aware_reversal_alpha: -0.778 (负相关)
+  27. sw_circ_mv_rank_intra_sector ↔ amihud_illiquidity: -0.774 (负相关)
+  28. beta_20d ↔ downside_beta: 0.772 (正相关)
+  29. intra_sector_momentum_rank ↔ kdj_j_9: 0.764 (正相关)
+  30. kdj_k_9 ↔ ppo_strength_pct: 0.761 (正相关)
+  31. turnover_z_20 ↔ abnormal_turnover: 0.760 (正相关)
+  32. turnover_z_20 ↔ abnormal_turnover_pct: 0.759 (正相关)
+  33. intra_sector_momentum_rank ↔ price_ma5_ratio: 0.754 (正相关)
+  34. intra_sector_momentum_rank ↔ price_ma5_ratio_pct: 0.754 (正相关)
+  35. kdj_diff_9 ↔ momentum_decay: 0.753 (正相关)
+  36. sector_relative_volatility ↔ downside_beta: 0.750 (正相关)
+  37. body_efficiency ↔ intraday_clv: 0.747 (正相关)
+  38. market_sentiment_ad ↔ return_3d_sector_mean: 0.747 (正相关)
+  39. ma60_slope ↔ price_ma60_ratio: 0.747 (正相关)
+  40. sector_trend_gated_momentum_intra_z ↔ momentum_decay: 0.740 (正相关)
+  41. max_rally_20d ↔ ppo_strength_pct: 0.740 (正相关)
+  42. return_20d_intra_z ↔ close_position_20d: 0.740 (正相关)
+  43. market_vols_adaptive_iv ↔ downside_beta: -0.739 (负相关)
+  44. return_3d_intra_z ↔ price_ma5_ratio: 0.732 (正相关)
+  45. close_position_60d ↔ price_ma60_ratio: 0.729 (正相关)
+  46. price_ma60_ratio ↔ ma_alignment_score: 0.727 (正相关)
+  47. ma5_slope ↔ sector_trend_gated_momentum_intra_z: 0.727 (正相关)
+  48. return_3d_intra_z ↔ price_ma5_ratio_pct: 0.727 (正相关)
+  49. return_5d_intra_z ↔ sector_trend_gated_momentum_intra_z: 0.727 (正相关)
+  50. log_price_slope_10d ↔ close_position_20d: 0.726 (正相关)
+  51. return_3d_sector_mean ↔ return_5d_sector_mean: 0.726 (正相关)
+  52. price_acceleration ↔ momentum_decay: 0.725 (正相关)
+  53. sector_trend_gated_momentum_intra_z ↔ kdj_j_9: 0.722 (正相关)
+  54. return_10d_intra_z ↔ stable_momentum: 0.722 (正相关)
+  55. sector_liquidity_gated_turnover_z ↔ abnormal_turnover: 0.720 (正相关)
+  56. sector_liquidity_gated_turnover_z ↔ abnormal_turnover_pct: 0.720 (正相关)
+  57. return_20d_intra_z ↔ close_position_60d: 0.718 (正相关)
+  58. price_ma60_ratio ↔ ppo_strength_pct: 0.716 (正相关)
+  59. beta_20d ↔ market_vols_adaptive_iv: -0.716 (负相关)
+  60. ma5_slope ↔ return_3d_intra_z: 0.713 (正相关)
+  61. return_3d_intra_z ↔ return_5d_intra_z: 0.713 (正相关)
+  62. kdj_golden_cross_strength ↔ momentum_decay: 0.710 (正相关)
+  63. intraday_reversal ↔ body_efficiency: 0.706 (正相关)
+  64. sector_trend_gated_momentum_intra_z ↔ price_ma5_ratio: 0.706 (正相关)
+  65. sector_trend_gated_momentum_intra_z ↔ price_ma5_ratio_pct: 0.706 (正相关)
+  66. kdj_j_9 ↔ max_rally_10d: 0.704 (正相关)
+  67. intra_sector_momentum_rank ↔ max_rally_10d: 0.703 (正相关)
+  68. intra_sector_momentum_rank ↔ regime_aware_reversal_alpha: -0.702 (负相关)
 
 因子冗余性排名:
    1. intra_sector_momentum_rank: 9次高相关
@@ -207,41 +224,44 @@ ATR三分类标签系统 - 因子Spearman秩相关性分析报告
    9. return_5d_intra_z: 4次高相关
   10. regime_aware_reversal_alpha: 4次高相关
   11. ppo_strength_pct: 4次高相关
-  12. kdj_diff_9: 3次高相关
-  13. kdj_k_9: 3次高相关
-  14. body_efficiency: 3次高相关
-  15. stable_momentum: 3次高相关
-  16. max_rally_10d: 3次高相关
-  17. downside_beta: 3次高相关
-  18. price_ma60_ratio: 3次高相关
-  19. abnormal_turnover: 2次高相关
-  20. abnormal_turnover_pct: 2次高相关
-  21. kdj_golden_cross_strength: 2次高相关
-  22. intraday_reversal: 2次高相关
-  23. intraday_clv: 2次高相关
-  24. return_10d_intra_z: 2次高相关
-  25. max_rally_20d: 2次高相关
-  26. beta_20d: 2次高相关
-  27. return_3d_sector_mean: 2次高相关
-  28. market_vols_adaptive_iv: 2次高相关
-  29. sector_liquidity_gated_turnover_z: 2次高相关
-  30. sector_vols_divergence_alpha: 1次高相关
-  31. max_drawdown_20d: 1次高相关
-  32. log_price_slope_20d: 1次高相关
-  33. return_20d_intra_z: 1次高相关
-  34. pct_chg_intra_z: 1次高相关
-  35. sector_broken_resilience_alpha: 1次高相关
-  36. log_price_slope_10d: 1次高相关
-  37. open_to_high_ratio: 1次高相关
-  38. sector_relative_strength_vs_market: 1次高相关
-  39. sector_breadth: 1次高相关
-  40. high_to_close_drawdown: 1次高相关
-  41. high_to_close_drawdown_pct: 1次高相关
-  42. sw_circ_mv_rank_intra_sector: 1次高相关
-  43. amihud_illiquidity: 1次高相关
-  44. sector_relative_volatility: 1次高相关
-  45. market_sentiment_ad: 1次高相关
-  46. ma60_slope: 1次高相关
-  47. ma_alignment_score: 1次高相关
-  48. return_5d_sector_mean: 1次高相关
-  49. price_acceleration: 1次高相关
+  12. price_ma60_ratio: 4次高相关
+  13. abnormal_turnover: 3次高相关
+  14. abnormal_turnover_pct: 3次高相关
+  15. kdj_diff_9: 3次高相关
+  16. sector_liquidity_gated_turnover_z: 3次高相关
+  17. turnover_z_20: 3次高相关
+  18. return_20d_intra_z: 3次高相关
+  19. kdj_k_9: 3次高相关
+  20. return_10d_intra_z: 3次高相关
+  21. body_efficiency: 3次高相关
+  22. stable_momentum: 3次高相关
+  23. close_position_20d: 3次高相关
+  24. max_rally_10d: 3次高相关
+  25. downside_beta: 3次高相关
+  26. kdj_golden_cross_strength: 2次高相关
+  27. intraday_reversal: 2次高相关
+  28. intraday_clv: 2次高相关
+  29. log_price_slope_10d: 2次高相关
+  30. max_rally_20d: 2次高相关
+  31. beta_20d: 2次高相关
+  32. return_3d_sector_mean: 2次高相关
+  33. market_vols_adaptive_iv: 2次高相关
+  34. close_position_60d: 2次高相关
+  35. sector_vols_divergence_alpha: 1次高相关
+  36. max_drawdown_20d: 1次高相关
+  37. log_price_slope_20d: 1次高相关
+  38. pct_chg_intra_z: 1次高相关
+  39. sector_broken_resilience_alpha: 1次高相关
+  40. open_to_high_ratio: 1次高相关
+  41. sector_relative_strength_vs_market: 1次高相关
+  42. sector_breadth: 1次高相关
+  43. high_to_close_drawdown: 1次高相关
+  44. high_to_close_drawdown_pct: 1次高相关
+  45. sw_circ_mv_rank_intra_sector: 1次高相关
+  46. amihud_illiquidity: 1次高相关
+  47. sector_relative_volatility: 1次高相关
+  48. market_sentiment_ad: 1次高相关
+  49. ma60_slope: 1次高相关
+  50. ma_alignment_score: 1次高相关
+  51. return_5d_sector_mean: 1次高相关
+  52. price_acceleration: 1次高相关

@@ -23,18 +23,12 @@ class FactorContext:
     """携带辅助数据的上下文。"""
 
     market_data: Optional[pd.DataFrame] = None
-    sector_data: Optional[pd.DataFrame] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def require_market(self) -> pd.DataFrame:
         if self.market_data is None:
             raise ValueError("当前因子需要market_data，但未提供。")
         return self.market_data
-
-    def require_sector(self) -> pd.DataFrame:
-        if self.sector_data is None:
-            raise ValueError("当前因子需要sector_data，但未提供。")
-        return self.sector_data
 
 
 @dataclass(slots=True)

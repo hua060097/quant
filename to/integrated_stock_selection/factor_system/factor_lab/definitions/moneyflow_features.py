@@ -93,6 +93,42 @@ def _buy_sm_amount_rate(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
     return _align_moneyflow_series(data, ctx, "buy_sm_amount_rate")
 
 
+def _lg_pos_sm_neg_10d_days(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
+    """
+    近10日大单正、小单负的出现次数。
+
+    数值越大，表示最近一段时间内越多天出现“大资金承接、小资金撤离”的结构。
+    """
+    mf = _prepare_moneyflow_df(ctx)
+    if mf.empty or "buy_lg_amount_rate" not in mf.columns or "buy_sm_amount_rate" not in mf.columns:
+        return pd.Series(np.nan, index=data.index, dtype="float64")
+
+    mf = mf.copy()
+    mf["lg_pos_sm_neg_flag"] = (
+        pd.to_numeric(mf["buy_lg_amount_rate"], errors="coerce").gt(0)
+        & pd.to_numeric(mf["buy_sm_amount_rate"], errors="coerce").lt(0)
+    ).astype("float64")
+
+    base = data[["date", "stock_code"]].copy()
+    base["date"] = pd.to_datetime(base["date"])
+    base["stock_code"] = base["stock_code"].astype(str)
+    base["__idx__"] = data.index
+
+    merged = base.merge(
+        mf[["date", "stock_code", "lg_pos_sm_neg_flag"]],
+        on=["date", "stock_code"],
+        how="left",
+        sort=False,
+    )
+    merged = merged.sort_values(["stock_code", "date"])
+    merged["lg_pos_sm_neg_10d_days"] = (
+        merged.groupby("stock_code", sort=False)["lg_pos_sm_neg_flag"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).sum())
+    )
+    series = pd.Series(merged["lg_pos_sm_neg_10d_days"].values, index=merged["__idx__"].values, dtype="float64")
+    return series.reindex(data.index).astype("float64")
+
+
 def _net_d5_amount_to_turnover(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
     net_d5 = _align_moneyflow_series(data, ctx, "net_d5_amount")
     amount = pd.to_numeric(data["amount"], errors="coerce").astype("float64")
@@ -143,6 +179,19 @@ buy_sm_amount_rate = register_factor(
 )
 
 
+lg_pos_sm_neg_10d_days = register_factor(
+    FactorDefinition(
+        name="lg_pos_sm_neg_10d_days",
+        required_columns={"date", "stock_code"},
+        lookback_days=10,
+        calculator=_lg_pos_sm_neg_10d_days,
+        calculation_scope='target_cross_section',
+        target_calculator=lambda d, ti, c: _lg_pos_sm_neg_10d_days(d, c).loc[ti],
+        description="近10日大单买入占比为正且小单买入占比为负的天数，衡量资金结构分歧。",
+    )
+)
+
+
 net_d5_amount_to_turnover = register_factor(
     FactorDefinition(
         name="net_d5_amount_to_turnover",
@@ -172,6 +221,7 @@ main_outflow_retail_takeover = register_factor(
 __all__ = [
     "buy_lg_amount_rate",
     "buy_sm_amount_rate",
+    "lg_pos_sm_neg_10d_days",
     "net_d5_amount_to_turnover",
     "main_outflow_retail_takeover",
 ]

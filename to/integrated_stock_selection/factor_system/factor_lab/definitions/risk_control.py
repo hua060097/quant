@@ -20,38 +20,33 @@ from ..target_utils import select_target_series
 # 1. 效率比率 (Kaufman Efficiency Ratio) - 趋势纯度之王
 # ==============================================================================
 def _efficiency_ratio(data: pd.DataFrame, _: FactorContext) -> pd.Series:
-    """
-    考夫曼效率比率 (KER)
-    
-    逻辑：
-    ER = |Price_T - Price_T-N| / Sum(Abs(Price_i - Price_i-1))
-    即：(位移) / (路程)
-    
-    大师点评：
-    这是区分“妖股连板”和“震荡慢牛”与“垃圾震荡”的神器。
-    - 接近1：极强趋势（几乎没有回调）。
-    - 接近0：极高噪音（上下乱窜不涨）。
-    """
+
     if 'close' not in data.columns:
         return pd.Series(0.0, index=data.index)
-    
+
     N = 20
-    
+
     grouped = data.groupby('stock_code', sort=False)['close']
-    
-    # 1. 计算净位移 (Signal)
+
+    # 位移
     change_n = grouped.diff(N).abs()
-    
-    # 2. 计算总路程 (Noise)
-    # 每日变化的绝对值滚动求和
-    # 优化：直接用 diff(1).abs().rolling()
+
+    # 每日路径
     daily_path = grouped.diff(1).abs()
-    total_path = daily_path.rolling(N, min_periods=15).sum()
-    
-    # 3. 计算效率
+
+    # 正确 rolling
+    total_path = (
+        daily_path
+        .groupby(data['stock_code'])
+        .rolling(N, min_periods=15)
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
+
     er = change_n / (total_path + 1e-9)
-    
+
     return er.astype('float64')
+
 
 efficiency_ratio = register_factor(
     FactorDefinition(
@@ -263,6 +258,31 @@ max_drawdown_20d = register_factor(
     )
 )
 
+# ==============================================================================
+# 5. 近3日跌停标记：最近3个交易日是否有过跌停
+# ==============================================================================
+def _limit_down_3d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    if 'is_limit_down' not in data.columns:
+        return pd.Series(0, index=data.index)
+    grouped = data.groupby('stock_code', sort=False)['is_limit_down']
+    result = grouped.transform(lambda x: x.rolling(3, min_periods=1).max())
+    return result.fillna(0).astype(int)
+
+
+limit_down_3d = register_factor(
+    FactorDefinition(
+        name='limit_down_3d',
+        required_columns={'stock_code', 'date', 'is_limit_down'},
+        lookback_days=5,
+        calculator=_limit_down_3d,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _limit_down_3d(d, c), target_index=ti
+        ),
+        description='近3个交易日是否出现过跌停（1=有，0=无）',
+    )
+)
+
 __all__ = [
     'efficiency_ratio',
     'ulcer_index',
@@ -271,4 +291,5 @@ __all__ = [
     'max_rally_10d',
     'max_rally_20d_raw',
     'max_rally_10d_raw',
+    'limit_down_3d',
 ]

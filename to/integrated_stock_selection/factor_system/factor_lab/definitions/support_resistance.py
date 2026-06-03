@@ -160,6 +160,93 @@ def _resistance_pressure_alpha(data: pd.DataFrame, ctx: FactorContext) -> pd.Ser
     # [优化] 引入全局稳健标准化
     return _global_robust_zscore(r, data['date'])
 
+
+def _rolling_prior_high(data: pd.DataFrame, window: int = 20, min_periods: int = 10) -> pd.Series:
+    high = pd.to_numeric(data['high'], errors='coerce')
+    prior_high = (
+        high.groupby(data['stock_code'], sort=False)
+        .rolling(window, min_periods=min_periods)
+        .max()
+        .reset_index(level=0, drop=True)
+        .groupby(data['stock_code'], sort=False)
+        .shift(1)
+    )
+    return prior_high.astype('float64')
+
+
+def _volume_ratio_to_prior_base(data: pd.DataFrame, window: int = 20, min_periods: int = 10) -> pd.Series:
+    if 'volume' in data.columns:
+        volume = pd.to_numeric(data['volume'], errors='coerce')
+    elif 'vol' in data.columns:
+        volume = pd.to_numeric(data['vol'], errors='coerce')
+    elif 'amount' in data.columns:
+        volume = pd.to_numeric(data['amount'], errors='coerce')
+    else:
+        return pd.Series(np.nan, index=data.index, dtype='float64')
+
+    base = (
+        volume.groupby(data['stock_code'], sort=False)
+        .rolling(window, min_periods=min_periods)
+        .mean()
+        .reset_index(level=0, drop=True)
+        .groupby(data['stock_code'], sort=False)
+        .shift(1)
+    )
+    return (volume / (base + EPS)).replace([np.inf, -np.inf], np.nan).clip(0.0, 30.0).astype('float64')
+
+
+def _upper_shadow_ratio(data: pd.DataFrame) -> pd.Series:
+    upper = data['high'] - np.maximum(data['open'], data['close'])
+    ratio = upper / (data['close'] + EPS)
+    return pd.Series(ratio, index=data.index).clip(0.0, 0.5).astype('float64')
+
+
+def _prior_high_distance_20d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    当前收盘价相对“前20日最高价”的距离。
+
+    负值：仍在前高下方；0附近：正在挑战前高；正值：已突破前高。
+    """
+    if not {'stock_code', 'high', 'close'}.issubset(data.columns):
+        return pd.Series(np.nan, index=data.index, dtype='float64')
+    prior_high = _rolling_prior_high(data, window=20, min_periods=10)
+    distance = pd.to_numeric(data['close'], errors='coerce') / (prior_high + EPS) - 1.0
+    return distance.replace([np.inf, -np.inf], np.nan).clip(-1.0, 1.0).astype('float64')
+
+
+def _prior_high_proximity_20d(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
+    """
+    当前价是否处于前高博弈带。
+
+    以距前高3%左右为核心带宽，越接近前高越接近1，远离前高趋近0。
+    """
+    distance = _prior_high_distance_20d(data, ctx).abs()
+    proximity = np.exp(-distance / 0.03)
+    return pd.Series(proximity, index=data.index).clip(0.0, 1.0).astype('float64')
+
+
+def _prior_high_volume_contest_20d(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
+    """
+    带量挑战前高的博弈强度。
+
+    核心逻辑：越接近前高、越放量、越有上影/冲高回落，说明前高位置分歧越激烈。
+    输出做按日 robust z-score，便于与其他横截面因子共同训练。
+    """
+    if not {'stock_code', 'date', 'open', 'high', 'close'}.issubset(data.columns):
+        return pd.Series(np.nan, index=data.index, dtype='float64')
+
+    distance = _prior_high_distance_20d(data, ctx)
+    proximity = _prior_high_proximity_20d(data, ctx)
+    volume_ratio = _volume_ratio_to_prior_base(data, window=20, min_periods=10).fillna(1.0)
+    upper_shadow = _upper_shadow_ratio(data).fillna(0.0)
+
+    # 仍在前高下方或刚突破不远时，分歧最有解释力；远离前高后不再当作前高博弈。
+    contest_zone = ((distance >= -0.06) & (distance <= 0.04)).astype('float64')
+    vol_excess = np.maximum(0.0, volume_ratio - 1.0)
+    raw = proximity * contest_zone * vol_excess * (1.0 + upper_shadow * 10.0)
+    raw = pd.Series(raw, index=data.index).replace([np.inf, -np.inf], np.nan).clip(0.0, 20.0)
+    return _global_robust_zscore(raw, data['date'])
+
 # ==========================
 # 注册因子
 # ==========================
@@ -192,4 +279,52 @@ resistance_distance = register_factor(
     )
 )
 
-__all__ = ['support_distance', 'resistance_distance']
+prior_high_distance_20d = register_factor(
+    FactorDefinition(
+        name='prior_high_distance_20d',
+        required_columns={'stock_code', 'date', 'high', 'close'},
+        lookback_days=35,
+        calculator=_prior_high_distance_20d,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _prior_high_distance_20d(d, c), target_index=ti
+        ),
+        description='当前收盘价相对前20日最高价的距离，负值为未突破，正值为突破',
+    )
+)
+
+prior_high_proximity_20d = register_factor(
+    FactorDefinition(
+        name='prior_high_proximity_20d',
+        required_columns={'stock_code', 'date', 'high', 'close'},
+        lookback_days=35,
+        calculator=_prior_high_proximity_20d,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _prior_high_proximity_20d(d, c), target_index=ti
+        ),
+        description='[0,1] 当前股价接近前20日高点的程度，越接近前高越高',
+    )
+)
+
+prior_high_volume_contest_20d = register_factor(
+    FactorDefinition(
+        name='prior_high_volume_contest_20d',
+        required_columns={'stock_code', 'date', 'open', 'high', 'close'},
+        lookback_days=35,
+        calculator=_prior_high_volume_contest_20d,
+        calculation_scope='target_with_history_window',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _prior_high_volume_contest_20d(d, c), target_index=ti
+        ),
+        description='[-6,6] 带量挑战前高的博弈强度：接近前高×超额量能×上影分歧',
+    )
+)
+
+__all__ = [
+    'support_distance',
+    'resistance_distance',
+    'prior_high_distance_20d',
+    'prior_high_proximity_20d',
+    'prior_high_volume_contest_20d',
+]

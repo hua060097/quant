@@ -140,33 +140,56 @@ class PositionMonitor5Min:
 
     def add_position_5m(self, stock_code: str, entry_price: float, entry_date: str,
                         slot_index: int = None, target_pct: float = None,
-                        enable_closing_sell: bool = False):
+                        enable_closing_sell: bool = False,
+                        open_price: float = None):
         """
         添加持仓监控（5分钟K线版本）
 
         Args:
             stock_code: 股票代码
-            entry_price: 买入价格
+            entry_price: 买入价格（实际成交均价，用于计算实际盈亏）
             entry_date: 买入日期 (YYYY-MM-DD)
+            open_price: T+1日开盘价（用于止盈止损的基准价，与回测一致）
         """
+        # 止盈止损基准价：优先使用开盘价（与回测一致），fallback到成交均价
+        risk_ref_price = open_price if (open_price and open_price > 0) else entry_price
+
         self.positions[stock_code] = {
             'stock_code': stock_code,
             'entry_price': entry_price,
+            'open_price': open_price if open_price else 0.0,
+            'risk_ref_price': risk_ref_price,
             'entry_date': datetime.strptime(entry_date, '%Y-%m-%d').date(),
             'entry_datetime': datetime.now(),
             'klines_after_entry': [],  # 买入后的5分钟K线
             'consecutive_bearish': 0,  # 兼容展示字段
             'consecutive_bearish_in_profit': 0,  # 盈利状态下连续阴线数
+            'consecutive_weak_in_profit': 0,  # 盈利状态下连续弱K线数（阴线/十字）
             'max_decline_from_entry': 0.0,  # 最大回撤（相对于买入价）
             'should_exit': False,
             'exit_reason': None,
+            'exit_in_progress': False,
+            'exit_order_id': None,
+            'exit_submitted_at': None,
             'slot_index': slot_index,
             'target_pct': target_pct,
             'enable_closing_sell': enable_closing_sell,
+            'highest_price_since_buy': risk_ref_price,
+            'highest_return_since_buy': 0.0,
+            't1_day_lowest_price': self._load_entry_day_low(stock_code, entry_date) or 0.0,
+            'risk_state': 'IDLE',
+            'failed_cont_watch_active': False,
+            'failed_cont_watch_bars_seen': 0,
+            'failed_cont_watch_bearish_bars': 0,
+            'failed_cont_watch_break_level': 0.0,
+            'failed_cont_watch_day_offset': -1,
+            'last_checked_kline_time': None,
         }
 
         self.logger.info(f"添加5分钟监控: {stock_code}")
-        self.logger.info(f"  买入价: {entry_price:.2f}")
+        self.logger.info(f"  买入价(实际均价): {entry_price:.2f}")
+        if open_price and open_price > 0:
+            self.logger.info(f"  开盘价(风控基准): {open_price:.2f}")
         self.logger.info(f"  买入日期: {entry_date}")
 
     def remove_position(self, stock_code: str):
@@ -174,6 +197,62 @@ class PositionMonitor5Min:
         if stock_code in self.positions:
             del self.positions[stock_code]
             self.logger.info(f"移除监控: {stock_code}")
+
+    def _load_entry_day_low(self, stock_code: str, entry_date: str) -> Optional[float]:
+        """加载买入日(T+1)日线最低价，供 FailedContinuation 使用。"""
+        try:
+            from xtquant import xtdata
+
+            entry_compact = datetime.strptime(entry_date, '%Y-%m-%d').strftime('%Y%m%d')
+            daily_data = xtdata.get_market_data_ex(
+                stock_list=[stock_code],
+                period='1d',
+                start_time=entry_compact,
+                end_time=entry_compact,
+                count=1,
+                dividend_type="front",
+            )
+            if stock_code in daily_data and len(daily_data[stock_code]) > 0:
+                day_low = float(daily_data[stock_code].iloc[0]['low'])
+                self.logger.info(f"{stock_code}: T+1日低点={day_low:.2f}")
+                return day_low
+        except Exception as e:
+            self.logger.warning(f"{stock_code}: 读取T+1日低点失败: {e}")
+        return None
+
+    @staticmethod
+    def _extract_time_hm(kline_time: str) -> str:
+        try:
+            dt = datetime.strptime(kline_time, '%Y%m%d %H:%M:00')
+            return dt.strftime('%H:%M')
+        except Exception:
+            return ''
+
+    def _get_holding_day_offset(self, entry_date: datetime.date, current_date: datetime.date) -> Optional[int]:
+        """返回与回测一致的 holding_day_offset：买入日=0, T+2=1, T+3=2。"""
+        try:
+            if entry_date in self.trading_dates and current_date in self.trading_dates:
+                return self.trading_dates.index(current_date) - self.trading_dates.index(entry_date)
+            return (current_date - entry_date).days
+        except Exception:
+            return None
+
+    @staticmethod
+    def _reset_failed_cont_watch(position: Dict):
+        position['failed_cont_watch_active'] = False
+        position['failed_cont_watch_bars_seen'] = 0
+        position['failed_cont_watch_bearish_bars'] = 0
+        position['failed_cont_watch_break_level'] = 0.0
+        position['failed_cont_watch_day_offset'] = -1
+
+    @staticmethod
+    def _is_expiry_bar(holding_day_offset: Optional[int], time_hm: str) -> bool:
+        if holding_day_offset is None:
+            return False
+        return (
+            holding_day_offset >= StopLossConfig.MAX_HOLDING_DAYS - 1
+            and time_hm == '14:55'
+        )
 
     def start_5m_monitoring(self):
         """启动5分钟K线监控"""
@@ -216,6 +295,8 @@ class PositionMonitor5Min:
                 if not self._is_trading_time():
                     continue
 
+                self._sync_pending_exit_positions()
+
                 # ===== 收集5分钟K线数据（在5分钟整数倍时间点）=====
                 self._collect_5min_kline_data()
 
@@ -227,7 +308,7 @@ class PositionMonitor5Min:
                     position = self.positions[stock_code]
 
                     # 检查是否需要退出
-                    if position['should_exit']:
+                    if position.get('should_exit') or position.get('exit_in_progress'):
                         continue
 
                     # 检查是否到了T+2（买入日的下一个交易日）
@@ -274,161 +355,203 @@ class PositionMonitor5Min:
             return False
 
     def _check_position_risk_5m(self, stock_code: str, position: Dict):
-        """
-        5分钟K线风控检查（与回测系统完全一致）
-
-        风控规则：
-        1. 累计收益风控：累计收益低于阈值（相对于买入价）→ 立即卖出
-           - 阈值从配置读取（StopLossConfig.MAX_STOP_LOSS_PCT）
-           - 使用每根K线的收盘价检查
-           - 从第一根5分钟K线（9:35）开始检查
-        2. 连续阴线风控：连续4根5分钟K线阴线（同一天内）→ 立即卖出
-           - 阈值从配置读取（StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD）
-
-        执行时机：
-        - 从T+2日开始检查
-        - 从第一根5分钟K线开始检查（不要求4根K线）
-        - 按时间顺序逐个K线检查
-
-        Args:
-            stock_code: 股票代码
-            position: 持仓信息
-        """
+        """与当前分钟回测一致的状态机风控。"""
         try:
-            # 导入配置
-            from live_trading.config import StopLossConfig
-
-            # 从缓存获取5分钟K线数据
             if stock_code not in self.kline_cache or len(self.kline_cache[stock_code]) == 0:
                 self.logger.debug(f"{stock_code}: 暂无5分钟K线数据，跳过风控检查")
                 return
 
-            latest_klines = self.kline_cache[stock_code]
-
-            # 筛选买入后的K线（T+2日开始的）
-            entry_date_str = position['entry_date'].strftime('%Y%m%d')
-
-            # 筛选今天和之后的K线
-            from datetime import datetime
-            today_str = datetime.now().strftime('%Y%m%d')
-
-            # 筛选今天的K线
-            today_klines = [
-                kline for kline in latest_klines
-                if kline['time'][:8] == today_str
-            ]
-
-            if len(today_klines) == 0:
-                self.logger.debug(f"{stock_code}: 今天的5分钟K线数据不足（{len(today_klines)}根），跳过风控检查")
+            today = datetime.now().date()
+            today_str = today.strftime('%Y%m%d')
+            today_klines = [k for k in self.kline_cache[stock_code] if k['time'][:8] == today_str]
+            last_checked_time = position.get('last_checked_kline_time')
+            if last_checked_time and last_checked_time[:8] != today_str:
+                position['consecutive_bearish_in_profit'] = 0
+                position['consecutive_weak_in_profit'] = 0
+                position['consecutive_bearish'] = 0
+            if last_checked_time:
+                today_klines = [k for k in today_klines if k['time'] > last_checked_time]
+            if not today_klines:
                 return
 
-            self.logger.info(f"🛡️ {stock_code}: 开始5分钟风控检查（止损阈值: {StopLossConfig.MAX_STOP_LOSS_PCT:.2%}），今天K线数: {len(today_klines)}")
+            self.logger.info(
+                f"🛡️ {stock_code}: 开始5分钟状态机风控检查"
+                f"（硬止损: {StopLossConfig.MAX_STOP_LOSS_PCT:.2%}），今天K线数: {len(today_klines)}"
+            )
 
-            # ===== 按时间顺序逐个K线检查（与回测系统一致）=====
-            # 不限制K线数量，从第一根K线开始检查
-
-            # 记录上一根K线的日期（用于检测跨天）
+            holding_day_offset = self._get_holding_day_offset(position['entry_date'], today)
             prev_kline_date = None
 
             for kline in today_klines:
-                open_price = kline['open']
-                close_price = kline['close']
+                open_price = float(kline['open'])
+                close_price = float(kline['close'])
+                high_price = float(kline.get('high', max(open_price, close_price)))
                 kline_time = kline['time']
-                kline_date = kline_time[:8]  # 提取YYYYMMDD
-                kline_time_str = kline_time[9:]  # 提取HH:MM:00
+                kline_date = kline_time[:8]
+                time_hm = self._extract_time_hm(kline_time)
 
-                # 检查是否跨天（新的一天开始）
                 if prev_kline_date is not None and kline_date != prev_kline_date:
-                    # 跨天了，重置盈利状态连续阴线计数
-                    if position['consecutive_bearish_in_profit'] > 0:
-                        self.logger.info(
-                            f"{stock_code}: 跨天检测，重置盈利状态连续阴线计数（从{position['consecutive_bearish_in_profit']}重置为0）"
-                        )
-                        position['consecutive_bearish_in_profit'] = 0
-                        position['consecutive_bearish'] = 0
-
-                # 更新上一根K线的日期
+                    position['consecutive_bearish_in_profit'] = 0
+                    position['consecutive_weak_in_profit'] = 0
                 prev_kline_date = kline_date
 
-                # ===== 风控条件1: 累计收益低于阈值（与回测系统完全一致）=====
-                # 计算累计收益（基于买入价，使用收盘价）
-                decline_ratio = (close_price - position['entry_price']) / position['entry_price']
-
-                # 更新最大回撤记录
-                position['max_decline_from_entry'] = min(
-                    position['max_decline_from_entry'],
-                    decline_ratio
+                risk_ref = position.get('risk_ref_price', position['entry_price'])
+                current_return = (close_price - risk_ref) / risk_ref
+                position['max_decline_from_entry'] = min(position['max_decline_from_entry'], current_return)
+                position['highest_price_since_buy'] = max(position.get('highest_price_since_buy', risk_ref), high_price)
+                position['highest_return_since_buy'] = max(
+                    position.get('highest_return_since_buy', 0.0),
+                    (position['highest_price_since_buy'] - risk_ref) / risk_ref
                 )
 
-                # 检查是否触发止损（使用配置的阈值）
-                if decline_ratio <= StopLossConfig.MAX_STOP_LOSS_PCT:
-                    self.logger.warning(f"🚨 {stock_code}: 在{kline_time_str}触发累计收益止损!")
-                    self.logger.warning(f"  买入价: {position['entry_price']:.2f}")
-                    self.logger.warning(f"  收盘价: {close_price:.2f}")
-                    self.logger.warning(f"  累计收益: {decline_ratio:.2%}")
-                    self.logger.warning(f"  止损阈值: {StopLossConfig.MAX_STOP_LOSS_PCT:.2%}")
-
-                    # 标记退出
-                    position['should_exit'] = True
-                    position['exit_reason'] = f'累计收益低于{StopLossConfig.MAX_STOP_LOSS_PCT:.2%}'
-
-                    # 立即卖出
-                    self._execute_sell_5m(stock_code, position, position['exit_reason'])
-                    return
-
-                # ===== 风控条件2: 仅盈利状态下连续阴线（与主回测一致）=====
-                current_return = (close_price - position['entry_price']) / position['entry_price']
+                body_ratio = (close_price - open_price) / open_price if open_price else 0.0
                 is_bearish = close_price < open_price
+                is_neutral = abs(body_ratio) <= 0.0005
 
-                if current_return > 0:
-                    if is_bearish:
-                        position['consecutive_bearish_in_profit'] += 1
-                        position['consecutive_bearish'] = position['consecutive_bearish_in_profit']
-                        self.logger.info(
-                            f"📉 {stock_code}: 检测到盈利状态阴线（{kline_date} {kline_time_str}），"
-                            f"连续阴线: {position['consecutive_bearish_in_profit']}根"
-                        )
-                    else:
-                        if position['consecutive_bearish_in_profit'] > 0:
-                            self.logger.info(
-                                f"📈 {stock_code}: 盈利状态检测到阳线，重置连续阴线计数"
-                                f"（从{position['consecutive_bearish_in_profit']}重置为0）"
-                            )
-                        position['consecutive_bearish_in_profit'] = 0
-                        position['consecutive_bearish'] = 0
-
-                    threshold = StopLossConfig.CONSECUTIVE_BEARISH_THRESHOLD
-                    if position['consecutive_bearish_in_profit'] >= threshold:
-                        self.logger.warning(f"🚨 {stock_code}: 触发盈利状态连续阴线风控!")
-                        self.logger.warning(
-                            f"  连续阴线: {position['consecutive_bearish_in_profit']}根（阈值: {threshold}根）"
-                        )
-                        self.logger.warning(f"  日期: {kline_date}")
-
-                        position['should_exit'] = True
-                        position['exit_reason'] = f'盈利状态下连续{position["consecutive_bearish_in_profit"]}根阴线'
-                        self._execute_sell_5m(stock_code, position, position['exit_reason'])
-                        return
+                # 回测里这一路变量名仍叫 consecutive_bearish_in_profit，
+                # 实际语义是连续走坏：阴线递增，十字/平盘保持，阳线重置。
+                if is_bearish:
+                    position['consecutive_bearish_in_profit'] += 1
+                    position['consecutive_weak_in_profit'] = position['consecutive_bearish_in_profit']
+                    position['consecutive_bearish'] = position['consecutive_bearish_in_profit']
+                elif is_neutral:
+                    position['consecutive_weak_in_profit'] = position['consecutive_bearish_in_profit']
                 else:
-                    if position['consecutive_bearish_in_profit'] > 0:
-                        self.logger.info(
-                            f"📉 {stock_code}: 当前非盈利状态，重置盈利状态连续阴线计数"
-                            f"（从{position['consecutive_bearish_in_profit']}重置为0）"
-                        )
                     position['consecutive_bearish_in_profit'] = 0
+                    position['consecutive_weak_in_profit'] = 0
                     position['consecutive_bearish'] = 0
 
-            # 检查是否到尾盘卖出时间（14:55）
-            if position.get('enable_closing_sell') and self._is_closing_sell_time():
-                self.logger.info(f"⏰ {stock_code}: 14:55尾盘卖出时间到，执行卖出")
-                position['should_exit'] = True
-                position['exit_reason'] = '尾盘卖出'
-                self._execute_sell_5m(stock_code, position, '尾盘卖出')
-                return
+                # FailFast
+                if (
+                    StopLossConfig.ENABLE_TOP1_STATE_MACHINE_RISK
+                    and holding_day_offset == 1
+                    and time_hm == '09:35'
+                    and current_return <= StopLossConfig.T2_0935_HARD_STOP_THRESHOLD
+                ):
+                    reason = f"T+2 09:35失败止损({StopLossConfig.T2_0935_HARD_STOP_THRESHOLD:.2%})"
+                    position['should_exit'] = True
+                    position['exit_reason'] = reason
+                    self._execute_sell_5m(stock_code, position, reason)
+                    return
 
-            # 检查是否超过最大持仓期（3个交易日）- 异常情况
+                if (
+                    StopLossConfig.ENABLE_TOP1_STATE_MACHINE_RISK
+                    and StopLossConfig.ENABLE_T2_1000_SOFT_STOP
+                    and holding_day_offset == 1
+                    and time_hm == '10:00'
+                    and current_return <= StopLossConfig.T2_1000_SOFT_STOP_THRESHOLD
+                ):
+                    reason = f"T+2 10:00继续走坏止损({StopLossConfig.T2_1000_SOFT_STOP_THRESHOLD:.2%})"
+                    position['should_exit'] = True
+                    position['exit_reason'] = reason
+                    self._execute_sell_5m(stock_code, position, reason)
+                    return
+
+                # WeakDrift
+                if StopLossConfig.ENABLE_SECOND_LAYER_TIME_STOP:
+                    if (
+                        holding_day_offset == 1
+                        and time_hm == '14:55'
+                        and current_return <= StopLossConfig.T2_CLOSE_BREAKEVEN_STOP_THRESHOLD
+                    ):
+                        reason = f"T+2收盘仍未转正({StopLossConfig.T2_CLOSE_BREAKEVEN_STOP_THRESHOLD:.2%})"
+                        position['should_exit'] = True
+                        position['exit_reason'] = reason
+                        self._execute_sell_5m(stock_code, position, reason)
+                        return
+                    if (
+                        holding_day_offset == 2
+                        and time_hm == '09:35'
+                        and current_return <= StopLossConfig.T3_0935_BREAKEVEN_STOP_THRESHOLD
+                    ):
+                        reason = f"T+3 09:35仍未转正({StopLossConfig.T3_0935_BREAKEVEN_STOP_THRESHOLD:.2%})"
+                        position['should_exit'] = True
+                        position['exit_reason'] = reason
+                        self._execute_sell_5m(stock_code, position, reason)
+                        return
+
+                # FailedContinuation: 跌破T+1低点后，从下一根开始要求连续2根阴线；收回即失效
+                if StopLossConfig.ENABLE_SMALL_PROFIT_FAILURE_EXIT and holding_day_offset == 1:
+                    break_level = float(position.get('t1_day_lowest_price') or 0.0)
+                    peak_armed = position.get('highest_return_since_buy', 0.0) >= StopLossConfig.SMALL_PROFIT_ACTIVATION_RETURN
+                    if peak_armed and break_level > 0:
+                        if not position['failed_cont_watch_active']:
+                            if close_price < break_level:
+                                position['failed_cont_watch_active'] = True
+                                position['failed_cont_watch_bars_seen'] = 0
+                                position['failed_cont_watch_bearish_bars'] = 0
+                                position['failed_cont_watch_break_level'] = break_level
+                                position['failed_cont_watch_day_offset'] = holding_day_offset
+                                position['risk_state'] = 'FAILED_CONTINUATION_WATCH'
+                        else:
+                            if close_price >= position['failed_cont_watch_break_level']:
+                                self._reset_failed_cont_watch(position)
+                            else:
+                                position['failed_cont_watch_bars_seen'] += 1
+                                if is_bearish:
+                                    position['failed_cont_watch_bearish_bars'] += 1
+                                else:
+                                    position['failed_cont_watch_bearish_bars'] = 0
+                                if position['failed_cont_watch_bearish_bars'] >= StopLossConfig.SMALL_PROFIT_BEARISH_REQUIRED_COUNT:
+                                    reason = (
+                                        f"小盈利后延续失败: 跌破T+1低点后连续"
+                                        f"{position['failed_cont_watch_bearish_bars']}根阴线"
+                                        f" | 峰值{position['highest_return_since_buy']:.2%}"
+                                        f" | 当前{current_return:.2%}"
+                                        f" | T+1低点{position['failed_cont_watch_break_level']:.2f}"
+                                    )
+                                    position['should_exit'] = True
+                                    position['exit_reason'] = reason
+                                    self._execute_sell_5m(stock_code, position, reason)
+                                    return
+                    else:
+                        self._reset_failed_cont_watch(position)
+                else:
+                    self._reset_failed_cont_watch(position)
+
+                # ProfitProtect
+                drawdown_from_highest = None
+                highest_price = float(position.get('highest_price_since_buy') or 0.0)
+                if highest_price > 0:
+                    drawdown_from_highest = (close_price - highest_price) / highest_price
+                if (
+                    StopLossConfig.ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT
+                    and current_return >= StopLossConfig.PROFIT_BEARISH_ACTIVATION_RETURN
+                    and position.get('highest_return_since_buy', 0.0) >= StopLossConfig.PROFIT_BEARISH_MIN_PEAK_RETURN
+                    and drawdown_from_highest is not None
+                    and drawdown_from_highest <= StopLossConfig.PROFIT_BEARISH_TRAILING_DRAWDOWN
+                    and current_return >= StopLossConfig.PROFIT_BEARISH_MIN_CURRENT_RETURN
+                    and position['consecutive_bearish_in_profit'] >= StopLossConfig.PROFIT_BEARISH_REQUIRED_COUNT
+                ):
+                    reason = (
+                        f"利润保护: 连续{position['consecutive_bearish_in_profit']}根弱K线"
+                        f" | 峰值{position['highest_return_since_buy']:.2%}"
+                        f" | 回撤{drawdown_from_highest:.2%}"
+                    )
+                    position['should_exit'] = True
+                    position['exit_reason'] = reason
+                    self._execute_sell_5m(stock_code, position, reason)
+                    return
+
+                # 全局硬止损兜底
+                if current_return <= StopLossConfig.MAX_STOP_LOSS_PCT:
+                    reason = f"累计收益低于{StopLossConfig.MAX_STOP_LOSS_PCT:.2%}"
+                    position['should_exit'] = True
+                    position['exit_reason'] = reason
+                    self._execute_sell_5m(stock_code, position, reason)
+                    return
+
+                # 到期卖出：回测 holding_days=3 时，到期日为买入日后第2个交易日；
+                # 回测用当日最后一根分钟K收盘价卖出，实盘在14:55主动卖出以避开尾盘集合竞价。
+                if self._is_expiry_bar(holding_day_offset, time_hm):
+                    position['should_exit'] = True
+                    position['exit_reason'] = '到期'
+                    self._execute_sell_5m(stock_code, position, '到期')
+                    return
+
+                position['last_checked_kline_time'] = kline_time
+
             if self._is_max_holding_reached(position):
-                self.logger.warning(f"⚠️ {stock_code}: 持仓异常（超过3个交易日），执行卖出")
                 position['should_exit'] = True
                 position['exit_reason'] = '持仓异常'
                 self._execute_sell_5m(stock_code, position, '持仓异常')
@@ -448,11 +571,22 @@ class PositionMonitor5Min:
             reason: 卖出原因
         """
         try:
+            if position.get('exit_in_progress'):
+                self.logger.info(
+                    f"{stock_code}: 卖出已在执行中，跳过重复卖出 "
+                    f"(order_id={position.get('exit_order_id')}, reason={position.get('exit_reason')})"
+                )
+                return
+
+            position['should_exit'] = True
+            position['exit_reason'] = reason
+
             # 查询持仓
             positions = self.trader.query_stock_positions(self.trader.account)
 
             if not positions:
                 self.logger.warning(f"{stock_code}: 无持仓")
+                self.remove_position(stock_code)
                 return
 
             # 获取持仓数量
@@ -464,6 +598,7 @@ class PositionMonitor5Min:
 
             if volume < 100:
                 self.logger.warning(f"{stock_code}: 可用数量不足1手")
+                self._mark_exit_in_progress(stock_code, position, None, reason)
                 return
 
             # 获取最新价格
@@ -471,17 +606,25 @@ class PositionMonitor5Min:
 
             if not latest_price:
                 self.logger.warning(f"{stock_code}: 无法获取最新价")
+                position['should_exit'] = False
+                position['exit_reason'] = None
                 return
 
             # 计算收益
             entry_price = position['entry_price']
+            risk_ref = position.get('risk_ref_price', entry_price)
             profit_pct = (latest_price - entry_price) / entry_price * 100
+            risk_return_pct = (latest_price - risk_ref) / risk_ref * 100
 
             self.logger.info(f"执行5分钟卖出: {stock_code}")
             self.logger.info(f"  原因: {reason}")
-            self.logger.info(f"  买入价: {entry_price:.2f}")
+            self.logger.info(f"  买入价(均价): {entry_price:.2f}")
+            if risk_ref != entry_price:
+                self.logger.info(f"  开盘价(风控基准): {risk_ref:.2f}")
             self.logger.info(f"  卖出价: {latest_price:.2f}")
-            self.logger.info(f"  收益率: {profit_pct:+.2f}%")
+            self.logger.info(f"  实际收益率: {profit_pct:+.2f}%")
+            if risk_ref != entry_price:
+                self.logger.info(f"  风控收益率(基准=开盘): {risk_return_pct:+.2f}%")
             self.logger.info(f"  卖出数量: {volume}股（全仓卖出）")
 
             # 执行卖出（全仓）
@@ -491,6 +634,7 @@ class PositionMonitor5Min:
             )
 
             if order_id:
+                self._mark_exit_in_progress(stock_code, position, order_id, reason)
                 # 保存记录
                 self.scheduler.save_trade_record(
                     datetime.now().strftime('%Y%m%d'),
@@ -501,15 +645,68 @@ class PositionMonitor5Min:
                     profit_pct=profit_pct
                 )
 
-                # 移除监控
-                self.remove_position(stock_code)
+                self._sync_pending_exit_positions()
             else:
-                self.logger.error(f"卖出失败: {stock_code}")
+                submission = getattr(self.trader.order_manager, 'last_sell_submission', None)
+                if submission and submission.get('stock_code') == stock_code:
+                    submitted_order_id = submission.get('order_id')
+                    self._mark_exit_in_progress(stock_code, position, submitted_order_id, reason)
+                    self.logger.warning(
+                        f"{stock_code}: 卖出函数超时/失败返回，但检测到卖单已提交 "
+                        f"(order_id={submitted_order_id})，冻结监控等待成交/持仓同步"
+                    )
+                    self._sync_pending_exit_positions()
+                else:
+                    position['should_exit'] = False
+                    position['exit_reason'] = None
+                    self.logger.error(f"卖出失败且未检测到已提交卖单: {stock_code}")
 
         except Exception as e:
             self.logger.error(f"执行5分钟卖出失败: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+    def _mark_exit_in_progress(self, stock_code: str, position: Dict, order_id: Optional[str], reason: str):
+        """标记退出中，避免成交回报迟到时继续风控或重复卖出。"""
+        position['should_exit'] = True
+        position['exit_reason'] = reason
+        position['exit_in_progress'] = True
+        position['exit_order_id'] = str(order_id) if order_id else position.get('exit_order_id')
+        position['exit_submitted_at'] = datetime.now()
+        self.logger.info(
+            f"{stock_code}: 已进入卖出等待确认状态 "
+            f"(order_id={position.get('exit_order_id')}, reason={reason})"
+        )
+
+    def _sync_pending_exit_positions(self):
+        """对退出中持仓做账户同步；账户已无持仓时立即移除监控。"""
+        pending_codes = [
+            code for code, position in self.positions.items()
+            if position.get('exit_in_progress') or position.get('should_exit')
+        ]
+        if not pending_codes:
+            return
+
+        try:
+            account_positions = self.trader.query_stock_positions(self.trader.account) or []
+            held_volume = {}
+            for pos in account_positions:
+                code = getattr(pos, 'stock_code', None)
+                if not code:
+                    continue
+                total_volume = int(getattr(pos, 'volume', 0) or 0)
+                can_use_volume = int(getattr(pos, 'can_use_volume', 0) or 0)
+                held_volume[code] = max(total_volume, can_use_volume)
+
+            for stock_code in pending_codes:
+                if stock_code not in self.positions:
+                    continue
+                if held_volume.get(stock_code, 0) < 100:
+                    self.logger.info(f"{stock_code}: 账户已无可监控持仓，确认移除5分钟监控")
+                    self.remove_position(stock_code)
+
+        except Exception as e:
+            self.logger.warning(f"同步退出中持仓失败: {e}")
 
     def _is_after_t2(self, entry_date: datetime.date) -> bool:
         """
@@ -646,6 +843,10 @@ class PositionMonitor5Min:
                 return
 
             boundary_time = now.replace(second=0, microsecond=0)
+            if boundary_time.strftime('%H:%M') == '09:30':
+                self.logger.info("09:30开盘点不生成风控K线，等待09:35第一根5分钟K收盘后检查")
+                return
+
             time_str = boundary_time.strftime('%Y%m%d %H:%M:00')
 
             # 检查是否已经收集过这个时间点的数据
@@ -690,7 +891,9 @@ class PositionMonitor5Min:
                 kline = {
                     'time': time_str,
                     'open': open_price,
-                    'close': current_price
+                    'close': current_price,
+                    'high': max(open_price, current_price),
+                    'low': min(open_price, current_price),
                 }
 
                 # 添加到缓存
@@ -831,6 +1034,8 @@ class PositionMonitor5Min:
             self.logger.info("=" * 60)
 
             for stock_code, position in self.positions.items():
+                if position.get('exit_in_progress'):
+                    continue
                 # 获取当前价格
                 current_price = self.trader.get_current_price(stock_code)
                 if current_price is None:
@@ -870,6 +1075,8 @@ class PositionMonitor5Min:
         summary = []
 
         for stock_code, position in self.positions.items():
+            if position.get('exit_in_progress'):
+                continue
             # 获取最新价
             current_price = self.trader.get_current_price(stock_code)
 

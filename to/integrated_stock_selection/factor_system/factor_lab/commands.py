@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional
+import gc
 
 import pandas as pd
 
@@ -31,7 +32,6 @@ def generate_factors(
         start_date,
         end_date,
         market_data=market_data,
-        sector_data=sector_data,
         context_extra=context_extra,
         batch_callback=batch_callback,
         batch_size=batch_size,
@@ -220,7 +220,6 @@ def generate_and_store(
         end_date,
         pipeline=pipeline,
         market_data=market_data,
-        sector_data=sector_data,
         context_extra=context_extra,
         batch_callback=callback,
         batch_size=batch_size,
@@ -267,37 +266,95 @@ def generate_and_store(
     # 对所有原始因子进行后处理
     pipe = pipeline or FactorPipeline()
 
-    # 准备数据（需要包含date列用于cross-sectional处理）
-    working = all_raw_factors.copy()
+    # 准备轻量索引数据（后处理只需要 date/stock_code，不再复制整张 raw 因子表）
+    working = all_raw_factors[store.index_columns].copy()
     working['date'] = pd.to_datetime(working['date'])
 
     # 提取因子数据（排除索引列）
-    factor_cols = [c for c in working.columns if c not in store.index_columns]
-    computed = {name: working[name] for name in factor_cols}
+    factor_cols = [c for c in all_raw_factors.columns if c not in store.index_columns]
+    computed = {name: all_raw_factors[name] for name in factor_cols}
     expanding_history = None
 
     if normalization_config:
         expanding_factors = list(normalization_config.get('expanding_factors', []))
         expanding_anchor_start = normalization_config.get('expanding_anchor_start')
-        if expanding_factors and store.exists():
+        if expanding_factors:
             available_history_cols = [c for c in expanding_factors if c in factor_cols]
             if available_history_cols:
+                current_start_date = working['date'].min()
+                history_cols_to_keep = store.index_columns + available_history_cols
+                history_parts = []
+
+                # 全量生成时，all_raw_factors 通常包含目标日前的完整原始历史；
+                # 增量生成时，raw 临时文件往往只有本次窗口，必须额外从正式库读取历史 base factor。
                 try:
-                    history_columns = store.index_columns + available_history_cols
-                    history_source = pd.read_parquet(store.path, columns=history_columns)
-                    if not history_source.empty:
-                        history_source['date'] = pd.to_datetime(history_source['date'])
-                        current_start_date = working['date'].min()
-                        history_mask = history_source['date'] < current_start_date
+                    raw_history = all_raw_factors
+                    if not raw_history.empty and 'date' in raw_history.columns:
+                        raw_dates = pd.to_datetime(raw_history['date'])
+                        history_mask = raw_dates < current_start_date
                         if expanding_anchor_start:
-                            history_mask &= history_source['date'] >= pd.to_datetime(expanding_anchor_start)
-                        expanding_history = history_source.loc[history_mask].copy()
-                        logger.info(
-                            f"Expanding历史基线加载完成: {len(expanding_history):,}行, "
-                            f"锚点={expanding_anchor_start}, 当前起点={current_start_date.strftime('%Y-%m-%d')}"
-                        )
+                            history_mask &= raw_dates >= pd.to_datetime(expanding_anchor_start)
+                        raw_history_filtered = raw_history.loc[history_mask]
+                        if not raw_history_filtered.empty:
+                            history_cols_available = [
+                                c for c in history_cols_to_keep if c in raw_history_filtered.columns
+                            ]
+                            if history_cols_available:
+                                history_parts.append(raw_history_filtered[history_cols_available].copy())
                 except Exception as exc:
-                    logger.warning(f"加载Expanding历史基线失败，将退回当前窗口计算: {exc}")
+                    logger.warning(f"从原始因子提取Expanding历史基线失败: {exc}")
+
+                if incremental_mode and store.exists():
+                    try:
+                        import pyarrow.parquet as pq
+
+                        schema_names = set(pq.read_schema(store.path).names)
+                        store_history_cols = [c for c in history_cols_to_keep if c in schema_names]
+                        store_factor_cols = [c for c in available_history_cols if c in schema_names]
+                        if store_factor_cols and 'date' in schema_names:
+                            filters = [('date', '<', pd.Timestamp(current_start_date).to_pydatetime())]
+                            if expanding_anchor_start:
+                                filters = [
+                                    ('date', '>=', pd.Timestamp(expanding_anchor_start).to_pydatetime()),
+                                    ('date', '<', pd.Timestamp(current_start_date).to_pydatetime()),
+                                ]
+                            store_history = pq.read_table(
+                                store.path,
+                                columns=store_history_cols,
+                                filters=filters,
+                            ).to_pandas()
+                            if not store_history.empty:
+                                store_history['date'] = pd.to_datetime(store_history['date'])
+                                history_parts.insert(0, store_history)
+                                logger.info(
+                                    f"Expanding历史基线从正式因子库补充: {len(store_history):,}行, "
+                                    f"列={store_factor_cols}, 当前起点={current_start_date.strftime('%Y-%m-%d')}"
+                                )
+                    except Exception as exc:
+                        logger.warning(f"从正式因子库加载Expanding历史基线失败，将退回已有raw历史: {exc}")
+
+                if history_parts:
+                    expanding_history = pd.concat(history_parts, ignore_index=True)
+                    if all(c in expanding_history.columns for c in store.index_columns):
+                        expanding_history = (
+                            expanding_history
+                            .drop_duplicates(subset=store.index_columns, keep='last')
+                            .sort_values(store.index_columns)
+                        )
+                    logger.info(
+                        f"Expanding历史基线准备完成: {len(expanding_history):,}行, "
+                        f"锚点={expanding_anchor_start}, 当前起点={current_start_date.strftime('%Y-%m-%d')}"
+                    )
+                elif incremental_mode:
+                    logger.warning(
+                        "未找到Expanding历史基线，将仅使用当前窗口计算；"
+                        "增量窗口过短时 *_exp 因子可能与全量生成不一致"
+                    )
+                else:
+                    logger.info(
+                        "全量生成未使用额外Expanding历史基线；"
+                        "*_exp 因子将基于当前完整生成窗口计算"
+                    )
 
     # 应用后处理流程
     if normalization_config:
@@ -330,20 +387,28 @@ def generate_and_store(
         logger.info("⚠️ 未提供归一化配置，跳过归一化步骤")
         clipping_report = {}
 
-    # 构建最终数据
-    final_data = working[store.index_columns].copy()
+    # raw表和computed引用已不再需要，先释放再构建最终大表，降低保存前内存峰值。
+    del all_raw_factors, computed, expanding_history
+    gc.collect()
 
-    # 复制数据
-    logger.info(f"[调试] 开始复制处理后的因子到最终数据")
-    for name, series in processed.items():
-        try:
-            final_data[name] = series.values
-            if len(series) % 1000 == 0:  # 每复制1000个因子记录一次进度
-                logger.info(f"[调试] 已复制因子 {name}: {len(series)} 个值")
-        except Exception as e:
-            logger.error(f"[调试] 复制因子 {name} 失败: {e}")
-            logger.error(f"[调试] 因子类型: {type(series)}, 形状: {series.shape if hasattr(series, 'shape') else 'N/A'}")
-            raise
+    # 构建最终数据：一次性拼接，避免逐列插入导致 pandas block 反复扩容和碎片化。
+    logger.info(f"[调试] 开始构建最终数据（一次性拼接 {len(processed)} 个因子）")
+    try:
+        factor_frame = pd.DataFrame(
+            {name: series.to_numpy(copy=False) for name, series in processed.items()},
+            index=working.index,
+        )
+        final_data = pd.concat(
+            [working[store.index_columns].reset_index(drop=True), factor_frame.reset_index(drop=True)],
+            axis=1,
+            copy=False,
+        )
+        del factor_frame
+        gc.collect()
+    except Exception as e:
+        logger.error(f"[调试] 构建最终数据失败: {e}")
+        logger.error(f"[调试] 已处理因子数: {len(processed)}")
+        raise
 
     logger.info(f"[调试] 最终数据构建完成 - 形状: {final_data.shape}, 列数: {len(final_data.columns)}")
     # 🆕 根据模式选择保存策略
@@ -354,27 +419,36 @@ def generate_and_store(
             # 增量模式：智能合并
             logger.info(f"[DEBUG] 增量模式 - 使用 {overlap_mode} 模式智能合并数据")
 
-            # 加载现有数据
-            existing_data = store.load()
-            logger.info(f"[DEBUG] 加载现有数据用于合并 - 形状: {existing_data.shape}")
+            # ⭐ 内存优化：不再全量加载existing_data，传store_path让合并函数用pyarrow按日期过滤
+            # 只加载前几行用于获取列信息
+            import pyarrow.parquet as pq
+            parquet_meta = pq.read_schema(store.path)
+            existing_row_count = pq.read_metadata(store.path).num_rows
+            logger.info(f"[DEBUG] 现有数据: {existing_row_count:,}行, {len(parquet_meta.names)}列 (pyarrow元数据, 不加载到内存)")
 
             # 导入智能合并函数
             from .store import _smart_merge_dataframes
 
-            # 合并数据（重合日期用新数据覆盖）
-            logger.info(f"[DEBUG] 开始智能合并 - 现有数据: {len(existing_data):,}条, 新数据: {len(final_data):,}条")
+            # 合并数据（传store_path，合并函数内部用pyarrow按日期过滤加载非重叠行）
+            logger.info(f"[DEBUG] 开始智能合并 - 新数据: {len(final_data):,}条")
             merged_data = _smart_merge_dataframes(
-                existing_data=existing_data,
+                existing_data=pd.DataFrame(columns=parquet_meta.names),  # 空DataFrame只用于列信息
                 new_data=final_data,
                 index_columns=store.index_columns,
                 overlap_mode=overlap_mode,
-                add_factor_mode=add_factor_mode  # ✅ 传递参数
+                add_factor_mode=add_factor_mode,
+                store_path=str(store.path)  # ⭐ 传递parquet路径，按日期过滤加载
             )
             logger.info(f"[DEBUG] 智能合并完成 - 合并后数据: {len(merged_data):,}条记录")
 
-            # 保存合并后的数据
-            store.save(merged_data)
-            logger.info(f"[DEBUG] 保存合并数据完成 - 保存到: {store.path}")
+            # 保存合并后的数据（流式合并已直接写入磁盘，跳过save）
+            if hasattr(merged_data, 'attrs') and (
+                merged_data.attrs.get('_already_saved') or merged_data.attrs.get('_stream_merged')
+            ):
+                logger.info(f"[DEBUG] 数据已通过流式合并写入磁盘，跳过save")
+            else:
+                store.save(merged_data)
+                logger.info(f"[DEBUG] 保存合并数据完成 - 保存到: {store.path}")
 
             # 更新最终结果数据
             final_data = merged_data
@@ -393,38 +467,44 @@ def generate_and_store(
             final_factor_cols = [c for c in final_data.columns if c not in store.index_columns]
             logger.info(f"[调试] 即将保存 {len(final_factor_cols)} 个因子")
 
-            save_problematic = []
-            for col in final_factor_cols[:10]:  # 检查前10个
-                try:
-                    series = final_data[col]
-                    nan_count = series.isna().sum()
-                    total_count = len(series)
-                    unique_count = series.nunique()
-
-                    if nan_count == total_count:
-                        logger.error(f"[调试] 即将保存的因子 {col}: 全部NaN ({nan_count}/{total_count})")
-                        save_problematic.append(col)
-                    elif unique_count == 1:
-                        logger.error(f"[调试] 即将保存的因子 {col}: 常数列 (唯一值={unique_count})")
-                        save_problematic.append(col)
-                    else:
-                        valid_data = series.dropna()
-                        if len(valid_data) > 0:
-                            mean_val = valid_data.mean()
-                            std_val = valid_data.std()
-                            logger.info(f"[调试] 即将保存的因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
-                        else:
-                            logger.error(f"[调试] 即将保存的因子 {col}: 无有效数据")
-                            save_problematic.append(col)
-                except Exception as e:
-                    logger.error(f"[调试] 即将保存的因子 {col}: 检查失败 - {e}")
-                    save_problematic.append(col)
-
-            if save_problematic:
-                logger.error(f"[调试] 即将保存的数据中发现 {len(save_problematic)} 个问题因子: {save_problematic}")
-                logger.error(f"[调试] 保存后这些因子将保持NaN或常数状态")
+            if len(final_data) * max(len(final_factor_cols), 1) > 50_000_000:
+                logger.info(
+                    "[调试] 数据量较大，跳过保存前逐列nunique/std检查，"
+                    "避免全量保存前产生额外内存峰值"
+                )
             else:
-                logger.info(f"[调试] 即将保存的数据质量检查通过")
+                save_problematic = []
+                for col in final_factor_cols[:10]:  # 检查前10个
+                    try:
+                        series = final_data[col]
+                        nan_count = series.isna().sum()
+                        total_count = len(series)
+                        unique_count = series.nunique()
+
+                        if nan_count == total_count:
+                            logger.error(f"[调试] 即将保存的因子 {col}: 全部NaN ({nan_count}/{total_count})")
+                            save_problematic.append(col)
+                        elif unique_count == 1:
+                            logger.error(f"[调试] 即将保存的因子 {col}: 常数列 (唯一值={unique_count})")
+                            save_problematic.append(col)
+                        else:
+                            valid_data = series.dropna()
+                            if len(valid_data) > 0:
+                                mean_val = valid_data.mean()
+                                std_val = valid_data.std()
+                                logger.info(f"[调试] 即将保存的因子 {col}: 正常 (均值={mean_val:.6f}, 标准差={std_val:.6f}, 有效={len(valid_data)}/{total_count})")
+                            else:
+                                logger.error(f"[调试] 即将保存的因子 {col}: 无有效数据")
+                                save_problematic.append(col)
+                    except Exception as e:
+                        logger.error(f"[调试] 即将保存的因子 {col}: 检查失败 - {e}")
+                        save_problematic.append(col)
+
+                if save_problematic:
+                    logger.error(f"[调试] 即将保存的数据中发现 {len(save_problematic)} 个问题因子: {save_problematic}")
+                    logger.error(f"[调试] 保存后这些因子将保持NaN或常数状态")
+                else:
+                    logger.info(f"[调试] 即将保存的数据质量检查通过")
 
             # 检查保存路径和权限
             try:
@@ -444,22 +524,30 @@ def generate_and_store(
                     # 增量保存模式：智能合并现有数据和新数据
                     logger.info(f"[增量保存] 使用 {overlap_mode} 模式合并数据")
 
-                    # 加载现有数据
-                    existing_data = store.load()
-                    logger.info(f"[增量保存] 加载现有数据: {existing_data.shape}")
+                    # ⭐ 内存优化：用pyarrow获取元信息，传store_path给合并函数
+                    import pyarrow.parquet as pq
+                    parquet_meta = pq.read_schema(store.path)
+                    existing_row_count = pq.read_metadata(store.path).num_rows
+                    logger.info(f"[增量保存] 现有数据: {existing_row_count:,}行 (pyarrow元数据)")
 
                     # 使用修复后的合并函数
                     from .store_merge_fix import smart_merge_dataframes_fixed
                     merged_data = smart_merge_dataframes_fixed(
-                        existing_data, final_data, store.index_columns, overlap_mode,
-                        add_factor_mode=add_factor_mode  # ✅ 传递参数
+                        pd.DataFrame(columns=parquet_meta.names), final_data, store.index_columns, overlap_mode,
+                        add_factor_mode=add_factor_mode,
+                        store_path=str(store.path)  # ⭐ 传parquet路径
                     )
 
-                    # 保存合并后的数据
-                    store.save(merged_data)
+                    # 保存合并后的数据（流式合并已直接写入磁盘，跳过save）
+                    if not (
+                        hasattr(merged_data, 'attrs') and (
+                            merged_data.attrs.get('_already_saved') or merged_data.attrs.get('_stream_merged')
+                        )
+                    ):
+                        store.save(merged_data)
 
                     logger.info(f"[调试] 增量保存成功 - 正式文件大小: {store.path.stat().st_size / (1024*1024):.2f} MB")
-                    logger.info(f"[DEBUG] 增量保存完成 - 现有: {len(existing_data):,}条 + 新: {len(final_data):,}条 → 合并: {len(merged_data):,}条")
+                    logger.info(f"[DEBUG] 增量保存完成 - 新: {len(final_data):,}条 → 合并: {len(merged_data):,}条")
 
                     # 更新 final_data 用于后续验证
                     final_data = merged_data
@@ -476,20 +564,15 @@ def generate_and_store(
                 # 验证保存后的数据
                 logger.info(f"[调试] 验证保存后的数据...")
                 try:
-                    verify_data = store.load()
-                    logger.info(f"[调试] 验证读取成功 - 形状: {verify_data.shape}")
+                    import pyarrow.parquet as pq
 
-                    # 检查几个因子
-                    verify_factor_cols = [c for c in verify_data.columns if c not in store.index_columns]
-                    logger.info(f"[调试] 验证因子数量: {len(verify_factor_cols)}")
-
-                    for col in verify_factor_cols[:5]:  # 验证前5个
-                        series = verify_data[col]
-                        nan_count = series.isna().sum()
-                        if nan_count == len(series):
-                            logger.error(f"[调试] 验证发现保存后的因子 {col}: 全部NaN")
-                        else:
-                            logger.info(f"[调试] 验证保存后的因子 {col}: 正常 (NaN: {nan_count}/{len(series)})")
+                    metadata = pq.read_metadata(store.path)
+                    schema_names = pq.read_schema(store.path).names
+                    verify_factor_cols = [c for c in schema_names if c not in store.index_columns]
+                    logger.info(
+                        f"[调试] 验证元数据成功 - 行数: {metadata.num_rows:,}, "
+                        f"列数: {len(schema_names)}, 因子数: {len(verify_factor_cols)}"
+                    )
 
                 except Exception as e:
                     logger.error(f"[调试] 验证保存后的数据失败: {e}")
@@ -502,8 +585,25 @@ def generate_and_store(
                 raise
     except Exception as e:
         logger.error(f"保存数据失败: {e}")
-        # 如果增量保存失败，尝试直接覆盖保存
-        logger.warning("尝试回退到直接覆盖保存...")
+        if incremental_mode and store.exists():
+            try:
+                import shutil
+                backup_path = store.path.with_suffix('.parquet.bak')
+                shutil.copy2(store.path, backup_path)
+                logger.error(f"已备份原文件到: {backup_path}，但不会用增量片段覆盖正式文件")
+            except Exception as backup_err:
+                logger.error(f"备份原文件失败: {backup_err}")
+            raise RuntimeError(
+                f"增量合并失败，已阻止用仅包含本次生成日期的数据覆盖正式文件。"
+                f"原文件仍保留在: {store.path}。原始错误: {e}"
+            ) from e
+
+        final_factor_cols = [c for c in final_data.columns if c not in store.index_columns]
+        if len(final_data) * max(len(final_factor_cols), 1) > 50_000_000:
+            logger.error("非增量大表保存失败，已停止重试以避免重复触发内存/磁盘峰值")
+            raise
+
+        logger.warning("非增量保存失败，尝试直接保存当前最终数据")
         store.save(final_data)
         logger.info("回退保存完成")
 
@@ -514,8 +614,13 @@ def generate_and_store(
     except Exception as e:
         logger.warning(f"清理临时文件失败: {e}")
 
-    # 返回最终结果
-    return PipelineResult(factors=list(processed.keys()), data=final_data, clipping_report=clipping_report)
+    result_factors = list(processed.keys())
+    result_index = working
+    del processed, final_data
+    gc.collect()
+
+    # 返回轻量索引数据即可；完整因子已保存到 parquet，外层只需要行数/日期/股票数统计。
+    return PipelineResult(factors=result_factors, data=result_index, clipping_report=clipping_report)
 
 
 def generate_and_store_batch_processing(
@@ -740,7 +845,6 @@ def generate_and_store_batch_processing(
                 start_date,
                 end_date,
                 market_data=market_data,
-                sector_data=sector_data,
                 context_extra=context_extra,
                 normalization_config=None,  # 不进行归一化
             )
@@ -1179,7 +1283,6 @@ def generate_and_store_optimized(
             store=store,
             pipeline=pipeline,
             market_data=market_data,
-            sector_data=sector_data,
             context_extra=context_extra,
             batch_size=batch_size,
             normalization_config=normalization_config,
@@ -1197,7 +1300,6 @@ def generate_and_store_optimized(
             store=store,
             pipeline=pipeline,
             market_data=market_data,
-            sector_data=sector_data,
             context_extra=context_extra,
             enable_batch_save=enable_batch_save,
             batch_size=batch_size,

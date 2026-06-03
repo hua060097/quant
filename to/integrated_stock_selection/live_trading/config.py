@@ -83,28 +83,70 @@ class TradingConfig:
 
 class StrategyConfig:
     """策略层配置"""
-    # 是否启用与回测一致的 q40 Top1/Top2 动态切换
-    ENABLE_DYNAMIC_RANK_SWITCH = True
+    # 当前 copy.py 默认 Top1 策略不启用 live_default q40 Top1/Top2 动态切换
+    ENABLE_DYNAMIC_RANK_SWITCH = False
 
     # 策略级可用总资金上限（独立于账户总资产）
-    STRATEGY_CAPITAL = 86_000.0
+    STRATEGY_CAPITAL = 108_000.0
 
     # 并行槽位和固定槽位仓位
-    MAX_CONCURRENT_POSITIONS = 2
-    POSITION_SCHEDULE = [0.8, 0.2]
+    MAX_CONCURRENT_POSITIONS = 3
+    POSITION_SCHEDULE = [0.8, 0.2, 0.2]
 
     # pred/select 输出保留的候选数
     PRED_TOPN = 5
+
+    # 默认单模型（与当前主策略保持一致）
+    DEFAULT_LIGHTGBM_MODEL_FILE = "lightgbm_model_window3_20260427_231053.pkl"
+
+    # 默认高位衰竭/承接失败过滤（先排序，再判断候选是否可交易）
+    ENABLE_EXHAUSTION_BUY_FILTER = True
+    EXHAUSTION_FILTER_STRATEGY = "three_rule_v3"
+    # v3: three_rule_v3 (基于50+162双日志鲁棒性分析)
+    EXHAUSTION_V3_CPV_THRESHOLD = -0.4              # cpv_factor <= 此值（配合runup>0.8）
+    EXHAUSTION_V3_BLOWOFF_THRESHOLD = 2.0           # prev_day_blowoff_risk >= 此值
+    EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.30     # sector_momentum_accel_rank <= 此值
+    EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD = -0.18  # sector_leadership_persistence_v3 <= 此值
+    EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD = 0.40  # return_20d_intra_z <= 此值
+    EXHAUSTION_V3_MARKET_LIQ_THRESHOLD = 0.94  # market_liquidity_change < 此值
+    EXHAUSTION_V3_ULCER_THRESHOLD = -0.80       # ulcer_index < 此值 (路径A)
+    EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 1.0      # momentum_peak_decay_3d > 此值 (路径B)
+    EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD = 0.67  # intra_sector_momentum_rank < 此值 (路径C)
+    EXHAUSTION_V3_MKT_DISP_THRESHOLD = 0.98    # mkt_dispersion_shock_v2 < 此值
+    EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38     # market_advance_decline_ratio < 此值
+    ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True      # Rule6: 近3日跌停过滤
+    EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.70   # top10_10d_strength_level_v3 >= 此值 (Rule7)
+    EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.25   # buy_sm_amount_rate <= 此值 (Rule7)
+    EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # Rule8: 连板情绪近20日高分位
+    EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75  # Rule8: kdj_j_9为截面robust z-score后的J值
+    EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD = 1.50  # Rule9: 当日Top1相对候选池预测强度不足
+    # Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低(<=0.45)
+    EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.80
+    EXHAUSTION_V3_REG_ADR_THRESHOLD = 0.45
+    # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20 → 高位衰竭
+    # 拦截4笔增量大亏，0误杀大涨/小赚
+    EXHAUSTION_V3_MA5_RAW_THRESHOLD = 9.0
+    EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD = 0.20
+    # Rule12: MA5回撤深度极深(<=-0.05) + 短期加速上涨(>=6) → 高位回撤加速衰竭
+    EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD = -0.05  # ma5_pullback_depth_10d <= 此值(Rule12)
+    EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD = 6.0   # ret_3d_vs_10d_accel >= 此值(Rule12)
+    # v2: runup_ma5 / runup_or_blowoff (旧规则，保留)
+    EXHAUSTION_RUNUP_MA5_THRESHOLD = 0.8
+    EXHAUSTION_TOP10_10D_STRENGTH_THRESHOLD = 0.5
+    EXHAUSTION_PREV_DAY_BLOWOFF_THRESHOLD = 4.15
+    EXHAUSTION_SECTOR_MOMENTUM_ACCEL_WEAK_THRESHOLD = 0.41
+    EXHAUSTION_MARKET_ADVANCE_DECLINE_RATIO_THRESHOLD = 5.39559
+    EXHAUSTION_TURNOVER_Z20_THRESHOLD = 1.0
 
     # q40 训练窗
     Q40_TRAIN_START = "2023-06-01"
     Q40_TRAIN_END = "2025-03-01"
 
-    # 开盘跳空风控（与当前回测逻辑对齐）
-    GAP_DOWN_THRESHOLD_TOP1 = -0.03
-    GAP_DOWN_THRESHOLD_STRONG_TOP2 = -0.03
-    GAP_DOWN_THRESHOLD_NON_TOP1 = -0.05
-    GAP_DOWN_THRESHOLD_WEAK_TOP2 = -0.07
+    # 开盘跳空风控（与当前回测 gap6 / gap_up5 对齐）
+    GAP_DOWN_THRESHOLD_TOP1 = -0.06
+    GAP_DOWN_THRESHOLD_STRONG_TOP2 = -0.06
+    GAP_DOWN_THRESHOLD_NON_TOP1 = -0.06
+    GAP_DOWN_THRESHOLD_WEAK_TOP2 = -0.06
     GAP_UP_THRESHOLD = 0.05
 
 
@@ -119,20 +161,31 @@ class StopLossConfig:
     # 止损倍数(ATR)
     ATR_MULTIPLIER_LOSS = 0.9
 
-    # 最大止损比例(%)
-    # 说明：
-    #   - 正值：允许下跌的比例（例如 0.05 表示允许下跌5%）
-    #   - 0.00：盈亏平衡，收益为负就卖出（激进风控）
-    #   - 负值：要求正收益（例如 -0.01 表示要求至少1%收益才不卖出）
-    MAX_STOP_LOSS_PCT = -0.05  # -5% = 累计下跌5%触发风控
+    # 全局硬止损兜底
+    MAX_STOP_LOSS_PCT = -0.05
 
-    # 连续阴线风控阈值（根数）
-    # 说明：连续N根5分钟K线阴线触发风控
-    CONSECUTIVE_BEARISH_THRESHOLD = 3  # 连续3根阴线触发风控
+    # 与分钟回测一致的状态机参数
+    ENABLE_TOP1_STATE_MACHINE_RISK = True
+    T2_0935_HARD_STOP_THRESHOLD = -0.04
+    ENABLE_T2_1000_SOFT_STOP = True
+    T2_1000_SOFT_STOP_THRESHOLD = -0.02
+    ENABLE_SECOND_LAYER_TIME_STOP = True
+    T2_CLOSE_BREAKEVEN_STOP_THRESHOLD = 0.00
+    T3_0935_BREAKEVEN_STOP_THRESHOLD = 0.00
+
+    ENABLE_SMALL_PROFIT_FAILURE_EXIT = True
+    SMALL_PROFIT_ACTIVATION_RETURN = 0.04
+    SMALL_PROFIT_BEARISH_REQUIRED_COUNT = 2
+    SMALL_PROFIT_WATCH_WINDOW_BARS = 3
+
+    ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT = True
+    PROFIT_BEARISH_ACTIVATION_RETURN = 0.05
+    PROFIT_BEARISH_MIN_PEAK_RETURN = 0.09
+    PROFIT_BEARISH_TRAILING_DRAWDOWN = -0.04
+    PROFIT_BEARISH_MIN_CURRENT_RETURN = 0.06
+    PROFIT_BEARISH_REQUIRED_COUNT = 3
 
     # 最大持仓天数
-    # 注意: T+1买入当天算第1天
-    # 例如: MAX_HOLDING_DAYS=3, 则T+1/T+2/T+3持仓, T+4开盘强制卖出
     MAX_HOLDING_DAYS = 3
 
     # 监控检查间隔(秒)

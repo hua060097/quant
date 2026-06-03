@@ -9,6 +9,7 @@ import os
 import json
 import time
 import logging
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -167,6 +168,16 @@ class XtQuantTrader:
             self.connected = True
             self.logger.info("✅ 迅投API连接完成")
             self.logger.info("✅ 智能订单管理器已初始化")
+
+            # 提前初始化 xtdata，避免后续首次调用时冷启动导致数据不可用
+            try:
+                from xtquant import xtdata
+                xtdata.enable_hello = False
+                # 触发xtdata连接，让它有时间准备数据
+                xtdata.get_full_tick(['000001.SZ'])
+                self.logger.info("✅ xtdata行情数据已预热")
+            except Exception as e:
+                self.logger.warning(f"xtdata预热失败（不影响交易连接）: {e}")
 
             return True
             
@@ -347,14 +358,33 @@ class XtQuantTrader:
         try:
             from xtquant import xtdata
 
-            # 获取最新行情
-            quote = xtdata.get_full_tick([stock_code])
+            # 获取最新行情（带重试，应对xtdata冷启动延迟）
+            for attempt in range(3):
+                quote = xtdata.get_full_tick([stock_code])
 
-            if stock_code in quote:
-                price = quote[stock_code]['lastPrice']
-                return price
-            else:
-                return None
+                if stock_code in quote and 'lastPrice' in quote[stock_code]:
+                    price = quote[stock_code]['lastPrice']
+                    if price and price > 0:
+                        return price
+
+                if attempt < 2:
+                    self.logger.warning(f"{stock_code} tick数据未就绪，{1}s后重试 ({attempt+1}/3)")
+                    time.sleep(1)
+
+            # Fallback: tick数据不可用时，用最近一日收盘价
+            self.logger.warning(f"{stock_code} tick数据不可用，回退到日线收盘价")
+            hist = xtdata.get_market_data_ex(
+                field_list=['close'],
+                stock_list=[stock_code],
+                period='1d',
+                count=1,
+            )
+            if hist and stock_code in hist and len(hist[stock_code]) > 0:
+                close_price = float(hist[stock_code].iloc[-1, 0])
+                if close_price > 0:
+                    return close_price
+
+            return None
 
         except Exception as e:
             self.logger.error(f"获取最新价失败: {e}")
@@ -586,6 +616,43 @@ class TradingScheduler:
         self.trading_dates = []
         self._load_trading_calendar()
 
+    def _acquire_trade_records_lock(self, timeout: float = 10.0):
+        """Acquire a cross-process lock for trade_records.json updates."""
+        lock_path = PathConfig.TRADE_RECORDS_FILE.with_suffix(PathConfig.TRADE_RECORDS_FILE.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(lock_path, "a+b")
+        deadline = time.time() + float(timeout)
+
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    lock_file.seek(0)
+                    lock_file.truncate()
+                    lock_file.write(str(os.getpid()).encode("ascii", errors="ignore"))
+                    lock_file.flush()
+                    return lock_file
+                except OSError:
+                    if time.time() >= deadline:
+                        lock_file.close()
+                        raise TimeoutError(f"等待交易记录锁超时: {lock_path}")
+                    time.sleep(0.1)
+
+        return lock_file
+
+    def _release_trade_records_lock(self, lock_file) -> None:
+        if not lock_file:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            lock_file.close()
+
     def _load_trading_calendar(self):
         """加载交易日历"""
         try:
@@ -703,7 +770,7 @@ class TradingScheduler:
             from datetime import datetime, timedelta
 
             # Tushare token
-            TS_TOKEN = "022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c100qq"
+            TS_TOKEN = "gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b"
 
             self.logger.info("正在从tushare获取交易日历...")
 
@@ -906,7 +973,7 @@ class TradingScheduler:
                           exit_reason: str = None, profit_pct: float = None,
                           slot_index: int = None, target_pct: float = None,
                           planned_amount: float = None, strategy_capital: float = None,
-                          target_rank: int = None):
+                          target_rank: int = None, open_price: float = None):
         """
         保存交易记录（增强版）
 
@@ -921,7 +988,10 @@ class TradingScheduler:
             exit_reason: 卖出原因 (卖出时记录)
             profit_pct: 收益率 (卖出时记录)
         """
+        lock_file = None
         try:
+            lock_file = self._acquire_trade_records_lock()
+
             # 读取现有记录
             if PathConfig.TRADE_RECORDS_FILE.exists():
                 with open(PathConfig.TRADE_RECORDS_FILE, 'r', encoding='utf-8') as f:
@@ -955,6 +1025,8 @@ class TradingScheduler:
                     record['strategy_capital'] = float(strategy_capital)
                 if target_rank is not None:
                     record['target_rank'] = int(target_rank)
+                if open_price is not None and open_price > 0:
+                    record['open_price'] = float(open_price)
 
             # 卖出记录的额外字段
             if action == 'sell' and exit_reason:
@@ -964,14 +1036,28 @@ class TradingScheduler:
 
             records[date].append(record)
 
-            # 保存
-            with open(PathConfig.TRADE_RECORDS_FILE, 'w', encoding='utf-8') as f:
+            # 原子保存，避免monitor/trade并行时读到半写文件
+            PathConfig.TRADE_RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding='utf-8',
+                dir=str(PathConfig.TRADE_RECORDS_FILE.parent),
+                delete=False,
+                suffix='.tmp',
+            ) as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+                temp_name = f.name
+
+            os.replace(temp_name, PathConfig.TRADE_RECORDS_FILE)
 
             self.logger.info(f"交易记录已保存: {PathConfig.TRADE_RECORDS_FILE}")
 
         except Exception as e:
             self.logger.error(f"保存交易记录失败: {e}")
+        finally:
+            self._release_trade_records_lock(lock_file)
 
     def calculate_holding_days(self, entry_date_str: str) -> int:
         """

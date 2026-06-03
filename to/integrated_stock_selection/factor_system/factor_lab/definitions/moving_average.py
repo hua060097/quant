@@ -739,7 +739,7 @@ price_ma10_ratio = register_factor(
         calculator=_price_ma10_ratio,
         calculation_scope='target_with_history_window',
         target_calculator=_price_ma10_ratio_target,
-        description='5日均线乖离率（短期情绪极限）',
+        description='10日均线乖离率（短期情绪极限）',
     )
 )
 

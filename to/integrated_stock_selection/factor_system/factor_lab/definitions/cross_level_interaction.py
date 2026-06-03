@@ -127,6 +127,7 @@ def _resolve_frozen_window(extra: dict) -> tuple[pd.Timestamp, pd.Timestamp]:
 class _CrossInteractionHelper:
     def __init__(self, data: pd.DataFrame, ctx: FactorContext):
         self.data = data.copy()
+        self.data.sort_values(["stock_code", "date"], inplace=True)
         self.ctx = ctx
         self.original_index = data.index
 

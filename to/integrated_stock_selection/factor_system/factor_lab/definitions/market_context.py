@@ -166,6 +166,42 @@ def _market_sentiment_advance_decline(data: pd.DataFrame, ctx: FactorContext) ->
     # return data['date'].map(sentiment).fillna(0.0).astype('float64')
     return data['date'].map(sentiment).astype('float64')
 
+
+def _market_advance_decline_ratio(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    """
+    市场上涨家数/下跌家数比例。
+
+    与 market_sentiment_ad 的差异：
+    - market_sentiment_ad 是 (上涨家数-下跌家数)/总家数，偏平滑情绪。
+    - 本因子是 Advancers/Decliners，保留市场宽度的非线性强弱。
+    """
+    if 'pct_chg' not in data.columns:
+        return pd.Series(np.nan, index=data.index, dtype='float64')
+
+    pct = pd.to_numeric(data['pct_chg'], errors='coerce')
+    daily = pd.DataFrame({'date': data['date'].values, 'pct_chg': pct.values}, index=data.index)
+    counts = daily.groupby('date', sort=True)['pct_chg'].agg(
+        advancers=lambda x: (x > 0).sum(),
+        decliners=lambda x: (x < 0).sum(),
+    )
+    ratio = counts['advancers'] / (counts['decliners'] + 1.0)
+    ratio = ratio.replace([np.inf, -np.inf], np.nan).clip(0.0, 20.0)
+    return data['date'].map(ratio).astype('float64')
+
+
+def _market_advance_decline_ratio_percentile_20d(data: pd.DataFrame, ctx: FactorContext) -> pd.Series:
+    """
+    市场上涨家数/下跌家数比例在近20日中的滚动分位数。
+
+    使用包含当日的20日窗口，表示“今天市场宽度在近期处于什么位置”。
+    """
+    ratio = _market_advance_decline_ratio(data, ctx)
+    daily_ratio = pd.DataFrame({'date': data['date'].values, 'ratio': ratio.values}).drop_duplicates('date')
+    daily_ratio = daily_ratio.sort_values('date')
+    percentile = _rolling_percentile_self(daily_ratio['ratio'], window=20, min_periods=10)
+    pct_map = pd.Series(percentile.values, index=daily_ratio['date'])
+    return data['date'].map(pct_map).astype('float64')
+
 # ==============================================================================
 # 3. 市场恐慌因子 (Market Risk)
 # ==============================================================================
@@ -319,6 +355,34 @@ market_sentiment_ad = register_factor(
     )
 )
 
+market_advance_decline_ratio = register_factor(
+    FactorDefinition(
+        name='market_advance_decline_ratio',
+        required_columns={'date', 'pct_chg'},
+        lookback_days=0,
+        calculator=_market_advance_decline_ratio,
+        calculation_scope='daily_broadcast',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _market_advance_decline_ratio(d, c), target_index=ti
+        ),
+        description='市场上涨家数/下跌家数比例，越高代表市场宽度越强',
+    )
+)
+
+market_advance_decline_ratio_percentile_20d = register_factor(
+    FactorDefinition(
+        name='market_advance_decline_ratio_percentile_20d',
+        required_columns={'date', 'pct_chg'},
+        lookback_days=25,
+        calculator=_market_advance_decline_ratio_percentile_20d,
+        calculation_scope='stateful_history',
+        target_calculator=lambda d, ti, c: select_target_series(
+            _market_advance_decline_ratio_percentile_20d(d, c), target_index=ti
+        ),
+        description='市场上涨/下跌家数比例在近20日滚动窗口中的历史分位数',
+    )
+)
+
 market_volatility_context = register_factor(
     FactorDefinition(
         name='market_volatility_context',
@@ -437,6 +501,8 @@ limit_down_count_percentile_20d = register_factor(
 __all__ = [
     'market_trend_strength',
     'market_sentiment_ad',
+    'market_advance_decline_ratio',
+    'market_advance_decline_ratio_percentile_20d',
     'market_volatility_context',
     'market_liquidity_change',
     'market_prev_60d_new_high_avg_return',

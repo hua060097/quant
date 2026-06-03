@@ -1447,7 +1447,9 @@ class BacktestStrategy:
         trading_dates: List[datetime.date],
         predicted_return: float = 0.0,
         target_rank: int = 1,
-        preloaded: bool = False
+        preloaded: bool = False,
+        buy_price_mode: str = "open",
+        buy_price_weights: Optional[Dict[str, float]] = None
     ) -> Dict[str, Any]:
         """
         单股票单预测日模拟，用于离线缓存分钟交易结果。
@@ -1504,8 +1506,22 @@ class BacktestStrategy:
             result['missing_minute_data'] = True
             return result
 
-        buy_open = float(execution_day_data.iloc[0]['open'])
-        result['buy_price'] = buy_open
+        first_bar = execution_day_data.iloc[0]
+        buy_open = float(first_bar['open'])
+        if buy_price_mode == "first_bar_weighted":
+            weights = buy_price_weights or {'open': 0.60, 'high': 0.15, 'low': 0.15, 'close': 0.10}
+            weighted_sum = 0.0
+            weight_sum = 0.0
+            for price_col, weight in weights.items():
+                if price_col in first_bar and pd.notna(first_bar[price_col]):
+                    price_value = float(first_bar[price_col])
+                    if price_value > 0:
+                        weighted_sum += price_value * float(weight)
+                        weight_sum += float(weight)
+            buy_price = weighted_sum / weight_sum if weight_sum > 0 else buy_open
+        else:
+            buy_price = buy_open
+        result['buy_price'] = buy_price
 
         entry_check = self.check_entry_signal(
             stock_code, trade_date, prev_close, buy_open, target_rank=target_rank
@@ -1534,8 +1550,8 @@ class BacktestStrategy:
             stock_code=stock_code,
             buy_date=trade_date,
             buy_datetime=buy_datetime,
-            buy_price=buy_open,
-            highest_price_since_buy=buy_open,
+            buy_price=buy_price,
+            highest_price_since_buy=buy_price,
             highest_return_since_buy=0.0,
             quantity=100,
             predicted_return=float(predicted_return) if pd.notna(predicted_return) else 0.0,
@@ -1544,11 +1560,11 @@ class BacktestStrategy:
             holding_days=int(self.config.holding_days),
             slot_index=0,
             t1_day_lowest_price=t1_day_lowest_price,
-            last_valid_mark_price=buy_open
+            last_valid_mark_price=buy_price
         )
 
         result['buy_executable'] = True
-        exit_price = buy_open
+        exit_price = buy_price
         exit_date = holding_end_date
         exit_reason = '到期'
 
@@ -1565,7 +1581,7 @@ class BacktestStrategy:
             risk_check = self.check_position_risk(position, check_date, trading_dates)
             if risk_check.get('should_exit', False):
                 exit_date = check_date
-                exit_price = float(risk_check.get('exit_price', buy_open))
+                exit_price = float(risk_check.get('exit_price', buy_price))
                 exit_reason = f"风控: {risk_check.get('reason', '')}"
                 break
 
@@ -1574,16 +1590,16 @@ class BacktestStrategy:
             if not exit_day_data.empty and pd.notna(exit_day_data.iloc[-1]['close']):
                 exit_price = float(exit_day_data.iloc[-1]['close'])
             else:
-                exit_price = buy_open
+                exit_price = buy_price
 
         path_stats = self._compute_minute_path_stats(
             stock_code=stock_code,
             start_date=trade_date,
             end_date=exit_date,
             trading_dates=trading_dates,
-            buy_price=buy_open
+            buy_price=buy_price
         )
-        realized_return = (float(exit_price) - float(buy_open)) / float(buy_open) if buy_open > 0 else 0.0
+        realized_return = (float(exit_price) - float(buy_price)) / float(buy_price) if buy_price > 0 else 0.0
 
         result.update({
             'exit_price': float(exit_price),
@@ -2810,7 +2826,9 @@ def build_minute_trade_cache(
     cache_path: Optional[Path] = None,
     holding_days: int = 3,
     overwrite: bool = False,
-    log_prefix: str = "[MINUTE_CACHE]"
+    log_prefix: str = "[MINUTE_CACHE]",
+    buy_price_mode: str = "open",
+    buy_price_weights: Optional[Dict[str, float]] = None
 ) -> pd.DataFrame:
     """
     为验证集/selection集股票生成分钟交易结果缓存。
@@ -2896,7 +2914,9 @@ def build_minute_trade_cache(
                         trading_dates=trading_dates,
                         predicted_return=float(pred_value) if pd.notna(pred_value) else 0.0,
                         target_rank=1,
-                        preloaded=True
+                        preloaded=True,
+                        buy_price_mode=buy_price_mode,
+                        buy_price_weights=buy_price_weights
                     )
                 )
         finally:

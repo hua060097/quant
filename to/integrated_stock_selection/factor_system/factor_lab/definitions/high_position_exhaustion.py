@@ -169,6 +169,18 @@ def _upper_shadow_ratio_raw(data: pd.DataFrame) -> pd.Series:
     return ratio.clip(0.0, 0.5).fillna(0.0).astype("float64")
 
 
+def _lower_shadow_ratio_raw(data: pd.DataFrame) -> pd.Series:
+    """下影线 / close，天然非负比例，做上限截断。"""
+    if not {"open", "low", "close"}.issubset(data.columns):
+        return _zero(data.index)
+    open_ = _safe_num(data["open"]).astype("float64")
+    low = _safe_num(data["low"]).astype("float64")
+    close = _safe_num(data["close"]).astype("float64")
+    lower = np.minimum(open_, close) - low
+    ratio = _safe_div(pd.Series(lower, index=data.index).clip(lower=0.0), close)
+    return ratio.clip(0.0, 0.5).fillna(0.0).astype("float64")
+
+
 def _close_to_high_raw(data: pd.DataFrame) -> pd.Series:
     """close / high - 1，范围通常为 [-1, 0]。"""
     if not {"high", "close"}.issubset(data.columns):
@@ -214,6 +226,27 @@ def _turnover_z_20_ts_raw(data: pd.DataFrame) -> pd.Series:
     return _rolling_z_by_stock(data, value, window=20, min_periods=10)
 
 
+def _volume_source(data: pd.DataFrame) -> pd.Series:
+    """优先使用原始成交量，缺失时退化到成交额/换手率。"""
+    for col in ("volume", "vol", "amount", "turnover_rate"):
+        if col in data.columns:
+            return _safe_num(data[col]).astype("float64")
+    return _zero(data.index)
+
+
+def _volume_ratio_20d_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    日线量比：当日成交量 / 前20日平均成交量。
+
+    分母整体 shift(1)，只用预测日前的历史均量作为基准，避免当日放量稀释自身。
+    """
+    volume = _volume_source(data)
+    base = _rolling_groupby(data, volume, 20, 10, "mean")
+    base = base.groupby(data["stock_code"], sort=False).shift(1)
+    ratio = _safe_div(volume, base)
+    return ratio.replace([np.inf, -np.inf], np.nan).clip(0.0, 30.0).astype("float64")
+
+
 def _turnover_z_20_norm_full(data: pd.DataFrame) -> pd.Series:
     """成交异常：先时间序列 z，再按日横截面 robust z，最终可直接训练使用。"""
     return _cs_z(data, _turnover_z_20_ts_raw(data), pre_clip=(-6.0, 6.0))
@@ -245,6 +278,23 @@ def _pullback_depth_from_high_raw(data: pd.DataFrame, window: int, min_periods: 
     return _clip_series(_safe_div(close, high_n) - 1.0, -1.0, 0.0).fillna(0.0)
 
 
+def _ma5_pullback_depth_10d_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    近10日最低价相对 MA5 的最深回踩幅度。
+
+    输出为原始比例值，通常为负数；例如 -0.05 表示过去10日中最低价曾跌破
+    当日 MA5 约 5%。该因子保留原始幅度，不做横截面 z-score，便于风控规则
+    使用可解释阈值。
+    """
+    if not {"low", "close"}.issubset(data.columns):
+        return _zero(data.index)
+    close = _safe_num(data["close"]).astype("float64")
+    low = _safe_num(data["low"]).astype("float64")
+    ma5 = close.groupby(data["stock_code"], sort=False).transform(lambda x: x.rolling(5, min_periods=5).mean())
+    low_ma5_gap = _safe_div(low, ma5) - 1.0
+    return _rolling_groupby(data, low_ma5_gap, 10, 5, "min").clip(-1.0, 1.0).fillna(0.0).astype("float64")
+
+
 def _gap_up_flag(data: pd.DataFrame, threshold: float = 0.02) -> pd.Series:
     if not {"open", "close"}.issubset(data.columns):
         return _zero(data.index)
@@ -257,6 +307,30 @@ def _gap_up_flag(data: pd.DataFrame, threshold: float = 0.02) -> pd.Series:
 def _upper_shadow_ratio_3d_mean_raw(data: pd.DataFrame) -> pd.Series:
     upper = _upper_shadow_ratio_raw(data)
     return _rolling_groupby(data, upper, 3, 1, "mean").clip(0.0, 0.5).fillna(0.0).astype("float64")
+
+
+def _upper_shadow_pressure_5d_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    近5日上影抛压：上影比例滚动均值 × 放量权重。
+
+    只放大“带量上影”，避免普通小上影被误判成强抛压。
+    """
+    upper = _upper_shadow_ratio_raw(data)
+    vol_ratio = _volume_ratio_20d_raw(data).clip(0.0, 5.0).fillna(1.0)
+    pressure = upper * np.maximum(1.0, vol_ratio)
+    return _rolling_groupby(data, pressure, 5, 2, "mean").clip(0.0, 2.0).fillna(0.0).astype("float64")
+
+
+def _lower_shadow_absorption_5d_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    近5日下影承接：下影比例滚动均值 × 放量权重。
+
+    这个因子不是风险因子，而是识别回踩有承接；对高位抛压因子形成方向区分。
+    """
+    lower = _lower_shadow_ratio_raw(data)
+    vol_ratio = _volume_ratio_20d_raw(data).clip(0.0, 5.0).fillna(1.0)
+    absorption = lower * np.maximum(1.0, vol_ratio)
+    return _rolling_groupby(data, absorption, 5, 2, "mean").clip(0.0, 2.0).fillna(0.0).astype("float64")
 
 
 def _close_to_high_3d_mean_raw(data: pd.DataFrame) -> pd.Series:
@@ -320,6 +394,48 @@ def _low_break_prev_low_after_runup_full(data: pd.DataFrame) -> pd.Series:
     ret_10d = _return_n(data, 10)
     out = ((ret_10d > 0.10) & (low < prev_low)).astype("float64")
     return pd.Series(out, index=data.index).astype("float64")
+
+
+# ==============================================================================
+# 连续版高位衰竭因子：将二值判断替换为强度信号，使LightGBM能学习分裂
+# ==============================================================================
+
+def _runup_ma5_exhaustion_raw(data: pd.DataFrame) -> pd.Series:
+    """高位均线衰竭强度v2：涨幅 × MA5跌破幅度 × 异常换手 → 连续值"""
+    if "close" not in data.columns:
+        return _zero(data.index)
+    close = _safe_num(data["close"]).astype("float64")
+    ma5 = _rolling_col(data, "close", 5, 3, "mean")
+    ret_10d = _return_n(data, 10)
+    # 换手异常：取原始时序z（未截断），仅保留异常放量部分
+    turnover_ts_z = _turnover_z_20_ts_raw(data)
+
+    # 涨幅强度：用softplus替代max(0,)产生平滑渐变
+    runup = np.log1p(np.exp(ret_10d * 8.0)) / 8.0             # softplus, ~[0, ret_10d]
+    # MA5跌破幅度
+    ma5_gap = np.maximum(0.0, 1.0 - _safe_div(close, ma5))    # 跌破幅度，正值
+    # 换手异常：低于0（换手偏低）截为0，保留放量信号
+    turnover_signal = np.maximum(0.0, turnover_ts_z)
+
+    raw = runup * ma5_gap * turnover_signal * 100.0
+    return raw.clip(0.0, 50.0).fillna(0.0).astype("float64")
+
+
+def _runup_low_break_raw(data: pd.DataFrame) -> pd.Series:
+    """高位破前低强度v2：涨幅 × 跌破前低幅度 × 异常换手 → 连续值"""
+    if not {"low", "close"}.issubset(data.columns):
+        return _zero(data.index)
+    low = _safe_num(data["low"]).astype("float64")
+    prev_low = low.groupby(data["stock_code"], sort=False).shift(1)
+    ret_10d = _return_n(data, 10)
+    turnover_ts_z = _turnover_z_20_ts_raw(data)
+
+    runup = np.log1p(np.exp(ret_10d * 8.0)) / 8.0
+    low_break_gap = np.maximum(0.0, 1.0 - _safe_div(low, prev_low))
+    turnover_signal = np.maximum(0.0, turnover_ts_z)
+
+    raw = runup * low_break_gap * turnover_signal * 100.0
+    return raw.clip(0.0, 50.0).fillna(0.0).astype("float64")
 
 
 # ==============================================================================
@@ -391,6 +507,48 @@ upper_shadow_ratio_3d_mean = register_factor(
 )
 
 
+def _upper_shadow_pressure_5d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _cs_z(data, _upper_shadow_pressure_5d_raw(data), pre_clip=(0.0, 2.0))
+
+
+def _upper_shadow_pressure_5d_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_upper_shadow_pressure_5d(data, _), target_index)
+
+
+upper_shadow_pressure_5d = register_factor(
+    FactorDefinition(
+        name="upper_shadow_pressure_5d",
+        required_columns={"stock_code", "date", "open", "high", "close"},
+        lookback_days=35,
+        calculator=_upper_shadow_pressure_5d,
+        calculation_scope="target_with_history_window",
+        target_calculator=_upper_shadow_pressure_5d_target,
+        description="[-6,6] 近5日带量上影抛压，已按日横截面robust z标准化",
+    )
+)
+
+
+def _lower_shadow_absorption_5d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _cs_z(data, _lower_shadow_absorption_5d_raw(data), pre_clip=(0.0, 2.0))
+
+
+def _lower_shadow_absorption_5d_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_lower_shadow_absorption_5d(data, _), target_index)
+
+
+lower_shadow_absorption_5d = register_factor(
+    FactorDefinition(
+        name="lower_shadow_absorption_5d",
+        required_columns={"stock_code", "date", "open", "low", "close"},
+        lookback_days=35,
+        calculator=_lower_shadow_absorption_5d,
+        calculation_scope="target_with_history_window",
+        target_calculator=_lower_shadow_absorption_5d_target,
+        description="[-6,6] 近5日带量下影承接，已按日横截面robust z标准化",
+    )
+)
+
+
 def _close_to_high_3d_mean(data: pd.DataFrame, _: FactorContext) -> pd.Series:
     # 已为比例值，范围 [-1,0]
     return _close_to_high_3d_mean_raw(data)
@@ -431,6 +589,48 @@ turnover_z_20 = register_factor(
         calculation_scope="target_with_history_window",
         target_calculator=_turnover_z_20_target,
         description="[-6,6] 成交/换手异常：先按个股近20日做时间序列z，再按日横截面robust z",
+    )
+)
+
+
+def _stock_volume_ratio_20d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _volume_ratio_20d_raw(data)
+
+
+def _stock_volume_ratio_20d_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_stock_volume_ratio_20d(data, _), target_index)
+
+
+stock_volume_ratio_20d = register_factor(
+    FactorDefinition(
+        name="stock_volume_ratio_20d",
+        required_columns={"stock_code", "date"},
+        lookback_days=35,
+        calculator=_stock_volume_ratio_20d,
+        calculation_scope="target_with_history_window",
+        target_calculator=_stock_volume_ratio_20d_target,
+        description="[0,30] 日线量比：当日成交量/前20日平均成交量，优先使用volume字段",
+    )
+)
+
+
+def _high_position_volume_surge(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _cs_z(data, _high_position_volume_surge_raw(data), pre_clip=(0.0, 20.0))
+
+
+def _high_position_volume_surge_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_high_position_volume_surge(data, _), target_index)
+
+
+high_position_volume_surge = register_factor(
+    FactorDefinition(
+        name="high_position_volume_surge",
+        required_columns={"stock_code", "date", "high", "low", "close"},
+        lookback_days=35,
+        calculator=_high_position_volume_surge,
+        calculation_scope="target_with_history_window",
+        target_calculator=_high_position_volume_surge_target,
+        description="[-6,6] 高位位置×超额量比，刻画高位放量分歧，已按日横截面robust z标准化",
     )
 )
 
@@ -538,6 +738,30 @@ def _high_pos_reversal_volume_raw(data: pd.DataFrame) -> pd.Series:
     return (pos * upper * vol_z).clip(0.0, 6.0).astype("float64")
 
 
+def _high_position_volume_surge_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    高位放量强度：20日高位位置 × 超额量比。
+
+    它不同于 abnormal_turnover：这里用原始成交量相对前20日均量，且只在价格处于高位时放大。
+    """
+    pos = _close_position_raw(data, 20, 10)
+    vol_excess = np.maximum(0.0, _volume_ratio_20d_raw(data).fillna(1.0) - 1.0)
+    return (pos * vol_excess).clip(0.0, 20.0).astype("float64")
+
+
+def _shadow_reversal_volume_pressure_raw(data: pd.DataFrame) -> pd.Series:
+    """
+    冲高回落放量抛压：高位 × 收盘远离高点 × 上影 × 超额量比。
+
+    目标是识别“冲高失败且放量”的分歧出货结构。
+    """
+    pos = _close_position_raw(data, 20, 10)
+    reversal = _high_close_reversal_raw(data)
+    upper = _upper_shadow_ratio_raw(data)
+    vol_excess = np.maximum(0.0, _volume_ratio_20d_raw(data).fillna(1.0) - 1.0)
+    return (pos * reversal * upper * vol_excess * 10.0).clip(0.0, 20.0).astype("float64")
+
+
 def _high_pos_reversal_volume(data: pd.DataFrame, _: FactorContext) -> pd.Series:
     # 交互项统一按日横截面 robust z；输出 [-6,6]
     return _cs_z(data, _high_pos_reversal_volume_raw(data), pre_clip=(0.0, 6.0))
@@ -556,6 +780,31 @@ high_pos_reversal_volume = register_factor(
         calculation_scope="target_with_history_window",
         target_calculator=_high_pos_reversal_volume_target,
         description="[-6,6] 高位×上影线×放量，已按日横截面robust z标准化",
+    )
+)
+
+
+def _shadow_reversal_volume_pressure(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _cs_z(data, _shadow_reversal_volume_pressure_raw(data), pre_clip=(0.0, 20.0))
+
+
+def _shadow_reversal_volume_pressure_target(
+    data: pd.DataFrame,
+    target_index: pd.Index,
+    _: FactorContext,
+) -> pd.Series:
+    return _target_from_full(_shadow_reversal_volume_pressure(data, _), target_index)
+
+
+shadow_reversal_volume_pressure = register_factor(
+    FactorDefinition(
+        name="shadow_reversal_volume_pressure",
+        required_columns={"stock_code", "date", "open", "high", "low", "close"},
+        lookback_days=35,
+        calculator=_shadow_reversal_volume_pressure,
+        calculation_scope="target_with_history_window",
+        target_calculator=_shadow_reversal_volume_pressure_target,
+        description="[-6,6] 高位冲高回落×上影×超额量比，刻画放量抛压/出货结构",
     )
 )
 
@@ -581,6 +830,27 @@ ret_3d_vs_10d_accel = register_factor(
         calculation_scope="target_with_history_window",
         target_calculator=_ret_3d_vs_10d_accel_target,
         description="[-6,6] 3日涨幅相对10日平均速度的加速项，已按日横截面robust z标准化",
+    )
+)
+
+
+def _ma5_pullback_depth_10d(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    return _ma5_pullback_depth_10d_raw(data)
+
+
+def _ma5_pullback_depth_10d_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_ma5_pullback_depth_10d(data, _), target_index)
+
+
+ma5_pullback_depth_10d = register_factor(
+    FactorDefinition(
+        name="ma5_pullback_depth_10d",
+        required_columns={"stock_code", "date", "low", "close"},
+        lookback_days=15,
+        calculator=_ma5_pullback_depth_10d,
+        calculation_scope="target_with_history_window",
+        target_calculator=_ma5_pullback_depth_10d_target,
+        description="原始比例值，近10日最低价相对MA5的最深回踩幅度；-0.05表示约跌破MA5 5%",
     )
 )
 
@@ -739,18 +1009,87 @@ low_break_prev_low_after_runup = register_factor(
 )
 
 
+# ==============================================================================
+# 连续版高位衰竭因子（进模型训练用）
+# 使用横截面分位数排名替代robust z-score：分布均匀，不会被clip到两端
+# ==============================================================================
+
+def _daily_quantile_rank(series: pd.Series, date_series: pd.Series) -> pd.Series:
+    """按交易日做横截面分位数排名，输出 [0, 1]，无视原始分布形状"""
+    df = pd.DataFrame({"val": _safe_num(series).values, "date": date_series.values}, index=series.index)
+    return df.groupby("date", sort=False)["val"].rank(pct=True).fillna(0.0).astype("float64")
+
+
+def _runup_ma5_exhaustion(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    # 分位数排名 [0,1] → 缩放到 [-3, 4] 保留偏态供树模型分裂
+    raw = _runup_ma5_exhaustion_raw(data)
+    if "date" not in data.columns:
+        return raw.clip(0.0, 50.0).fillna(0.0)
+    rank = _daily_quantile_rank(raw, data["date"])
+    # p>0.7 才给正值（表示衰竭异常），p<0.7 给负值到略正
+    return (rank - 0.7) * 10.0  # 输出范围 [-7, 3]
+
+
+def _runup_ma5_exhaustion_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_runup_ma5_exhaustion(data, _), target_index)
+
+
+runup_ma5_exhaustion = register_factor(
+    FactorDefinition(
+        name="runup_ma5_exhaustion",
+        required_columns={"stock_code", "date", "close"},
+        lookback_days=20,
+        calculator=_runup_ma5_exhaustion,
+        calculation_scope="target_with_history_window",
+        target_calculator=_runup_ma5_exhaustion_target,
+        description="[-7,3] v2高位MA5衰竭：softplus涨幅×跌破MA5幅度×异常换手，横截面分位排名",
+    )
+)
+
+
+def _runup_low_break(data: pd.DataFrame, _: FactorContext) -> pd.Series:
+    raw = _runup_low_break_raw(data)
+    if "date" not in data.columns:
+        return raw.clip(0.0, 50.0).fillna(0.0)
+    rank = _daily_quantile_rank(raw, data["date"])
+    return (rank - 0.7) * 10.0
+
+
+def _runup_low_break_target(data: pd.DataFrame, target_index: pd.Index, _: FactorContext) -> pd.Series:
+    return _target_from_full(_runup_low_break(data, _), target_index)
+
+
+runup_low_break = register_factor(
+    FactorDefinition(
+        name="runup_low_break",
+        required_columns={"stock_code", "date", "low", "close"},
+        lookback_days=20,
+        calculator=_runup_low_break,
+        calculation_scope="target_with_history_window",
+        target_calculator=_runup_low_break_target,
+        description="[-7,3] v2高位破前低强度：softplus涨幅×跌破前低幅度×异常换手，横截面分位排名",
+    )
+)
+
+
 __all__ = [
     "close_position_20d",
     "close_position_60d",
     "upper_shadow_ratio_3d_mean",
+    "upper_shadow_pressure_5d",
+    "lower_shadow_absorption_5d",
     "close_to_high_3d_mean",
     "turnover_z_20",
+    "stock_volume_ratio_20d",
+    "high_position_volume_surge",
     "high_volume_no_gain_3d",
     "pullback_depth_from_10d_high",
     "high_pos_upper_shadow",
     "high_pos_volume_no_gain",
     "high_pos_reversal_volume",
+    "shadow_reversal_volume_pressure",
     "ret_3d_vs_10d_accel",
+    "ma5_pullback_depth_10d",
     "ret_5d_vs_20d_accel",
     "momentum_peak_decay_3d",
     "consecutive_up_days_5d",
@@ -758,4 +1097,6 @@ __all__ = [
     "gap_up_count_5d",
     "close_below_ma5_after_runup",
     "low_break_prev_low_after_runup",
+    "runup_ma5_exhaustion",
+    "runup_low_break",
 ]

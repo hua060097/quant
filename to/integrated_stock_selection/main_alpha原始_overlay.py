@@ -198,8 +198,8 @@ def _get_challenger_walkforward_windows():
             #  'train_end': '2025-02-25',
             'val_start': '2025-03-05',
             'val_end': '2025-05-25',
-            'test_start': '2025-06-05',
-            'test_end': '2025-12-26'
+            'test_start': '2026-04-05',
+            'test_end': '2026-05-07'
             # 'val_start': '2025-03-01',
             # 'val_end': '2025-06-02',
             # 'test_start': '2025-06-06',
@@ -1122,7 +1122,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘_overlay_新市场因子_q40并行2槽位04222312.log',
+        'stock_selection_test_mode_walkforward_排序模型_原始因子_实盘_overlay_新市场因子_q40并行2槽位05182120.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -2937,11 +2937,11 @@ def _get_lgb_search_space():
     # }
     space = {
         'learning_rate': [0.02],
-        'num_leaves': [31, 61],
+        'num_leaves': [63, 127],
         'reg_alpha': [0.5, 1, 2, 5, 8, 10],
         'reg_lambda': [0.5, 1, 2, 5, 8],
-        'min_data_in_leaf': [220, 240, 260, 280, 310, 320, 360],
-        'feature_fraction': [0.5, 0.6, 0.7],
+        'min_data_in_leaf': [220, 310, 320, 360, 400],
+        'feature_fraction': [ 0.7, 0.8],
         'bagging_fraction': [0.6, 0.7, 0.8],
         'bagging_freq': [1, 3],
         'n_estimators': [600],
@@ -6701,7 +6701,7 @@ def _get_zscore_factors():
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
         'sector_concentration',
-        'sector_rank_change_5d',
+        # 'sector_rank_change_5d',
         'sector_breadth',
         'intraday_clv',
         'beta_60d',
@@ -6710,10 +6710,6 @@ def _get_zscore_factors():
         'efficiency_ratio',
         'mass_index_reversal',
         'price_acceleration',
-        'log_price_slope_5d',
-        'log_price_slope_10d',
-        'log_price_slope_20d',
-        'log_price_slope_10d_x_log_circ_mv',
         'ma60_slope',
         'price_ma60_ratio',
         'kdj_diff_9',
@@ -6737,15 +6733,23 @@ def _get_zscore_factors():
         'pct_chg_2d',
         'regime_aware_reversal_alpha',
         'trend_acceleration',
-        'trend_consistency',
-        'trend_pullback_composite_alpha',
+        # 'trend_consistency',
+        # 'trend_pullback_composite_alpha',
         'cpv_factor',
         'price_ma5_ratio',
-        'high_volatility_pullback_alpha',
+        # 'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
-        'ma_alignment_score',
+        # 'ma_alignment_score',
+        'stock_volume_ratio_20d',
+        # 'high_position_volume_surge',
+        'upper_shadow_pressure_5d',
+        'lower_shadow_absorption_5d',
+        # 'shadow_reversal_volume_pressure',
+        'post_accumulation_supply_tightness',
+        'true_turnover_10d',
+        # 'tightness_3d',
     ]
 
 
@@ -6798,22 +6802,22 @@ def _get_expanding_factors():
     return [
         # 市场/环境广播因子优先使用 expanding percentile
         'mkt_ma5_followthrough_v3',
-        'market_trend_strength',
-        'mkt_regime_trend_pressure_v2',
-        'mkt_dispersion_shock_v2',
-        'mkt_sector_dispersion',
-        'ma5_strength_breadth_v3',
-        'mkt_breadth_thrust_v2',
-        'mkt_liquidity_impulse_v2',
-        'market_volatility_context',
-        'strong_stock_volume_confirmation_v3',
-        'sector_hotspot_concentration_v3',
-        'sector_leadership_persistence_v3',
-        'mkt_emotion_stability_v2',
-        'emotion_quality_balance_v3',
-        'market_60d_new_high_ratio',
-        'top10_10d_strength_level_v3',
-        'top10_10d_recent3_strength_v3',
+        # 'market_trend_strength',
+        # 'mkt_regime_trend_pressure_v2',
+        # 'mkt_dispersion_shock_v2',
+        # 'mkt_sector_dispersion',
+        # 'ma5_strength_breadth_v3',
+        # 'mkt_breadth_thrust_v2',
+        # 'mkt_liquidity_impulse_v2',
+        # 'market_volatility_context',
+        # 'strong_stock_volume_confirmation_v3',
+        # 'sector_hotspot_concentration_v3',
+        # 'sector_leadership_persistence_v3',
+        # 'mkt_emotion_stability_v2',
+        # 'emotion_quality_balance_v3',
+        # 'market_60d_new_high_ratio',
+        # 'top10_10d_strength_level_v3',
+        # 'top10_10d_recent3_strength_v3',
     ]
 
 
@@ -6824,11 +6828,9 @@ def _get_stock_factors():
         'ma5_slope',
         'ma_alignment_persistence_5d',
         'ma_ribbon_expansion_3d',
-        'max_rally_20d_raw',
-        'max_rally_10d_raw',
+        'limit_down_3d',
         # 'market_prev_60d_new_high_avg_return',                                                                                     
         'market_60d_new_high_ratio',                                                                                                          
-        'market_60d_new_high_ratio_train_percentile',
         # 'abnormal_deviation_3d_ratio',
         # 'abnormal_event_count_10d',
         'severe_abnormal_pressure_10d',
@@ -6837,7 +6839,7 @@ def _get_stock_factors():
         # 'zhaban_count_percentile_20d',                                                                                                     
         # 'limit_down_count_percentile_20d',
         'limit_up_sw2_concentration',                                                                                                                
-        'sector_ma5_followthrough_v3',
+        # 'sector_ma5_followthrough_v3',
         'sw2_high_low_position_return_spread', 
         'beta_20d',
         # 'return_5d_cs_rank',
@@ -6845,6 +6847,8 @@ def _get_stock_factors():
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
+        'market_advance_decline_ratio',
+        'market_advance_decline_ratio_percentile_20d',
         'market_volatility_context',
         'mkt_regime_trend_pressure_v2',
         'mkt_breadth_thrust_v2',
@@ -6852,7 +6856,6 @@ def _get_stock_factors():
         'mkt_dispersion_shock_v2',
         'mkt_liquidity_impulse_v2',
         'mkt_ma5_followthrough_v3',
-        # 'mkt_ma5_followthrough_v3_expanding_percentile',
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
         'net_d5_amount_to_turnover',
@@ -6885,6 +6888,9 @@ def _get_stock_factors():
         'volume_price_exhaustion',
         'failed_breakout_pressure',
         'ma5_ma10_flattening_after_runup',
+        'prev_day_blowoff_risk',
+        'carryover_overheat_risk',
+        'distribution_after_strength_risk',
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
@@ -6918,6 +6924,9 @@ def _get_stock_factors():
         'market_emotion_resonance_alpha',
         'resistance_distance',
         'support_distance',
+        'prior_high_distance_20d',
+        'prior_high_proximity_20d',
+        'prior_high_volume_contest_20d',
         'coskewness',
         'kurtosis_20d',
         'skewness_20d',
@@ -6929,7 +6938,6 @@ def _get_stock_factors():
         'log_price_slope_5d',
         'log_price_slope_10d',
         'log_price_slope_20d',
-        'log_price_slope_10d_x_log_circ_mv',
         'stock_sector_pos_align',
 
     # ===== 按日z-score =====
@@ -6950,10 +6958,6 @@ def _get_stock_factors():
         'efficiency_ratio',
         'mass_index_reversal',
         'price_acceleration',
-        'log_price_slope_5d',
-        'log_price_slope_10d',
-        'log_price_slope_20d',
-        'log_price_slope_10d_x_log_circ_mv',
         'ma60_slope',
         'price_ma60_ratio',
         'kdj_diff_9',
@@ -6981,6 +6985,7 @@ def _get_stock_factors():
         'trend_pullback_composite_alpha',
         'cpv_factor',
         'price_ma5_ratio',
+        'price_ma5_ratio_raw',
         'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
@@ -6989,21 +6994,36 @@ def _get_stock_factors():
         "close_position_20d",
         "close_position_60d",
         "upper_shadow_ratio_3d_mean",
+        "upper_shadow_pressure_5d",
+        "lower_shadow_absorption_5d",
         "close_to_high_3d_mean",
         "turnover_z_20",
+        "stock_volume_ratio_20d",
+        "high_position_volume_surge",
         "high_volume_no_gain_3d",
         "pullback_depth_from_10d_high",
         "high_pos_upper_shadow",
         "high_pos_volume_no_gain",
         "high_pos_reversal_volume",
+        "shadow_reversal_volume_pressure",
         "ret_3d_vs_10d_accel",
-        "ret_5d_vs_20d_accel",
+        # "ret_5d_vs_20d_accel",
         "momentum_peak_decay_3d",
         "consecutive_up_days_5d",
-        "large_up_days_10d",
-        "gap_up_count_5d",
+        # "large_up_days_10d",
+        # "gap_up_count_5d",
         "close_below_ma5_after_runup",
         "low_break_prev_low_after_runup",
+        'runup_low_break',
+        'runup_ma5_exhaustion',
+        'post_accumulation_supply_tightness',
+        'true_turnover_10d',
+        'tightness_3d',
+        'lg_pos_sm_neg_10d_days',
+        # 'prev_first_limit_up_performance',
+        'prev_first_limit_up_performance_percentile_20d',
+        # 'prev_non_first_limit_up_performance',
+        'prev_non_first_limit_up_performance_percentile_20d',
 
 
     # ===== 按行业z-score =====
@@ -7029,30 +7049,45 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # 'market_advance_decline_ratio_percentile_20d',
+        'tightness_3d',
+        'trend_consistency',
+        'sector_rank_change_5d',
+        'high_position_volume_surge',
+        'shadow_reversal_volume_pressure',
+        'trend_pullback_composite_alpha',
+        'high_volatility_pullback_alpha',
+        'ma_alignment_score',
+        'prev_first_limit_up_performance',
+        'prev_first_limit_up_performance_percentile_20d',
+        'prev_non_first_limit_up_performance',
+        'prev_non_first_limit_up_performance_percentile_20d',
+        'lg_pos_sm_neg_10d_days',
+        'limit_down_3d',
         'ma5_slope',
         'ma_alignment_persistence_5d',
-        'ma_ribbon_expansion_3d',
+        # 'ma_ribbon_expansion_3d',
         'beta_20d',
         # 'market_prev_60d_new_high_avg_return',                                                                                                
         'market_60d_new_high_ratio',                                                                                                                 
-        'market_60d_new_high_ratio_train_percentile',
         # 'abnormal_deviation_3d_ratio',
         # 'abnormal_event_count_10d',
         'severe_abnormal_pressure_10d',
         # 'severe_abnormal_pressure_30d',
-        'max_rally_20d_raw',
-        'max_rally_10d_raw',
+        # 'max_rally_20d_raw',
+        # 'max_rally_10d_raw',
         # 'limit_up_count_percentile_20d',                                                                                                             
         # 'zhaban_count_percentile_20d',                                                                                                               
         # 'limit_down_count_percentile_20d', 
         'limit_up_sw2_concentration',                                                                                                                
-        'sector_ma5_followthrough_v3',
+        # 'sector_ma5_followthrough_v3',
         'sw2_high_low_position_return_spread', 
         # 'return_5d_cs_rank',
         'high_to_close_drawdown',
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
+        'market_advance_decline_ratio',
         'market_volatility_context',
         'mkt_regime_trend_pressure_v2',
         'mkt_breadth_thrust_v2',
@@ -7060,7 +7095,6 @@ def _get_original_factors():
         'mkt_dispersion_shock_v2',
         'mkt_liquidity_impulse_v2',
         'mkt_ma5_followthrough_v3',
-        # 'mkt_ma5_followthrough_v3_expanding_percentile',
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
         'net_d5_amount_to_turnover',
@@ -7093,6 +7127,9 @@ def _get_original_factors():
         'volume_price_exhaustion',
         'failed_breakout_pressure',
         'ma5_ma10_flattening_after_runup',
+        'prev_day_blowoff_risk',
+        'carryover_overheat_risk',
+        'distribution_after_strength_risk',
         'pct_chg_intra_z',
         'return_10d_intra_z',
         'return_20d_intra_z',
@@ -7126,6 +7163,7 @@ def _get_original_factors():
         'market_emotion_resonance_alpha',
         'resistance_distance',
         'support_distance',
+        'prior_high_volume_contest_20d',
         'coskewness',
         'kurtosis_20d',
         'skewness_20d',
@@ -7136,8 +7174,8 @@ def _get_original_factors():
         'sector_correlation_20d',
         'log_price_slope_5d',
         'log_price_slope_10d',
-        'log_price_slope_20d',
-        'log_price_slope_10d_x_log_circ_mv',
+        # 'log_price_slope_20d',
+        # 'log_price_slope_10d_x_log_circ_mv',
         'stock_sector_pos_align',
         "close_position_20d",
         "close_position_60d",
@@ -7150,13 +7188,17 @@ def _get_original_factors():
         "high_pos_volume_no_gain",
         "high_pos_reversal_volume",
         "ret_3d_vs_10d_accel",
-        "ret_5d_vs_20d_accel",
-        "momentum_peak_decay_3d",
-        "consecutive_up_days_5d",
-        "large_up_days_10d",
-        "gap_up_count_5d",
-        "close_below_ma5_after_runup",
-        "low_break_prev_low_after_runup",
+        # "ret_5d_vs_20d_accel",
+        'momentum_peak_decay_3d',
+        'consecutive_up_days_5d',
+        # 'large_up_days_10d',
+        # 'gap_up_count_5d',
+        'close_below_ma5_after_runup',
+        'low_break_prev_low_after_runup',
+        'runup_low_break',
+        'runup_ma5_exhaustion',
+        'price_ma5_ratio_raw',
+        
     ]
 
 
@@ -8473,26 +8515,14 @@ def run_generate_factors_mode(args):
 
         print(f"?? 目标区间: {start_date} - {end_date}")
 
-        requested_history_days = getattr(args, 'extend_history_days', FACTOR_LOOKBACK_DAYS)
-        base_history_days = max(int(requested_history_days), FACTOR_LOOKBACK_DAYS)
+        # 始终使用完整历史基础数据，确保所有因子（包括250日窗口因子和expanding percentile因子）
+        # 有足够的历史数据用于计算，不再与保存模式耦合
+        extended_start_date = FACTOR_FULL_HISTORY_START
         incremental_mode = bool(getattr(args, 'incremental_save', False))
-        effective_history_days = (
-            base_history_days + INCREMENTAL_WARMUP_DAYS
-            if incremental_mode
-            else base_history_days
+        print(
+            f"?? 历史加载: 使用完整历史基础数据 {extended_start_date} ~ {end_date} "
+            f"(target={start_date} ~ {end_date})"
         )
-
-        if incremental_mode:
-            extended_start_date = FACTOR_FULL_HISTORY_START
-            print(
-                f"?? 增量模式历史加载: 使用完整历史基础数据 {extended_start_date} ~ {end_date} "
-                f"(target={start_date} ~ {end_date})"
-            )
-        else:
-            print(f"?? 非增量模式历史加载: {effective_history_days}天")
-            extended_start_date = data_loader._calculate_extended_start_date(
-                start_date, end_date, effective_history_days
-            )
 
         stock_data = data_loader.load_stock_features(extended_start_date, end_date)
         try:
@@ -8699,7 +8729,10 @@ def run_generate_factors_mode(args):
             sw_sector_mapping = {}  # 确保为空字典而不是None
             print("?? 未找到SW申万行业映射，将使用默认行业映射。")
 
-        moneyflow_data = _load_moneyflow_data(start_date, end_date)
+        # 资金流派生因子也可能需要历史窗口，例如 lg_pos_sm_neg_10d_days
+        # 需要目标日前若干日的 moneyflow_data。这里与基础行情一样加载完整历史，
+        # 避免增量首日滚动/shift 因子退化为 NaN/0。
+        moneyflow_data = _load_moneyflow_data(extended_start_date, end_date)
         if moneyflow_data is not None and not moneyflow_data.empty:
             extra_context['moneyflow_data'] = moneyflow_data
             print(f"? 资金流数据记录数: {len(moneyflow_data):,}")
@@ -9024,7 +9057,7 @@ def run_generate_factors_mode(args):
 
         generated = pipeline_result.data
         record_count = len(generated)
-        factor_count = len([c for c in generated.columns if c not in {'date', 'stock_code'}])
+        factor_count = len(getattr(pipeline_result, 'factors', []) or [])
 
         logger.info(f"生成因子完成: {factor_count} 列, {record_count} 条记录")
         print(f"? 生成完成: {record_count} 条记录, {factor_count} 个因子")
@@ -9767,25 +9800,25 @@ def _generate_training_labels_for_all_data(stock_data):
         .transform(rank_to_label)
     )
 
-    def rank_to_label_30(x):
-        x = x.dropna()
-        if len(x) < 30:
-            return pd.Series(np.nan, index=x.index)
-        pct = x.rank(pct=True, method='average')
-        bins = np.linspace(0, 1, 31)
-        labels = list(range(30))
-        return pd.cut(
-            pct,
-            bins=bins,
-            labels=labels,
-            include_lowest=True
-        ).astype(float)
+    # def rank_to_label_30(x):
+    #     x = x.dropna()
+    #     if len(x) < 30:
+    #         return pd.Series(np.nan, index=x.index)
+    #     pct = x.rank(pct=True, method='average')
+    #     bins = np.linspace(0, 1, 31)
+    #     labels = list(range(30))
+    #     return pd.cut(
+    #         pct,
+    #         bins=bins,
+    #         labels=labels,
+    #         include_lowest=True
+    #     ).astype(float)
 
-    stock_data['relevance_30'] = (
-        stock_data
-        .groupby('date')['risk_adjusted_return_label']
-        .transform(rank_to_label_30)
-    )
+    # stock_data['relevance_30'] = (
+    #     stock_data
+    #     .groupby('date')['risk_adjusted_return_label']
+    #     .transform(rank_to_label_30)
+    # )
 
     mask_untradable = (
         (stock_data['is_limit_up'] == 1) |
@@ -9796,7 +9829,7 @@ def _generate_training_labels_for_all_data(stock_data):
     )
 
     stock_data.loc[mask_untradable, 'relevance'] = np.nan
-    stock_data.loc[mask_untradable, 'relevance_30'] = np.nan
+    # stock_data.loc[mask_untradable, 'relevance_30'] = np.nan
 
     return stock_data
 
@@ -17131,28 +17164,29 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             logger.info(f"[CHART] 有效selection样本: {len(selection_data_valid):,}/{len(selection_data):,} ({len(selection_data_valid)/len(selection_data)*100:.1f}%)")
 
         # 🆕 排序模型要求数据按日期排序,确保训练集和验证集按日期升序排列
+        #todo 20260510 oom了，暂时跳过这里
         # [强化] 关键修复: 必须同时按date和stock_code排序,确保同一天内股票顺序确定
-        if 'date' in train_data_valid.columns and 'stock_code' in train_data_valid.columns:
-            train_data_valid = train_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
-            logger.info("[OK] 训练集已按[date, stock_code]升序排序（排序模型要求）")
-        elif 'date' in train_data_valid.columns:
-            train_data_valid = train_data_valid.sort_values('date').reset_index(drop=True)
-            logger.info("[OK] 训练集已按date升序排序（排序模型要求）")
+        # if 'date' in train_data_valid.columns and 'stock_code' in train_data_valid.columns:
+        #     train_data_valid = train_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
+        #     logger.info("[OK] 训练集已按[date, stock_code]升序排序（排序模型要求）")
+        # elif 'date' in train_data_valid.columns:
+        #     train_data_valid = train_data_valid.sort_values('date').reset_index(drop=True)
+        #     logger.info("[OK] 训练集已按date升序排序（排序模型要求）")
 
-        if 'date' in val_data_valid.columns and 'stock_code' in val_data_valid.columns:
-            val_data_valid = val_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
-            logger.info("[OK] 验证集已按[date, stock_code]升序排序（排序模型要求）")
-        elif 'date' in val_data_valid.columns:
-            val_data_valid = val_data_valid.sort_values('date').reset_index(drop=True)
-            logger.info("[OK] 验证集已按date升序排序（排序模型要求）")
+        # if 'date' in val_data_valid.columns and 'stock_code' in val_data_valid.columns:
+        #     val_data_valid = val_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
+        #     logger.info("[OK] 验证集已按[date, stock_code]升序排序（排序模型要求）")
+        # elif 'date' in val_data_valid.columns:
+        #     val_data_valid = val_data_valid.sort_values('date').reset_index(drop=True)
+        #     logger.info("[OK] 验证集已按date升序排序（排序模型要求）")
 
-        if selection_data_valid is not None:
-            if 'date' in selection_data_valid.columns and 'stock_code' in selection_data_valid.columns:
-                selection_data_valid = selection_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
-                logger.info("[OK] selection集已按[date, stock_code]升序排序（排序模型要求）")
-            elif 'date' in selection_data_valid.columns:
-                selection_data_valid = selection_data_valid.sort_values('date').reset_index(drop=True)
-                logger.info("[OK] selection集已按date升序排序（排序模型要求）")
+        # if selection_data_valid is not None:
+        #     if 'date' in selection_data_valid.columns and 'stock_code' in selection_data_valid.columns:
+        #         selection_data_valid = selection_data_valid.sort_values(['date', 'stock_code']).reset_index(drop=True)
+        #         logger.info("[OK] selection集已按[date, stock_code]升序排序（排序模型要求）")
+        #     elif 'date' in selection_data_valid.columns:
+        #         selection_data_valid = selection_data_valid.sort_values('date').reset_index(drop=True)
+        #         logger.info("[OK] selection集已按date升序排序（排序模型要求）")
 
         # 🆕 提取relevance标签(用于LightGBM训练)和relevance_30标签(用于XGBoost训练)和原始收益率标签(用于IC计算)
         train_labels = train_data_valid['atr_return_label']

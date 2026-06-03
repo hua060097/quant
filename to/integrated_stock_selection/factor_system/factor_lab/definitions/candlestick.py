@@ -124,7 +124,13 @@ def _gap_power(data: pd.DataFrame, _: FactorContext) -> pd.Series:
     # 3. 计算波动率基准 (ATR 代理)
     # 直接在 transform 中使用链式操作，避免 lambda 产生的额外开销
     # 逻辑：取20日均值后整体后移一位（确保计算今天缺口时，分母只包含昨天及以前的信息）
-    avg_tr = tr.groupby(data['stock_code'], sort=False).rolling(20, min_periods=10).mean().reset_index(level=0, drop=True).shift(1)
+    avg_tr = (
+        tr.groupby(data['stock_code'], sort=False)
+        .rolling(20, min_periods=10).mean()
+        .reset_index(level=0, drop=True)
+        .groupby(data['stock_code'], sort=False)
+        .shift(1)
+    )
     
     # 4. 计算缺口并标准化
     gap = data['open'] - prev_close
