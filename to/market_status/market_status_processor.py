@@ -607,13 +607,25 @@ class MarketStatusProcessor:
             market_status = analyzer.analyze_market_status(market_data_transposed, indicators)
             # print(f"market_status: {market_status}")
             
-            # 保存分析结果
+            # 保存分析结果 - 只保存用户指定日期范围内的数据
             process_dates = []
+
+            # 将用户指定的日期范围转换为日期对象，用于比较
+            user_start_date = self._str_to_date(start_date)
+            user_end_date = self._str_to_date(end_date)
+
             for date in market_status.keys():
                 if market_status[date].get('market_type') != 0:  # 只处理有效的市场状态
                     date_str = date.strftime('%Y%m%d') if isinstance(date, datetime) else date
-                    self._save_market_status(market_status[date], date_str)
-                    process_dates.append(date_str)
+                    current_date = self._str_to_date(date_str)
+
+                    # ✅ 只保存用户指定日期范围内的数据
+                    if user_start_date <= current_date <= user_end_date:
+                        self._save_market_status(market_status[date], date_str)
+                        process_dates.append(date_str)
+                    else:
+                        # 历史数据只用于计算，不存储
+                        self.logger.debug(f"跳过历史数据日期: {date_str} (仅用于计算指标)")
             
             self.logger.info(f"处理完成，市场状态处理成功，共保存 {len(process_dates)} 个交易日的数据")
             print(f"处理完成，市场状态处理成功，共保存 {len(process_dates)} 个交易日的数据")
@@ -2648,9 +2660,10 @@ if __name__ == "__main__":
     end_date = args.end_date
     # 可以在这里添加示例调用
     # process_market_data(start_date='20230101', end_date='20251021', index_codes=['399006.SZ'])
-    # process_market_data(start_date=start_date, end_date=end_date, index_codes=['399006.SZ']) 
+    process_market_data(start_date=start_date, end_date=end_date, index_codes=['399006.SZ']) 
     # process_market_data(start_date='20230101', end_date='20251231', index_codes=['399006.SZ'])  20250630
-    process_market_data(start_date='20230101', end_date='20230601', index_codes=['399006.SZ'])
+    # process_market_data(start_date='20230101', end_date='20230601', index_codes=['399006.SZ'])
+    # process_market_data(start_date='20260121', end_date='20260126', index_codes=['399006.SZ'])
 
     # update_market_data(start_date='20250424', end_date='20250425', index_codes=['399006.SZ'], force =True) 
     # query_market_status(date='20230103')

@@ -87,11 +87,11 @@ class StrategyConfig:
     ENABLE_DYNAMIC_RANK_SWITCH = False
 
     # 策略级可用总资金上限（独立于账户总资产）
-    STRATEGY_CAPITAL = 108_000.0
+    STRATEGY_CAPITAL = 98_000.0
 
     # 并行槽位和固定槽位仓位
     MAX_CONCURRENT_POSITIONS = 3
-    POSITION_SCHEDULE = [0.8, 0.2, 0.2]
+    POSITION_SCHEDULE = [0.8, 0.2, 0.4]
 
     # pred/select 输出保留的候选数
     PRED_TOPN = 5
@@ -105,24 +105,23 @@ class StrategyConfig:
     # v3: three_rule_v3 (基于50+162双日志鲁棒性分析)
     EXHAUSTION_V3_CPV_THRESHOLD = -0.4              # cpv_factor <= 此值（配合runup>0.8）
     EXHAUSTION_V3_BLOWOFF_THRESHOLD = 2.0           # prev_day_blowoff_risk >= 此值
-    EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.30     # sector_momentum_accel_rank <= 此值
+    EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.36     # sector_momentum_accel_rank <= 此值
     EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD = -0.18  # sector_leadership_persistence_v3 <= 此值
     EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD = 0.40  # return_20d_intra_z <= 此值
     EXHAUSTION_V3_MARKET_LIQ_THRESHOLD = 0.94  # market_liquidity_change < 此值
-    EXHAUSTION_V3_ULCER_THRESHOLD = -0.80       # ulcer_index < 此值 (路径A)
-    EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 1.0      # momentum_peak_decay_3d > 此值 (路径B)
+    EXHAUSTION_V3_ULCER_THRESHOLD = -2.25       # ulcer_index < 此值 (路径A)
+    EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 3.20     # momentum_peak_decay_3d > 此值 (路径B)
     EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD = 0.67  # intra_sector_momentum_rank < 此值 (路径C)
     EXHAUSTION_V3_MKT_DISP_THRESHOLD = 0.98    # mkt_dispersion_shock_v2 < 此值
     EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38     # market_advance_decline_ratio < 此值
     ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True      # Rule6: 近3日跌停过滤
-    EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.70   # top10_10d_strength_level_v3 >= 此值 (Rule7)
-    EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.25   # buy_sm_amount_rate <= 此值 (Rule7)
+    EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.80   # top10_10d_strength_level_v3 >= 此值 (Rule7)
+    EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -0.20   # buy_sm_amount_rate <= 此值 (Rule7)
     EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # Rule8: 连板情绪近20日高分位
     EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75  # Rule8: kdj_j_9为截面robust z-score后的J值
     EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD = 1.50  # Rule9: 当日Top1相对候选池预测强度不足
-    # Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低(<=0.45)
-    EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.80
-    EXHAUSTION_V3_REG_ADR_THRESHOLD = 0.45
+    EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.98  # Rule10: 个股严重上涨占比当日最高2%
+    EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD = 4.50  # Rule10: 市场涨跌比极热
     # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20 → 高位衰竭
     # 拦截4笔增量大亏，0误杀大涨/小赚
     EXHAUSTION_V3_MA5_RAW_THRESHOLD = 9.0

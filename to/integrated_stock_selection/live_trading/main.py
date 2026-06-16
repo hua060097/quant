@@ -701,6 +701,7 @@ def run_trade_mode(args):
         if candidate_code in position_records:
             logger.info(f"{candidate_code} 已在持仓中，跳过重复开仓")
         else:
+            trader.ensure_market_quote_subscription([candidate_code])
             slot_index = free_slots[0]
             target_pct = float(StrategyConfig.POSITION_SCHEDULE[slot_index])
             planned_amount = float(StrategyConfig.STRATEGY_CAPITAL * target_pct)
@@ -772,6 +773,9 @@ def _run_monitoring_session(trader, scheduler, logger, session_name: str = "监�
         logger.info(f"{session_name}: 当前无有效持仓，结束")
         trader.disconnect()
         return True
+
+    if hasattr(trader, "ensure_market_quote_subscription"):
+        trader.ensure_market_quote_subscription([pos.stock_code for pos in valid_positions])
 
     monitor_5m = PositionMonitor5Min(trader, scheduler)
     monitored_count = 0

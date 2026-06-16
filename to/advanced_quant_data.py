@@ -4797,7 +4797,7 @@ def main():
 
     
     # 下载日线数据
-    # download_daily_data(storage, start_date, end_date, batch_size, workers)
+    download_daily_data(storage, start_date, end_date, batch_size, workers)
     
     # 下载5分钟数据
     # download_minute_data(storage, start_date, end_date, batch_size//2, workers)

@@ -35,6 +35,28 @@ from typing import List, Optional, Dict
 # Python官方推荐：在模块级别定义logger
 logger = logging.getLogger(__name__)
 
+# test_model_walkforward专用：将指定日内形态因子替换为当日横截面中位数。
+# 作用是只保留“当日整体水平”，去掉股票间的个体差异，验证这些因子是否带来过拟合。
+WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS = [
+    # "body_efficiency",
+    # "gap_power",
+    # "range_compression",
+    # "intraday_clv",
+    # "intraday_reversal",
+    # "open_to_high_ratio",
+    # "intraday_reversal",
+    # "max_rally_10d",
+    # "buy_sm_amount_rate_pct",
+    # "net_d5_amount_to_turnover"
+    # "intraday_reversal",
+    # "return_5d_intra_z",
+    # "sector_volatility_5d",
+    # "alpha_001",
+    # "sector_weak_reversal_alpha",
+    # "max_drawdown_20d",
+]
+ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE = False
+
 # 分钟回测模式:
 # False -> 固定 Top1 满仓
 # True  -> 使用 live_trading 默认策略(日级 Top1/Top2/空仓切换)
@@ -89,8 +111,15 @@ ENABLE_TOP1_STATE_MACHINE_RISK = True
 # 这些因子存在离散档位/大量重复值/边界值，LightGBM 可能被 float32 尾差跨阈值影响。
 # 这里仅在测试集/回测预测前处理，用于评估当前已训练模型对尾差的敏感度。
 ENABLE_PREDICTION_FEATURE_ROUNDING = False
-PREDICTION_FEATURE_ROUND_DECIMALS = 6
+PREDICTION_FEATURE_ROUND_DECIMALS = 5
 PREDICTION_FEATURE_ROUND_COLUMNS = [
+    "ma_convergence_score",
+    "high_to_close_drawdown",
+    "sector_limit_overflow_alpha",
+    "distance_from_52w_low",
+    "sector_liquidity_gated_turnover_z",
+    "max_rally_10d",
+    # "buy_sm_amount_rate_pct",
     # 'ma_alignment_score',
     # 'trend_consistency',
     # 'sector_rank_change_5d',
@@ -100,189 +129,189 @@ PREDICTION_FEATURE_ROUND_COLUMNS = [
     # 'high_volatility_pullback_alpha',
     # 'prev_non_first_limit_up_performance_percentile_20d',
     # 'limit_down_3d',
-    'price_ma5_ratio_raw',
-    'prev_day_blowoff_risk',
-    'market_advance_decline_ratio',
+    # 'price_ma5_ratio_raw',
+    # 'prev_day_blowoff_risk',
+    # 'market_advance_decline_ratio',
     # 'market_prev_60d_new_high_avg_return',                                                                                     
-    'market_60d_new_high_ratio',                                                                                                          
+    # 'market_60d_new_high_ratio',                                                                                                          
     # 'market_60d_new_high_ratio_train_percentile',
     # 'abnormal_deviation_3d_ratio',
     # 'abnormal_event_count_10d',
-    'severe_abnormal_pressure_10d',
+    # 'severe_abnormal_pressure_10d',
     # 'severe_abnormal_pressure_30d',
     # 'limit_up_count_percentile_20d',                                                                                                    
     # 'zhaban_count_percentile_20d',                                                                                                     
     # 'limit_down_count_percentile_20d',
-    'limit_up_sw2_concentration',                                                                                                                
-    'sector_ma5_followthrough_v3',
-    'sw2_high_low_position_return_spread', 
-    'beta_20d',
-    # 'return_5d_cs_rank',
-    'high_to_close_drawdown',
-    'market_trend_strength',
-    'market_liquidity_change',
-    'market_sentiment_ad',
-    'market_volatility_context',
+    # 'limit_up_sw2_concentration',                                                                                                                
+    # 'sector_ma5_followthrough_v3',
+    # 'sw2_high_low_position_return_spread', 
+    # 'beta_20d',
+    # # 'return_5d_cs_rank',
+    # 'high_to_close_drawdown',
+    # 'market_trend_strength',
+    # 'market_liquidity_change',
+    # 'market_sentiment_ad',
+    # 'market_volatility_context',
     # 'mkt_regime_trend_pressure_v2',
-    'mkt_breadth_thrust_v2',
+    # 'mkt_breadth_thrust_v2',
     # 'mkt_emotion_stability_v2',
-    'mkt_dispersion_shock_v2',
-    'mkt_liquidity_impulse_v2',
-    'mkt_ma5_followthrough_v3',
+    # 'mkt_dispersion_shock_v2',
+    # 'mkt_liquidity_impulse_v2',
+    # 'mkt_ma5_followthrough_v3',
     # 'mkt_ma5_followthrough_v3_expanding_percentile',
-    'buy_lg_amount_rate',
-    'buy_sm_amount_rate',
-    'net_d5_amount_to_turnover',
-    'main_outflow_retail_takeover',
-    'sector_leadership_persistence_v3',
-    'sector_hotspot_concentration_v3',
-    'ma5_strength_breadth_v3',
-    'strong_stock_volume_confirmation_v3',
-    'emotion_quality_balance_v3',
-    'top10_10d_recent3_strength_v3',
-    'top10_5d_recent3_strength_v3',
-    'top10_3d_recent3_strength_v3',
-    'top10_10d_strength_level_v3',
-    'top10_10d_today_return_level_v3',
-    'pct_chg_sector_mean',
-    'return_10d_sector_mean',
-    'return_20d_sector_mean',
-    'return_3d_sector_mean',
-    'return_5d_sector_mean',
-    'sector_momentum_consistency',
-    'sector_momentum_dispersion_rank',
-    'sector_momentum_interaction',
-    'value_growth_rotation',
-    'size_rotation_strength',
-    'sector_dispersion',
-    'sector_relative_volatility',
-    'sector_volatility_5d',
-    'sw_circ_mv_rank_intra_sector',
-    'ma_convergence_score',
-    'pct_chg_intra_z',
-    'return_10d_intra_z',
-    'return_20d_intra_z',
-    'return_3d_intra_z',
-    'return_5d_intra_z',
-    'intra_sector_momentum_rank',
-    'sector_trend_gated_momentum_intra_z',
-    'sector_rotation_breakout_intra_z',
-    'sector_leader_capture_rank',
-    'sector_strong_leader_alpha',
-    'sector_liquidity_gated_turnover_z',
-    'sector_weak_reversal_alpha',
-    'sector_momentum_accel_rank',
-    'sector_turnover_change_5d_20d',
-    'sector_hhi_change',
-    'sector_relative_strength_vs_market',
-    'mkt_sector_dispersion',
-    'sector_mkt_corr_20d',
-    'intra_sector_breadth',
-    'market_vols_adaptive_iv',
-    'market_trend_adaptive_beta',
-    'sector_excess_intra_rank',
-    'sector_vols_divergence_alpha',
-    'sector_turnover_surge_pv_alpha',
-    'sector_dispersion_leader_alpha',
-    'vortex_trend',
-    'intraday_reversal',
-    'sector_limit_overflow_alpha',
-    'sector_broken_resilience_alpha',
-    'limit_sustain_alpha',
-    'market_emotion_resonance_alpha',
-    'resistance_distance',
-    'support_distance',
-    'coskewness',
-    'kurtosis_20d',
-    'skewness_20d',
-    'alpha_001',
-    'alpha_002',
-    'alpha_017',
-    'downside_beta',
-    'sector_correlation_20d',
-    'log_price_slope_5d',
-    'log_price_slope_10d',
-    'log_price_slope_20d',
-    'log_price_slope_10d_x_log_circ_mv',
-    'stock_sector_pos_align',
+    # 'buy_lg_amount_rate',
+    # 'buy_sm_amount_rate',
+    # 'net_d5_amount_to_turnover',
+    # 'main_outflow_retail_takeover',
+    # 'sector_leadership_persistence_v3',
+    # 'sector_hotspot_concentration_v3',
+    # 'ma5_strength_breadth_v3',
+    # 'strong_stock_volume_confirmation_v3',
+    # 'emotion_quality_balance_v3',
+    # 'top10_10d_recent3_strength_v3',
+    # 'top10_5d_recent3_strength_v3',
+    # 'top10_3d_recent3_strength_v3',
+    # 'top10_10d_strength_level_v3',
+    # 'top10_10d_today_return_level_v3',
+    # 'pct_chg_sector_mean',
+    # 'return_10d_sector_mean',
+    # 'return_20d_sector_mean',
+    # 'return_3d_sector_mean',
+    # 'return_5d_sector_mean',
+    # 'sector_momentum_consistency',
+    # 'sector_momentum_dispersion_rank',
+    # 'sector_momentum_interaction',
+    # 'value_growth_rotation',
+    # 'size_rotation_strength',
+    # 'sector_dispersion',
+    # 'sector_relative_volatility',
+    # 'sector_volatility_5d',
+    # 'sw_circ_mv_rank_intra_sector',
+    # 'ma_convergence_score',
+    # 'pct_chg_intra_z',
+    # 'return_10d_intra_z',
+    # 'return_20d_intra_z',
+    # 'return_3d_intra_z',
+    # 'return_5d_intra_z',
+    # 'intra_sector_momentum_rank',
+    # 'sector_trend_gated_momentum_intra_z',
+    # 'sector_rotation_breakout_intra_z',
+    # 'sector_leader_capture_rank',
+    # 'sector_strong_leader_alpha',
+    # 'sector_liquidity_gated_turnover_z',
+    # 'sector_weak_reversal_alpha',
+    # 'sector_momentum_accel_rank',
+    # 'sector_turnover_change_5d_20d',
+    # 'sector_hhi_change',
+    # 'sector_relative_strength_vs_market',
+    # 'mkt_sector_dispersion',
+    # 'sector_mkt_corr_20d',
+    # 'intra_sector_breadth',
+    # 'market_vols_adaptive_iv',
+    # 'market_trend_adaptive_beta',
+    # 'sector_excess_intra_rank',
+    # 'sector_vols_divergence_alpha',
+    # 'sector_turnover_surge_pv_alpha',
+    # 'sector_dispersion_leader_alpha',
+    # 'vortex_trend',
+    # 'intraday_reversal',
+    # 'sector_limit_overflow_alpha',
+    # 'sector_broken_resilience_alpha',
+    # 'limit_sustain_alpha',
+    # 'market_emotion_resonance_alpha',
+    # 'resistance_distance',
+    # 'support_distance',
+    # 'coskewness',
+    # 'kurtosis_20d',
+    # 'skewness_20d',
+    # 'alpha_001',
+    # 'alpha_002',
+    # 'alpha_017',
+    # 'downside_beta',
+    # 'sector_correlation_20d',
+    # 'log_price_slope_5d',
+    # 'log_price_slope_10d',
+    # 'log_price_slope_20d',
+    # 'log_price_slope_10d_x_log_circ_mv',
+    # 'stock_sector_pos_align',
 
-    'range_compression',
-    'body_efficiency',
-    'shadow_dominance',
-    'gap_power',
-    'overnight_return',
-    'kdj_golden_cross_strength',
-    'open_to_high_ratio',
-    'sector_concentration',
-    'sector_rank_change_5d',
-    'sector_breadth',
-    'intraday_clv',
-    'beta_60d',
-    'amihud_illiquidity',
-    'abnormal_turnover',
-    'efficiency_ratio',
-    'mass_index_reversal',
-    'price_acceleration',
-    'log_price_slope_5d',
-    'log_price_slope_10d',
-    'log_price_slope_20d',
-    'log_price_slope_10d_x_log_circ_mv',
-    'ma60_slope',
-    'price_ma60_ratio',
-    'kdj_diff_9',
-    'kdj_j_9',
-    'kdj_k_9',
-    'stable_momentum',
-    'momentum_decay',
-    'turnover_stability',
-    'money_flow_pressure',
-    'ulcer_index',
-    'max_drawdown_20d',
-    'max_rally_20d',
-    'max_rally_10d',
-    'ppo_strength',
-    'mfi_strength',
-    'relative_strength_20d',
-    'volatility_structure_alpha',
-    'price_impact',
-    'volume_structure_alpha',
-    'pct_chg_1d',
-    'pct_chg_2d',
-    'regime_aware_reversal_alpha',
-    'trend_acceleration',
-    'trend_consistency',
-    'trend_pullback_composite_alpha',
-    'cpv_factor',
-    'price_ma5_ratio',
-    'high_volatility_pullback_alpha',
-    'volume_confirmed_pullback_alpha',
-    'distance_from_52w_high',
-    'distance_from_52w_low',
-    'ma_alignment_score',
-    'turnover_z_20',
-    'runup_ma5_exhaustion',
-    'post_accumulation_supply_tightness',
-    'true_turnover_10d',
-    'tightness_3d',
+    # 'range_compression',
+    # 'body_efficiency',
+    # 'shadow_dominance',
+    # 'gap_power',
+    # 'overnight_return',
+    # 'kdj_golden_cross_strength',
+    # 'open_to_high_ratio',
+    # 'sector_concentration',
+    # 'sector_rank_change_5d',
+    # 'sector_breadth',
+    # 'intraday_clv',
+    # 'beta_60d',
+    # 'amihud_illiquidity',
+    # 'abnormal_turnover',
+    # 'efficiency_ratio',
+    # 'mass_index_reversal',
+    # 'price_acceleration',
+    # 'log_price_slope_5d',
+    # 'log_price_slope_10d',
+    # 'log_price_slope_20d',
+    # 'log_price_slope_10d_x_log_circ_mv',
+    # 'ma60_slope',
+    # 'price_ma60_ratio',
+    # 'kdj_diff_9',
+    # 'kdj_j_9',
+    # 'kdj_k_9',
+    # 'stable_momentum',
+    # 'momentum_decay',
+    # 'turnover_stability',
+    # 'money_flow_pressure',
+    # 'ulcer_index',
+    # 'max_drawdown_20d',
+    # 'max_rally_20d',
+    # 'max_rally_10d',
+    # 'ppo_strength',
+    # 'mfi_strength',
+    # 'relative_strength_20d',
+    # 'volatility_structure_alpha',
+    # 'price_impact',
+    # 'volume_structure_alpha',
+    # 'pct_chg_1d',
+    # 'pct_chg_2d',
+    # 'regime_aware_reversal_alpha',
+    # 'trend_acceleration',
+    # 'trend_consistency',
+    # 'trend_pullback_composite_alpha',
+    # 'cpv_factor',
+    # 'price_ma5_ratio',
+    # 'high_volatility_pullback_alpha',
+    # 'volume_confirmed_pullback_alpha',
+    # 'distance_from_52w_high',
+    # 'distance_from_52w_low',
+    # 'ma_alignment_score',
+    # 'turnover_z_20',
+    # 'runup_ma5_exhaustion',
+    # 'post_accumulation_supply_tightness',
+    # 'true_turnover_10d',
+    # 'tightness_3d',
 
 ]
 
 # ============================================================
 # Exhaustion factor buy filter (高位衰竭因子买入过滤)
 # ============================================================
-ENABLE_EXHAUSTION_BUY_FILTER = True
+ENABLE_EXHAUSTION_BUY_FILTER = False
 
 # 策略选择:
 #   'three_rule_v3' (默认):       [runup_ma5_exhaustion > 0.8 AND cpv_factor <= -0.4]
-#                              OR [prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.30]
+#                              OR [prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.36]
 #                              OR [sector_leadership_persistence_v3 <= -0.18 AND return_20d_intra_z <= 0.40]
-#                              OR [market_liquidity_change < 0.94 AND (ulcer_index < -0.80 OR momentum_peak_decay_3d > 1.0 OR intra_sector_momentum_rank < 0.67)]
+#                              OR [market_liquidity_change < 0.94 AND (ulcer_index < -2.25 OR momentum_peak_decay_3d > 3.20 OR intra_sector_momentum_rank < 0.67)]
 #                              OR [mkt_dispersion_shock_v2 < 0.98 AND market_advance_decline_ratio < 0.38]
 #                              OR [limit_down_3d == 1]
-#                              OR [top10_10d_strength_level_v3 >= 0.70 AND buy_sm_amount_rate <= -1.25]
+#                              OR [top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate <= -0.20]
 #                              OR [prev_non_first_limit_up_performance_percentile_20d >= 0.80 AND kdj_j_9 <= 0.75]
 #                              OR [score_z_in_day <= 1.50]
-#                              OR [reg_severe_up_10d_ratio_pct >= 0.80 AND market_advance_decline_ratio <= 0.45]
+#                              OR [reg_severe_up_10d_ratio_pct >= 0.98 AND market_advance_decline_ratio >= 4.50]
 #                              OR [price_ma5_ratio_raw >= 9.0 AND ma_convergence_score >= 0.20]
 #   'runup_or_blowoff':        [runup_ma5_exhaustion > 0.8 AND top10_10d_strength_level_v3 >= 0.5]
 #                              OR [prev_day_blowoff_risk >= 4.15 AND sector_momentum_accel_rank <= 0.41]
@@ -294,32 +323,31 @@ EXHAUSTION_FILTER_STRATEGY = 'three_rule_v3'
 # v3 策略参数 (strategy='three_rule_v3') — 基于50+162双日志鲁棒性分析
 EXHAUSTION_V3_CPV_THRESHOLD = -0.4              # cpv_factor <= 此值（配合runup>0.8）
 EXHAUSTION_V3_BLOWOFF_THRESHOLD = 2.0           # prev_day_blowoff_risk >= 此值
-EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.30     # sector_momentum_accel_rank <= 此值
+EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD = 0.36     # sector_momentum_accel_rank <= 此值
 EXHAUSTION_V3_SECTOR_LEADERSHIP_THRESHOLD = -0.18  # sector_leadership_persistence_v3 <= 此值
 EXHAUSTION_V3_RETURN_20D_INTRA_Z_THRESHOLD = 0.40  # 仅在个股20日相对强度也偏弱时才触发R3
 # v3 Rule4: 大盘流动性弱 + 个股三项至少其一（经历深度回撤 / 动能峰值已过 / 行业内排名垫底）
-# 基于162/175日志+影子机会鲁棒性分析，三路径OR，零误杀大赚
+# 收紧路径A/B以避免弱流动性下仍可延续上涨的误杀；路径C保持不变
 EXHAUSTION_V3_MARKET_LIQ_THRESHOLD = 0.94   # market_liquidity_change < 此值（大盘流动性收缩）
-EXHAUSTION_V3_ULCER_THRESHOLD = -0.80       # ulcer_index < 此值（路径A: 经历深度持续回撤）
-EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 1.0      # momentum_peak_decay_3d > 此值（路径B: 动能峰值已过）
+EXHAUSTION_V3_ULCER_THRESHOLD = -2.25       # ulcer_index < 此值（路径A: 极深持续回撤）
+EXHAUSTION_V3_MOM_PEAK_THRESHOLD = 3.20     # momentum_peak_decay_3d > 此值（路径B: 明显动能衰减）
 EXHAUSTION_V3_INTRA_SECTOR_RANK_THRESHOLD = 0.67  # intra_sector_momentum_rank < 此值（路径C: 行业内部排名垫底）
 # v3 Rule5: 市场熔断 — 安静熊市（dispersion低于均值 + 涨跌比极低），全市场暂停买入
 EXHAUSTION_V3_MKT_DISP_THRESHOLD = 0.98      # mkt_dispersion_shock_v2 < 此值（市场异常安静，无主线）
 EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38       # market_advance_decline_ratio < 此值（涨跌比极差，广度崩溃）
 # v3 Rule6: 近3个交易日有过跌停 → 不买（基于162全样本分析，4/38拦截0误杀）
 ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True       # 是否启用近3日跌停过滤
-# v3 Rule7: 短强但散户资金流出 → 主力出货嫌疑（拦截3笔新大亏，零误杀大赚）
-EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.70    # top10_10d_strength_level_v3 >= 此值（股票处于10日强度top10）
-EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.25    # buy_sm_amount_rate <= 此值（散户资金净流出）
+# v3 Rule7: 极强股伴随小单资金流出 → 高位承接不足
+EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.80    # top10_10d_strength_level_v3 >= 此值
+EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -0.20    # buy_sm_amount_rate <= 此值
 # v3 Rule8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱 → 热点接力退潮风险
 EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # prev_non_first_limit_up_performance_percentile_20d >= 此值
 EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75                         # kdj_j_9 <= 此值；注意此处为截面robust z-score后的J值
 # v3 Rule9: 当日Top1模型分数相对候选池预测分布偏弱
 EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD = 1.50                  # score_z_in_day <= 此值
-# v3 Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低(<=0.45)
-# 含义：个股高位运行遭遇市场广度崩溃，大概率见顶亏钱
-EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.80  # reg_severe_up_10d_ratio_pct >= 此值(Rule10)
-EXHAUSTION_V3_REG_ADR_THRESHOLD = 0.45                  # market_advance_decline_ratio <= 此值(Rule10)
+# v3 Rule10: 个股近10日严重上涨占比处于当日最高2% + 市场涨跌比极热
+EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD = 0.98           # reg_severe_up_10d_ratio_pct >= 此值
+EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD = 4.50                     # market_advance_decline_ratio >= 此值
 # v3 Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
 # 含义：短期极度超买 + 均线系统收敛(趋势动能衰减) → 高位衰竭
 # 拦截4笔增量大亏，0误杀大涨/小赚
@@ -599,6 +627,46 @@ def _calc_daily_rank_panel_binary(model, X_eval, y_eval_original, eval_dates, ev
     return pd.DataFrame(rows)
 
 
+def _calc_daily_rank_panel_from_predictions(predictions, y_eval_original, eval_dates, eval_data_raw=None, rank_position=1):
+    if predictions is None or len(predictions) == 0 or y_eval_original is None or len(y_eval_original) == 0:
+        return pd.DataFrame()
+
+    eval_pred = np.asarray(predictions, dtype=float).reshape(-1)
+    y_eval_original = np.asarray(y_eval_original, dtype=float).reshape(-1)
+    n = min(len(eval_pred), len(y_eval_original), len(eval_dates))
+    if n <= 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        'date': pd.to_datetime(eval_dates[:n]),
+        'pred': eval_pred[:n],
+        'actual_return': y_eval_original[:n]
+    })
+    if eval_data_raw is not None and len(eval_data_raw) > 0:
+        eval_data_raw_aligned = eval_data_raw.reset_index(drop=True)
+        for col in ['stock_code', 'relevance', 'future_min_low_ret', 'risk_adjusted_return_label']:
+            if col in eval_data_raw_aligned.columns:
+                df[col] = eval_data_raw_aligned[col].values[:len(df)]
+
+    rows = []
+    for date_val, group in df.groupby('date', sort=True):
+        if len(group) < max(rank_position, 5):
+            continue
+        sorted_group = group.sort_values('pred', ascending=False).reset_index(drop=True)
+        row = sorted_group.iloc[rank_position - 1]
+        rows.append({
+            'date': date_val,
+            'stock_code': row.get('stock_code'),
+            'rank': int(rank_position),
+            'pred_score': float(row['pred']),
+            'actual_return': float(row['actual_return']),
+            'relevance': float(row['relevance']) if 'relevance' in row and pd.notna(row['relevance']) else np.nan,
+            'future_min_low_ret': float(row['future_min_low_ret']) if 'future_min_low_ret' in row and pd.notna(row['future_min_low_ret']) else np.nan,
+            'risk_adjusted_return_label': float(row['risk_adjusted_return_label']) if 'risk_adjusted_return_label' in row and pd.notna(row['risk_adjusted_return_label']) else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
 def _calc_daily_topk_selection_rows_binary(model, X_eval, y_eval_original, eval_dates, eval_data_raw=None, top_k=3, min_group_size=5):
     try:
         best_iter = getattr(model, 'best_iteration', None)
@@ -641,6 +709,259 @@ def _calc_daily_topk_selection_rows_binary(model, X_eval, y_eval_original, eval_
                 'risk_adjusted_return_label': float(getattr(row, 'risk_adjusted_return_label', np.nan)) if pd.notna(getattr(row, 'risk_adjusted_return_label', np.nan)) else np.nan,
             })
     return pd.DataFrame(selected_rows)
+
+
+def _calc_daily_topk_selection_rows_from_predictions(
+    predictions,
+    y_eval_original,
+    eval_dates,
+    eval_data_raw=None,
+    top_k=3,
+    min_group_size=5,
+):
+    eval_pred = np.asarray(predictions, dtype=float).reshape(-1)
+    y_eval_original = np.asarray(y_eval_original, dtype=float).reshape(-1)
+    n = min(len(eval_pred), len(y_eval_original), len(eval_dates))
+    if n <= 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        'date': pd.to_datetime(eval_dates[:n]),
+        'pred': eval_pred[:n],
+        'actual_return': y_eval_original[:n]
+    })
+    if eval_data_raw is not None and len(eval_data_raw) > 0:
+        eval_data_raw_aligned = eval_data_raw.reset_index(drop=True)
+        for col in ['stock_code', 'relevance', 'future_min_low_ret', 'risk_adjusted_return_label']:
+            if col in eval_data_raw_aligned.columns:
+                df[col] = eval_data_raw_aligned[col].values[:len(df)]
+
+    selected_rows = []
+    for date_val, group in df.groupby('date', sort=True):
+        if len(group) < max(top_k, min_group_size):
+            continue
+        sorted_group = group.sort_values('pred', ascending=False).reset_index(drop=True)
+        basket = sorted_group.head(top_k).copy()
+        for rank_idx, row in enumerate(basket.itertuples(index=False), 1):
+            selected_rows.append({
+                'date': date_val,
+                'stock_code': getattr(row, 'stock_code', None),
+                'rank': int(rank_idx),
+                'pred_score': float(getattr(row, 'pred')),
+                'actual_return': float(getattr(row, 'actual_return')),
+                'relevance': float(getattr(row, 'relevance', np.nan)) if pd.notna(getattr(row, 'relevance', np.nan)) else np.nan,
+                'future_min_low_ret': float(getattr(row, 'future_min_low_ret', np.nan)) if pd.notna(getattr(row, 'future_min_low_ret', np.nan)) else np.nan,
+                'risk_adjusted_return_label': float(getattr(row, 'risk_adjusted_return_label', np.nan)) if pd.notna(getattr(row, 'risk_adjusted_return_label', np.nan)) else np.nan,
+            })
+    return pd.DataFrame(selected_rows)
+
+
+def _evaluate_candidate_with_minute_cache_from_predictions(
+    predictions,
+    y_eval_original,
+    eval_dates,
+    eval_data_raw,
+    minute_cache_df,
+    minute_segments=6,
+):
+    if minute_cache_df is None or len(minute_cache_df) == 0:
+        return None
+
+    top1_panel = _calc_daily_rank_panel_from_predictions(predictions, y_eval_original, eval_dates, eval_data_raw, rank_position=1)
+    if top1_panel is None or top1_panel.empty:
+        return None
+
+    cache_cols = [
+        'date', 'stock_code', 'buy_executable', 'skip_reason', 'exit_reason',
+        'minute_realized_return', 'minute_min_return', 'minute_max_drawdown',
+        'stoploss_hit', 'profit_bearish_hit', 'holding_days_realized',
+        'missing_minute_data', 'adj_factor_changed', 'label_valid'
+    ]
+    cache_view = minute_cache_df[[c for c in cache_cols if c in minute_cache_df.columns]].copy()
+    cache_view['date'] = pd.to_datetime(cache_view['date'])
+
+    top1_merged = top1_panel.merge(cache_view, on=['date', 'stock_code'], how='left')
+    top1_merged['buy_executable'] = top1_merged['buy_executable'].fillna(False).astype(bool)
+    top1_merged['missing_minute_data'] = top1_merged['missing_minute_data'].fillna(True).astype(bool)
+    top1_merged['stoploss_hit'] = top1_merged['stoploss_hit'].fillna(False).astype(bool)
+    top1_merged['profit_bearish_hit'] = top1_merged['profit_bearish_hit'].fillna(False).astype(bool)
+    if 'adj_factor_changed' in top1_merged.columns:
+        top1_merged.loc[top1_merged['adj_factor_changed'].fillna(False).astype(bool), 'buy_executable'] = False
+    if 'label_valid' in top1_merged.columns:
+        top1_merged.loc[top1_merged['label_valid'].fillna(True).astype(bool) == False, 'buy_executable'] = False
+    top1_merged['minute_realized_return'] = pd.to_numeric(top1_merged.get('minute_realized_return', 0.0), errors='coerce').fillna(0.0)
+    top1_merged['effective_minute_return'] = np.where(top1_merged['buy_executable'], top1_merged['minute_realized_return'], 0.0)
+
+    rets = top1_merged['effective_minute_return'].values.astype(float)
+    mean_return = float(np.mean(rets)) if len(rets) > 0 else 0.0
+    median_return = float(np.median(rets)) if len(rets) > 0 else 0.0
+    win_rate = float(np.mean(rets > 0)) if len(rets) > 0 else 0.0
+    q10 = float(np.percentile(rets, 10)) if len(rets) > 0 else 0.0
+    max_drawdown = _calc_max_drawdown(rets)
+    cumulative_return = float(np.prod(1.0 + rets) - 1.0) if len(rets) > 0 else 0.0
+    ret_std = float(np.std(rets)) if len(rets) > 1 else 0.0
+    downside_rets = rets[rets < 0]
+    downside_std = float(np.std(downside_rets)) if len(downside_rets) > 0 else 0.0
+    drawdown_abs = max(abs(max_drawdown), 0.05)
+    calmar_like = cumulative_return / drawdown_abs
+    efficiency_gap = cumulative_return + max_drawdown
+    sharpe_like = mean_return / max(ret_std, 0.01)
+    sortino_like = mean_return / max(downside_std, 0.01)
+    stoploss_rate = float(np.mean(top1_merged['stoploss_hit'])) if len(top1_merged) > 0 else 0.0
+    profit_bearish_rate = float(np.mean(top1_merged['profit_bearish_hit'])) if len(top1_merged) > 0 else 0.0
+    skip_rate = float(np.mean(~top1_merged['buy_executable'])) if len(top1_merged) > 0 else 0.0
+    missing_rate = float(np.mean(top1_merged['missing_minute_data'])) if len(top1_merged) > 0 else 0.0
+
+    minute_segment_metrics = []
+    minute_segment_penalty = 0.0
+    minute_positive_segments = 0
+    minute_weak_segments = 0
+    seg_sharpes, seg_sortinos, seg_cums, seg_calmars, seg_efficiencies = [], [], [], [], []
+    seg_win_rates, seg_means = [], []
+
+    unique_days = np.array(sorted(pd.to_datetime(top1_merged['date']).unique()))
+    minute_segments = max(1, int(minute_segments))
+    minute_day_segments = [seg for seg in np.array_split(unique_days, minute_segments) if len(seg) > 0]
+    for seg_idx, seg_days in enumerate(minute_day_segments, 1):
+        seg_df = top1_merged[top1_merged['date'].isin(seg_days)].copy()
+        seg_rets = seg_df['effective_minute_return'].values.astype(float)
+        if len(seg_rets) == 0:
+            continue
+        seg_mean = float(np.mean(seg_rets))
+        seg_win = float(np.mean(seg_rets > 0))
+        seg_q10 = float(np.percentile(seg_rets, 10))
+        seg_dd = _calc_max_drawdown(seg_rets)
+        seg_cum = float(np.prod(1.0 + seg_rets) - 1.0)
+        seg_stoploss = float(np.mean(seg_df['stoploss_hit'])) if len(seg_df) > 0 else 0.0
+        seg_std = float(np.std(seg_rets)) if len(seg_rets) > 1 else 0.0
+        seg_down = seg_rets[seg_rets < 0]
+        seg_down_std = float(np.std(seg_down)) if len(seg_down) > 0 else 0.0
+
+        seg_sharpes.append(seg_mean / max(seg_std, 0.01))
+        seg_sortinos.append(seg_mean / max(seg_down_std, 0.01))
+        seg_cums.append(seg_cum)
+        seg_calmars.append(seg_cum / max(abs(seg_dd), 0.05))
+        seg_efficiencies.append(seg_cum + seg_dd)
+        seg_win_rates.append(seg_win)
+        seg_means.append(seg_mean)
+
+        if seg_cum > 0:
+            minute_positive_segments += 1
+        if seg_cum < 0 or seg_dd < -0.22 or seg_stoploss > 0.18:
+            minute_weak_segments += 1
+
+        seg_penalty = 0.0
+        if seg_cum < -0.05:
+            seg_penalty += 8000.0
+        elif seg_cum < 0:
+            seg_penalty += 300.0
+        if seg_dd < -0.25:
+            seg_penalty += 400.0
+        if seg_stoploss > 0.12:
+            seg_penalty += 180.0 * (seg_stoploss - 0.12)
+
+        minute_segment_penalty += seg_penalty
+        minute_segment_metrics.append({
+            'segment': int(seg_idx),
+            'days': int(len(seg_rets)),
+            'cumulative_return': seg_cum,
+            'mean_return': seg_mean,
+            'win_rate': seg_win,
+            'q10': seg_q10,
+            'max_drawdown': seg_dd,
+            'stoploss_rate': seg_stoploss,
+            'sharpe': float(seg_sharpes[-1]),
+            'sortino': float(seg_sortinos[-1]),
+            'penalty': float(seg_penalty),
+        })
+
+    _avg = lambda arr: float(np.mean(arr)) if len(arr) > 0 else 0.0
+    avg_sharpe = _avg(seg_sharpes)
+    avg_sortino = _avg(seg_sortinos)
+    avg_cum = _avg(seg_cums)
+    avg_calmar = _avg(seg_calmars)
+    avg_efficiency = _avg(seg_efficiencies)
+    avg_win_rate = _avg(seg_win_rates)
+    avg_mean_return = _avg(seg_means)
+
+    topk_cum_returns = {}
+    for top_k in (3, 5):
+        selected_rows = _calc_daily_topk_selection_rows_from_predictions(
+            predictions, y_eval_original, eval_dates, eval_data_raw, top_k=top_k
+        )
+        if selected_rows is None or selected_rows.empty:
+            topk_cum_returns[top_k] = 0.0
+            continue
+        merged = selected_rows.merge(cache_view, on=['date', 'stock_code'], how='left')
+        merged['buy_executable'] = merged['buy_executable'].fillna(False).astype(bool)
+        if 'adj_factor_changed' in merged.columns:
+            merged.loc[merged['adj_factor_changed'].fillna(False).astype(bool), 'buy_executable'] = False
+        if 'label_valid' in merged.columns:
+            merged.loc[merged['label_valid'].fillna(True).astype(bool) == False, 'buy_executable'] = False
+        merged['minute_realized_return'] = pd.to_numeric(merged.get('minute_realized_return', 0.0), errors='coerce').fillna(0.0)
+        merged['effective_minute_return'] = np.where(merged['buy_executable'], merged['minute_realized_return'], 0.0)
+        daily_means = merged.groupby('date')['effective_minute_return'].mean()
+        topk_cum_returns[top_k] = float(np.prod(1.0 + daily_means.values.astype(float)) - 1.0) if len(daily_means) > 0 else 0.0
+
+    topk_penalty = 0.0
+    if topk_cum_returns.get(3, 0.0) < 0:
+        topk_penalty += 420.0 * abs(topk_cum_returns[3])
+    if topk_cum_returns.get(5, 0.0) < 0:
+        topk_penalty += 260.0 * abs(topk_cum_returns[5])
+
+    minute_consistency_bonus = 0.0
+    if minute_positive_segments >= 2:
+        minute_consistency_bonus += 220.0
+    if minute_positive_segments == 3:
+        minute_consistency_bonus += 180.0
+    if minute_weak_segments >= 2:
+        minute_segment_penalty += 260.0 * minute_weak_segments
+
+    minute_score = (
+        3000.0 * avg_sharpe +
+        2500.0 * avg_sortino +
+        600.0 * avg_cum +
+        1000.0 * avg_calmar +
+        1200.0 * avg_efficiency +
+        80.0 * (avg_win_rate - 0.5) +
+        100.0 * avg_mean_return +
+        180.0 * topk_cum_returns.get(3, 0.0) +
+        90.0 * topk_cum_returns.get(5, 0.0) +
+        40.0 * median_return +
+        120.0 * q10 -
+        180.0 * stoploss_rate -
+        90.0 * profit_bearish_rate -
+        180.0 * skip_rate -
+        180.0 * missing_rate -
+        topk_penalty -
+        minute_segment_penalty * 1.5 +
+        minute_consistency_bonus * 1.5
+    )
+    return {
+        'score': float(minute_score),
+        'days': int(len(top1_merged)),
+        'cumulative_return': cumulative_return,
+        'calmar_like': float(calmar_like),
+        'efficiency_gap': float(efficiency_gap),
+        'sharpe_like': float(sharpe_like),
+        'sortino_like': float(sortino_like),
+        'mean_return': mean_return,
+        'median_return': median_return,
+        'win_rate': win_rate,
+        'q10': q10,
+        'max_drawdown': max_drawdown,
+        'stoploss_rate': stoploss_rate,
+        'profit_bearish_rate': profit_bearish_rate,
+        'skip_rate': skip_rate,
+        'missing_rate': missing_rate,
+        'top3_cum_return': float(topk_cum_returns.get(3, 0.0)),
+        'top5_cum_return': float(topk_cum_returns.get(5, 0.0)),
+        'segments': minute_segment_metrics,
+        'positive_segments': int(minute_positive_segments),
+        'weak_segments': int(minute_weak_segments),
+        'segment_penalty': float(minute_segment_penalty),
+        'consistency_bonus': float(minute_consistency_bonus),
+    }
 
 
 def _evaluate_candidate_with_topk_label_return_ratio_binary(
@@ -740,7 +1061,15 @@ def _evaluate_candidate_with_topk_label_return_ratio_binary(
     }
 
 
-def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original, eval_dates, eval_data_raw, minute_cache_df):
+def _evaluate_candidate_with_minute_cache_binary(
+    model,
+    X_eval,
+    y_eval_original,
+    eval_dates,
+    eval_data_raw,
+    minute_cache_df,
+    minute_segments=6,
+):
     if minute_cache_df is None or len(minute_cache_df) == 0:
         return None
 
@@ -800,7 +1129,8 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
     seg_win_rates, seg_means = [], []
 
     unique_days = np.array(sorted(pd.to_datetime(top1_merged['date']).unique()))
-    minute_day_segments = [seg for seg in np.array_split(unique_days, 6) if len(seg) > 0]
+    minute_segments = max(1, int(minute_segments))
+    minute_day_segments = [seg for seg in np.array_split(unique_days, minute_segments) if len(seg) > 0]
     for seg_idx, seg_days in enumerate(minute_day_segments, 1):
         seg_df = top1_merged[top1_merged['date'].isin(seg_days)].copy()
         seg_rets = seg_df['effective_minute_return'].values.astype(float)
@@ -1555,7 +1885,7 @@ def parse_arguments():
 
     parser.add_argument(
         '--mode',
-        choices=['generate_factors', 'test_factors', 'train_model', 'test_model', 'test_model_walkforward', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis'],
+        choices=['generate_factors', 'test_factors', 'permutation_factor_clusters', 'factor_label_correlation', 'factor_local_sensitivity', 'train_model', 'test_model', 'test_model_walkforward', 'ma_convergence_quantile_ensemble', 'top1_conditional_risk_analysis', 'pred_stocks', 'full_pipeline', 'test_optimization', 'factor_correlation', 'genetic_factor', 'market_state_test', 'interaction_analysis'],
         default='generate_factors',
         help='运行模式 (默认: generate_factors)'
     )
@@ -1697,6 +2027,83 @@ def parse_arguments():
         help='选择使用的模型，用逗号分隔 (可选: xgboost, lightgbm)。默认: xgboost,lightgbm (仅test_model和test_model_walkforward模式生效)'
     )
 
+    parser.add_argument(
+        '--permutation_repeats',
+        type=int,
+        default=5,
+        help='因子簇Permutation重复次数，默认5 (仅permutation_factor_clusters模式生效)'
+    )
+    parser.add_argument(
+        '--permutation_seed',
+        type=int,
+        default=20260602,
+        help='因子簇Permutation随机种子 (仅permutation_factor_clusters模式生效)'
+    )
+    parser.add_argument(
+        '--permutation_perturb_mode',
+        choices=['permute', 'median'],
+        default='permute',
+        help=(
+            '因子扰动方式，仅permutation_factor_clusters模式生效。'
+            'permute=按日横截面内随机打乱原值；'
+            'median=按日横截面中位数替换，用于测试推理期neutralize补丁。'
+        )
+    )
+    parser.add_argument(
+        '--risk_big_loss_threshold',
+        type=float,
+        default=-0.05,
+        help='Top1条件风险分析中定义大亏的收益阈值 (默认: -0.05)'
+    )
+    parser.add_argument(
+        '--risk_big_gain_threshold',
+        type=float,
+        default=0.08,
+        help='Top1条件风险分析中定义大赚的收益阈值 (默认: 0.08)'
+    )
+    parser.add_argument(
+        '--risk_low_gap_quantile',
+        type=float,
+        default=0.30,
+        help='Top1条件风险分析中用于划分低置信样本的score_gap_1_2分位 (默认: 0.30)'
+    )
+    parser.add_argument(
+        '--ensemble_model_path',
+        type=str,
+        default='results/lightgbm_model_window3_20260427_231053.pkl',
+        help='因子扰动集成使用的固定模型路径 (默认: results/lightgbm_model_window3_20260427_231053.pkl)'
+    )
+    parser.add_argument(
+        '--ensemble_factor',
+        type=str,
+        default='ma_convergence_score',
+        help='因子扰动集成时只扰动的单因子名称 (默认: ma_convergence_score)'
+    )
+    parser.add_argument(
+        '--ensemble_quantiles',
+        type=str,
+        default='0.01,0.02',
+        help='因子扰动集成使用的分位数位移，默认0.01,0.02 (表示±1%和±2%)'
+    )
+    parser.add_argument(
+        '--ensemble_eval_start',
+        type=str,
+        default='20250801',
+        help='因子扰动集成评估开始日期，格式YYYYMMDD (默认: 20250801)'
+    )
+    parser.add_argument(
+        '--ensemble_eval_end',
+        type=str,
+        default='20260518',
+        help='因子扰动集成评估结束日期，格式YYYYMMDD (默认: 20260518)'
+    )
+    parser.add_argument(
+        '--sensitivity_quantile_steps',
+        type=str,
+        default='0.01,0.02,0.05',
+        help='因子局部敏感性测试的当日横截面分位数位移，例如0.01,0.02,0.05'
+    )
+
     # 🆕 窗口选择参数（用于test_model_walkforward模式）
     parser.add_argument(
         '--window',
@@ -1738,7 +2145,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子205_noround.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子218_round.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -1862,7 +2269,31 @@ def _load_factor_cache_data(
             logger.error("因子数据文件不存在，请先运行 generate_factors 模式生成 factor_lab 数据。")
             return None
 
-        factor_df = store.load()
+        factor_df = None
+        if required_factors is not None and (start_date or end_date):
+            try:
+                import pyarrow.parquet as pq
+                parquet_columns = set(pq.ParquetFile(str(store.path)).schema_arrow.names)
+                requested_columns = list(dict.fromkeys(['date', 'stock_code', 'returns_zscore'] + list(required_factors)))
+                requested_columns = [col for col in requested_columns if col in parquet_columns]
+                filters = []
+                if start_date:
+                    filters.append(('date', '>=', pd.Timestamp(start_date)))
+                if end_date:
+                    filters.append(('date', '<=', pd.Timestamp(end_date)))
+                logger.info(
+                    "按列/日期裁剪读取因子文件: columns=%d, start=%s, end=%s",
+                    len(requested_columns), start_date, end_date,
+                )
+                factor_df = pq.read_table(
+                    str(store.path),
+                    columns=requested_columns,
+                    filters=filters or None,
+                ).to_pandas()
+            except Exception as exc:
+                logger.warning(f"按列/日期裁剪读取失败，回退传统加载: {exc}")
+        if factor_df is None:
+            factor_df = store.load()
         if factor_df is None or factor_df.empty:
             logger.error("因子数据文件为空，请确认已生成 factor_lab 数据。")
             return None
@@ -6777,6 +7208,37 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # "runup_path_turbulence_10d",
+        # "runup_turbulence_copula_10d",
+        # "high_level_churn_risk_10d",
+        # "runup_range_expansion_10d",
+        # "runup_path_turbulence_10d",
+        # "runup_signed_path_turbulence_10d",
+        # "runup_volume_friction_10d",
+        # "runup_upper_shadow_turbulence_10d",
+        # "high_level_churn_risk_10d",
+        "reg_severe_up_10d_ratio",
+        "prior_high_retest_setup_quality_60d_v2",
+        "pre_breakout_local_knn_similarity_20d_v2",
+        "pre_breakout_local_knn_quality_20d_v2",
+        "prior_high_retest_quality_60d",
+        "pre_breakout_local_prototype_similarity_20d",
+        "pre_breakout_local_prototype_quality_20d",
+        "position_reclaim_residual_20_60",
+        "pre_breakout_causal_prototype_similarity_20d",
+        "pre_second_breakout_shapelet_corr_20d_v2",
+        "position_20_60_spread_v2",
+        "close_position_20d_robust",
+        "close_position_60d_robust",
+        "close_rank_position_20d",
+        "close_rank_position_60d",
+        "position_20_60_spread",
+        "position_pullback_setup_20_60",
+        "position_20_60_alignment",
+        "close_position_20d",
+        "close_position_60d",
+        'gap_intraday_quality_score_5d',
+        'pre_second_breakout_shapelet_corr_20d',
         'momentum_peak_decay_3d',
         'prev_non_first_limit_up_performance_percentile_20d',
         'limit_down_3d',
@@ -7812,18 +8274,28 @@ def main():
    
     print("板块-个股一体化选股系统")
     print("=" * 60)
-    print(f"系统配置:")
-    print(f"  运行模式: {args.mode}")
-    print(f"  数据期间: {system_config.start_date} - {system_config.end_date}")
-    print(f"  训练期间: {system_config.start_date} - {system_config.train_end_date}")
-    print(f"  测试期间: {system_config.test_start_date} - {system_config.end_date}")
-    print(f"  每日选股: {system_config.daily_stock_count}只")
-    print(f"  持仓天数: {backtest_config.holding_days}天")
-    print(f"  板块筛选: 前{system_config.sector_filter_count}个（优化后）")
-    print(f"  板块权重: {system_config.factor_weights['sector']:.0%}（大幅提升）")
-    print(f"  连板回看: {system_config.max_lookback_days}天")
-    print(f"  输出目录: {args.output_dir}")
-    print()
+    if args.mode == "top1_conditional_risk_analysis":
+        start_date = args.start_date or "20250801"
+        end_date = args.end_date or "20260518"
+        print("系统配置:")
+        print(f"  运行模式: {args.mode}")
+        print(f"  分析区间: {start_date} - {end_date}")
+        print(f"  默认模型: results/lightgbm_model_window3_20260427_231053.pkl")
+        print(f"  输出目录: {args.output_dir}")
+        print()
+    else:
+        print(f"系统配置:")
+        print(f"  运行模式: {args.mode}")
+        print(f"  数据期间: {system_config.start_date} - {system_config.end_date}")
+        print(f"  训练期间: {system_config.start_date} - {system_config.train_end_date}")
+        print(f"  测试期间: {system_config.test_start_date} - {system_config.end_date}")
+        print(f"  每日选股: {system_config.daily_stock_count}只")
+        print(f"  持仓天数: {backtest_config.holding_days}天")
+        print(f"  板块筛选: 前{system_config.sector_filter_count}个（优化后）")
+        print(f"  板块权重: {system_config.factor_weights['sector']:.0%}（大幅提升）")
+        print(f"  连板回看: {system_config.max_lookback_days}天")
+        print(f"  输出目录: {args.output_dir}")
+        print()
 
 
 #     # 三种模式：
@@ -7849,6 +8321,17 @@ def main():
         success = run_generate_factors_mode(args)
     elif args.mode == 'test_factors':
         success = run_test_factors_mode(args)
+    elif args.mode == 'permutation_factor_clusters':
+        success = run_permutation_factor_clusters_mode(args)
+        # python main_alpha_二分类_原因子_with_test_metrics_妖股_copy.py  --mode permutation_factor_clusters --start_date 20250801   --end_date 20260518 --permutation_perturb_mode median
+    elif args.mode == 'factor_label_correlation':
+        success = run_factor_label_correlation_mode(args)
+        # python main_alpha_二分类_原因子_with_test_metrics_妖股_copy.py --mode factor_label_correlation --start_date 20250801 --end_date 20260518
+    elif args.mode == 'top1_conditional_risk_analysis':
+        success = run_top1_conditional_risk_analysis_mode(args)
+    elif args.mode == 'factor_local_sensitivity':
+        success = run_factor_local_sensitivity_mode(args)
+        # python main_alpha_二分类_原因子_with_test_metrics_妖股_copy.py --mode factor_local_sensitivity --start_date 20250801 --end_date 20260518
     elif args.mode == 'train_model':
         # success = run_train_model_mode(args,train_end_date='2024-06-01', is_regression=True)  # [强化] 启用成本感知回归模式
         success = run_train_model_mode(args,None, is_regression=True)
@@ -7860,6 +8343,8 @@ def main():
     #python main.py --mode test_model_walkforward --window 3 --models lightgbm --optimize_thresholds
     elif args.mode == 'test_model_walkforward':
         success = run_test_model_walkforward_mode(args)
+    elif args.mode == 'ma_convergence_quantile_ensemble':
+        success = run_ma_convergence_quantile_ensemble_mode(args)
     # python main.py --mode pred_stocks --date 20251216
     elif args.mode == 'pred_stocks':
         success = run_pred_stocks_mode(args)
@@ -7882,10 +8367,11 @@ def main():
 
 def load_sw_sector_mapping() -> Dict[str, str]:
     """
-    加载SW申万行业数据（使用标准化编码）
+    加载SW2申万二级行业数据（使用标准化编码）
 
-    数据格式: {"920351.BJ": "SW1交通运输", ...}
-    返回: 股票代码到SW行业名称的映射字典
+    数据来源: config/sw2_industry_encoding.pkl
+    数据格式: {"920092.BJ": "SW2IT服务", ...}
+    返回: 股票代码到SW2行业名称的映射字典
     """
     encoding_data = load_standardized_sw_encoding()
     if not encoding_data:
@@ -8418,7 +8904,23 @@ def run_test_factors_mode(args):
             logger.error(f"数据中缺少必要字段: {missing_base_columns}")
             return False
 
+        import pyarrow.parquet as pq
+        parquet_schema_columns = pq.ParquetFile(str(FACTOR_LAB_STORE_PATH)).schema_arrow.names
+        parquet_factor_columns_ordered = [
+            col for col in parquet_schema_columns if col not in {'stock_code', 'date'}
+        ]
+        if args.factor_names:
+            requested_for_load = [name.strip() for name in args.factor_names.split(',') if name.strip()]
+            factor_load_names = [name for name in requested_for_load if name in parquet_factor_columns_ordered]
+            ignored_requested = [name for name in requested_for_load if name not in parquet_factor_columns_ordered]
+            if ignored_requested:
+                print(f"· 非 factors.parquet 因子，已忽略：{ignored_requested}")
+        else:
+            factor_load_names = parquet_factor_columns_ordered
+        print(f"· 正在按测试区间加载 factors.parquet：{len(factor_load_names)} 个因子列")
+
         factor_data = _load_factor_cache_data(
+            required_factors=factor_load_names,
             include_label_generation_features=True,
             start_date=start_date,
             end_date=end_date,
@@ -8525,7 +9027,24 @@ def run_test_factors_mode(args):
             }
         )
 
-        potential_factors = [col for col in merged_data.columns if col not in exclude_columns]
+        # 严格只测试 factors.parquet 中真实保存的因子列。_load_factor_cache_data
+        # 会为标签生成临时补入涨跌停、行情和交易状态字段，这些不是因子。
+        parquet_factor_columns = set(
+            pq.ParquetFile(str(FACTOR_LAB_STORE_PATH)).schema_arrow.names
+        ).difference({'stock_code', 'date'})
+        potential_factors = [
+            col for col in merged_data.columns
+            if col in parquet_factor_columns and col not in exclude_columns
+        ]
+        ignored_augmented_columns = [
+            col for col in merged_data.columns
+            if col not in parquet_factor_columns
+            and col not in {'stock_code', 'date', 'vwap_return_label'}
+        ]
+        print(
+            f"· 因子范围：严格使用 factors.parquet 中的列，共匹配 {len(potential_factors)} 个；"
+            f"忽略标签/行情临时字段 {len(ignored_augmented_columns)} 个"
+        )
 
         if args.factor_names:
             requested_factors = [name.strip() for name in args.factor_names.split(',') if name.strip()]
@@ -8552,21 +9071,54 @@ def run_test_factors_mode(args):
         _check_factor_data_quality(merged_data, sample_factors)
 
         try:
-            from .factor_system.factor_validator import FactorValidator
+            from .factor_system.factor_lab.registry import registry as factor_registry
+            from .factor_system.hierarchical_factor_validator import validate_factors_by_level
         except ImportError:
-            from factor_system.factor_validator import FactorValidator
+            from factor_system.factor_lab.registry import registry as factor_registry
+            from factor_system.hierarchical_factor_validator import validate_factors_by_level
 
-        validator = FactorValidator()
-        validation_results = validator.validate_quantitative_factors(
+        definitions = {definition.name: definition for definition in factor_registry.definitions()}
+        try:
+            sw_sector_mapping = load_sw_sector_mapping() or {}
+        except Exception as exc:
+            logger.warning(f"加载申万行业映射失败，行业广播因子将回退为个股因子验证: {exc}")
+            sw_sector_mapping = {}
+
+        def _print_hierarchical_progress(phase, current, total, factor, elapsed):
+            phase_name = '分类' if phase == 'classify' else '验证'
+            print(
+                f"\r· 因子{phase_name}进度：{current}/{total} "
+                f"({current / max(total, 1):.1%}) | {factor} | {elapsed:.2f}s",
+                end='',
+                flush=True,
+            )
+            if current == total:
+                print()
+
+        print("· 开始识别市场、行业和个股因子层级...")
+        validation_results = validate_factors_by_level(
             merged_data,
             actual_factors,
-            return_columns=final_return_columns,
+            label='vwap_return_label',
+            definitions=definitions,
+            stock_to_sector=sw_sector_mapping,
+            progress_callback=_print_hierarchical_progress,
+        )
+        validation_results.update(
+            {
+                'overall_status': 'PASS',
+                'total_factors': len(actual_factors),
+                'total_records': len(merged_data),
+                'validation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'return_columns': final_return_columns,
+            }
         )
 
         print("===== 验证结果概览 =====")
         print(f"· 检测因子：{validation_results.get('total_factors', 0)} 个")
         print(f"· 样本条数：{validation_results.get('total_records', 0)} 条")
         print(f"· 总体状态：{validation_results.get('overall_status', 'UNKNOWN')}")
+        print(f"· 分层数量：{validation_results.get('factor_counts', {})}")
 
         output_path = Path(args.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -8577,32 +9129,24 @@ def run_test_factors_mode(args):
             json.dump(validation_results, f, indent=2, ensure_ascii=False, default=str)
         print(f"· 验证报告：{validation_file}")
 
-        time_windows = validation_results.get('time_windows', {})
-        for window_name, window_data in time_windows.items():
-            factor_metrics = window_data.get('factor_metrics', {})
+        combined_rows = []
+        for factor_level, factor_metrics in validation_results.get('levels', {}).items():
             if not factor_metrics:
                 continue
             metrics_df = pd.DataFrame(factor_metrics).T
-            if window_name == 'vwap_return_label':
-                metrics_file = output_path / f"factor_metrics_vwap_return_{timestamp}.csv"
-            elif window_name == 'atr_return_label':
-                metrics_file = output_path / f"factor_metrics_vwap_return_legacy_{timestamp}.csv"
-            else:
-                metrics_file = output_path / f"factor_metrics_{window_name}_{timestamp}.csv"
+            metrics_df.index.name = 'factor'
+            metrics_file = output_path / f"factor_metrics_{factor_level}_vwap_return_{timestamp}.csv"
             metrics_df.to_csv(metrics_file, encoding='utf-8')
-            print(f"· 详情指标：{metrics_file}")
+            print(f"· {factor_level}因子指标：{metrics_file}")
+            level_rows = metrics_df.reset_index()
+            level_rows['factor_level'] = factor_level
+            combined_rows.append(level_rows)
 
-        summary_stats = validation_results.get('summary_statistics', {})
-        if summary_stats:
-            summary_df = pd.DataFrame([summary_stats])
-            summary_file = output_path / f"factor_summary_cross_window_{timestamp}.csv"
-            summary_df.to_csv(summary_file, encoding='utf-8', index=False)
-            print(f"· 跨窗口摘要：{summary_file}")
-
-        if validation_results.get('warnings'):
-            print(f"· 警告共 {len(validation_results['warnings'])} 条，示例：{validation_results['warnings'][:3]}")
-        if validation_results.get('errors'):
-            print(f"· 错误共 {len(validation_results['errors'])} 条，示例：{validation_results['errors'][:3]}")
+        if combined_rows:
+            combined_df = pd.concat(combined_rows, ignore_index=True, sort=False)
+            combined_file = output_path / f"factor_metrics_hierarchical_vwap_return_{timestamp}.csv"
+            combined_df.to_csv(combined_file, encoding='utf-8', index=False)
+            print(f"· 分层汇总指标：{combined_file}")
 
         print("===== 因子测试完成 =====")
         return True
@@ -9226,6 +9770,60 @@ def _prepare_feature_data(input_data, feature_columns, data_type="特征数据")
         # [CHART] 步骤2：提取特征数据
         feature_data = input_data[available_features].copy()
 
+        if ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE:
+            neutralize_features = [
+                col for col in WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS
+                if col in feature_data.columns
+            ]
+
+            if neutralize_features and 'date' in input_data.columns:
+                group_key = input_data['date']
+
+                # 建议加这个检查，避免 input_data 和 feature_data 行错位
+                if len(group_key) != len(feature_data):
+                    raise ValueError(
+                        f"[中位数Blend] {data_type}: date长度({len(group_key)}) "
+                        f"与feature_data长度({len(feature_data)})不一致"
+                    )
+
+                blend_keep_ratio = 0.0      # 保留原值 70%
+                blend_median_ratio = 1    # 向当日横截面中位数收缩 30%
+
+                for col in neutralize_features:
+                    # 更建议用 feature_data[col]，因为这是模型实际输入空间
+                    original = pd.to_numeric(feature_data[col], errors='coerce')
+                    daily_median = original.groupby(group_key).transform('median')
+
+                    feature_data[col] = (
+                        blend_keep_ratio * original
+                        + blend_median_ratio * daily_median
+                    )
+
+                    logger.info(
+                        f"[中位数Blend] {data_type}: {col}, "
+                        f"原值占比={blend_keep_ratio:.2f}, "
+                        f"中位数占比={blend_median_ratio:.2f}, "
+                        f"median_mean={daily_median.mean():.6f}, "
+                        f"new_mean={feature_data[col].mean():.6f}"
+                    )
+
+                logger.info(
+                    f"[中位数Blend] {data_type}: 已将 {len(neutralize_features)} 个因子 "
+                    f"按 {blend_keep_ratio:.0%}原值 + {blend_median_ratio:.0%}当日横截面中位数 做Blend: "
+                    f"{', '.join(neutralize_features)}"
+                )
+
+            elif neutralize_features:
+                logger.warning(
+                    f"[中位数Blend] {data_type}: 缺少date列，无法执行当日横截面中位数Blend"
+                )
+            else:
+                logger.info(
+                    f"[中位数Blend] {data_type}: 当前特征列表未包含待Blend因子"
+                )
+            # else:
+            #     logger.info(f"[中位数替换] {data_type}: 当前特征列表未包含待替换日内形态因子")
+
         logger.info(f"{data_type}统计:")
         logger.info(f"  样本数: {len(feature_data):,}个")
         logger.info(f"  特征数: {len(available_features)}个")
@@ -9547,6 +10145,2427 @@ def _save_model_results(model_results, feature_names, pca_models=None, model_typ
         logger.error(f"保存模型结果失败: {e}")
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
+
+
+def _get_permutation_factor_groups(feature_columns):
+    """按业务含义把训练特征划分为因子簇，用于簇级 permutation。"""
+    factor_groups = {
+        "beta_20d": ["beta_20d"],
+        "downside_beta": ["downside_beta"],
+        "price_ma5_ratio": ["price_ma5_ratio"],
+        "price_ma60_ratio": ["price_ma60_ratio"],
+        "ma60_slope": ["ma60_slope"],
+        "ma_alignment_score": ["ma_alignment_score"],
+        "ma_convergence_score": ["ma_convergence_score"],
+        "distance_from_52w_high": ["distance_from_52w_high"],
+        "distance_from_52w_low": ["distance_from_52w_low"],
+        "max_rally_10d": ["max_rally_10d"],
+        "max_rally_20d": ["max_rally_20d"],
+        "max_drawdown_20d": ["max_drawdown_20d"],
+        "high_to_close_drawdown": ["high_to_close_drawdown"],
+        "high_to_close_drawdown_pct": ["high_to_close_drawdown_pct"],
+        "log_price_slope_10d": ["log_price_slope_10d"],
+        "log_price_slope_20d": ["log_price_slope_20d"],
+        "trend_acceleration": ["trend_acceleration"],
+        "trend_consistency": ["trend_consistency"],
+        "stable_momentum": ["stable_momentum"],
+        "price_acceleration": ["price_acceleration"],
+        "abnormal_turnover": ["abnormal_turnover"],
+        "turnover_stability": ["turnover_stability"],
+        "price_impact": ["price_impact"],
+        "amihud_illiquidity": ["amihud_illiquidity"],
+        "buy_lg_amount_rate_pct": ["buy_lg_amount_rate_pct"],
+        "buy_sm_amount_rate_pct": ["buy_sm_amount_rate_pct"],
+        "net_d5_amount_to_turnover": ["net_d5_amount_to_turnover"],
+        "main_outflow_retail_takeover": ["main_outflow_retail_takeover"],
+        "volume_structure_alpha_pct": ["volume_structure_alpha_pct"],
+        "volume_confirmed_pullback_alpha": ["volume_confirmed_pullback_alpha"],
+        "money_flow_pressure_pct": ["money_flow_pressure_pct"],
+        "sector_momentum_interaction": ["sector_momentum_interaction"],
+        "sector_momentum_accel_rank": ["sector_momentum_accel_rank"],
+        "sector_momentum_consistency": ["sector_momentum_consistency"],
+        "sector_trend_gated_momentum_intra_z": ["sector_trend_gated_momentum_intra_z"],
+        "sector_rotation_breakout_intra_z": ["sector_rotation_breakout_intra_z"],
+        "sector_strong_leader_alpha": ["sector_strong_leader_alpha"],
+        "sector_leadership_persistence_v3": ["sector_leadership_persistence_v3"],
+        "sector_relative_strength_vs_market": ["sector_relative_strength_vs_market"],
+        "sector_breadth": ["sector_breadth"],
+        "sector_dispersion": ["sector_dispersion"],
+        "sector_momentum_dispersion_rank": ["sector_momentum_dispersion_rank"],
+        "sector_relative_volatility": ["sector_relative_volatility"],
+        "sector_volatility_5d": ["sector_volatility_5d"],
+        "sector_vols_divergence_alpha": ["sector_vols_divergence_alpha"],
+        "sector_excess_intra_rank": ["sector_excess_intra_rank"],
+        "intra_sector_momentum_rank": ["intra_sector_momentum_rank"],
+        "stock_sector_pos_align": ["stock_sector_pos_align"],
+        "sw2_high_low_position_return_spread": ["sw2_high_low_position_return_spread"],
+        "sw_circ_mv_rank_intra_sector": ["sw_circ_mv_rank_intra_sector"],
+        "sector_hotspot_concentration_v3": ["sector_hotspot_concentration_v3"],
+        "sector_concentration": ["sector_concentration"],
+        "sector_correlation_20d": ["sector_correlation_20d"],
+        "sector_mkt_corr_20d": ["sector_mkt_corr_20d"],
+        "sector_hhi_change": ["sector_hhi_change"],
+        "sector_rank_change_5d": ["sector_rank_change_5d"],
+        "sector_turnover_surge_pv_alpha": ["sector_turnover_surge_pv_alpha"],
+        "sector_liquidity_gated_turnover_z": ["sector_liquidity_gated_turnover_z"],
+        "sector_turnover_change_5d_20d": ["sector_turnover_change_5d_20d"],
+        "sector_weak_reversal_alpha": ["sector_weak_reversal_alpha"],
+        "sector_broken_resilience_alpha": ["sector_broken_resilience_alpha"],
+        "sector_limit_overflow_alpha": ["sector_limit_overflow_alpha"],
+        "market_trend_strength": ["market_trend_strength"],
+        "market_liquidity_change": ["market_liquidity_change"],
+        "market_sentiment_ad": ["market_sentiment_ad"],
+        "market_volatility_context": ["market_volatility_context"],
+        "market_vols_adaptive_iv": ["market_vols_adaptive_iv"],
+        "market_emotion_resonance_alpha": ["market_emotion_resonance_alpha"],
+        "mkt_sector_dispersion": ["mkt_sector_dispersion"],
+        "emotion_quality_balance_v3": ["emotion_quality_balance_v3"],
+        "strong_stock_volume_confirmation_v3": ["strong_stock_volume_confirmation_v3"],
+        "value_growth_rotation": ["value_growth_rotation"],
+        "size_rotation_strength": ["size_rotation_strength"],
+        "mkt_ma5_followthrough_v3_exp": ["mkt_ma5_followthrough_v3_exp"],
+        "pct_chg_1d": ["pct_chg_1d"],
+        "pct_chg_2d": ["pct_chg_2d"],
+        "pct_chg_intra_z": ["pct_chg_intra_z"],
+        "pct_chg_sector_mean": ["pct_chg_sector_mean"],
+        "return_3d_intra_z": ["return_3d_intra_z"],
+        "return_5d_intra_z": ["return_5d_intra_z"],
+        "return_10d_intra_z": ["return_10d_intra_z"],
+        "return_20d_intra_z": ["return_20d_intra_z"],
+        "return_3d_sector_mean": ["return_3d_sector_mean"],
+        "return_5d_sector_mean": ["return_5d_sector_mean"],
+        "return_10d_sector_mean": ["return_10d_sector_mean"],
+        "return_10d_sector_mean_pct": ["return_10d_sector_mean_pct"],
+        "return_20d_sector_mean": ["return_20d_sector_mean"],
+        "momentum_decay": ["momentum_decay"],
+        "trend_pullback_composite_alpha": ["trend_pullback_composite_alpha"],
+        "regime_aware_reversal_alpha": ["regime_aware_reversal_alpha"],
+        "high_volatility_pullback_alpha": ["high_volatility_pullback_alpha"],
+        "volatility_structure_alpha": ["volatility_structure_alpha"],
+        "body_efficiency": ["body_efficiency"],
+        "gap_power": ["gap_power"],
+        "range_compression": ["range_compression"],
+        "open_to_high_ratio": ["open_to_high_ratio"],
+        "intraday_clv": ["intraday_clv"],
+        "intraday_reversal": ["intraday_reversal"],
+        "shadow_dominance_pct": ["shadow_dominance_pct"],
+        "cpv_factor_pct": ["cpv_factor_pct"],
+        "kdj_diff_9": ["kdj_diff_9"],
+        "kdj_golden_cross_strength": ["kdj_golden_cross_strength"],
+        "kdj_k_9": ["kdj_k_9"],
+        "kdj_j_9": ["kdj_j_9"],
+        "ppo_strength_pct": ["ppo_strength_pct"],
+        "mfi_strength": ["mfi_strength"],
+        "mass_index_reversal": ["mass_index_reversal"],
+        "efficiency_ratio": ["efficiency_ratio"],
+        "ulcer_index": ["ulcer_index"],
+        "kurtosis_20d": ["kurtosis_20d"],
+        "skewness_20d": ["skewness_20d"],
+        "coskewness": ["coskewness"],
+        "support_distance": ["support_distance"],
+        "resistance_distance": ["resistance_distance"],
+        "severe_abnormal_pressure_10d_pct": ["severe_abnormal_pressure_10d_pct"],
+        "alpha_001": ["alpha_001"],
+        "alpha_002": ["alpha_002"],
+        "alpha_017": ["alpha_017"],
+        "limit_sustain_alpha": ["limit_sustain_alpha"],
+    }
+
+
+    feature_set = set(feature_columns)
+    filtered = {name: [col for col in cols if col in feature_set] for name, cols in factor_groups.items()}
+    assigned = {col for cols in filtered.values() for col in cols}
+    unassigned = [col for col in feature_columns if col not in assigned]
+    if unassigned:
+        filtered["unassigned_other"] = unassigned
+        logger.info(f"unassigned_other:{unassigned}")
+    return {name: cols for name, cols in filtered.items() if cols}
+
+
+def _predict_lightgbm_model(model, X):
+    best_iter = getattr(model, "best_iteration", None)
+    return model.predict(X, num_iteration=best_iter) if best_iter else model.predict(X)
+
+
+def _evaluate_permutation_predictions(data, predictions, return_col="future_return_5d", top_ks=(1, 2, 3, 5)):
+    """评估固定模型预测结果的真实收益分布。
+
+    注意：这里的 top1/top2/top3/top5 均表示"第K名"股票，而不是"前K名等权组合"。
+    例如 top2_mean_return 表示每天预测分数排名第2的那一只股票的平均收益。
+    """
+    required_cols = ["date", "stock_code", return_col]
+    if "relevance" in data.columns:
+        required_cols.append("relevance")
+    eval_df = data[required_cols].copy()
+    eval_df["predicted_return"] = predictions
+    eval_df = eval_df.dropna(subset=["date", "stock_code", return_col, "predicted_return"])
+    if eval_df.empty:
+        raise ValueError("Permutation评估数据为空")
+
+    eval_df["date"] = pd.to_datetime(eval_df["date"])
+    eval_df[return_col] = pd.to_numeric(eval_df[return_col], errors="coerce")
+    eval_df = eval_df.dropna(subset=[return_col])
+    if eval_df.empty:
+        raise ValueError("Permutation评估数据收益列为空")
+
+    sorted_df = eval_df.sort_values(["date", "predicted_return"], ascending=[True, False]).copy()
+    sorted_df["_rank_position"] = sorted_df.groupby("date").cumcount() + 1
+
+    metrics = {
+        "sample_count": int(len(eval_df)),
+        "date_count": int(eval_df["date"].nunique()),
+    }
+    for top_k in top_ks:
+        selected = sorted_df.loc[sorted_df["_rank_position"] == int(top_k)].copy()
+        returns = selected[return_col].astype(float)
+        daily_returns = selected.set_index("date")[return_col].astype(float)
+        daily_win = (returns > 0).astype(float)
+        daily_big_loss = (returns <= -0.04).astype(float)
+        daily_big_gain = (returns >= 0.08).astype(float)
+
+        metrics[f"top{top_k}_n"] = int(len(returns))
+        metrics[f"top{top_k}_date_count"] = int(selected["date"].nunique()) if len(selected) else 0
+        metrics[f"top{top_k}_mean_return"] = float(daily_returns.mean()) if len(daily_returns) else np.nan
+        metrics[f"top{top_k}_median_return"] = float(daily_returns.median()) if len(daily_returns) else np.nan
+        metrics[f"top{top_k}_std_return"] = float(daily_returns.std(ddof=1)) if len(daily_returns) > 1 else np.nan
+        metrics[f"top{top_k}_sum_return"] = float(daily_returns.sum()) if len(daily_returns) else np.nan
+        metrics[f"top{top_k}_win_rate"] = float(daily_win.mean()) if len(daily_win) else np.nan
+        metrics[f"top{top_k}_big_loss_rate"] = float(daily_big_loss.mean()) if len(daily_big_loss) else np.nan
+        metrics[f"top{top_k}_big_gain_rate"] = float(daily_big_gain.mean()) if len(daily_big_gain) else np.nan
+        if "relevance" in selected.columns:
+            monster = (pd.to_numeric(selected["relevance"], errors="coerce") >= 1).astype(float)
+            metrics[f"top{top_k}_monster_rate"] = float(monster.mean()) if len(monster) else np.nan
+    return metrics
+
+
+def _permute_columns_within_date(X, dates, columns, rng):
+    """按交易日横截面内部随机打乱指定列。"""
+    return _perturb_columns_within_date(X, dates, columns, rng=rng, mode="permute")
+
+
+def _median_neutralize_columns_within_date(X, dates, columns):
+    """按交易日横截面中位数替换指定列，用于测试推理期 neutralize 补丁。"""
+    return _perturb_columns_within_date(X, dates, columns, rng=None, mode="median")
+
+
+def _perturb_columns_within_date(X, dates, columns, rng=None, mode="permute"):
+    """在模型输入空间内按日扰动指定因子列。
+
+    mode='permute': 每个交易日内部随机重排原值，保留当日横截面分布。
+    mode='median' : 每个交易日内部全部替换成当日横截面中位数。
+    """
+    if len(X) != len(dates):
+        raise ValueError(f"X长度({len(X)})和dates长度({len(dates)})不一致")
+
+    if mode not in {"permute", "median"}:
+        raise ValueError(f"未知扰动模式: {mode}")
+
+    X_new = X.copy().reset_index(drop=True)
+    date_values = pd.Series(dates).reset_index(drop=True)
+
+    for col in columns:
+        if col not in X_new.columns:
+            logger.warning(f"扰动列不存在，跳过: {col}")
+            continue
+
+        s = pd.to_numeric(X_new[col], errors="coerce")
+        if mode == "permute":
+            if rng is None:
+                raise ValueError("mode='permute' 需要传入 rng")
+            values = s.to_numpy(copy=True)
+            for idx in date_values.groupby(date_values, sort=False).indices.values():
+                if len(idx) > 1:
+                    values[idx] = rng.permutation(values[idx])
+            X_new[col] = values
+        else:  # mode == "median"
+            X_new[col] = s.groupby(date_values, sort=False).transform("median").to_numpy()
+
+    return X_new
+
+
+def _interp_quantiles_from_sorted_values(sorted_values: np.ndarray, quantiles: np.ndarray) -> np.ndarray:
+    """给定已排序数组，按[0,1]分位值线性插值得到对应原值。"""
+    sorted_values = np.asarray(sorted_values, dtype=float)
+    quantiles = np.asarray(quantiles, dtype=float)
+    if sorted_values.size == 0:
+        return np.zeros_like(quantiles, dtype=float)
+    if sorted_values.size == 1:
+        return np.full_like(quantiles, float(sorted_values[0]), dtype=float)
+
+    quantiles = np.clip(quantiles, 0.0, 1.0)
+    positions = quantiles * (sorted_values.size - 1)
+    lower = np.floor(positions).astype(int)
+    upper = np.ceil(positions).astype(int)
+    frac = positions - lower
+    return sorted_values[lower] * (1.0 - frac) + sorted_values[upper] * frac
+
+
+def _shift_feature_by_daily_quantile(eval_dates, feature_values, shift_pct, logger=None, feature_name="feature"):
+    """按交易日横截面把单因子的分位数平移 shift_pct 后映射回原值空间。"""
+    eval_dates = pd.Series(pd.to_datetime(eval_dates)).reset_index(drop=True)
+    feature_values = np.asarray(feature_values, dtype=float).reshape(-1)
+    if len(eval_dates) != len(feature_values):
+        raise ValueError(f"{feature_name}: dates长度({len(eval_dates)})与feature长度({len(feature_values)})不一致")
+
+    shift_pct = float(shift_pct)
+    if abs(shift_pct) < 1e-12:
+        return feature_values.astype(np.float32, copy=True)
+
+    out = feature_values.astype(float, copy=True)
+    grouped_indices = eval_dates.groupby(eval_dates, sort=False).indices
+    for _, idx in grouped_indices.items():
+        group_vals = feature_values[idx]
+        finite_mask = np.isfinite(group_vals)
+        finite_count = int(finite_mask.sum())
+        if finite_count < 2:
+            continue
+
+        finite_vals = group_vals[finite_mask]
+        sorted_vals = np.sort(finite_vals)
+        ranks = pd.Series(finite_vals).rank(method="first").to_numpy(dtype=float)
+        base_pct = (ranks - 1.0) / max(finite_count - 1, 1)
+        target_pct = np.clip(base_pct + shift_pct, 0.0, 1.0)
+        shifted_vals = _interp_quantiles_from_sorted_values(sorted_vals, target_pct)
+
+        out_idx = np.asarray(idx)[finite_mask]
+        out[out_idx] = shifted_vals
+
+    if logger is not None:
+        logger.info(
+            f"[QUANTILE_SHIFT] {feature_name}: 已按日横截面平移 {shift_pct:+.2%} 分位数"
+        )
+    return out.astype(np.float32, copy=False)
+
+
+def _build_permutation_time_segments(eval_data: pd.DataFrame, n_segments: int = 4) -> list[dict]:
+    """按交易日数量把评估区间等分为若干段。"""
+    unique_dates = pd.Series(pd.to_datetime(eval_data["date"]).sort_values().unique())
+    if unique_dates.empty:
+        return []
+
+    segments = []
+    for idx, date_part in enumerate(np.array_split(unique_dates.to_numpy(), n_segments), start=1):
+        if len(date_part) == 0:
+            continue
+        start_ts = pd.Timestamp(date_part[0])
+        end_ts = pd.Timestamp(date_part[-1])
+        mask = (eval_data["date"] >= start_ts) & (eval_data["date"] <= end_ts)
+        segments.append({
+            "segment": f"S{idx}",
+            "segment_idx": idx,
+            "segment_start": start_ts,
+            "segment_end": end_ts,
+            "segment_date_count": int(len(date_part)),
+            "mask": mask.to_numpy(),
+        })
+    return segments
+
+
+def _summarize_permutation_repeat_metrics(
+    group_name: str,
+    cols: list[str],
+    repeats: int,
+    repeat_metrics: list[dict],
+    baseline: dict,
+    *,
+    segment_info: dict | None = None,
+) -> dict:
+    summary = {
+        "group": group_name,
+        "feature_count": len(cols),
+        "features": ",".join(cols),
+        "repeats": repeats,
+    }
+    if segment_info:
+        summary.update({
+            "segment": segment_info["segment"],
+            "segment_idx": segment_info["segment_idx"],
+            "segment_start": segment_info["segment_start"].strftime("%Y-%m-%d"),
+            "segment_end": segment_info["segment_end"].strftime("%Y-%m-%d"),
+            "segment_date_count": segment_info["segment_date_count"],
+        })
+
+    metric_names = [k for k in repeat_metrics[0].keys() if k not in {"sample_count", "date_count"}]
+    for metric_name in metric_names:
+        values = np.array([m[metric_name] for m in repeat_metrics], dtype=float)
+        summary[f"{metric_name}_mean"] = float(np.nanmean(values))
+        summary[f"{metric_name}_std"] = float(np.nanstd(values))
+        if metric_name in baseline:
+            drop = float(baseline[metric_name] - summary[f"{metric_name}_mean"])
+            summary[f"{metric_name}_drop"] = drop
+            std = summary[f"{metric_name}_std"]
+            summary[f"{metric_name}_drop_over_std"] = float(drop / std) if std and np.isfinite(std) else np.nan
+            summary[f"{metric_name}_drop_per_feature"] = float(drop / len(cols)) if len(cols) else np.nan
+    return summary
+
+
+def _summarize_segment_stability(segment_summary: pd.DataFrame) -> pd.DataFrame:
+    if segment_summary.empty or "top1_mean_return_drop" not in segment_summary.columns:
+        return pd.DataFrame()
+
+    rows = []
+    for group_name, group_df in segment_summary.groupby("group", sort=False):
+        drops = pd.to_numeric(group_df["top1_mean_return_drop"], errors="coerce").dropna()
+        top3_drops = pd.to_numeric(group_df.get("top3_mean_return_drop", pd.Series(dtype=float)), errors="coerce").dropna()
+        top5_drops = pd.to_numeric(group_df.get("top5_mean_return_drop", pd.Series(dtype=float)), errors="coerce").dropna()
+        if drops.empty:
+            continue
+        mean_drop = float(drops.mean())
+        std_drop = float(drops.std(ddof=0))
+        positive_count = int((drops > 0).sum())
+        negative_count = int((drops < 0).sum())
+        rows.append({
+            "group": group_name,
+            "feature_count": int(group_df["feature_count"].iloc[0]),
+            "segment_count": int(len(drops)),
+            "positive_segment_count": positive_count,
+            "positive_segment_ratio": float(positive_count / len(drops)),
+            "negative_segment_count": negative_count,
+            "negative_segment_ratio": float(negative_count / len(drops)),
+            "negative_segment_mean": mean_drop,
+            "negative_segment_min": float(drops.min()),
+            "negative_segment_max": float(drops.max()),
+            "top1_drop_segment_mean": mean_drop,
+            "top1_drop_segment_std": std_drop,
+            "top1_drop_segment_min": float(drops.min()),
+            "top1_drop_segment_max": float(drops.max()),
+            "top1_drop_stability_ratio": float(mean_drop / std_drop) if std_drop > 0 else np.nan,
+            "top3_drop_segment_mean": float(top3_drops.mean()) if len(top3_drops) else np.nan,
+            "top5_drop_segment_mean": float(top5_drops.mean()) if len(top5_drops) else np.nan,
+        })
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["positive_segment_ratio", "top1_drop_segment_mean", "top1_drop_stability_ratio"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+    return result
+
+
+def _calculate_daily_factor_label_ic(data: pd.DataFrame, factor: str, label_col: str) -> pd.Series:
+    """计算因子与标签收益的每日横截面Spearman IC。"""
+    daily_values = {}
+    for date_value, group in data.groupby("date", sort=False):
+        pair = group[[factor, label_col]].apply(pd.to_numeric, errors="coerce").dropna()
+        if len(pair) < 3 or pair[factor].nunique() < 2 or pair[label_col].nunique() < 2:
+            continue
+        daily_values[pd.Timestamp(date_value)] = pair[factor].corr(pair[label_col], method="spearman")
+    return pd.Series(daily_values, dtype=float).dropna()
+
+
+def _summarize_factor_label_correlation(
+    data: pd.DataFrame,
+    factor: str,
+    label_col: str,
+    daily_ic: Optional[pd.Series] = None,
+) -> dict:
+    """汇总单因子与模型收益标签的相关性。"""
+    pair = data[[factor, label_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    result = {
+        "sample_count": int(len(pair)),
+        "pearson_corr": np.nan,
+        "spearman_corr": np.nan,
+        "daily_ic_count": 0,
+        "daily_spearman_ic_mean": np.nan,
+        "daily_spearman_ic_std": np.nan,
+        "daily_spearman_ic_min": np.nan,
+        "daily_spearman_ic_max": np.nan,
+        "daily_spearman_ic_positive_ratio": np.nan,
+        "daily_spearman_ic_ir": np.nan,
+    }
+    if len(pair) >= 3 and pair[factor].nunique() >= 2 and pair[label_col].nunique() >= 2:
+        result["pearson_corr"] = float(pair[factor].corr(pair[label_col], method="pearson"))
+        result["spearman_corr"] = float(pair[factor].corr(pair[label_col], method="spearman"))
+
+    if daily_ic is None:
+        daily_ic = _calculate_daily_factor_label_ic(data, factor, label_col)
+    daily_ic = pd.to_numeric(daily_ic, errors="coerce").dropna()
+    if not daily_ic.empty:
+        ic_mean = float(daily_ic.mean())
+        ic_std = float(daily_ic.std(ddof=0))
+        result.update({
+            "daily_ic_count": int(len(daily_ic)),
+            "daily_spearman_ic_mean": ic_mean,
+            "daily_spearman_ic_std": ic_std,
+            "daily_spearman_ic_min": float(daily_ic.min()),
+            "daily_spearman_ic_max": float(daily_ic.max()),
+            "daily_spearman_ic_positive_ratio": float((daily_ic > 0).mean()),
+            "daily_spearman_ic_ir": float(ic_mean / ic_std) if ic_std > 0 else np.nan,
+        })
+    return result
+
+
+def _summarize_factor_label_segment_stability(
+    overall_result: pd.DataFrame,
+    segment_result: pd.DataFrame,
+) -> pd.DataFrame:
+    """汇总每个因子的S1-S4相关方向及稳定性。"""
+    if overall_result.empty or segment_result.empty:
+        return pd.DataFrame()
+
+    overall_lookup = overall_result.set_index("factor")
+    rows = []
+    for factor, group in segment_result.groupby("factor", sort=False):
+        if factor not in overall_lookup.index:
+            continue
+        overall = overall_lookup.loc[factor]
+        seg_spearman = pd.to_numeric(group["spearman_corr"], errors="coerce").dropna()
+        seg_daily_ic = pd.to_numeric(group["daily_spearman_ic_mean"], errors="coerce").dropna()
+        if seg_spearman.empty:
+            continue
+
+        overall_sign = np.sign(float(overall.get("spearman_corr", np.nan)))
+        same_sign_count = int((np.sign(seg_spearman) == overall_sign).sum()) if np.isfinite(overall_sign) else 0
+        positive_count = int((seg_spearman > 0).sum())
+        negative_count = int((seg_spearman < 0).sum())
+        overall_daily_ic_sign = np.sign(float(overall.get("daily_spearman_ic_mean", np.nan)))
+        daily_ic_same_sign_count = (
+            int((np.sign(seg_daily_ic) == overall_daily_ic_sign).sum())
+            if len(seg_daily_ic) and np.isfinite(overall_daily_ic_sign)
+            else 0
+        )
+        rows.append({
+            "factor": factor,
+            "in_model": bool(overall.get("in_model", False)),
+            "segment_count": int(len(seg_spearman)),
+            "overall_pearson_corr": overall.get("pearson_corr", np.nan),
+            "overall_spearman_corr": overall.get("spearman_corr", np.nan),
+            "overall_daily_spearman_ic_mean": overall.get("daily_spearman_ic_mean", np.nan),
+            "same_sign_segment_count": same_sign_count,
+            "same_sign_segment_ratio": float(same_sign_count / len(seg_spearman)),
+            "positive_segment_count": positive_count,
+            "positive_segment_ratio": float(positive_count / len(seg_spearman)),
+            "negative_segment_count": negative_count,
+            "negative_segment_ratio": float(negative_count / len(seg_spearman)),
+            "daily_ic_same_sign_segment_count": daily_ic_same_sign_count,
+            "daily_ic_same_sign_segment_ratio": (
+                float(daily_ic_same_sign_count / len(seg_daily_ic)) if len(seg_daily_ic) else np.nan
+            ),
+            "daily_ic_positive_segment_count": int((seg_daily_ic > 0).sum()) if len(seg_daily_ic) else 0,
+            "daily_ic_negative_segment_count": int((seg_daily_ic < 0).sum()) if len(seg_daily_ic) else 0,
+            "segment_spearman_mean": float(seg_spearman.mean()),
+            "segment_spearman_std": float(seg_spearman.std(ddof=0)),
+            "segment_spearman_min": float(seg_spearman.min()),
+            "segment_spearman_max": float(seg_spearman.max()),
+            "segment_spearman_abs_mean": float(seg_spearman.abs().mean()),
+            "segment_daily_ic_mean": float(seg_daily_ic.mean()) if len(seg_daily_ic) else np.nan,
+            "segment_daily_ic_std": float(seg_daily_ic.std(ddof=0)) if len(seg_daily_ic) else np.nan,
+            "segment_daily_ic_min": float(seg_daily_ic.min()) if len(seg_daily_ic) else np.nan,
+            "segment_daily_ic_max": float(seg_daily_ic.max()) if len(seg_daily_ic) else np.nan,
+        })
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["same_sign_segment_ratio", "segment_spearman_abs_mean"],
+            ascending=[False, False],
+        )
+    return result
+
+
+def _shift_factor_by_daily_quantile(
+    X: pd.DataFrame,
+    dates: pd.Series,
+    factor: str,
+    quantile_shift: float,
+) -> pd.DataFrame:
+    """按日把单因子移动固定的经验分位数距离，再映射回当日原始数值尺度。"""
+    if factor not in X.columns:
+        raise ValueError(f"模型输入缺少因子: {factor}")
+    if len(X) != len(dates):
+        raise ValueError("X与dates长度不一致")
+
+    shifted = X.copy()
+    values = pd.to_numeric(shifted[factor], errors="coerce").to_numpy(dtype=float, copy=True)
+    date_series = pd.Series(pd.to_datetime(dates)).reset_index(drop=True)
+    for idx in date_series.groupby(date_series, sort=False).indices.values():
+        day_values = values[idx]
+        valid_mask = np.isfinite(day_values)
+        valid_values = day_values[valid_mask]
+        if len(valid_values) < 3 or np.unique(valid_values).size < 2:
+            continue
+        current_quantiles = pd.Series(valid_values).rank(method="average", pct=True).to_numpy()
+        target_quantiles = np.clip(current_quantiles + quantile_shift, 0.0, 1.0)
+        try:
+            shifted_values = np.quantile(valid_values, target_quantiles, method="linear")
+        except TypeError:
+            shifted_values = np.quantile(valid_values, target_quantiles, interpolation="linear")
+        day_values[valid_mask] = shifted_values
+        values[idx] = day_values
+    shifted[factor] = values
+    return shifted
+
+
+def _calculate_exact_rank_change_rates(
+    data: pd.DataFrame,
+    baseline_pred,
+    perturbed_pred,
+    top_ks=(1, 2, 3, 4, 5),
+) -> dict:
+    """计算微扰前后每日精确第N名股票发生变化的比例。"""
+    rank_df = data[["date", "stock_code"]].copy()
+    rank_df["baseline_pred"] = np.asarray(baseline_pred)
+    rank_df["perturbed_pred"] = np.asarray(perturbed_pred)
+    result = {}
+    for prefix in ("baseline", "perturbed"):
+        sorted_df = rank_df.sort_values(
+            ["date", f"{prefix}_pred"],
+            ascending=[True, False],
+        ).copy()
+        sorted_df["_rank"] = sorted_df.groupby("date").cumcount() + 1
+        selected = sorted_df[sorted_df["_rank"].isin(top_ks)]
+        pivot = selected.pivot(index="date", columns="_rank", values="stock_code")
+        for top_k in top_ks:
+            result[f"_{prefix}_top{top_k}"] = pivot.get(top_k, pd.Series(dtype=object))
+
+    metrics = {}
+    for top_k in top_ks:
+        base = result[f"_baseline_top{top_k}"]
+        perturbed = result[f"_perturbed_top{top_k}"]
+        aligned = pd.concat([base.rename("base"), perturbed.rename("perturbed")], axis=1).dropna()
+        metrics[f"top{top_k}_selection_change_rate"] = (
+            float((aligned["base"] != aligned["perturbed"]).mean()) if len(aligned) else np.nan
+        )
+    return metrics
+
+
+def _evaluate_local_sensitivity_once(
+    data: pd.DataFrame,
+    baseline_pred,
+    perturbed_pred,
+    baseline_metrics: dict,
+) -> dict:
+    """评估一次微扰对预测、精确Top1~Top5股票及标签收益的影响。"""
+    perturbed_pred = np.asarray(perturbed_pred)
+    baseline_pred = np.asarray(baseline_pred)
+    metrics = _evaluate_permutation_predictions(
+        data, perturbed_pred, return_col="atr_return_label", top_ks=(1, 2, 3, 4, 5)
+    )
+    result = {
+        "mean_abs_prediction_change": float(np.mean(np.abs(perturbed_pred - baseline_pred))),
+        "max_abs_prediction_change": float(np.max(np.abs(perturbed_pred - baseline_pred))),
+        "prediction_change_std": float(np.std(perturbed_pred - baseline_pred)),
+    }
+    result.update(_calculate_exact_rank_change_rates(data, baseline_pred, perturbed_pred))
+    for top_k in (1, 2, 3, 4, 5):
+        base_return = baseline_metrics.get(f"top{top_k}_mean_return", np.nan)
+        changed_return = metrics.get(f"top{top_k}_mean_return", np.nan)
+        result[f"top{top_k}_mean_return_after"] = changed_return
+        result[f"top{top_k}_mean_return_drop"] = float(base_return - changed_return)
+        result[f"top{top_k}_mean_return_abs_change"] = float(abs(base_return - changed_return))
+        for metric_suffix in ("win_rate", "big_loss_rate", "big_gain_rate"):
+            base_value = baseline_metrics.get(f"top{top_k}_{metric_suffix}", np.nan)
+            changed_value = metrics.get(f"top{top_k}_{metric_suffix}", np.nan)
+            result[f"top{top_k}_{metric_suffix}_drop"] = float(base_value - changed_value)
+    return result
+
+
+def _summarize_local_sensitivity(detail_result: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
+    """把方向和邻域测试结果汇总为因子敏感性指标。"""
+    if detail_result.empty:
+        return pd.DataFrame()
+    rows = []
+    for keys, group in detail_result.groupby(group_cols, sort=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        row = dict(zip(group_cols, keys))
+        row["perturbation_count"] = int(len(group))
+        row["mean_abs_prediction_change"] = float(group["mean_abs_prediction_change"].mean())
+        row["max_abs_prediction_change"] = float(group["max_abs_prediction_change"].max())
+        for top_k in (1, 2, 3, 4, 5):
+            change_rate = pd.to_numeric(group[f"top{top_k}_selection_change_rate"], errors="coerce")
+            abs_return_change = pd.to_numeric(group[f"top{top_k}_mean_return_abs_change"], errors="coerce")
+            return_drop = pd.to_numeric(group[f"top{top_k}_mean_return_drop"], errors="coerce")
+            row[f"top{top_k}_selection_change_rate_mean"] = float(change_rate.mean())
+            row[f"top{top_k}_selection_change_rate_max"] = float(change_rate.max())
+            row[f"top{top_k}_return_abs_change_mean"] = float(abs_return_change.mean())
+            row[f"top{top_k}_return_abs_change_max"] = float(abs_return_change.max())
+            row[f"top{top_k}_worst_return_drop"] = float(return_drop.max())
+        rank_change_cols = [f"top{k}_selection_change_rate_mean" for k in (1, 2, 3, 4, 5)]
+        row["top1_to_top5_rank_change_mean"] = float(np.mean([row[col] for col in rank_change_cols]))
+        canonical = group[np.isclose(pd.to_numeric(group["quantile_step"], errors="coerce"), 0.02)]
+        row["canonical_2pct_top1_rank_change_mean"] = (
+            float(canonical["top1_selection_change_rate"].mean()) if len(canonical) else np.nan
+        )
+        row["canonical_2pct_top1_return_abs_change_mean"] = (
+            float(canonical["top1_mean_return_abs_change"].mean()) if len(canonical) else np.nan
+        )
+        rows.append(row)
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["top1_to_top5_rank_change_mean", "top1_return_abs_change_mean"],
+            ascending=[False, False],
+        )
+    return result
+
+
+def _summarize_local_sensitivity_segment_stability(segment_summary: pd.DataFrame) -> pd.DataFrame:
+    """汇总局部敏感性在S1-S4之间的稳定程度。"""
+    if segment_summary.empty:
+        return pd.DataFrame()
+    rows = []
+    for factor, group in segment_summary.groupby("factor", sort=False):
+        rank_change = pd.to_numeric(group["top1_to_top5_rank_change_mean"], errors="coerce").dropna()
+        top1_rank_change = pd.to_numeric(group["top1_selection_change_rate_mean"], errors="coerce").dropna()
+        top1_return_change = pd.to_numeric(group["top1_return_abs_change_mean"], errors="coerce").dropna()
+        if rank_change.empty:
+            continue
+        rank_mean = float(rank_change.mean())
+        rank_std = float(rank_change.std(ddof=0))
+        rows.append({
+            "factor": factor,
+            "segment_count": int(len(rank_change)),
+            "rank_change_segment_mean": rank_mean,
+            "rank_change_segment_std": rank_std,
+            "rank_change_segment_min": float(rank_change.min()),
+            "rank_change_segment_max": float(rank_change.max()),
+            "rank_change_stability_ratio": float(rank_mean / rank_std) if rank_std > 0 else np.nan,
+            "top1_rank_change_segment_mean": float(top1_rank_change.mean()) if len(top1_rank_change) else np.nan,
+            "top1_rank_change_segment_min": float(top1_rank_change.min()) if len(top1_rank_change) else np.nan,
+            "top1_rank_change_segment_max": float(top1_rank_change.max()) if len(top1_rank_change) else np.nan,
+            "top1_return_abs_change_segment_mean": (
+                float(top1_return_change.mean()) if len(top1_return_change) else np.nan
+            ),
+            "top1_return_abs_change_segment_min": (
+                float(top1_return_change.min()) if len(top1_return_change) else np.nan
+            ),
+            "top1_return_abs_change_segment_max": (
+                float(top1_return_change.max()) if len(top1_return_change) else np.nan
+            ),
+        })
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["rank_change_segment_min", "rank_change_segment_mean"],
+            ascending=[False, False],
+        )
+    return result
+
+
+def run_factor_local_sensitivity_mode(args):
+    """使用当日经验分位数微扰检测固定LightGBM模型对各训练因子的局部敏感性。"""
+    logger = logging.getLogger(__name__)
+    print("===== 模型因子局部敏感性分析 =====")
+    try:
+        model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        if not model_path.exists():
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
+        with open(model_path, "rb") as f:
+            model_data = pickle.load(f)
+        model = model_data["model"]
+        feature_columns = list(model_data.get("feature_names") or [])
+        if not feature_columns:
+            raise ValueError("模型文件缺少feature_names")
+
+        steps = sorted({
+            float(value.strip())
+            for value in str(getattr(args, "sensitivity_quantile_steps", "0.01,0.02,0.05")).split(",")
+            if value.strip()
+        })
+        if not steps or any(step <= 0 or step >= 0.5 for step in steps):
+            raise ValueError("sensitivity_quantile_steps必须位于(0, 0.5)")
+
+        eval_start = pd.to_datetime(getattr(args, "start_date", None) or "20250801")
+        eval_end = pd.to_datetime(getattr(args, "end_date", None) or "20260518")
+        label_end = eval_end + pd.Timedelta(days=14)
+        eval_data = _load_factor_cache_data(
+            required_factors=feature_columns,
+            include_label_generation_features=True,
+            start_date=eval_start.strftime("%Y%m%d"),
+            end_date=label_end.strftime("%Y%m%d"),
+        )
+        if eval_data is None or eval_data.empty:
+            raise ValueError("局部敏感性评估数据加载失败")
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        if "stock_code" in eval_data.columns:
+            bj_mask = eval_data["stock_code"].astype(str).str.endswith((".BJ", ".bj"), na=False)
+            eval_data = eval_data.loc[~bj_mask].copy()
+        try:
+            valid_cs_mask, _, _ = _build_valid_cs_mask(eval_data, logger)
+            eval_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+        except Exception as e:
+            logger.warning(f"valid_cs_mask生成失败，回退为全True: {e}")
+            eval_data["valid_cs_mask"] = True
+
+        labeled_result = _generate_training_labels_for_all_data(eval_data)
+        eval_data = labeled_result[0] if isinstance(labeled_result, tuple) else labeled_result
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data[
+            (eval_data["date"] >= eval_start) &
+            (eval_data["date"] <= eval_end)
+        ].dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期范围内无有效局部敏感性评估样本")
+
+        X = eval_data[feature_columns].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        baseline_pred = np.asarray(_predict_lightgbm_model(model, X))
+        baseline_metrics = _evaluate_permutation_predictions(
+            eval_data, baseline_pred, return_col="atr_return_label", top_ks=(1, 2, 3, 4, 5)
+        )
+        segments = _build_permutation_time_segments(eval_data, n_segments=4)
+        segment_baselines = {}
+        for segment in segments:
+            mask = segment["mask"]
+            segment_baselines[segment["segment"]] = _evaluate_permutation_predictions(
+                eval_data.loc[mask], baseline_pred[mask],
+                return_col="atr_return_label", top_ks=(1, 2, 3, 4, 5),
+            )
+
+        logger.info(
+            f"固定模型={model_path.name}, 因子={len(feature_columns)}, 样本={len(eval_data):,}, "
+            f"区间={eval_start.date()}~{eval_end.date()}, 分位数微扰={steps}, 双向测试"
+        )
+        detail_rows = []
+        segment_detail_rows = []
+        for factor_idx, factor in enumerate(feature_columns, start=1):
+            for step in steps:
+                for direction in (-1, 1):
+                    signed_shift = direction * step
+                    X_shifted = _shift_factor_by_daily_quantile(
+                        X, eval_data["date"], factor, signed_shift
+                    )
+                    pred = np.asarray(_predict_lightgbm_model(model, X_shifted))
+                    row = {
+                        "factor": factor,
+                        "quantile_step": step,
+                        "direction": "down" if direction < 0 else "up",
+                        "signed_quantile_shift": signed_shift,
+                    }
+                    row.update(_evaluate_local_sensitivity_once(
+                        eval_data, baseline_pred, pred, baseline_metrics
+                    ))
+                    detail_rows.append(row)
+
+                    for segment in segments:
+                        mask = segment["mask"]
+                        seg_row = {
+                            "factor": factor,
+                            "quantile_step": step,
+                            "direction": "down" if direction < 0 else "up",
+                            "signed_quantile_shift": signed_shift,
+                            "segment": segment["segment"],
+                            "segment_idx": segment["segment_idx"],
+                            "segment_start": segment["segment_start"].strftime("%Y-%m-%d"),
+                            "segment_end": segment["segment_end"].strftime("%Y-%m-%d"),
+                        }
+                        seg_row.update(_evaluate_local_sensitivity_once(
+                            eval_data.loc[mask],
+                            baseline_pred[mask],
+                            pred[mask],
+                            segment_baselines[segment["segment"]],
+                        ))
+                        segment_detail_rows.append(seg_row)
+            if factor_idx % 5 == 0 or factor_idx == len(feature_columns):
+                logger.info(f"局部敏感性分析进度: {factor_idx}/{len(feature_columns)}")
+
+        detail_result = pd.DataFrame(detail_rows)
+        summary_result = _summarize_local_sensitivity(detail_result, ["factor"])
+        segment_detail_result = pd.DataFrame(segment_detail_rows)
+        segment_summary_result = _summarize_local_sensitivity(
+            segment_detail_result, ["factor", "segment", "segment_start", "segment_end"]
+        )
+        segment_stability_result = _summarize_local_sensitivity_segment_stability(segment_summary_result)
+
+        out_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else Path("results")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = out_dir / "factor_local_sensitivity_summary.csv"
+        detail_path = out_dir / "factor_local_sensitivity_detail.csv"
+        segment_summary_path = out_dir / "factor_local_sensitivity_segments_all.csv"
+        segment_detail_path = out_dir / "factor_local_sensitivity_segment_detail.csv"
+        segment_stability_path = out_dir / "factor_local_sensitivity_segment_stability.csv"
+        summary_result.to_csv(summary_path, index=False, encoding="utf-8-sig")
+        detail_result.to_csv(detail_path, index=False, encoding="utf-8-sig")
+        segment_summary_result.to_csv(segment_summary_path, index=False, encoding="utf-8-sig")
+        segment_detail_result.to_csv(segment_detail_path, index=False, encoding="utf-8-sig")
+        segment_stability_result.to_csv(segment_stability_path, index=False, encoding="utf-8-sig")
+
+        show_cols = [
+            "factor", "top1_to_top5_rank_change_mean",
+            "top1_selection_change_rate_mean", "top1_selection_change_rate_max",
+            "top1_return_abs_change_mean", "top1_return_abs_change_max",
+            "top1_worst_return_drop", "canonical_2pct_top1_rank_change_mean",
+            "canonical_2pct_top1_return_abs_change_mean",
+            "mean_abs_prediction_change", "max_abs_prediction_change",
+        ]
+        print("\n===== 最敏感模型因子 Top30 =====")
+        print(summary_result[show_cols].head(30).to_string(index=False))
+        print("\n定义：每个因子按当日经验分布上下移动1%/2%/5%分位；TopN为每日模型预测精确第N名。")
+        print(f"汇总结果已保存: {summary_path}")
+        print(f"全部方向/邻域明细已保存: {detail_path}")
+        print(f"S1-S4敏感性汇总已保存: {segment_summary_path}")
+        print(f"S1-S4方向/邻域明细已保存: {segment_detail_path}")
+        print(f"S1-S4稳定性已保存: {segment_stability_path}")
+        return True
+    except Exception as e:
+        logger.error(f"模型因子局部敏感性分析失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def run_factor_label_correlation_mode(args):
+    """分析factors.parquet全部因子与固定模型收益标签的相关性及分段稳定性。"""
+    logger = logging.getLogger(__name__)
+    print("===== 全因子与模型标签收益相关性分析 =====")
+    try:
+        import pyarrow.parquet as pq
+
+        model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        if not model_path.exists():
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
+        if not FACTOR_LAB_STORE_PATH.exists():
+            raise FileNotFoundError(f"因子文件不存在: {FACTOR_LAB_STORE_PATH}")
+
+        with open(model_path, "rb") as f:
+            model_data = pickle.load(f)
+        model_features = set(model_data.get("feature_names") or [])
+
+        parquet_columns = pq.ParquetFile(str(FACTOR_LAB_STORE_PATH)).schema_arrow.names
+        factor_columns = [col for col in parquet_columns if col not in {"date", "stock_code", "date_str"}]
+        if not factor_columns:
+            raise ValueError("factors.parquet中没有可分析因子")
+
+        eval_start = pd.to_datetime(getattr(args, "start_date", None) or "20250801")
+        eval_end = pd.to_datetime(getattr(args, "end_date", None) or "20260518")
+        label_end = eval_end + pd.Timedelta(days=14)
+        eval_data = _load_factor_cache_data(
+            required_factors=factor_columns,
+            include_label_generation_features=True,
+            start_date=eval_start.strftime("%Y%m%d"),
+            end_date=label_end.strftime("%Y%m%d"),
+        )
+        if eval_data is None or eval_data.empty:
+            raise ValueError("相关性评估数据加载失败")
+
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        if "stock_code" in eval_data.columns:
+            bj_mask = eval_data["stock_code"].astype(str).str.endswith((".BJ", ".bj"), na=False)
+            eval_data = eval_data.loc[~bj_mask].copy()
+
+        try:
+            valid_cs_mask, _, _ = _build_valid_cs_mask(eval_data, logger)
+            eval_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+        except Exception as e:
+            logger.warning(f"valid_cs_mask生成失败，回退为全True: {e}")
+            eval_data["valid_cs_mask"] = True
+
+        labeled_result = _generate_training_labels_for_all_data(eval_data)
+        eval_data = labeled_result[0] if isinstance(labeled_result, tuple) else labeled_result
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data[
+            (eval_data["date"] >= eval_start) &
+            (eval_data["date"] <= eval_end)
+        ].dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期范围内没有有效标签样本")
+
+        available_factors = [
+            factor for factor in factor_columns
+            if factor in eval_data.columns and pd.api.types.is_numeric_dtype(eval_data[factor])
+        ]
+        segments = _build_permutation_time_segments(eval_data, n_segments=4)
+        logger.info(
+            f"模型={model_path.name}, 标签=atr_return_label, 区间={eval_start.date()}~{eval_end.date()}, "
+            f"样本={len(eval_data):,}, 全因子={len(available_factors)}, 模型内因子={len(model_features)}"
+        )
+
+        overall_rows = []
+        segment_rows = []
+        for factor_idx, factor in enumerate(available_factors, start=1):
+            daily_ic = _calculate_daily_factor_label_ic(eval_data, factor, "atr_return_label")
+            overall = {
+                "factor": factor,
+                "in_model": factor in model_features,
+            }
+            overall.update(_summarize_factor_label_correlation(
+                eval_data, factor, "atr_return_label", daily_ic=daily_ic
+            ))
+            overall_rows.append(overall)
+
+            for segment in segments:
+                seg_mask = segment["mask"]
+                seg_data = eval_data.loc[seg_mask]
+                # 直接在分段数据内重新计算每日IC，避免daily_ic索引类型不稳定
+                # （部分环境中可能形成object/ndarray索引，无法与Timestamp比较）。
+                seg_daily_ic = _calculate_daily_factor_label_ic(
+                    seg_data, factor, "atr_return_label"
+                )
+                row = {
+                    "factor": factor,
+                    "in_model": factor in model_features,
+                    "segment": segment["segment"],
+                    "segment_idx": segment["segment_idx"],
+                    "segment_start": segment["segment_start"].strftime("%Y-%m-%d"),
+                    "segment_end": segment["segment_end"].strftime("%Y-%m-%d"),
+                    "segment_date_count": segment["segment_date_count"],
+                }
+                row.update(_summarize_factor_label_correlation(
+                    seg_data, factor, "atr_return_label", daily_ic=seg_daily_ic
+                ))
+                segment_rows.append(row)
+
+            if factor_idx % 10 == 0 or factor_idx == len(available_factors):
+                logger.info(f"相关性分析进度: {factor_idx}/{len(available_factors)}")
+
+        overall_result = pd.DataFrame(overall_rows)
+        overall_result["abs_spearman_corr"] = overall_result["spearman_corr"].abs()
+        overall_result["abs_daily_spearman_ic_mean"] = overall_result["daily_spearman_ic_mean"].abs()
+        overall_result = overall_result.sort_values("abs_daily_spearman_ic_mean", ascending=False)
+        segment_result = pd.DataFrame(segment_rows).sort_values(["factor", "segment_idx"])
+        stability_result = _summarize_factor_label_segment_stability(overall_result, segment_result)
+
+        out_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else Path("results")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        overall_path = out_dir / "factor_label_correlation_overall.csv"
+        segment_path = out_dir / "factor_label_correlation_segments_all.csv"
+        stability_path = out_dir / "factor_label_correlation_segment_stability.csv"
+        overall_result.to_csv(overall_path, index=False, encoding="utf-8-sig")
+        segment_result.to_csv(segment_path, index=False, encoding="utf-8-sig")
+        stability_result.to_csv(stability_path, index=False, encoding="utf-8-sig")
+
+        show_cols = [
+            "factor", "in_model", "sample_count", "pearson_corr", "spearman_corr",
+            "daily_spearman_ic_mean", "daily_spearman_ic_std",
+            "daily_spearman_ic_positive_ratio", "daily_spearman_ic_ir",
+        ]
+        print("\n===== |每日横截面Spearman IC均值| Top30 =====")
+        print(overall_result[show_cols].head(30).to_string(index=False))
+        if not stability_result.empty:
+            stability_cols = [
+                "factor", "in_model", "overall_spearman_corr",
+                "same_sign_segment_count", "same_sign_segment_ratio",
+                "positive_segment_count", "negative_segment_count",
+                "daily_ic_same_sign_segment_count", "daily_ic_same_sign_segment_ratio",
+                "daily_ic_positive_segment_count", "daily_ic_negative_segment_count",
+                "segment_spearman_mean", "segment_spearman_std",
+                "segment_spearman_min", "segment_spearman_max",
+                "segment_daily_ic_mean", "segment_daily_ic_std",
+            ]
+            print("\n===== S1-S4方向稳定性 Top30 =====")
+            print(stability_result[stability_cols].head(30).to_string(index=False))
+
+        print(f"\n整体相关性已保存: {overall_path}")
+        print(f"所有因子S1-S4相关性已保存: {segment_path}")
+        print(f"分段稳定性已保存: {stability_path}")
+        return True
+    except Exception as e:
+        logger.error(f"全因子标签相关性分析失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def _safe_roc_auc_high_value(scores, binary_labels):
+    """AUC for score high -> positive label=1; NaN on invalid or single-class input."""
+    try:
+        scores = pd.to_numeric(pd.Series(scores), errors="coerce")
+        labels = pd.to_numeric(pd.Series(binary_labels), errors="coerce")
+        mask = scores.notna() & labels.notna()
+        scores = scores[mask].astype(float)
+        labels = labels[mask].astype(int)
+        if len(scores) == 0 or len(np.unique(labels)) < 2:
+            return np.nan
+        pos_mask = labels.to_numpy() == 1
+        n_pos = int(pos_mask.sum())
+        n_neg = int(len(labels) - n_pos)
+        if n_pos == 0 or n_neg == 0:
+            return np.nan
+        ranks = pd.Series(scores.to_numpy()).rank(method="average").to_numpy()
+        auc = (ranks[pos_mask].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+        return float(auc)
+    except Exception:
+        return np.nan
+
+
+def _safe_ks_2samp_statistic(sample_a, sample_b):
+    """KS statistic with scipy fallback."""
+    try:
+        a = pd.to_numeric(pd.Series(sample_a), errors="coerce").dropna().to_numpy(dtype=float)
+        b = pd.to_numeric(pd.Series(sample_b), errors="coerce").dropna().to_numpy(dtype=float)
+        if len(a) == 0 or len(b) == 0:
+            return np.nan
+        try:
+            from scipy.stats import ks_2samp
+        except Exception:
+            return np.nan
+        return float(ks_2samp(a, b, alternative="two-sided", mode="auto").statistic)
+    except Exception:
+        return np.nan
+
+
+def _compute_top1_conditional_risk_metrics(
+    data: pd.DataFrame,
+    factor: str,
+    *,
+    in_model: bool,
+    big_loss_threshold: float,
+    big_gain_threshold: float,
+    low_gap_threshold: float | None = None,
+    min_samples: int = 30,
+    min_unique: int = 3,
+    scope: str = "overall",
+) -> dict:
+    """单因子 Top1 条件风险统计。"""
+    base = {
+        "scope": scope,
+        "factor": factor,
+        "in_model": bool(in_model),
+        "sample_count": 0,
+        "factor_mean": np.nan,
+        "factor_std": np.nan,
+        "factor_median": np.nan,
+        "unique_count": 0,
+        "big_loss_count": 0,
+        "big_gain_count": 0,
+        "big_loss_rate": np.nan,
+        "big_gain_rate": np.nan,
+        "pearson_corr_with_return": np.nan,
+        "spearman_corr_with_return": np.nan,
+        "loss_auc_high_value": np.nan,
+        "gain_auc_high_value": np.nan,
+        "ks_loss_vs_nonloss": np.nan,
+        "ks_gain_vs_nongain": np.nan,
+        "big_loss_mean": np.nan,
+        "non_big_loss_mean": np.nan,
+        "big_gain_mean": np.nan,
+        "non_big_gain_mean": np.nan,
+        "big_loss_median": np.nan,
+        "non_big_loss_median": np.nan,
+        "big_gain_median": np.nan,
+        "non_big_gain_median": np.nan,
+        "top20pct_sample_count": 0,
+        "top20pct_big_loss_capture_rate": np.nan,
+        "top20pct_big_gain_kill_rate": np.nan,
+        "top20pct_avg_return": np.nan,
+        "top20pct_big_loss_rate": np.nan,
+        "bottom20pct_sample_count": 0,
+        "bottom20pct_big_loss_capture_rate": np.nan,
+        "bottom20pct_big_gain_kill_rate": np.nan,
+        "bottom20pct_avg_return": np.nan,
+        "bottom20pct_big_loss_rate": np.nan,
+        "risk_filter_score": 0.0,
+        "analysis_valid": False,
+        "skip_reason": "",
+    }
+
+    if factor not in data.columns or "atr_return_label" not in data.columns:
+        base["skip_reason"] = "missing_factor_or_label"
+        return base
+
+    working = data[[factor, "atr_return_label"]].copy()
+    working[factor] = pd.to_numeric(working[factor], errors="coerce")
+    working["atr_return_label"] = pd.to_numeric(working["atr_return_label"], errors="coerce")
+    working = working.replace([np.inf, -np.inf], np.nan).dropna(subset=[factor, "atr_return_label"])
+
+    if low_gap_threshold is not None and "score_gap_1_2" in data.columns:
+        gap = pd.to_numeric(data["score_gap_1_2"], errors="coerce")
+        gap_mask = gap <= float(low_gap_threshold)
+        working = working.loc[gap_mask.loc[working.index]].copy()
+        base["low_gap_threshold"] = float(low_gap_threshold)
+        base["low_gap_sample_count"] = int(len(working))
+
+    sample_count = int(len(working))
+    unique_count = int(working[factor].nunique(dropna=True))
+    base["sample_count"] = sample_count
+    base["unique_count"] = unique_count
+
+    if sample_count == 0:
+        base["skip_reason"] = "empty_sample"
+        return base
+
+    ret = working["atr_return_label"]
+    fac = working[factor]
+    big_loss_mask = ret <= float(big_loss_threshold)
+    big_gain_mask = ret >= float(big_gain_threshold)
+    big_loss_count = int(big_loss_mask.sum())
+    big_gain_count = int(big_gain_mask.sum())
+    base["big_loss_count"] = big_loss_count
+    base["big_gain_count"] = big_gain_count
+    base["big_loss_rate"] = float(big_loss_count / sample_count) if sample_count else np.nan
+    base["big_gain_rate"] = float(big_gain_count / sample_count) if sample_count else np.nan
+    base["factor_mean"] = float(fac.mean()) if len(fac) else np.nan
+    base["factor_std"] = float(fac.std(ddof=1)) if len(fac) > 1 else np.nan
+    base["factor_median"] = float(fac.median()) if len(fac) else np.nan
+    base["pearson_corr_with_return"] = float(fac.corr(ret, method="pearson")) if unique_count >= 2 else np.nan
+    base["spearman_corr_with_return"] = float(fac.corr(ret, method="spearman")) if unique_count >= 2 else np.nan
+
+    if sample_count < min_samples or unique_count < min_unique:
+        base["skip_reason"] = f"insufficient_samples_or_unique(n={sample_count},u={unique_count})"
+        base["analysis_valid"] = False
+        return base
+
+    base["analysis_valid"] = True
+
+    base["loss_auc_high_value"] = _safe_roc_auc_high_value(fac, big_loss_mask.astype(int))
+    base["gain_auc_high_value"] = _safe_roc_auc_high_value(fac, big_gain_mask.astype(int))
+
+    loss_values = fac.loc[big_loss_mask]
+    non_loss_values = fac.loc[~big_loss_mask]
+    gain_values = fac.loc[big_gain_mask]
+    non_gain_values = fac.loc[~big_gain_mask]
+
+    base["ks_loss_vs_nonloss"] = _safe_ks_2samp_statistic(loss_values, non_loss_values)
+    base["ks_gain_vs_nongain"] = _safe_ks_2samp_statistic(gain_values, non_gain_values)
+
+    base["big_loss_mean"] = float(loss_values.mean()) if len(loss_values) else np.nan
+    base["non_big_loss_mean"] = float(non_loss_values.mean()) if len(non_loss_values) else np.nan
+    base["big_gain_mean"] = float(gain_values.mean()) if len(gain_values) else np.nan
+    base["non_big_gain_mean"] = float(non_gain_values.mean()) if len(non_gain_values) else np.nan
+    base["big_loss_median"] = float(loss_values.median()) if len(loss_values) else np.nan
+    base["non_big_loss_median"] = float(non_loss_values.median()) if len(non_loss_values) else np.nan
+    base["big_gain_median"] = float(gain_values.median()) if len(gain_values) else np.nan
+    base["non_big_gain_median"] = float(non_gain_values.median()) if len(non_gain_values) else np.nan
+
+    q20 = float(fac.quantile(0.20))
+    q80 = float(fac.quantile(0.80))
+    top_mask = fac >= q80
+    bottom_mask = fac <= q20
+    top_count = int(top_mask.sum())
+    bottom_count = int(bottom_mask.sum())
+    base["top20pct_sample_count"] = top_count
+    base["bottom20pct_sample_count"] = bottom_count
+
+    total_big_loss = max(big_loss_count, 0)
+    total_big_gain = max(big_gain_count, 0)
+    top_big_loss = int((top_mask & big_loss_mask).sum())
+    top_big_gain = int((top_mask & big_gain_mask).sum())
+    bottom_big_loss = int((bottom_mask & big_loss_mask).sum())
+    bottom_big_gain = int((bottom_mask & big_gain_mask).sum())
+
+    base["top20pct_big_loss_capture_rate"] = float(top_big_loss / total_big_loss) if total_big_loss > 0 else np.nan
+    base["top20pct_big_gain_kill_rate"] = float(top_big_gain / total_big_gain) if total_big_gain > 0 else np.nan
+    base["top20pct_avg_return"] = float(ret.loc[top_mask].mean()) if top_count else np.nan
+    base["top20pct_big_loss_rate"] = float((ret.loc[top_mask] <= float(big_loss_threshold)).mean()) if top_count else np.nan
+
+    base["bottom20pct_big_loss_capture_rate"] = float(bottom_big_loss / total_big_loss) if total_big_loss > 0 else np.nan
+    base["bottom20pct_big_gain_kill_rate"] = float(bottom_big_gain / total_big_gain) if total_big_gain > 0 else np.nan
+    base["bottom20pct_avg_return"] = float(ret.loc[bottom_mask].mean()) if bottom_count else np.nan
+    base["bottom20pct_big_loss_rate"] = float((ret.loc[bottom_mask] <= float(big_loss_threshold)).mean()) if bottom_count else np.nan
+
+    loss_auc = base["loss_auc_high_value"] if pd.notna(base["loss_auc_high_value"]) else 0.0
+    top20_capture = base["top20pct_big_loss_capture_rate"] if pd.notna(base["top20pct_big_loss_capture_rate"]) else 0.0
+    top20_gain_kill = base["top20pct_big_gain_kill_rate"] if pd.notna(base["top20pct_big_gain_kill_rate"]) else 0.0
+    top20_avg_return = base["top20pct_avg_return"] if pd.notna(base["top20pct_avg_return"]) else 0.0
+    base["risk_filter_score"] = float(
+        max(2.0 * (loss_auc - 0.5), 0.0)
+        + 1.5 * top20_capture
+        - 1.0 * top20_gain_kill
+        - 0.5 * max(top20_avg_return, 0.0)
+    )
+    return base
+
+
+def _summarize_top1_conditional_risk_stability(overall_result: pd.DataFrame, segment_result: pd.DataFrame) -> pd.DataFrame:
+    if segment_result is None or segment_result.empty:
+        return pd.DataFrame()
+
+    rows = []
+    overall_sign_map = {}
+    if overall_result is not None and not overall_result.empty and "spearman_corr_with_return" in overall_result.columns:
+        for row in overall_result.itertuples(index=False):
+            overall_sign_map[getattr(row, "factor")] = np.sign(getattr(row, "spearman_corr_with_return", np.nan))
+
+    for factor, group in segment_result.groupby("factor", sort=False):
+        valid = group[group.get("analysis_valid", True).fillna(True)] if "analysis_valid" in group.columns else group
+        valid_segment_count = int(len(valid))
+        if valid_segment_count == 0:
+            continue
+
+        spearman_vals = pd.to_numeric(valid.get("spearman_corr_with_return"), errors="coerce").dropna()
+        loss_auc_vals = pd.to_numeric(valid.get("loss_auc_high_value"), errors="coerce").dropna()
+        top20_capture_vals = pd.to_numeric(valid.get("top20pct_big_loss_capture_rate"), errors="coerce").dropna()
+        top20_gain_kill_vals = pd.to_numeric(valid.get("top20pct_big_gain_kill_rate"), errors="coerce").dropna()
+        top20_avg_return_vals = pd.to_numeric(valid.get("top20pct_avg_return"), errors="coerce").dropna()
+
+        overall_sign = overall_sign_map.get(factor, 0.0)
+        if overall_sign == 0 or np.isnan(overall_sign):
+            same_sign_count = 0
+        else:
+            same_sign_count = int((np.sign(spearman_vals) == overall_sign).sum())
+
+        rows.append({
+            "factor": factor,
+            "in_model": bool(group["in_model"].iloc[0]) if "in_model" in group.columns and len(group) else False,
+            "valid_segment_count": valid_segment_count,
+            "loss_auc_gt_0_5_count": int((loss_auc_vals > 0.5).sum()),
+            "loss_auc_gt_0_55_count": int((loss_auc_vals > 0.55).sum()),
+            "top20_capture_positive_count": int((top20_capture_vals > 0).sum()),
+            "top20_avg_return_negative_count": int((top20_avg_return_vals < 0).sum()),
+            "spearman_same_sign_count": same_sign_count,
+            "spearman_mean": float(spearman_vals.mean()) if len(spearman_vals) else np.nan,
+            "spearman_std": float(spearman_vals.std(ddof=0)) if len(spearman_vals) else np.nan,
+            "loss_auc_mean": float(loss_auc_vals.mean()) if len(loss_auc_vals) else np.nan,
+            "loss_auc_std": float(loss_auc_vals.std(ddof=0)) if len(loss_auc_vals) else np.nan,
+            "top20_loss_capture_mean": float(top20_capture_vals.mean()) if len(top20_capture_vals) else np.nan,
+            "top20_gain_kill_mean": float(top20_gain_kill_vals.mean()) if len(top20_gain_kill_vals) else np.nan,
+        })
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(
+            ["loss_auc_gt_0_55_count", "top20_loss_capture_mean", "spearman_mean"],
+            ascending=[False, False, False],
+            na_position="last",
+        )
+    return result
+
+
+def _apply_daily_cross_sectional_percentile_transform(
+    eval_data: pd.DataFrame,
+    top1_panel: pd.DataFrame,
+    factor_candidates: list[str],
+    logger: logging.Logger,
+    *,
+    chunk_size: int = 16,
+) -> pd.DataFrame:
+    """将非 *_pct 因子转换为当日横截面分位数，*_pct 因子保持原值。
+
+    这里只影响 top1_conditional_risk_analysis 模式，不改变原始因子文件或其他模式。
+    """
+    if top1_panel is None or top1_panel.empty:
+        return top1_panel
+
+    analysis_panel = top1_panel.copy()
+    non_pct_factors = [col for col in factor_candidates if not str(col).endswith("_pct")]
+    pct_factors = [col for col in factor_candidates if str(col).endswith("_pct")]
+
+    if not non_pct_factors:
+        logger.info("Top1条件风险分析：未发现需要做日内分位变换的因子（全部为 *_pct 或无可用因子）")
+        return analysis_panel
+
+    logger.info(
+        "Top1条件风险分析：非 *_pct 因子将转换为当日横截面分位数，共 %d 个；"
+        " *_pct 因子保持原值，共 %d 个",
+        len(non_pct_factors),
+        len(pct_factors),
+    )
+
+    top1_key = analysis_panel[["date", "stock_code"]].copy()
+    eval_base = eval_data[["date", "stock_code"] + non_pct_factors].copy()
+    eval_base["date"] = pd.to_datetime(eval_base["date"])
+    top1_key["date"] = pd.to_datetime(top1_key["date"])
+
+    for start_idx in range(0, len(non_pct_factors), chunk_size):
+        chunk = non_pct_factors[start_idx:start_idx + chunk_size]
+        logger.info(
+            "Top1条件风险分析：日内分位变换进度 %d/%d",
+            min(start_idx + len(chunk), len(non_pct_factors)),
+            len(non_pct_factors),
+        )
+
+        chunk_df = eval_base[["date", "stock_code"] + chunk].copy()
+        ranked = chunk_df.groupby("date", sort=False)[chunk].rank(pct=True, method="average")
+        ranked = pd.concat([chunk_df[["date", "stock_code"]].reset_index(drop=True), ranked.reset_index(drop=True)], axis=1)
+
+        merged = top1_key.merge(ranked, on=["date", "stock_code"], how="left")
+        for col in chunk:
+            analysis_panel[col] = pd.to_numeric(merged[col], errors="coerce")
+
+    return analysis_panel
+
+
+def _build_expanding_low_gap_mask(
+    score_gap: pd.Series,
+    low_gap_quantile: float,
+) -> tuple[pd.Series, pd.Series]:
+    """基于测试集历史的 expanding 分位数，生成逐日低置信门槛与掩码。
+
+    规则：
+    - 只使用当前日期之前的 score_gap_1_2 历史样本
+    - 当前日期自身不参与阈值计算
+    """
+    gap = pd.to_numeric(score_gap, errors="coerce")
+    expanding_th = gap.shift(1).expanding(min_periods=1).quantile(low_gap_quantile)
+    low_gap_mask = gap <= expanding_th
+    return expanding_th, low_gap_mask
+
+
+def run_top1_conditional_risk_analysis_mode(args):
+    """分析固定 LightGBM 模型 baseline Top1 样本的条件风险因子。"""
+    logger = logging.getLogger(__name__)
+    print("===== Top1 条件风险分析 =====")
+
+    try:
+        import pyarrow.parquet as pq
+
+        model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        if not model_path.exists():
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
+        if not FACTOR_LAB_STORE_PATH.exists():
+            raise FileNotFoundError(f"因子文件不存在: {FACTOR_LAB_STORE_PATH}")
+
+        with open(model_path, "rb") as f:
+            model_data = pickle.load(f)
+        model = model_data["model"]
+        feature_names = list(model_data.get("feature_names") or [])
+        if not feature_names:
+            raise ValueError("模型文件缺少 feature_names")
+
+        parquet_columns = pq.ParquetFile(str(FACTOR_LAB_STORE_PATH)).schema_arrow.names
+        all_factor_columns = [col for col in parquet_columns if col not in {"date", "stock_code", "date_str"}]
+        if not all_factor_columns:
+            raise ValueError("factors.parquet中没有可分析因子")
+
+        eval_start = pd.to_datetime(getattr(args, "start_date", None) or "20250801")
+        eval_end = pd.to_datetime(getattr(args, "end_date", None) or "20260518")
+        label_end = eval_end + pd.Timedelta(days=14)
+        big_loss_threshold = float(getattr(args, "risk_big_loss_threshold", -0.05))
+        big_gain_threshold = float(getattr(args, "risk_big_gain_threshold", 0.08))
+        low_gap_quantile = float(getattr(args, "risk_low_gap_quantile", 0.30))
+
+        eval_data = _load_factor_cache_data(
+            required_factors=all_factor_columns,
+            include_label_generation_features=True,
+            start_date=eval_start.strftime("%Y%m%d"),
+            end_date=label_end.strftime("%Y%m%d"),
+        )
+        if eval_data is None or eval_data.empty:
+            raise ValueError("Top1条件风险分析数据加载失败")
+
+        eval_data = eval_data.copy()
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        if "stock_code" in eval_data.columns:
+            bj_mask = eval_data["stock_code"].astype(str).str.endswith((".BJ", ".bj"), na=False)
+            if bj_mask.any():
+                logger.warning(f"剔除北交所样本: {int(bj_mask.sum()):,} 条")
+                eval_data = eval_data.loc[~bj_mask].copy()
+
+        try:
+            valid_cs_mask, _, _ = _build_valid_cs_mask(eval_data, logger)
+            eval_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+        except Exception as e:
+            logger.warning(f"valid_cs_mask生成失败，回退为全True: {e}")
+            eval_data["valid_cs_mask"] = True
+
+        labeled_result = _generate_training_labels_for_all_data(eval_data)
+        eval_data = labeled_result[0] if isinstance(labeled_result, tuple) else labeled_result
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data[
+            (eval_data["date"] >= eval_start) &
+            (eval_data["date"] <= eval_end)
+        ].copy()
+        if eval_data.empty:
+            raise ValueError("指定日期范围内无有效样本")
+
+        eval_data = eval_data.dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期范围内无有效 atr_return_label")
+
+        missing_model_features = [col for col in feature_names if col not in eval_data.columns]
+        if missing_model_features:
+            logger.warning(f"模型特征缺失 {len(missing_model_features)} 个，预测时将补0: {missing_model_features[:10]}")
+
+        X_model = pd.DataFrame(index=eval_data.index)
+        for col in feature_names:
+            if col in eval_data.columns:
+                X_model[col] = pd.to_numeric(eval_data[col], errors="coerce")
+            else:
+                X_model[col] = 0.0
+        X_model = X_model.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        baseline_pred = np.asarray(_predict_lightgbm_model(model, X_model), dtype=float).reshape(-1)
+        eval_data["pred_score"] = baseline_pred
+
+        top1_rows = []
+        for date_val, group in eval_data.groupby("date", sort=True):
+            if group.empty:
+                continue
+            sorted_group = group.sort_values(["pred_score", "stock_code"], ascending=[False, True]).reset_index(drop=True)
+            row = sorted_group.iloc[0].copy()
+            top2_score = float(sorted_group.iloc[1]["pred_score"]) if len(sorted_group) > 1 else np.nan
+            top3_score = float(sorted_group.iloc[2]["pred_score"]) if len(sorted_group) > 2 else np.nan
+            top5_score = float(sorted_group.iloc[4]["pred_score"]) if len(sorted_group) > 4 else np.nan
+            pred1 = float(row["pred_score"]) if pd.notna(row["pred_score"]) else np.nan
+            top1_rows.append({
+                **row.to_dict(),
+                "date": pd.to_datetime(date_val),
+                "pred_score": pred1,
+                "top2_score": top2_score,
+                "top3_score": top3_score,
+                "top5_score": top5_score,
+                "score_gap_1_2": pred1 - top2_score if pd.notna(pred1) and pd.notna(top2_score) else np.nan,
+                "score_gap_1_3": pred1 - top3_score if pd.notna(pred1) and pd.notna(top3_score) else np.nan,
+                "score_gap_1_5": pred1 - top5_score if pd.notna(pred1) and pd.notna(top5_score) else np.nan,
+            })
+
+        top1_panel = pd.DataFrame(top1_rows).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if top1_panel.empty:
+            raise ValueError("baseline Top1面板为空")
+
+        top1_panel["is_big_loss"] = top1_panel["atr_return_label"] <= big_loss_threshold
+        top1_panel["is_big_gain"] = top1_panel["atr_return_label"] >= big_gain_threshold
+        top1_panel["is_positive"] = top1_panel["atr_return_label"] > 0
+
+        top1_sample_count = int(len(top1_panel))
+        top1_date_count = int(top1_panel["date"].nunique())
+        top1_big_loss_count = int(top1_panel["is_big_loss"].sum())
+        top1_big_gain_count = int(top1_panel["is_big_gain"].sum())
+        logger.info(
+            f"Top1样本数={top1_sample_count:,}, 交易日数={top1_date_count:,}, "
+            f"大亏={top1_big_loss_count:,}({top1_big_loss_count / top1_sample_count:.2%}), "
+            f"大赚={top1_big_gain_count:,}({top1_big_gain_count / top1_sample_count:.2%}), "
+            f"均值={pd.to_numeric(top1_panel['atr_return_label'], errors='coerce').mean():.6f}, "
+            f"中位数={pd.to_numeric(top1_panel['atr_return_label'], errors='coerce').median():.6f}, "
+            f"胜率={top1_panel['is_positive'].mean():.2%}"
+        )
+        logger.info(
+            f"score_gap_1_2 低置信门槛将使用测试集内 expanding 30%分位历史阈值；"
+            f"当前完整测试窗的30%分位仅作参考: "
+            f"{pd.to_numeric(top1_panel['score_gap_1_2'], errors='coerce').dropna().quantile(low_gap_quantile):.6f}"
+        )
+
+        factor_candidates = [
+            col for col in all_factor_columns
+            if col in top1_panel.columns and pd.api.types.is_numeric_dtype(top1_panel[col])
+        ]
+        if not factor_candidates:
+            raise ValueError("Top1面板中没有可分析的数值因子")
+
+        logger.info(
+            f"模型内因子: {len(feature_names)}个, Top1面板候选因子: {len(factor_candidates)}个, "
+            f"其中模型内命中: {sum(col in set(feature_names) for col in factor_candidates)}个"
+        )
+
+        analysis_panel = _apply_daily_cross_sectional_percentile_transform(
+            eval_data=eval_data,
+            top1_panel=top1_panel,
+            factor_candidates=factor_candidates,
+            logger=logger,
+            chunk_size=16,
+        )
+        score_gap_expanding_th, score_gap_low_gap_mask = _build_expanding_low_gap_mask(
+            analysis_panel["score_gap_1_2"],
+            low_gap_quantile,
+        )
+        analysis_panel["score_gap_1_2_expanding_threshold"] = score_gap_expanding_th
+        analysis_panel["score_gap_1_2_low_gap_mask"] = score_gap_low_gap_mask.fillna(False)
+        logger.info(
+            "score_gap_1_2 expanding低置信样本数: %d / %d",
+            int(analysis_panel["score_gap_1_2_low_gap_mask"].sum()),
+            len(analysis_panel),
+        )
+
+        overall_rows = []
+        low_gap_rows = []
+        segment_rows = []
+
+        low_gap_panel = analysis_panel[analysis_panel["score_gap_1_2_low_gap_mask"]].copy()
+        logger.info(f"低置信子样本数: {len(low_gap_panel):,} / {len(analysis_panel):,}")
+
+        segments = _build_permutation_time_segments(analysis_panel, n_segments=4)
+        logger.info(
+            f"Top1面板按日期切分4段: "
+            + ", ".join([f"{s['segment']}({s['segment_start'].date()}~{s['segment_end'].date()}, {s['segment_date_count']}日)" for s in segments])
+        )
+
+        model_feature_set = set(feature_names)
+        for idx, factor in enumerate(factor_candidates, start=1):
+            in_model = factor in model_feature_set
+            overall_row = _compute_top1_conditional_risk_metrics(
+                analysis_panel,
+                factor,
+                in_model=in_model,
+                big_loss_threshold=big_loss_threshold,
+                big_gain_threshold=big_gain_threshold,
+                scope="overall",
+            )
+            overall_rows.append(overall_row)
+
+            low_gap_row = _compute_top1_conditional_risk_metrics(
+                low_gap_panel,
+                factor,
+                in_model=in_model,
+                big_loss_threshold=big_loss_threshold,
+                big_gain_threshold=big_gain_threshold,
+                low_gap_threshold=None,
+                scope="low_gap",
+            )
+            low_gap_rows.append(low_gap_row)
+
+            for segment in segments:
+                seg_data = analysis_panel.loc[segment["mask"]].copy()
+                seg_row = _compute_top1_conditional_risk_metrics(
+                    seg_data,
+                    factor,
+                    in_model=in_model,
+                    big_loss_threshold=big_loss_threshold,
+                    big_gain_threshold=big_gain_threshold,
+                    scope=segment["segment"],
+                )
+                seg_row.update({
+                    "segment": segment["segment"],
+                    "segment_idx": segment["segment_idx"],
+                    "segment_start": segment["segment_start"].strftime("%Y-%m-%d"),
+                    "segment_end": segment["segment_end"].strftime("%Y-%m-%d"),
+                    "segment_date_count": segment["segment_date_count"],
+                })
+                segment_rows.append(seg_row)
+
+            if idx % 20 == 0 or idx == len(factor_candidates):
+                logger.info(f"Top1条件风险分析进度: {idx}/{len(factor_candidates)}")
+
+        overall_result = pd.DataFrame(overall_rows)
+        low_gap_result = pd.DataFrame(low_gap_rows)
+        segment_result = pd.DataFrame(segment_rows)
+
+        if not overall_result.empty:
+            for col in ["big_loss_rate", "big_gain_rate"]:
+                if col in overall_result.columns:
+                    overall_result[col] = pd.to_numeric(overall_result[col], errors="coerce")
+            overall_result = overall_result.sort_values(
+                ["risk_filter_score", "loss_auc_high_value", "top20pct_big_loss_capture_rate"],
+                ascending=[False, False, False],
+                na_position="last",
+            )
+
+        if not low_gap_result.empty:
+            low_gap_result = low_gap_result.sort_values(
+                ["risk_filter_score", "loss_auc_high_value", "top20pct_big_loss_capture_rate"],
+                ascending=[False, False, False],
+                na_position="last",
+            )
+
+        segment_result = segment_result.sort_values(["factor", "segment_idx"], ascending=[True, True], na_position="last")
+        stability_result = _summarize_top1_conditional_risk_stability(overall_result, segment_result)
+
+        out_dir = Path(getattr(args, "output_dir", "./results"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        overall_path = out_dir / "top1_conditional_risk_overall.csv"
+        low_gap_path = out_dir / "top1_conditional_risk_low_gap.csv"
+        segments_path = out_dir / "top1_conditional_risk_segments_all.csv"
+        stability_path = out_dir / "top1_conditional_risk_segment_stability.csv"
+        top1_panel_path = out_dir / "top1_conditional_risk_top1_panel.csv"
+        baseline_path = out_dir / "top1_conditional_risk_baseline.json"
+
+        overall_result.to_csv(overall_path, index=False, encoding="utf-8-sig")
+        low_gap_result.to_csv(low_gap_path, index=False, encoding="utf-8-sig")
+        segment_result.to_csv(segments_path, index=False, encoding="utf-8-sig")
+        stability_result.to_csv(stability_path, index=False, encoding="utf-8-sig")
+        analysis_panel.to_csv(top1_panel_path, index=False, encoding="utf-8-sig")
+
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_path": str(model_path),
+                    "eval_start": eval_start.strftime("%Y-%m-%d"),
+                    "eval_end": eval_end.strftime("%Y-%m-%d"),
+                    "label_end": label_end.strftime("%Y-%m-%d"),
+                    "big_loss_threshold": big_loss_threshold,
+                    "big_gain_threshold": big_gain_threshold,
+                    "low_gap_quantile": low_gap_quantile,
+                    "top1_sample_count": top1_sample_count,
+                    "top1_date_count": top1_date_count,
+                    "top1_big_loss_count": top1_big_loss_count,
+                    "top1_big_gain_count": top1_big_gain_count,
+                    "model_feature_count": len(feature_names),
+                    "factor_candidate_count": len(factor_candidates),
+                    "factor_transform": "daily_cs_percentile_for_non_pct_factors",
+                    "score_gap_transform": "expanding_low_gap_on_test_history",
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        show_cols = [
+            "factor", "in_model", "sample_count", "factor_mean", "factor_std",
+            "big_loss_count", "big_gain_count", "big_loss_rate", "big_gain_rate",
+            "pearson_corr_with_return", "spearman_corr_with_return",
+            "loss_auc_high_value", "gain_auc_high_value",
+            "ks_loss_vs_nonloss", "ks_gain_vs_nongain",
+            "top20pct_big_loss_capture_rate", "top20pct_big_gain_kill_rate",
+            "top20pct_avg_return", "risk_filter_score",
+        ]
+        show_cols = [c for c in show_cols if c in overall_result.columns]
+        print("\n===== Top30: risk_filter_score =====")
+        print(overall_result[show_cols].head(30).to_string(index=False))
+
+        print("\n===== Top30: loss_auc_high_value =====")
+        print(
+            overall_result.sort_values(
+                ["loss_auc_high_value", "top20pct_big_loss_capture_rate"],
+                ascending=[False, False],
+                na_position="last",
+            )[show_cols].head(30).to_string(index=False)
+        )
+
+        print("\n===== Top30: top20pct_big_loss_capture_rate =====")
+        print(
+            overall_result.sort_values(
+                ["top20pct_big_loss_capture_rate", "loss_auc_high_value"],
+                ascending=[False, False],
+                na_position="last",
+            )[show_cols].head(30).to_string(index=False)
+        )
+
+        print("\n===== Top30: top20pct_big_gain_kill_rate(升序) + 高loss_capture候选 =====")
+        print(
+            overall_result.sort_values(
+                ["top20pct_big_gain_kill_rate", "top20pct_big_loss_capture_rate", "loss_auc_high_value"],
+                ascending=[True, False, False],
+                na_position="last",
+            )[show_cols].head(30).to_string(index=False)
+        )
+
+        if not low_gap_result.empty:
+            print("\n===== Low-Gap Top30: risk_filter_score =====")
+            print(low_gap_result[show_cols + [c for c in ["low_gap_threshold", "low_gap_sample_count"] if c in low_gap_result.columns]].head(30).to_string(index=False))
+
+        if not stability_result.empty:
+            stability_cols = [
+                "factor", "in_model", "valid_segment_count",
+                "loss_auc_gt_0_5_count", "loss_auc_gt_0_55_count",
+                "top20_capture_positive_count", "top20_avg_return_negative_count",
+                "spearman_same_sign_count", "spearman_mean", "spearman_std",
+                "loss_auc_mean", "loss_auc_std", "top20_loss_capture_mean", "top20_gain_kill_mean",
+            ]
+            stability_cols = [c for c in stability_cols if c in stability_result.columns]
+            print("\n===== 4段稳定性 Top30 =====")
+            print(stability_result[stability_cols].head(30).to_string(index=False))
+
+        print(f"\n整体结果已保存: {overall_path}")
+        print(f"Low-gap结果已保存: {low_gap_path}")
+        print(f"4段明细已保存: {segments_path}")
+        print(f"4段稳定性已保存: {stability_path}")
+        print(f"Top1面板已保存: {top1_panel_path}")
+        print(f"Baseline信息已保存: {baseline_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Top1条件风险分析失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def run_permutation_factor_clusters_mode(args):
+    """因子簇扰动分析：固定 Window3 LightGBM 模型和训练特征。"""
+    logger = logging.getLogger(__name__)
+    print("===== 因子簇扰动分析 =====")
+    try:
+        # lightgbm_model_window3_20260603_043604.pkl
+        model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        # model_path = Path("results/lightgbm_model_window3_20260603_043604.pkl")
+        if not model_path.exists():
+            logger.error(f"模型文件不存在: {model_path}")
+            return False
+
+        with open(model_path, "rb") as f:
+            model_data = pickle.load(f)
+        model = model_data["model"]
+        feature_columns = list(model_data.get("feature_names") or [])
+        if not feature_columns:
+            raise ValueError("模型文件缺少 feature_names，无法保证使用训练特征")
+
+        eval_start = pd.to_datetime(getattr(args, "start_date", None) or "20250801")
+        eval_end = pd.to_datetime(getattr(args, "end_date", None) or "20260518")
+        label_end = eval_end + pd.Timedelta(days=14)
+
+        eval_data = _load_factor_cache_data(
+            required_factors=feature_columns,
+            include_label_generation_features=True,
+            start_date=eval_start.strftime("%Y%m%d"),
+            end_date=label_end.strftime("%Y%m%d"),
+        )
+        if eval_data is None or eval_data.empty:
+            logger.error("Permutation评估数据加载失败")
+            return False
+
+        missing = [col for col in feature_columns if col not in eval_data.columns]
+        if missing:
+            raise ValueError(f"Permutation输入缺少模型训练特征: {missing[:20]}")
+
+        eval_data = eval_data.copy()
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data.sort_values(["date", "stock_code"]).reset_index(drop=True)
+
+        if "stock_code" in eval_data.columns:
+            bj_mask = eval_data["stock_code"].astype(str).str.endswith((".BJ", ".bj"), na=False)
+            if bj_mask.any():
+                logger.warning(f"Permutation标签生成前剔除北交所样本: {int(bj_mask.sum()):,} 条")
+                eval_data = eval_data.loc[~bj_mask].copy()
+
+        try:
+            valid_cs_mask, _, _ = _build_valid_cs_mask(eval_data, logger)
+            eval_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+        except Exception as e:
+            logger.warning(f"valid_cs_mask生成失败，回退为全True: {e}")
+            eval_data["valid_cs_mask"] = True
+
+        labeled_result = _generate_training_labels_for_all_data(eval_data)
+        eval_data = labeled_result[0] if isinstance(labeled_result, tuple) else labeled_result
+        eval_data["date"] = pd.to_datetime(eval_data["date"])
+        eval_data = eval_data[
+            (eval_data["date"] >= eval_start) &
+            (eval_data["date"] <= eval_end)
+        ].copy()
+
+        if "atr_return_label" not in eval_data.columns:
+            raise ValueError("标签生成后缺少 atr_return_label，无法按训练口径评估")
+        eval_data = eval_data.dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期区间内无有效Permutation评估样本")
+
+        X = eval_data[feature_columns].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+        perturb_mode = getattr(args, "permutation_perturb_mode", "permute")
+        if perturb_mode not in {"permute", "median"}:
+            raise ValueError(f"不支持的扰动模式: {perturb_mode}")
+
+        logger.info(f"固定模型: {model_path}")
+        logger.info("固定输入: factor_lab_data/factors.parquet + local_data行情字段")
+        logger.info(f"训练特征数: {len(feature_columns)}")
+        logger.info(
+            f"评估区间: {eval_start.strftime('%Y-%m-%d')} ~ {eval_end.strftime('%Y-%m-%d')}, "
+            f"标签扩展加载至 {label_end.strftime('%Y-%m-%d')}"
+        )
+        logger.info(f"评估样本: {len(eval_data):,} 行, 日期数: {eval_data['date'].nunique()}")
+        logger.info(f"扰动模式: {perturb_mode}；Top2/Top3/Top5口径=真实第2/3/5名，不是前K等权")
+
+        baseline_pred = _predict_lightgbm_model(model, X)
+        baseline = _evaluate_permutation_predictions(eval_data, baseline_pred, return_col="atr_return_label")
+        logger.info(
+            f"Baseline Top1 mean={baseline['top1_mean_return']:.6f}, "
+            f"Top3 mean={baseline['top3_mean_return']:.6f}, Top5 mean={baseline['top5_mean_return']:.6f}"
+        )
+        segments = _build_permutation_time_segments(eval_data, n_segments=4)
+        segment_baselines = {}
+        for segment in segments:
+            seg_mask = segment["mask"]
+            seg_baseline = _evaluate_permutation_predictions(
+                eval_data.loc[seg_mask],
+                np.asarray(baseline_pred)[seg_mask],
+                return_col="atr_return_label",
+            )
+            segment_baselines[segment["segment"]] = seg_baseline
+            logger.info(
+                f"Segment {segment['segment']} "
+                f"{segment['segment_start'].strftime('%Y-%m-%d')}~{segment['segment_end'].strftime('%Y-%m-%d')}: "
+                f"Top1 mean={seg_baseline['top1_mean_return']:.6f}, dates={seg_baseline['date_count']}"
+            )
+
+        seed = int(getattr(args, "permutation_seed", 20260602))
+        repeats = max(1, int(getattr(args, "permutation_repeats", 5))) if perturb_mode == "permute" else 1
+        groups = _get_permutation_factor_groups(feature_columns)
+
+        rows = []
+        detail_rows = []
+        segment_rows = []
+        segment_detail_rows = []
+        for group_idx, (group_name, cols) in enumerate(groups.items(), start=1):
+            logger.info(f"[{group_idx}/{len(groups)}] Perturb mode={perturb_mode}, group={group_name}, features={len(cols)}")
+            repeat_metrics = []
+            segment_repeat_metrics = {segment["segment"]: [] for segment in segments}
+            for repeat_idx in range(repeats):
+                rng = np.random.default_rng(seed + group_idx * 1000 + repeat_idx) if perturb_mode == "permute" else None
+                X_perturbed = _perturb_columns_within_date(
+                    X, eval_data["date"], cols, rng=rng, mode=perturb_mode
+                )
+                pred = _predict_lightgbm_model(model, X_perturbed)
+                pred = np.asarray(pred)
+                metrics = _evaluate_permutation_predictions(eval_data, pred, return_col="atr_return_label")
+                repeat_metrics.append(metrics)
+                detail = {
+                    "group": group_name,
+                    "repeat": repeat_idx + 1,
+                    "feature_count": len(cols),
+                    "features": ",".join(cols),
+                }
+                detail.update(metrics)
+                detail_rows.append(detail)
+
+                for segment in segments:
+                    seg_mask = segment["mask"]
+                    seg_metrics = _evaluate_permutation_predictions(
+                        eval_data.loc[seg_mask],
+                        pred[seg_mask],
+                        return_col="atr_return_label",
+                    )
+                    segment_repeat_metrics[segment["segment"]].append(seg_metrics)
+                    seg_detail = {
+                        "group": group_name,
+                        "repeat": repeat_idx + 1,
+                        "feature_count": len(cols),
+                        "features": ",".join(cols),
+                        "segment": segment["segment"],
+                        "segment_idx": segment["segment_idx"],
+                        "segment_start": segment["segment_start"].strftime("%Y-%m-%d"),
+                        "segment_end": segment["segment_end"].strftime("%Y-%m-%d"),
+                        "segment_date_count": segment["segment_date_count"],
+                    }
+                    seg_detail.update(seg_metrics)
+                    segment_detail_rows.append(seg_detail)
+
+            rows.append(_summarize_permutation_repeat_metrics(
+                group_name, cols, repeats, repeat_metrics, baseline
+            ))
+            for segment in segments:
+                segment_rows.append(_summarize_permutation_repeat_metrics(
+                    group_name,
+                    cols,
+                    repeats,
+                    segment_repeat_metrics[segment["segment"]],
+                    segment_baselines[segment["segment"]],
+                    segment_info=segment,
+                ))
+
+        result = pd.DataFrame(rows)
+        if "top1_mean_return_drop" in result.columns:
+            result = result.sort_values("top1_mean_return_drop", ascending=False)
+        segment_result = pd.DataFrame(segment_rows)
+        if not segment_result.empty and "top1_mean_return_drop" in segment_result.columns:
+            segment_result = segment_result.sort_values(["segment_idx", "top1_mean_return_drop"], ascending=[True, False])
+        stability_result = _summarize_segment_stability(segment_result)
+        segment_all_columns = [
+            "group",
+            "segment",
+            "segment_start",
+            "segment_end",
+            "top1_mean_return_drop",
+            "top3_mean_return_drop",
+            "top5_mean_return_drop",
+            "top1_win_rate_drop",
+            "top1_big_loss_rate_drop",
+            "top1_big_gain_rate_drop",
+        ]
+        segment_all_columns = [col for col in segment_all_columns if col in segment_result.columns]
+        segment_all_result = segment_result[segment_all_columns].copy()
+        if not segment_all_result.empty:
+            segment_all_result = segment_all_result.sort_values(
+                ["group", "segment"],
+                ascending=[True, True],
+            )
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(args.output_dir) if getattr(args, "output_dir", None) else Path("results")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_prefix = "factor_cluster_permutation" if perturb_mode == "permute" else "factor_cluster_median_neutralize"
+        summary_path = out_dir / f"{output_prefix}_lightgbm_w3_{timestamp}.csv"
+        detail_path = out_dir / f"{output_prefix}_lightgbm_w3_detail_{timestamp}.csv"
+        segment_summary_path = out_dir / f"{output_prefix}_lightgbm_w3_segments_{timestamp}.csv"
+        segment_detail_path = out_dir / f"{output_prefix}_lightgbm_w3_segment_detail_{timestamp}.csv"
+        stability_path = out_dir / f"{output_prefix}_lightgbm_w3_segment_stability_{timestamp}.csv"
+        segment_all_path = out_dir / f"{output_prefix}_segments_all.csv"
+        baseline_path = out_dir / f"{output_prefix}_lightgbm_w3_baseline_{timestamp}.json"
+        result.to_csv(summary_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(detail_rows).to_csv(detail_path, index=False, encoding="utf-8-sig")
+        segment_result.to_csv(segment_summary_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(segment_detail_rows).to_csv(segment_detail_path, index=False, encoding="utf-8-sig")
+        stability_result.to_csv(stability_path, index=False, encoding="utf-8-sig")
+        segment_all_result.to_csv(segment_all_path, index=False, encoding="utf-8-sig")
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_path": str(model_path),
+                    "data_path": str(FACTOR_LAB_STORE_PATH),
+                    "label_source": "atr_return_label generated by _generate_training_labels_for_all_data",
+                    "eval_start": eval_start.strftime("%Y-%m-%d"),
+                    "eval_end": eval_end.strftime("%Y-%m-%d"),
+                    "label_load_end": label_end.strftime("%Y-%m-%d"),
+                    "feature_count": len(feature_columns),
+                    "perturb_mode": perturb_mode,
+                    "topk_semantics": "top1/top2/top3/top5 are exact rank positions, not top-K equal-weight baskets",
+                    "repeats": repeats,
+                    "seed": seed,
+                    "baseline": baseline,
+                    "segment_baselines": segment_baselines,
+                    "segments": [
+                        {
+                            "segment": s["segment"],
+                            "segment_idx": s["segment_idx"],
+                            "segment_start": s["segment_start"].strftime("%Y-%m-%d"),
+                            "segment_end": s["segment_end"].strftime("%Y-%m-%d"),
+                            "segment_date_count": s["segment_date_count"],
+                        }
+                        for s in segments
+                    ],
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        show_cols = [
+            "group", "feature_count", "top1_mean_return_drop", "top1_mean_return_mean",
+            "top1_mean_return_std", "top1_mean_return_drop_over_std", "top1_mean_return_drop_per_feature",
+            "top3_mean_return_drop", "top5_mean_return_drop", "top1_win_rate_drop",
+            "top1_big_loss_rate_drop", "top1_big_gain_rate_drop",
+        ]
+        existing_show_cols = [col for col in show_cols if col in result.columns]
+        print(f"\n===== 因子簇扰动结果 Top（mode={perturb_mode}；TopK=真实第K名） =====")
+        print(result[existing_show_cols].head(30).to_string(index=False))
+
+        if not segment_result.empty:
+            print(f"\n===== 4段子区间 因子簇扰动结果 Top（mode={perturb_mode}；TopK=真实第K名） =====")
+            segment_show_cols = [
+                "segment", "segment_start", "segment_end", "group", "feature_count",
+                "top1_mean_return_drop", "top1_mean_return_mean",
+                "top1_mean_return_std", "top1_mean_return_drop_over_std",
+                "top3_mean_return_drop", "top5_mean_return_drop",
+                "top1_big_loss_rate_drop", "top1_big_gain_rate_drop",
+            ]
+            segment_show_cols = [col for col in segment_show_cols if col in segment_result.columns]
+            for segment_name, seg_df in segment_result.groupby("segment", sort=False):
+                print(f"\n--- {segment_name} ---")
+                print(seg_df[segment_show_cols].head(10).to_string(index=False))
+
+        if not stability_result.empty:
+            print("\n===== 4段稳定性汇总 =====")
+            stability_show_cols = [
+                "group", "feature_count", "positive_segment_count", "positive_segment_ratio",
+                "negative_segment_count", "negative_segment_ratio",
+                "negative_segment_mean", "negative_segment_min", "negative_segment_max",
+                "top1_drop_segment_mean", "top1_drop_segment_std",
+                "top1_drop_segment_min", "top1_drop_segment_max",
+                "top1_drop_stability_ratio", "top3_drop_segment_mean", "top5_drop_segment_mean",
+            ]
+            stability_show_cols = [col for col in stability_show_cols if col in stability_result.columns]
+            print(stability_result[stability_show_cols].head(30).to_string(index=False))
+
+            stable_negative = stability_result[
+                stability_result["negative_segment_count"] > 0
+            ].sort_values(
+                ["negative_segment_count", "negative_segment_mean"],
+                ascending=[False, True],
+            )
+            print("\n===== 稳定负向因子/因子簇（按负向分段数排序） =====")
+            if stable_negative.empty:
+                print("无：没有因子/因子簇在任何子段出现负Top1 drop。")
+            else:
+                print(stable_negative[stability_show_cols].to_string(index=False))
+
+        if "top1_mean_return_drop" in result.columns:
+            negative = result[result["top1_mean_return_drop"] < 0].sort_values("top1_mean_return_drop")
+            print("\n===== Negative Drop 因子簇 =====")
+            if negative.empty:
+                print("无：本次没有出现扰动后Top1收益反而提升的因子簇。")
+            else:
+                print(negative[existing_show_cols].to_string(index=False))
+
+            positive = result[result["top1_mean_return_drop"] > 0].copy()
+            print("\n===== 最终分析结果 =====")
+            if positive.empty:
+                print("未发现稳定正向贡献的因子簇：所有簇的Top1 mean return drop均不大于0。")
+            else:
+                top_group = positive.iloc[0]
+                robust_cols = [
+                    "group", "feature_count", "top1_mean_return_drop",
+                    "top1_mean_return_drop_over_std", "top1_mean_return_drop_per_feature",
+                    "top3_mean_return_drop", "top5_mean_return_drop",
+                ]
+                robust_cols = [col for col in robust_cols if col in positive.columns]
+                robust = positive.sort_values(
+                    ["top1_mean_return_drop_over_std", "top1_mean_return_drop"],
+                    ascending=[False, False],
+                    na_position="last",
+                )
+                efficient = positive.sort_values(
+                    ["top1_mean_return_drop_per_feature", "top1_mean_return_drop"],
+                    ascending=[False, False],
+                    na_position="last",
+                )
+                print(
+                    f"Top1收益贡献最高的簇: {top_group['group']} "
+                    f"(drop={top_group['top1_mean_return_drop']:.6f}, features={int(top_group['feature_count'])})"
+                )
+                print("\n按 drop/std 衡量的稳定贡献排序:")
+                print(robust[robust_cols].head(10).to_string(index=False))
+                print("\n按 drop_per_feature 衡量的单位因子贡献排序:")
+                print(efficient[robust_cols].head(10).to_string(index=False))
+                negative_count = int((result["top1_mean_return_drop"] < 0).sum())
+                print(
+                    f"\n结论提示: 正drop表示扰动该簇后收益下降；"
+                    f"negative drop簇数量={negative_count}。permute模式下代表打乱后更好；median模式下代表中位数替换后更好。"
+                )
+                if not stability_result.empty:
+                    stable_positive = stability_result[
+                        (stability_result["positive_segment_count"] >= 3) &
+                        (stability_result["top1_drop_segment_mean"] > 0)
+                    ].copy()
+                    print("\n分段稳定性提示:")
+                    if stable_positive.empty:
+                        print("没有因子簇在至少3个子段保持正Top1 drop；整体重要性可能更依赖特定行情阶段。")
+                    else:
+                        print(
+                            "至少3个子段为正drop的簇，优先看作更稳定的信息来源:"
+                        )
+                        print(stable_positive[stability_show_cols].head(10).to_string(index=False))
+        print(f"\n结果已保存: {summary_path}")
+        print(f"重复明细已保存: {detail_path}")
+        print(f"4段汇总已保存: {segment_summary_path}")
+        print(f"所有因子S1/S2/S3/S4精简drop已保存: {segment_all_path}")
+        print(f"4段重复明细已保存: {segment_detail_path}")
+        print(f"4段稳定性已保存: {stability_path}")
+        print(f"Baseline已保存: {baseline_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"因子簇Permutation模式失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def run_ma_convergence_quantile_ensemble_mode(args):
+    """
+    只针对 ma_convergence_score 做按日分位扰动的预测集成。
+
+    评估口径：
+    - baseline
+    - baseline + / - 1% 分位扰动
+    - baseline + / - 2% 分位扰动
+    - baseline + / - 1% + / - 2% 分位扰动
+    - 预测分取平均后重新排序
+    """
+    logger = logging.getLogger(__name__)
+    print("运行模式: ma_convergence_score 分位扰动集成")
+    logger.info("=" * 80)
+    logger.info("只对单因子 ma_convergence_score 做分位扰动集成，保持模型不变")
+    logger.info("=" * 80)
+
+    try:
+        import pickle
+        import pandas as pd
+        import numpy as np
+        from pathlib import Path
+
+        model_path = Path(getattr(args, "ensemble_model_path", "results/lightgbm_model_window3_20260427_231053.pkl"))
+        factor_name = str(getattr(args, "ensemble_factor", "ma_convergence_score")).strip()
+        quantile_steps_raw = str(getattr(args, "ensemble_quantiles", "0.01,0.02"))
+        quantile_steps = []
+        for item in quantile_steps_raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            quantile_steps.append(abs(float(item)))
+        if not quantile_steps:
+            quantile_steps = [0.01, 0.02]
+
+        eval_start = pd.to_datetime(getattr(args, "ensemble_eval_start", getattr(args, "start_date", "20250801")))
+        eval_end = pd.to_datetime(getattr(args, "ensemble_eval_end", getattr(args, "end_date", "20260518")))
+        load_start = (eval_start - pd.Timedelta(days=30)).strftime("%Y%m%d")
+        load_end = (eval_end + pd.Timedelta(days=15)).strftime("%Y%m%d")
+
+        logger.info(f"模型路径: {model_path}")
+        logger.info(f"评估区间: {eval_start.date()} ~ {eval_end.date()}")
+        logger.info(f"加载区间(含padding): {load_start} ~ {load_end}")
+        logger.info(f"扰动因子: {factor_name}")
+        logger.info(f"分位扰动: {quantile_steps_raw}")
+
+        if not model_path.exists():
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
+
+        with open(model_path, "rb") as f:
+            model_bundle = pickle.load(f)
+
+        model = model_bundle["model"] if isinstance(model_bundle, dict) and "model" in model_bundle else model_bundle
+        feature_names = model_bundle.get("feature_names") if isinstance(model_bundle, dict) else None
+        if not feature_names:
+            raise ValueError(f"模型文件中缺少 feature_names: {model_path}")
+        feature_names = list(feature_names)
+
+        logger.info(f"模型特征数: {len(feature_names)}")
+
+        factor_data = _load_factor_cache_data(
+            required_factors=feature_names,
+            include_label_generation_features=True,
+            start_date=load_start,
+            end_date=load_end,
+        )
+        if factor_data is None or factor_data.empty:
+            raise ValueError("因子数据加载失败")
+
+        factor_data["date"] = pd.to_datetime(factor_data["date"])
+        factor_data = factor_data.sort_values(["date", "stock_code"]).reset_index(drop=True)
+
+        if "valid_cs_mask" not in factor_data.columns:
+            logger.info("[LABEL] 生成valid_cs_mask...")
+            try:
+                valid_cs_mask, st_keep, new_keep = _build_valid_cs_mask(factor_data, logger)
+                factor_data["valid_cs_mask"] = valid_cs_mask.astype(bool)
+                del valid_cs_mask, st_keep, new_keep
+            except Exception as e:
+                logger.warning(f"[LABEL] valid_cs_mask生成失败，回退全True: {e}")
+                factor_data["valid_cs_mask"] = True
+
+        if "atr_return_label" not in factor_data.columns or factor_data["atr_return_label"].isna().all():
+            logger.info("[LABEL] 生成atr_return_label/relevance...")
+            factor_data = _generate_training_labels_for_all_data(factor_data)
+
+        eval_data = factor_data[
+            (factor_data["date"] >= eval_start) &
+            (factor_data["date"] <= eval_end)
+        ].copy()
+        if eval_data.empty:
+            raise ValueError("指定日期区间内无有效样本")
+
+        eval_data = eval_data.dropna(subset=["atr_return_label"]).sort_values(["date", "stock_code"]).reset_index(drop=True)
+        if eval_data.empty:
+            raise ValueError("指定日期区间内无有效 atr_return_label 样本")
+
+        available_model_features = [col for col in feature_names if col in eval_data.columns]
+        missing_features = [col for col in feature_names if col not in eval_data.columns]
+        if missing_features:
+            logger.warning(f"模型特征缺失 {len(missing_features)} 个，已用0填充: {missing_features[:10]}")
+
+        if factor_name not in feature_names:
+            raise ValueError(f"扰动因子 {factor_name} 不在模型特征中")
+
+        feature_df = pd.DataFrame(index=eval_data.index)
+        for col in feature_names:
+            if col in eval_data.columns:
+                feature_df[col] = pd.to_numeric(eval_data[col], errors="coerce")
+            else:
+                feature_df[col] = 0.0
+        feature_df = feature_df.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        X_base = feature_df.to_numpy(dtype=np.float32, copy=True)
+        feature_index = {name: idx for idx, name in enumerate(feature_names)}
+        factor_idx = feature_index[factor_name]
+
+        eval_dates = eval_data["date"].to_numpy()
+        y_eval = eval_data["atr_return_label"].to_numpy()
+
+        logger.info(f"评估样本: {len(eval_data):,} 行, 日期数: {eval_data['date'].nunique():,}")
+        logger.info(f"可用特征: {len(available_model_features)} / {len(feature_names)}")
+
+        minute_cache_df = _build_or_load_validation_minute_cache_binary(eval_data)
+        if minute_cache_df is None or len(minute_cache_df) == 0:
+            logger.warning("分钟缓存加载失败，minute path 指标将为空")
+
+        baseline_pred = np.asarray(_predict_lightgbm_model(model, X_base), dtype=float).reshape(-1)
+
+        variant_specs = [
+            {
+                "variant": "baseline",
+                "shifts": [],
+            }
+        ]
+        for step in quantile_steps:
+            step_tag = f"{int(round(step * 100)):02d}pct"
+            variant_specs.append({
+                "variant": f"blend_{step_tag}",
+                "shifts": [step, -step],
+            })
+        if len(quantile_steps) >= 2:
+            combined_shifts = []
+            for step in quantile_steps:
+                combined_shifts.extend([step, -step])
+            combined_tag = "_".join(f"{int(round(step * 100)):02d}pct" for step in quantile_steps)
+            variant_specs.append({
+                "variant": f"blend_{combined_tag}",
+                "shifts": combined_shifts,
+            })
+
+        summary_rows = []
+        minute6_detail_rows = []
+        minute7_detail_rows = []
+
+        for spec in variant_specs:
+            variant_name = spec["variant"]
+            shifts = spec["shifts"]
+            pred_list = [baseline_pred]
+
+            logger.info(f"[VARIANT] {variant_name}: shifts={shifts}")
+            for shift_pct in shifts:
+                shifted_col = _shift_feature_by_daily_quantile(
+                    eval_dates,
+                    X_base[:, factor_idx],
+                    shift_pct,
+                    logger=logger,
+                    feature_name=factor_name,
+                )
+                X_variant = X_base.copy()
+                X_variant[:, factor_idx] = shifted_col
+                pred_variant = np.asarray(_predict_lightgbm_model(model, X_variant), dtype=float).reshape(-1)
+                pred_list.append(pred_variant)
+                del X_variant, pred_variant, shifted_col
+                import gc; gc.collect()
+
+            ensemble_pred = np.mean(np.vstack(pred_list), axis=0)
+
+            top_metrics = _evaluate_permutation_predictions(
+                eval_data,
+                ensemble_pred,
+                return_col="atr_return_label",
+                top_ks=(1, 2, 3, 5),
+            )
+            minute6_metrics = _evaluate_candidate_with_minute_cache_from_predictions(
+                ensemble_pred,
+                y_eval,
+                eval_dates,
+                eval_data,
+                minute_cache_df,
+                minute_segments=6,
+            ) if minute_cache_df is not None and len(minute_cache_df) > 0 else None
+            minute7_metrics = _evaluate_candidate_with_minute_cache_from_predictions(
+                ensemble_pred,
+                y_eval,
+                eval_dates,
+                eval_data,
+                minute_cache_df,
+                minute_segments=7,
+            ) if minute_cache_df is not None and len(minute_cache_df) > 0 else None
+
+            row = {
+                "variant": variant_name,
+                "factor": factor_name,
+                "shifts": ",".join([f"{s:+.2%}" for s in shifts]) if shifts else "baseline",
+                "sample_count": int(top_metrics.get("sample_count", 0)),
+                "date_count": int(top_metrics.get("date_count", 0)),
+                "top1_mean_return": top_metrics.get("top1_mean_return", np.nan),
+                "top1_median_return": top_metrics.get("top1_median_return", np.nan),
+                "top1_win_rate": top_metrics.get("top1_win_rate", np.nan),
+                "top1_big_loss_rate": top_metrics.get("top1_big_loss_rate", np.nan),
+                "top1_big_gain_rate": top_metrics.get("top1_big_gain_rate", np.nan),
+                "top3_mean_return": top_metrics.get("top3_mean_return", np.nan),
+                "top5_mean_return": top_metrics.get("top5_mean_return", np.nan),
+                "top1_std_return": top_metrics.get("top1_std_return", np.nan),
+                "top1_sum_return": top_metrics.get("top1_sum_return", np.nan),
+                "top1_date_count": top_metrics.get("top1_date_count", np.nan),
+            }
+
+            if minute6_metrics:
+                row.update({
+                    "minute6_score": minute6_metrics.get("score", np.nan),
+                    "minute6_mean_return": minute6_metrics.get("mean_return", np.nan),
+                    "minute6_median_return": minute6_metrics.get("median_return", np.nan),
+                    "minute6_win_rate": minute6_metrics.get("win_rate", np.nan),
+                    "minute6_max_drawdown": minute6_metrics.get("max_drawdown", np.nan),
+                    "minute6_top3_cum_return": minute6_metrics.get("top3_cum_return", np.nan),
+                    "minute6_top5_cum_return": minute6_metrics.get("top5_cum_return", np.nan),
+                    "minute6_positive_segments": minute6_metrics.get("positive_segments", np.nan),
+                    "minute6_weak_segments": minute6_metrics.get("weak_segments", np.nan),
+                    "minute6_segment_penalty": minute6_metrics.get("segment_penalty", np.nan),
+                })
+                for seg in minute6_metrics.get("segments", []):
+                    minute6_detail_rows.append({
+                        "variant": variant_name,
+                        "minute_segments": 6,
+                        "factor": factor_name,
+                        **seg,
+                    })
+            if minute7_metrics:
+                row.update({
+                    "minute7_score": minute7_metrics.get("score", np.nan),
+                    "minute7_mean_return": minute7_metrics.get("mean_return", np.nan),
+                    "minute7_median_return": minute7_metrics.get("median_return", np.nan),
+                    "minute7_win_rate": minute7_metrics.get("win_rate", np.nan),
+                    "minute7_max_drawdown": minute7_metrics.get("max_drawdown", np.nan),
+                    "minute7_top3_cum_return": minute7_metrics.get("top3_cum_return", np.nan),
+                    "minute7_top5_cum_return": minute7_metrics.get("top5_cum_return", np.nan),
+                    "minute7_positive_segments": minute7_metrics.get("positive_segments", np.nan),
+                    "minute7_weak_segments": minute7_metrics.get("weak_segments", np.nan),
+                    "minute7_segment_penalty": minute7_metrics.get("segment_penalty", np.nan),
+                })
+                for seg in minute7_metrics.get("segments", []):
+                    minute7_detail_rows.append({
+                        "variant": variant_name,
+                        "minute_segments": 7,
+                        "factor": factor_name,
+                        **seg,
+                    })
+
+            summary_rows.append(row)
+
+            del pred_list, ensemble_pred
+            import gc; gc.collect()
+
+        summary = pd.DataFrame(summary_rows)
+        if not summary.empty:
+            baseline_row = summary[summary["variant"] == "baseline"]
+            if not baseline_row.empty:
+                baseline_row = baseline_row.iloc[0]
+                for col in [
+                    "top1_mean_return", "top1_median_return", "top1_win_rate",
+                    "top1_big_loss_rate", "top1_big_gain_rate",
+                    "top3_mean_return", "top5_mean_return",
+                    "minute6_max_drawdown", "minute7_max_drawdown",
+                    "minute6_score", "minute7_score",
+                ]:
+                    if col in summary.columns and pd.notna(baseline_row.get(col, np.nan)):
+                        summary[f"{col}_delta_vs_baseline"] = summary[col] - baseline_row[col]
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(getattr(args, "output_dir", "./results"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = out_dir / f"ma_convergence_quantile_ensemble_summary_{timestamp}.csv"
+        minute6_path = out_dir / f"ma_convergence_quantile_ensemble_minute6_segments_{timestamp}.csv"
+        minute7_path = out_dir / f"ma_convergence_quantile_ensemble_minute7_segments_{timestamp}.csv"
+        baseline_path = out_dir / f"ma_convergence_quantile_ensemble_baseline_{timestamp}.json"
+
+        summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(minute6_detail_rows).to_csv(minute6_path, index=False, encoding="utf-8-sig")
+        pd.DataFrame(minute7_detail_rows).to_csv(minute7_path, index=False, encoding="utf-8-sig")
+
+        with open(baseline_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model_path": str(model_path),
+                    "factor": factor_name,
+                    "eval_start": eval_start.strftime("%Y-%m-%d"),
+                    "eval_end": eval_end.strftime("%Y-%m-%d"),
+                    "load_start": load_start,
+                    "load_end": load_end,
+                    "quantile_steps": quantile_steps,
+                    "variant_specs": variant_specs,
+                    "feature_count": len(feature_names),
+                    "available_feature_count": len(available_model_features),
+                    "baseline": summary_rows[0] if summary_rows else {},
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        show_cols = [
+            "variant", "shifts",
+            "top1_mean_return", "top1_median_return", "top1_win_rate",
+            "top1_big_loss_rate", "top1_big_gain_rate",
+            "minute6_max_drawdown", "minute7_max_drawdown",
+            "minute6_score", "minute7_score",
+            "minute6_positive_segments", "minute6_weak_segments",
+            "minute7_positive_segments", "minute7_weak_segments",
+        ]
+        show_cols = [c for c in show_cols if c in summary.columns]
+        print("\n===== ma_convergence_score 分位扰动集成结果 =====")
+        print(summary[show_cols].to_string(index=False))
+
+        if "variant" in summary.columns and not summary.empty:
+            base = summary[summary["variant"] == "baseline"]
+            if not base.empty:
+                base = base.iloc[0]
+                improved = summary[summary["variant"] != "baseline"].copy()
+                if not improved.empty:
+                    improved["top1_mean_delta"] = improved["top1_mean_return"] - base["top1_mean_return"]
+                    improved["minute6_dd_delta"] = improved.get("minute6_max_drawdown", np.nan) - base.get("minute6_max_drawdown", np.nan)
+                    improved = improved.sort_values(["top1_mean_delta", "minute6_dd_delta"], ascending=[False, False], na_position="last")
+                    print("\n===== 相对baseline变化 =====")
+                    print(improved[[
+                        "variant",
+                        "top1_mean_delta",
+                        "top1_median_return",
+                        "top1_win_rate",
+                        "top1_big_loss_rate",
+                        "top1_big_gain_rate",
+                        "minute6_dd_delta",
+                        "minute6_score_delta_vs_baseline" if "minute6_score_delta_vs_baseline" in improved.columns else "minute6_score",
+                    ]].to_string(index=False))
+
+        print(f"\n结果已保存: {summary_path}")
+        print(f"6段minute路径明细已保存: {minute6_path}")
+        print(f"7段minute路径明细已保存: {minute7_path}")
+        print(f"Baseline已保存: {baseline_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"ma_convergence_score 分位扰动集成失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 
 def run_train_model_mode(args, train_end_date=None, is_regression=True, use_xgboost=None, use_lightgbm=None):
@@ -10886,7 +13905,7 @@ def _run_minute_level_backtest(
 
         logger.info(f"{window_prefix}[TARGET] 开始5分钟级别回测，持仓时间: {holding_days}天")
 
-        minute_position_schedule = [0.8, 0.2]
+        minute_position_schedule = [0.5, 0.5]
         use_ma5_entry_filter = str(TOP1_ENTRY_FILTER_MODE).lower() == 'ma5'
         delayed_entry_mode = str(TOP1_DELAYED_ENTRY_MODE).lower()
         minute_strategy_overrides = {
@@ -10940,7 +13959,7 @@ def _run_minute_level_backtest(
             "exhaustion_v3_kdj_j_z_threshold": EXHAUSTION_V3_KDJ_J_Z_THRESHOLD,
             "exhaustion_v3_score_z_in_day_threshold": EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD,
             "exhaustion_v3_reg_severe_up_10d_pct_threshold": EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD,
-            "exhaustion_v3_reg_adr_threshold": EXHAUSTION_V3_REG_ADR_THRESHOLD,
+            "exhaustion_v3_reg_hot_adr_threshold": EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD,
             "exhaustion_v3_ma5_raw_threshold": EXHAUSTION_V3_MA5_RAW_THRESHOLD,
             "exhaustion_v3_ma_convergence_threshold": EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD,
             "exhaustion_v3_ma5_pullback_depth_threshold": EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD,
@@ -11012,8 +14031,8 @@ def _run_minute_level_backtest(
             f"v3_non_first_limit_pct20_th={EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}, "
             f"v3_kdj_j_z_th={EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}, "
             f"v3_score_z_in_day_th={EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}, "
-            f"v3_reg_severe_pct_th={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}, "
-            f"v3_reg_adr_th={EXHAUSTION_V3_REG_ADR_THRESHOLD}, "
+            f"v3_reg_severe_up_10d_pct_th={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}, "
+            f"v3_reg_hot_adr_th={EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD}, "
             f"v3_ma5_raw_th={EXHAUSTION_V3_MA5_RAW_THRESHOLD}, "
             f"v3_ma_convergence_th={EXHAUSTION_V3_MA_CONVERGENCE_THRESHOLD}, "
             f"v3_ma5_pullback_depth_th={EXHAUSTION_V3_MA5_PULLBACK_DEPTH_THRESHOLD}, "
@@ -15042,6 +18061,13 @@ def run_test_model_walkforward_mode(args):
     logger.info("=" * 80)
 
     try:
+        global ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE
+        ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE = True
+        logger.info(
+            "[中位数替换] test_model_walkforward已启用，以下因子在输入模型前会替换为当日横截面中位数: "
+            f"{', '.join(WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS)}"
+        )
+
         import pandas as pd
         import numpy as np
         from pathlib import Path
@@ -15091,10 +18117,10 @@ def run_test_model_walkforward_mode(args):
                 'train_end': '2025-03-01',
                 #  'train_end': '2025-02-25',
                 'val_start': '2025-03-07',
-                'val_end': '2025-10-25',
+                'val_end': '2025-07-25',
                 # 'val_end': '2025-05-25',
-                'test_start': '2025-11-01',
-                'test_end': '2026-05-18'
+                'test_start': '2026-01-17',
+                'test_end': '2026-06-11'
                 # 'val_start': '2025-03-01',
                 # 'val_end': '2025-06-02',
                 # 'test_start': '2025-06-06',
@@ -15569,10 +18595,9 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
         )
 
         # ================================================================
-        # 规则2: prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.30
+        # 规则2: prev_day_blowoff_risk >= 2.0 AND sector_momentum_accel_rank <= 0.36
         # 含义：前日强势后放量分歧 + 行业动量减速 → 接力失败
         # 扩展XR2a: blowoff极端(>5.0)时 sector可放宽到0.50（极端分歧本身即危险）
-        # 扩展XR2b: sector极端(<=0.15)时 blowoff可放宽到1.0（板块已崩，稍有分歧即危险）
         # ================================================================
         blowoff_val = row.get('prev_day_blowoff_risk', np.nan)
         sector_val = row.get('sector_momentum_accel_rank', np.nan)
@@ -15581,7 +18606,6 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
             and (
                 (blowoff_val >= EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD)
                 or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a: blowoff极端
-                or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b: sector极端
             )
         )
 
@@ -15644,9 +18668,8 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
         )
 
         # ================================================================
-        # 规则7: top10_10d_strength_level_v3 >= 0.70 AND buy_sm_amount_rate <= -1.25
-        # 含义：短期强势股但散户资金净流出 → 主力出货嫌疑
-        # 拦截3笔新大亏（含184日志DD集群），零误杀大赚
+        # 规则7: top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate <= -0.20
+        # 含义：短期极强股伴随小单资金流出 → 高位承接不足
         # ================================================================
         top10_val = row.get('top10_10d_strength_level_v3', np.nan)
         buy_sm_val = row.get('buy_sm_amount_rate', np.nan)
@@ -15671,25 +18694,15 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
         )
 
         # ================================================================
-        # 规则9: score_z_in_day <= 1.50
-        # 含义：模型Top1分数相对当日候选池预测分布不够突出，属于”勉强第一”。
-        # ================================================================
-        score_z_val = row.get('score_z_in_day', np.nan)
-        rule9_hit = (
-            pd.notna(score_z_val)
-            and score_z_val <= EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD
-        )
-
-        # ================================================================
-        # 规则10: reg_severe_up_10d_ratio_pct >= 0.80 AND market_advance_decline_ratio <= 0.45
-        # 含义：个股近10日超额涨幅处于全市场高位(80分位以上) + 全市场涨跌比极低
-        #       → 个股高位运行遭遇市场广度崩溃，大概率见顶亏钱
+        # 规则10: reg_severe_up_10d_ratio_pct >= 0.98
+        #         AND market_advance_decline_ratio >= 4.50
+        # 含义：个股近期严重上涨占比位于当日极端高位，且市场广度过热。
         # ================================================================
         reg_severe_pct_val = row.get('reg_severe_up_10d_ratio_pct', np.nan)
         rule10_hit = (
             pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
             and reg_severe_pct_val >= EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD
-            and adr_val <= EXHAUSTION_V3_REG_ADR_THRESHOLD
+            and adr_val >= EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD
         )
 
         # ================================================================
@@ -15719,7 +18732,7 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
             and ret_accel_val >= EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD
         )
 
-        if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit or rule11_hit or rule12_hit:
+        if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule10_hit or rule11_hit or rule12_hit:
             parts = []
             if rule1_hit:
                 parts.append(
@@ -15729,10 +18742,8 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
             if rule2_hit:
                 if blowoff_val >= EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD:
                     r2_reason = f"prev_day_blowoff_risk({blowoff_val:.2f})>={EXHAUSTION_V3_BLOWOFF_THRESHOLD} AND sector_momentum_accel_rank({sector_val:.2f})<={EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD}"
-                elif blowoff_val > 5.0:
-                    r2_reason = f"XR2a: blowoff({blowoff_val:.2f})>5.0(extreme) AND sector_accel({sector_val:.2f})<=0.50(relaxed)"
                 else:
-                    r2_reason = f"XR2b: blowoff({blowoff_val:.2f})>1.0(relaxed) AND sector_accel({sector_val:.2f})<=0.15(extreme)"
+                    r2_reason = f"XR2a: blowoff({blowoff_val:.2f})>5.0(extreme) AND sector_accel({sector_val:.2f})<=0.50(relaxed)"
                 parts.append(r2_reason)
             if rule3_hit:
                 parts.append(
@@ -15768,14 +18779,10 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
                     f"non_first_limit_perf_pct20({non_first_pct20_val:.2f})>={EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}"
                     f" AND kdj_j_9_z({kdj_j_val:.2f})<={EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}"
                 )
-            if rule9_hit:
-                parts.append(
-                    f"score_z_in_day({score_z_val:.2f})<={EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}"
-                )
             if rule10_hit:
                 parts.append(
-                    f"reg_severe_up_10d_ratio_pct({reg_severe_pct_val:.2f})>={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
-                    f" AND market_advance_decline_ratio({adr_val:.2f})<={EXHAUSTION_V3_REG_ADR_THRESHOLD}"
+                    f"reg_severe_up_10d_ratio_pct({reg_severe_pct_val:.4f})>={EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
+                    f" AND market_advance_decline_ratio({adr_val:.2f})>={EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD}"
                 )
             if rule11_hit:
                 parts.append(
@@ -18100,6 +21107,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260429_202824.pkl"
         lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        # lgb_pattern = f"lightgbm_model_window3_20260608_131809.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260411_180603.pkl"

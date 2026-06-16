@@ -35,6 +35,18 @@ from typing import List, Optional, Dict
 # Python官方推荐：在模块级别定义logger
 logger = logging.getLogger(__name__)
 
+# test_model_walkforward专用：将指定日内形态因子替换为当日横截面中位数。
+# 作用是只保留“当日整体水平”，去掉股票间的个体差异，验证这些因子是否带来过拟合。
+WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS = [
+    "body_efficiency",
+    "gap_power",
+    "range_compression",
+    "intraday_clv",
+    "intraday_reversal",
+    "open_to_high_ratio",
+]
+ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE = False
+
 # 导入标准化SW编码接口
 from sw_encoding_loader import (
     load_standardized_sw_encoding,
@@ -1385,7 +1397,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子复现6.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子复现9.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3124,16 +3136,16 @@ def _get_lgb_search_space():
 
     # space = {
     #     'learning_rate': [0.02],
-    #     'num_leaves': [31, 127],
+    #     'num_leaves': [127],
     #     'max_depth': [-1],
     #     # 'min_data_in_leaf': [50, 100, 300, 500],
-    #     'min_data_in_leaf': [300, 380, 400, 420],
+    #     'min_data_in_leaf': [390, 400, 410],
     #     'feature_fraction': [0.6, 0.7, 0.8],
     #     'bagging_fraction': [0.6, 0.8, 1.0],
-    #     'reg_alpha': [5, 10, 20, 30, 40],
-    #     'reg_lambda': [5, 10, 20, 30, 40],
+    #     'reg_alpha': [4, 5, 6],
+    #     'reg_lambda': [4, 5, 6],
     #     # 'scale_pos_weight': [35, 45, 50] # 处理正负样本不平衡
-    #     'scale_pos_weight': [50, 90, 60] # 处理正负样本不平衡
+    #     'scale_pos_weight': [90] # 处理正负样本不平衡
     # }
     # 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
@@ -3147,9 +3159,12 @@ def _get_lgb_search_space():
         'min_data_in_leaf': [400],
         'feature_fraction': [0.8],
         'bagging_fraction': [0.6],
-        'reg_alpha': [5],
-        'reg_lambda': [5],
-        'scale_pos_weight': [90] # 处理正负样本不平衡
+        'reg_alpha': [4.9,5.05,5.2],
+        'reg_lambda': [5.1,5.05,4.9],
+        'scale_pos_weight': [90], # 处理正负样本不平衡
+        'random_state': [42],
+        # 'min_gain_to_split':[0.1,1,2,10],
+        
     }
     return space, [[0]] # 保持返回值个数向后兼容
 
@@ -3253,13 +3268,15 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'learning_rate': 0.02,
             'max_depth': -1,
             'bagging_freq': 1,
+            # 'min_gain_to_split': 0.01,
+            # 'max_bin': 31,
             'n_jobs': -1,
             'verbosity': -1,
-            'n_estimators': 500,
-            'random_state': 42
+            'n_estimators': 1000, #500
+            # 'random_state': 40
         }
 
-        SEARCH_ITER = 1
+        SEARCH_ITER = 8
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
@@ -5478,676 +5495,7 @@ def _get_new_stock_cache():
     return {}
 
 
-# def _get_zscore_factors():
-#     """
-#     返回需要 z-score 归一化的因子列表（保留幅度信息）
 
-#     适用场景：
-#     - 当因子的绝对幅度包含信息（例如极端正/负幅度代表强势/弱势）
-#     - 典型例子：return_1d, return_5d, 相关性因子, 比率因子
-#     - 已经做了 rank 的因子（如 rank_momentum_20d）也用 z-score
-#     """
-#     return [
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'overnight_return',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'beta_60d',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'ma60_slope',
-#         'price_ma60_ratio',
-#         'kdj_diff_9',
-#         'kdj_j_9',
-#         'kdj_k_9',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_20d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-#     ]
-
-
-
-# def _get_rankpct_factors():
-#     """
-#     返回需要 rankpct 归一化的因子列表（映射到 [-1, 1]，抗极端值）
-
-#     适用场景：
-#     - 当因子分布极度偏斜、含大量极端值，或不同股票间量纲差异巨大
-#     - 典型例子：PE, PB, 财务比率（分布长尾）、换手率（极端日子）
-#     - 做截面排序/Top-K 时常用 rank
-
-#     注意：同一因子可以同时出现在 _get_zscore_factors 和 _get_rankpct_factors 中
-#     """
-#     return [
-#         # 'price_ma60_ratio',
-#         # 'distance_from_52w_high',
-#         # 'distance_from_52w_low',
-#         # 'ma_alignment_score',
-#     ]
-
-
-# def _get_stock_factors():
-
-#     all_factors = [
-#         #--原始因子--#
-#         # 'mkt_adv_dec',
-#         # 'mkt_limit_balance',
-#         # 'mkt_limit_up_ratio',
-#         # 'mkt_limit_down_ratio',
-#         # 'mkt_zhaban_ratio',
-#         # 'mkt_emotion_heat',
-#         # 'mkt_emotion_heat_dom_period_32d',
-#         # 'mkt_emotion_heat_dom_strength_32d',
-#         # 'mkt_emotion_heat_spec_entropy_32d',
-#         # 'mkt_emotion_heat_hf_energy_ratio_32d',
-#         # 'mkt_adv_dec_ma3',
-#         # 'mkt_limit_balance_ma3',
-#         # 'mkt_emotion_heat_ma3',
-#         # 'mkt_adv_dec_delta3',
-#         # 'mkt_limit_balance_delta3',
-#         # 'mkt_emotion_heat_delta3',
-#         # 'mkt_adv_dec_z10',
-#         # 'mkt_limit_balance_z10',
-#         # 'mkt_emotion_heat_z10',
-#         'return_5d_cs_rank',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'pct_chg_sector_mean',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'pct_chg_intra_z',
-#         'return_10d_intra_z',
-#         'return_20d_intra_z',
-#         'return_3d_intra_z',
-#         'return_5d_intra_z',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_turnover_change_5d_20d',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'alpha_001',
-#         'alpha_002',
-#         'alpha_017',
-#         'downside_beta',
-#         'sector_correlation_20d',
-#         'stock_sector_pos_align',
-
-#     # ===== 按日z-score =====
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'overnight_return',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'beta_60d',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'ma60_slope',
-#         'price_ma60_ratio',
-#         'kdj_diff_9',
-#         'kdj_j_9',
-#         'kdj_k_9',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_20d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-
-
-#     # ===== 按行业z-score =====
-       
-    
-#     # ===== 全局rank =====
-        
-#     ]
-
-#     # 总计: 98 个因子
-
-#     return all_factors
-
-
-
-
-# def _get_original_factors():
-#     """获取需要保留原始值的因子列表（不进行归一化）
-
-#     这些因子在因子生成时会被计算，但不会进行z-score或rankpct归一化。
-#     在模型训练时，可以选择是否使用这些原始因子。
-
-#     Returns:
-#         list: 原始因子名称列表
-#     """
-#     # 目前没有需要保留原始值的因子
-#     # 如果未来需要，可以在这里添加
-#     return [
-#         # 'mkt_adv_dec',
-#         # 'mkt_limit_balance',
-#         # 'mkt_limit_up_ratio',
-#         # 'mkt_limit_down_ratio',
-#         # 'mkt_zhaban_ratio',
-#         # 'mkt_emotion_heat',
-#         # 'mkt_emotion_heat_dom_period_32d',
-#         # 'mkt_emotion_heat_dom_strength_32d',
-#         # 'mkt_emotion_heat_spec_entropy_32d',
-#         # 'mkt_emotion_heat_hf_energy_ratio_32d',
-#         # 'mkt_adv_dec_ma3',
-#         # 'mkt_limit_balance_ma3',
-#         # 'mkt_emotion_heat_ma3',
-#         # 'mkt_adv_dec_delta3',
-#         # 'mkt_limit_balance_delta3',
-#         # 'mkt_emotion_heat_delta3',
-#         # 'mkt_adv_dec_z10',
-#         # 'mkt_limit_balance_z10',
-#         # 'mkt_emotion_heat_z10',
-#         'return_5d_cs_rank',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'pct_chg_sector_mean',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'pct_chg_intra_z',
-#         'return_10d_intra_z',
-#         'return_20d_intra_z',
-#         'return_3d_intra_z',
-#         'return_5d_intra_z',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_turnover_change_5d_20d',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'alpha_001',
-#         'alpha_002',
-#         'alpha_017',
-#         'downside_beta',
-#         'sector_correlation_20d',
-#         'stock_sector_pos_align',
-#     ]
-
-
-
-# def _get_zscore_factors():
-#     return [
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_10d',
-#         'max_rally_20d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         # 'price_ma60_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-#     ]
-
-# def _get_rankpct_factors():
-#     """
-#     返回需要横截面分位数归一化的因子列表（映射到 [0, 1]，抗极端值）
-
-#     适用场景：
-#     - 当因子分布极度偏斜、含大量极端值，或不同股票间量纲差异巨大
-#     - 典型例子：PE, PB, 财务比率（分布长尾）、换手率（极端日子）
-#     - 做截面排序/Top-K 时常用横截面 pct
-
-#     输出后缀：
-#     - `_pct`
-
-#     注意：同一因子可以同时出现在 _get_zscore_factors 和 _get_rankpct_factors 中
-#     """
-#     return [
-#         # 个股相对极端性 / Top1-Top2切换 / veto 优先使用横截面 pct
-#         'severe_abnormal_pressure_10d',
-#         'high_to_close_drawdown',
-#         'cpv_factor',
-#         'ppo_strength',
-#         'return_10d_sector_mean',
-#         'return_20d_sector_mean',
-#         'return_3d_sector_mean',
-#         'return_5d_sector_mean',
-#         'shadow_dominance',
-#         'abnormal_turnover',
-#         'volume_structure_alpha',
-#         'money_flow_pressure',
-#         'sector_turnover_change_5d_20d',
-#         'open_to_high_ratio',
-#         'intraday_reversal',
-#         'buy_lg_amount_rate',
-#         'buy_sm_amount_rate',
-#         'main_outflow_retail_takeover',
-#     ]
-
-
-# def _get_expanding_factors():
-#     """
-#     返回需要 expanding 分位数变换的因子列表。
-
-#     主要用于市场/环境广播因子，按日期生成 [0, 1] 的 expanding percentile，
-#     输出后缀：
-#     - `_exp`
-#     """
-#     return [
-#         # 市场/环境广播因子优先使用 expanding percentile
-#         'mkt_ma5_followthrough_v3',
-#         'market_trend_strength',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_dispersion_shock_v2',
-#         'mkt_sector_dispersion',
-#         'ma5_strength_breadth_v3',
-#         'mkt_breadth_thrust_v2',
-#         'mkt_liquidity_impulse_v2',
-#         'market_volatility_context',
-#         'strong_stock_volume_confirmation_v3',
-#         'sector_hotspot_concentration_v3',
-#         'sector_leadership_persistence_v3',
-#         # 'mkt_emotion_stability_v2',
-#         'emotion_quality_balance_v3',
-#         'market_60d_new_high_ratio',
-#         'top10_10d_strength_level_v3',
-#         'top10_10d_recent3_strength_v3',
-#     ]
-
-
-# def _get_stock_factors():
-#     return [
-#         # 'max_rally_20d_raw',
-#         # 'max_rally_10d_raw',
-#         'severe_abnormal_pressure_10d',
-#         'sector_ma5_followthrough_v3',
-#         'beta_20d',
-#         # 'market_prev_60d_new_high_avg_return',                                                                                     
-#         'market_60d_new_high_ratio',                                                                                                          
-#         # 'limit_up_count_percentile_20d',                                                                                                    
-#         # 'zhaban_count_percentile_20d',                                                                                                     
-#         # 'limit_down_count_percentile_20d',
-#         'limit_up_sw2_concentration',                                                                                                                
-#         'sw2_high_low_position_return_spread', 
-#         # 'price_ma60_ratio',
-#         # 'return_5d_cs_rank',
-#         # 'alpha_001',
-#         # 'alpha_002',
-#         # 'alpha_017',
-#         'beta_60d',
-#         'downside_beta',
-#         # 'kdj_diff_9',
-#         # 'kdj_j_9',
-#         # 'kdj_k_9',
-#         'ma60_slope',
-#         'overnight_return',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'pct_chg_intra_z',
-#         'pct_chg_sector_mean',
-#         'return_3d_intra_z',
-#         'return_3d_sector_mean',
-#         'return_5d_intra_z',
-#         'return_5d_sector_mean',
-#         'return_10d_intra_z',
-#         'return_10d_sector_mean',
-#         'return_20d_intra_z',
-#         'return_20d_sector_mean',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_turnover_change_5d_20d',
-#         'high_to_close_drawdown',
-#         # 'price_ma5_ratio_raw',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_breadth_thrust_v2',
-#         # 'mkt_emotion_stability_v2',
-#         'mkt_dispersion_shock_v2',
-#         'mkt_liquidity_impulse_v2',
-#         'mkt_ma5_followthrough_v3',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'sector_correlation_20d',
-#         'stock_sector_pos_align',
-#         'range_compression',
-#         'body_efficiency',
-#         'shadow_dominance',
-#         'gap_power',
-#         'kdj_golden_cross_strength',
-#         'open_to_high_ratio',
-#         'sector_concentration',
-#         'sector_rank_change_5d',
-#         'sector_breadth',
-#         'intraday_clv',
-#         'amihud_illiquidity',
-#         'abnormal_turnover',
-#         'efficiency_ratio',
-#         'mass_index_reversal',
-#         'price_acceleration',
-#         'stable_momentum',
-#         'momentum_decay',
-#         'turnover_stability',
-#         'money_flow_pressure',
-#         'ulcer_index',
-#         'max_drawdown_20d',
-#         'max_rally_10d',
-#         'max_rally_20d',
-#         'ppo_strength',
-#         'mfi_strength',
-#         'relative_strength_20d',
-#         'volatility_structure_alpha',
-#         'price_impact',
-#         'volume_structure_alpha',
-#         'regime_aware_reversal_alpha',
-#         'trend_acceleration',
-#         'trend_consistency',
-#         'trend_pullback_composite_alpha',
-#         'cpv_factor',
-#         'price_ma5_ratio',
-#         'high_volatility_pullback_alpha',
-#         'volume_confirmed_pullback_alpha',
-#         'distance_from_52w_high',
-#         'distance_from_52w_low',
-#         'ma_alignment_score',
-#     ]
-
-
-# def _get_original_factors():
-#     return [
-#         # 'max_rally_20d_raw',
-#         # 'max_rally_10d_raw',
-#         'severe_abnormal_pressure_10d',
-#         'sector_ma5_followthrough_v3',
-#         'beta_20d',
-#         # 'market_prev_60d_new_high_avg_return',                                                                                     
-#         'market_60d_new_high_ratio',                                                                                                          
-#         # 'limit_up_count_percentile_20d',                                                                                                    
-#         # 'zhaban_count_percentile_20d',                                                                                                     
-#         # 'limit_down_count_percentile_20d',
-#         'limit_up_sw2_concentration',                                                                                                                
-#         'sw2_high_low_position_return_spread', 
-#         # 'return_5d_cs_rank',
-#         # 'alpha_001',
-#         # 'alpha_002',
-#         # 'alpha_017',
-#         'beta_60d',
-#         'downside_beta',
-#         # 'kdj_diff_9',
-#         # 'kdj_j_9',
-#         # 'kdj_k_9',
-#         'ma60_slope',
-#         'overnight_return',
-#         'pct_chg_1d',
-#         'pct_chg_2d',
-#         'pct_chg_intra_z',
-#         'pct_chg_sector_mean',
-#         'return_3d_intra_z',
-#         'return_3d_sector_mean',
-#         'return_5d_intra_z',
-#         'return_5d_sector_mean',
-#         'return_10d_intra_z',
-#         'return_10d_sector_mean',
-#         'return_20d_intra_z',
-#         'return_20d_sector_mean',
-#         'sector_liquidity_gated_turnover_z',
-#         'sector_turnover_change_5d_20d',
-#         'high_to_close_drawdown',
-#         # 'price_ma5_ratio_raw',
-#         'market_trend_strength',
-#         'market_liquidity_change',
-#         'market_sentiment_ad',
-#         'market_volatility_context',
-#         'mkt_regime_trend_pressure_v2',
-#         'mkt_breadth_thrust_v2',
-#         # 'mkt_emotion_stability_v2',
-#         'mkt_dispersion_shock_v2',
-#         # 'mkt_liquidity_impulse_v2',
-#         # 'mkt_ma5_followthrough_v3',
-#         'sector_momentum_consistency',
-#         'sector_momentum_dispersion_rank',
-#         'sector_momentum_interaction',
-#         'value_growth_rotation',
-#         'size_rotation_strength',
-#         'sector_dispersion',
-#         'sector_relative_volatility',
-#         'sector_volatility_5d',
-#         'sw_circ_mv_rank_intra_sector',
-#         'ma_convergence_score',
-#         'intra_sector_momentum_rank',
-#         'sector_trend_gated_momentum_intra_z',
-#         'sector_rotation_breakout_intra_z',
-#         'sector_leader_capture_rank',
-#         'sector_strong_leader_alpha',
-#         'sector_weak_reversal_alpha',
-#         'sector_momentum_accel_rank',
-#         'sector_hhi_change',
-#         'sector_relative_strength_vs_market',
-#         'mkt_sector_dispersion',
-#         'sector_mkt_corr_20d',
-#         'intra_sector_breadth',
-#         'market_vols_adaptive_iv',
-#         'market_trend_adaptive_beta',
-#         'sector_excess_intra_rank',
-#         'sector_vols_divergence_alpha',
-#         'sector_turnover_surge_pv_alpha',
-#         'sector_dispersion_leader_alpha',
-#         'vortex_trend',
-#         'intraday_reversal',
-#         'sector_limit_overflow_alpha',
-#         'sector_broken_resilience_alpha',
-#         'limit_sustain_alpha',
-#         'market_emotion_resonance_alpha',
-#         'resistance_distance',
-#         'support_distance',
-#         'coskewness',
-#         'kurtosis_20d',
-#         'skewness_20d',
-#         'sector_correlation_20d',
-#         'stock_sector_pos_align',
-#     ]
 
 
 def _get_zscore_factors():
@@ -6162,7 +5510,7 @@ def _get_zscore_factors():
     return [
         'range_compression',
         'body_efficiency',
-        # 'shadow_dominance',
+        # 'shadow_dominance',#￥
         'gap_power',
         'kdj_golden_cross_strength',
         'open_to_high_ratio',
@@ -6188,24 +5536,25 @@ def _get_zscore_factors():
         'max_drawdown_20d',
         'max_rally_20d',
         'max_rally_10d',
-        # 'ppo_strength',
+        # 'ppo_strength',#￥
         'mfi_strength',
         'volatility_structure_alpha',
         'price_impact',
-        # 'volume_structure_alpha',
+        # 'volume_structure_alpha',#￥
         'pct_chg_1d',
         'pct_chg_2d',
         'regime_aware_reversal_alpha',
         'trend_acceleration',
         'trend_consistency',
         'trend_pullback_composite_alpha',
-        # 'cpv_factor',
+        # 'cpv_factor',#￥
         'price_ma5_ratio',
         'high_volatility_pullback_alpha',
         'volume_confirmed_pullback_alpha',
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
+        # 'true_turnover_10d',#￥
     ]
 
 
@@ -6237,13 +5586,14 @@ def _get_rankpct_factors():
         'shadow_dominance',
         # 'abnormal_turnover',
         'volume_structure_alpha',
-        'money_flow_pressure',
+        'money_flow_pressure',#$
         # 'sector_turnover_change_5d_20d',
         # 'open_to_high_ratio',
         # 'intraday_reversal',
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
         # 'main_outflow_retail_takeover',
+        # 'ma_convergence_score',
     ]
 
 
@@ -6284,9 +5634,10 @@ def _get_stock_factors():
         # 'max_rally_20d_raw',
         # 'max_rally_10d_raw',
         # 'market_prev_60d_new_high_avg_return', 
-        'prev_non_first_limit_up_performance_percentile_20d',
-        'log_price_slope_10d',
-        'log_price_slope_20d',
+        # 'prev_non_first_limit_up_performance_percentile_20d',
+        'true_turnover_10d',
+        # 'log_price_slope_10d',
+        # 'log_price_slope_20d',
         # 'market_60d_new_high_ratio',
         # 'log_price_slope_10d_x_log_circ_mv',                                                                                              
         # 'market_60d_new_high_ratio_train_percentile',
@@ -6348,10 +5699,10 @@ def _get_stock_factors():
         'return_3d_intra_z',
         'return_5d_intra_z',
         'intra_sector_momentum_rank',
-        'sector_trend_gated_momentum_intra_z',
+        # 'sector_trend_gated_momentum_intra_z',
         'sector_rotation_breakout_intra_z',
         'sector_strong_leader_alpha',
-        'sector_liquidity_gated_turnover_z',
+        # 'sector_liquidity_gated_turnover_z',
         'sector_weak_reversal_alpha',
         'sector_momentum_accel_rank',
         'sector_turnover_change_5d_20d',
@@ -6362,8 +5713,8 @@ def _get_stock_factors():
         'market_vols_adaptive_iv',
         'sector_excess_intra_rank',
         'sector_vols_divergence_alpha',
-        'sector_turnover_surge_pv_alpha',
-        'intraday_reversal',
+        # 'sector_turnover_surge_pv_alpha',
+        # 'intraday_reversal',
         'sector_limit_overflow_alpha',
         'sector_broken_resilience_alpha',
         'limit_sustain_alpha',
@@ -6381,15 +5732,15 @@ def _get_stock_factors():
         'stock_sector_pos_align',
 
     # ===== 按日z-score =====
-        'range_compression',
-        'body_efficiency',
-        'gap_power',
-        'kdj_golden_cross_strength',
-        'open_to_high_ratio',
+        # 'range_compression',
+        # 'body_efficiency',
+        # 'gap_power',
+        # 'kdj_golden_cross_strength',
+        # 'open_to_high_ratio',
         'sector_concentration',
         'sector_rank_change_5d',
         'sector_breadth',
-        'intraday_clv',
+        # 'intraday_clv',
         'amihud_illiquidity',
         'abnormal_turnover',
         'efficiency_ratio',
@@ -6426,6 +5777,8 @@ def _get_stock_factors():
         'distance_from_52w_high',
         'distance_from_52w_low',
         'ma_alignment_score',
+        # 'runup_ma5_exhaustion',
+        # 'volume_price_exhaustion',
 
 
     # ===== 按行业z-score =====
@@ -6451,7 +5804,11 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # 'volume_price_exhaustion',
+        # 'runup_ma5_exhaustion',
         # 'prev_non_first_limit_up_performance_percentile_20d',
+        'gap_intraday_quality_score_5d',
+        'pre_second_breakout_shapelet_corr_20d',
         'beta_20d',
         # 'market_prev_60d_new_high_avg_return',  
         'log_price_slope_10d',
@@ -6471,7 +5828,7 @@ def _get_original_factors():
         # 'sector_ma5_followthrough_v3',
         'sw2_high_low_position_return_spread', 
         # 'return_5d_cs_rank',
-        'high_to_close_drawdown',
+        'high_to_close_drawdown',#%临时删
         'market_trend_strength',
         'market_liquidity_change',
         'market_sentiment_ad',
@@ -9232,6 +8589,25 @@ def _prepare_feature_data(input_data, feature_columns, data_type="特征数据")
         # [CHART] 步骤2：提取特征数据
         feature_data = input_data[available_features].copy()
 
+        if ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE:
+            neutralize_features = [
+                col for col in WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS
+                if col in feature_data.columns
+            ]
+            if neutralize_features and 'date' in input_data.columns:
+                group_key = input_data['date']
+                for col in neutralize_features:
+                    numeric_col = pd.to_numeric(input_data[col], errors='coerce')
+                    feature_data[col] = numeric_col.groupby(group_key).transform('median')
+                logger.info(
+                    f"[中位数替换] {data_type}: 已将 {len(neutralize_features)} 个日内形态因子替换为当日横截面中位数: "
+                    f"{', '.join(neutralize_features)}"
+                )
+            elif neutralize_features:
+                logger.warning(f"[中位数替换] {data_type}: 缺少date列，无法执行当日横截面中位数替换")
+            else:
+                logger.info(f"[中位数替换] {data_type}: 当前特征列表未包含待替换日内形态因子")
+
         logger.info(f"{data_type}统计:")
         logger.info(f"  样本数: {len(feature_data):,}个")
         logger.info(f"  特征数: {len(available_features)}个")
@@ -9419,197 +8795,125 @@ def _save_model_results(model_results, feature_names, pca_models=None, model_typ
 def _get_permutation_factor_groups(feature_columns):
     """按业务含义把训练特征划分为因子簇，用于簇级 permutation。"""
     factor_groups = {
-        "beta":['beta_20d', 'beta_60d',],
-
-        'downside_beta':['downside_beta',],
-
-        "sector":['intra_sector_breadth', 
-                'sector_dispersion_leader_alpha', 'sector_leader_capture_rank',
-                'sector_leadership_persistence_v3',],
-        # "market_new":['limit_up_sw2_concentration',
-        #         'ma5_strength_breadth_v3', 'market_advance_decline_ratio', 'market_trend_adaptive_beta',"prev_non_first_limit_up_performance_percentile_20d",
-        #         'mkt_breadth_thrust_v2', 'mkt_dispersion_shock_v2', 'mkt_emotion_stability_v2', 'mkt_liquidity_impulse_v2',],
-        "market_breadth_thrust": [
-            "market_advance_decline_ratio",
-            "mkt_breadth_thrust_v2",
-            "ma5_strength_breadth_v3",
-        ],
-
-        "market_emotion_liquidity": [
-            "mkt_emotion_stability_v2",
-            "mkt_liquidity_impulse_v2",
-            "market_trend_adaptive_beta",
-        ],
-
-        "limit_concentration": [
-            "limit_up_sw2_concentration",
-            "prev_non_first_limit_up_performance_percentile_20d",
-        ],
-
-        "market_dispersion": [
-            "mkt_dispersion_shock_v2",
-        ],
-        # "old_alpha":['relative_strength_20d','skewness_20d', 'ulcer_index','vortex_trend'],
-
-        # "momentum_peak_decay_3d":['momentum_peak_decay_3d',],          
-
-        "new_supply_tightness":[
-            "post_accumulation_supply_tightness",
-            "tightness_3d",],
-
-        "true_turnover_10d":["true_turnover_10d",],
-
-        "new_pullback_accel":
-            ["ma5_pullback_depth_10d",
-            "ret_3d_vs_10d_accel",],
-
-        # "new_limit_blowoff_risk":
-        #     ["prev_day_blowoff_risk",
-        #     "limit_down_3d",
-        #     "reg_severe_up_10d_ratio_pct",],
-
-        # "new_market_breadth":
-        #     ["market_60d_new_high_ratio",
-        #     "top10_10d_strength_level_v3",],
-
-        # "new_turnover":
-        #     ["turnover_z_20",],
-        # "new": [
-        #     "post_accumulation_supply_tightness","prev_non_first_limit_up_performance_percentile_20d","market_60d_new_high_ratio","true_turnover_10d",
-        #     "top10_10d_strength_level_v3","ma5_pullback_depth_10d","tightness_3d","turnover_z_20","reg_severe_up_10d_ratio_pct","prev_day_blowoff_risk",
-        #     "ret_3d_vs_10d_accel","limit_down_3d",
-        # ],
-        "trend_ma5_position": [
-            "price_ma5_ratio_raw",
-        ],
-        "trend_ma60_position": [
-            "price_ma60_ratio",
-            "ma60_slope", 
-        ],
-        "trend_alignment": [
-            "ma_alignment_score", "ma_convergence_score",
-        ],
-        "trend_52w_position": [
-            "distance_from_52w_high", "distance_from_52w_low",
-        ],
-        "trend_rally_drawdown": [
-            "max_rally_10d", "max_rally_20d",
-        ],
-        "max_drawdown_20d":["max_drawdown_20d",],
-
-        "trend_high_risk": [
-            "high_to_close_drawdown", "high_to_close_drawdown_pct",
-        ],
-        "runup_ma5_exhaustion":["runup_ma5_exhaustion",],
-        "trend_slope_accel_consistency": [
-            "log_price_slope_10d", "log_price_slope_20d", "trend_acceleration",
-            "trend_consistency", "stable_momentum", "price_acceleration",
-        ],
-        "liquidity_turnover_microstructure": [
-            "abnormal_turnover", "turnover_stability", "price_impact", "amihud_illiquidity",
-        ],
-        # "liquidity_real_moneyflow": [
-        #     "buy_lg_amount_rate_pct", "buy_sm_amount_rate_pct", 
-        #     "net_d5_amount_to_turnover", "main_outflow_retail_takeover",
-        # ],
-        "liquidity_synthetic_flow_volume": [
-            "volume_structure_alpha_pct", "volume_confirmed_pullback_alpha","money_flow_pressure_pct",
-        ],
-        # "sector_momentum_core": [
-        #     "sector_momentum_interaction", "sector_momentum_accel_rank", "sector_momentum_consistency",
-        #     "sector_trend_gated_momentum_intra_z", "sector_rotation_breakout_intra_z",
-        #     "sector_strong_leader_alpha", "sector_leadership_persistence_v3",
-        # ],
-        # "sector_momentum_market": [
-        #     "sector_relative_strength_vs_market",
-        # ],
-        "sector_breadth_dispersion": [
-            "sector_breadth", "sector_dispersion", "sector_momentum_dispersion_rank",
-            "sector_relative_volatility", "sector_volatility_5d", "sector_vols_divergence_alpha",
-        ],
-        "sector_intra_rank": [
-            "sector_excess_intra_rank", "intra_sector_momentum_rank", "stock_sector_pos_align",
-            "sw2_high_low_position_return_spread", "sw_circ_mv_rank_intra_sector",
-        ],
-        "sector_concentration_correlation": [
-            "sector_hotspot_concentration_v3", "sector_concentration",
-            "sector_correlation_20d", "sector_mkt_corr_20d",
-        ],
-        "sector_hhi_change": [
-            "sector_hhi_change",
-        ],
-        # "sector_rank_change_5d": [
-        #     "sector_rank_change_5d",
-        # ],
-        "sector_turnover_liquidity": [
-            "sector_turnover_surge_pv_alpha",
-            "sector_liquidity_gated_turnover_z",
-        ],
-        # "sector_turnover_change_5d_20d": [
-        #     "sector_turnover_change_5d_20d",
-        # ],
-        # "sector_risk_alpha": [
-        #     "sector_weak_reversal_alpha", "sector_broken_resilience_alpha", "sector_limit_overflow_alpha",
-        # ],
-        # "market_context_regime": [
-        #     "market_trend_strength", "market_liquidity_change", "market_sentiment_ad",
-        #     "market_volatility_context", "market_vols_adaptive_iv", "market_emotion_resonance_alpha",
-        #     "mkt_sector_dispersion", "emotion_quality_balance_v3", "strong_stock_volume_confirmation_v3",
-        #     "value_growth_rotation", "size_rotation_strength","mkt_ma5_followthrough_v3_exp",
-        # ],
-        # "return_momentum_reversal1": [
-        #     "pct_chg_1d", "pct_chg_2d", "pct_chg_intra_z", "pct_chg_sector_mean",
-        #     "return_3d_intra_z", "return_5d_intra_z", "return_10d_intra_z", "return_20d_intra_z",
-        # ],
-        # "return_momentum_sector": [
-        #     "return_3d_sector_mean", "return_5d_sector_mean", "return_10d_sector_mean",
-        #     "return_10d_sector_mean_pct", "return_20d_sector_mean",
-        # ],
-        # "return_momentum_reversal3": [
-        #     "momentum_decay","trend_pullback_composite_alpha", "regime_aware_reversal_alpha",
-        #     "high_volatility_pullback_alpha", "volatility_structure_alpha",
-        # ],
-        # "candlestick_intraday_shape": [
-        #     "body_efficiency", "gap_power", "range_compression",
-        #     "intraday_clv", "intraday_reversal", "open_to_high_ratio",
-        # ],
-        # "shadow_dominance_pct": [
-        #     "shadow_dominance_pct",
-        # ],
-        "candlestick_cpv": [
-            "cpv_factor_pct",
-        ],
-        # "kdj_j_9":[
-        #     "kdj_j_9",
-        # ],
-        # "technical_oscillator": [
-        #     "kdj_diff_9", "kdj_golden_cross_strength", "kdj_k_9",
-        #     "ppo_strength_pct", "mfi_strength", "mass_index_reversal", "efficiency_ratio",
-        # ],
-        # "risk_volatility_stat1": [
-        #     "beta_20d", "downside_beta",
-        # ],
-        # "risk_volatility_stat2": [
-        #     "ulcer_index",
-        # ],
-        # "risk_volatility_stat3": [
-        #     "kurtosis_20d",
-        # ],
-        # "risk_volatility_stat4": [
-        #     "skewness_20d",
-        # ],
-        # "risk_volatility_stat5": [
-        #     "coskewness",
-        # ],
-        # "support_resistance": [
-        #     "support_distance", "resistance_distance",
-        # ],
-        # "regulatory_abnormal": [
-        #     "severe_abnormal_pressure_10d_pct", "limit_sustain_alpha",
-        # ],
-        # "worldquant_alpha": [
-        #     "alpha_001", "alpha_002", "alpha_017",
-        # ],
+        "beta_20d": ["beta_20d"],
+        "downside_beta": ["downside_beta"],
+        "price_ma5_ratio": ["price_ma5_ratio"],
+        "price_ma60_ratio": ["price_ma60_ratio"],
+        "ma60_slope": ["ma60_slope"],
+        "ma_alignment_score": ["ma_alignment_score"],
+        "ma_convergence_score": ["ma_convergence_score"],
+        "distance_from_52w_high": ["distance_from_52w_high"],
+        "distance_from_52w_low": ["distance_from_52w_low"],
+        "max_rally_10d": ["max_rally_10d"],
+        "max_rally_20d": ["max_rally_20d"],
+        "max_drawdown_20d": ["max_drawdown_20d"],
+        "high_to_close_drawdown": ["high_to_close_drawdown"],
+        "high_to_close_drawdown_pct": ["high_to_close_drawdown_pct"],
+        "log_price_slope_10d": ["log_price_slope_10d"],
+        "log_price_slope_20d": ["log_price_slope_20d"],
+        "trend_acceleration": ["trend_acceleration"],
+        "trend_consistency": ["trend_consistency"],
+        "stable_momentum": ["stable_momentum"],
+        "price_acceleration": ["price_acceleration"],
+        "abnormal_turnover": ["abnormal_turnover"],
+        "turnover_stability": ["turnover_stability"],
+        "price_impact": ["price_impact"],
+        "amihud_illiquidity": ["amihud_illiquidity"],
+        "buy_lg_amount_rate_pct": ["buy_lg_amount_rate_pct"],
+        "buy_sm_amount_rate_pct": ["buy_sm_amount_rate_pct"],
+        "net_d5_amount_to_turnover": ["net_d5_amount_to_turnover"],
+        "main_outflow_retail_takeover": ["main_outflow_retail_takeover"],
+        "volume_structure_alpha_pct": ["volume_structure_alpha_pct"],
+        "volume_confirmed_pullback_alpha": ["volume_confirmed_pullback_alpha"],
+        "money_flow_pressure_pct": ["money_flow_pressure_pct"],
+        "sector_momentum_interaction": ["sector_momentum_interaction"],
+        "sector_momentum_accel_rank": ["sector_momentum_accel_rank"],
+        "sector_momentum_consistency": ["sector_momentum_consistency"],
+        "sector_trend_gated_momentum_intra_z": ["sector_trend_gated_momentum_intra_z"],
+        "sector_rotation_breakout_intra_z": ["sector_rotation_breakout_intra_z"],
+        "sector_strong_leader_alpha": ["sector_strong_leader_alpha"],
+        "sector_leadership_persistence_v3": ["sector_leadership_persistence_v3"],
+        "sector_relative_strength_vs_market": ["sector_relative_strength_vs_market"],
+        "sector_breadth": ["sector_breadth"],
+        "sector_dispersion": ["sector_dispersion"],
+        "sector_momentum_dispersion_rank": ["sector_momentum_dispersion_rank"],
+        "sector_relative_volatility": ["sector_relative_volatility"],
+        "sector_volatility_5d": ["sector_volatility_5d"],
+        "sector_vols_divergence_alpha": ["sector_vols_divergence_alpha"],
+        "sector_excess_intra_rank": ["sector_excess_intra_rank"],
+        "intra_sector_momentum_rank": ["intra_sector_momentum_rank"],
+        "stock_sector_pos_align": ["stock_sector_pos_align"],
+        "sw2_high_low_position_return_spread": ["sw2_high_low_position_return_spread"],
+        "sw_circ_mv_rank_intra_sector": ["sw_circ_mv_rank_intra_sector"],
+        "sector_hotspot_concentration_v3": ["sector_hotspot_concentration_v3"],
+        "sector_concentration": ["sector_concentration"],
+        "sector_correlation_20d": ["sector_correlation_20d"],
+        "sector_mkt_corr_20d": ["sector_mkt_corr_20d"],
+        "sector_hhi_change": ["sector_hhi_change"],
+        "sector_rank_change_5d": ["sector_rank_change_5d"],
+        "sector_turnover_surge_pv_alpha": ["sector_turnover_surge_pv_alpha"],
+        "sector_liquidity_gated_turnover_z": ["sector_liquidity_gated_turnover_z"],
+        "sector_turnover_change_5d_20d": ["sector_turnover_change_5d_20d"],
+        "sector_weak_reversal_alpha": ["sector_weak_reversal_alpha"],
+        "sector_broken_resilience_alpha": ["sector_broken_resilience_alpha"],
+        "sector_limit_overflow_alpha": ["sector_limit_overflow_alpha"],
+        "market_trend_strength": ["market_trend_strength"],
+        "market_liquidity_change": ["market_liquidity_change"],
+        "market_sentiment_ad": ["market_sentiment_ad"],
+        "market_volatility_context": ["market_volatility_context"],
+        "market_vols_adaptive_iv": ["market_vols_adaptive_iv"],
+        "market_emotion_resonance_alpha": ["market_emotion_resonance_alpha"],
+        "mkt_sector_dispersion": ["mkt_sector_dispersion"],
+        "emotion_quality_balance_v3": ["emotion_quality_balance_v3"],
+        "strong_stock_volume_confirmation_v3": ["strong_stock_volume_confirmation_v3"],
+        "value_growth_rotation": ["value_growth_rotation"],
+        "size_rotation_strength": ["size_rotation_strength"],
+        "mkt_ma5_followthrough_v3_exp": ["mkt_ma5_followthrough_v3_exp"],
+        "pct_chg_1d": ["pct_chg_1d"],
+        "pct_chg_2d": ["pct_chg_2d"],
+        "pct_chg_intra_z": ["pct_chg_intra_z"],
+        "pct_chg_sector_mean": ["pct_chg_sector_mean"],
+        "return_3d_intra_z": ["return_3d_intra_z"],
+        "return_5d_intra_z": ["return_5d_intra_z"],
+        "return_10d_intra_z": ["return_10d_intra_z"],
+        "return_20d_intra_z": ["return_20d_intra_z"],
+        "return_3d_sector_mean": ["return_3d_sector_mean"],
+        "return_5d_sector_mean": ["return_5d_sector_mean"],
+        "return_10d_sector_mean": ["return_10d_sector_mean"],
+        "return_10d_sector_mean_pct": ["return_10d_sector_mean_pct"],
+        "return_20d_sector_mean": ["return_20d_sector_mean"],
+        "momentum_decay": ["momentum_decay"],
+        "trend_pullback_composite_alpha": ["trend_pullback_composite_alpha"],
+        "regime_aware_reversal_alpha": ["regime_aware_reversal_alpha"],
+        "high_volatility_pullback_alpha": ["high_volatility_pullback_alpha"],
+        "volatility_structure_alpha": ["volatility_structure_alpha"],
+        "body_efficiency": ["body_efficiency"],
+        "gap_power": ["gap_power"],
+        "range_compression": ["range_compression"],
+        "open_to_high_ratio": ["open_to_high_ratio"],
+        "intraday_clv": ["intraday_clv"],
+        "intraday_reversal": ["intraday_reversal"],
+        "shadow_dominance_pct": ["shadow_dominance_pct"],
+        "cpv_factor_pct": ["cpv_factor_pct"],
+        "kdj_diff_9": ["kdj_diff_9"],
+        "kdj_golden_cross_strength": ["kdj_golden_cross_strength"],
+        "kdj_k_9": ["kdj_k_9"],
+        "kdj_j_9": ["kdj_j_9"],
+        "ppo_strength_pct": ["ppo_strength_pct"],
+        "mfi_strength": ["mfi_strength"],
+        "mass_index_reversal": ["mass_index_reversal"],
+        "efficiency_ratio": ["efficiency_ratio"],
+        "ulcer_index": ["ulcer_index"],
+        "kurtosis_20d": ["kurtosis_20d"],
+        "skewness_20d": ["skewness_20d"],
+        "coskewness": ["coskewness"],
+        "support_distance": ["support_distance"],
+        "resistance_distance": ["resistance_distance"],
+        "severe_abnormal_pressure_10d_pct": ["severe_abnormal_pressure_10d_pct"],
+        "alpha_001": ["alpha_001"],
+        "alpha_002": ["alpha_002"],
+        "alpha_017": ["alpha_017"],
+        "limit_sustain_alpha": ["limit_sustain_alpha"],
     }
 
 
@@ -9785,8 +9089,8 @@ def run_permutation_factor_clusters_mode(args):
     print("===== 因子簇 Permutation 重要性分析 =====")
     try:
         # lightgbm_model_window3_20260603_043604.pkl
-        # model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
-        model_path = Path("results/lightgbm_model_window3_20260603_043604.pkl")
+        model_path = Path("results/lightgbm_model_window3_20260427_231053.pkl")
+        # model_path = Path("results/lightgbm_model_window3_20260603_043604.pkl")
         if not model_path.exists():
             logger.error(f"模型文件不存在: {model_path}")
             return False
@@ -15178,6 +14482,13 @@ def run_test_model_walkforward_mode(args):
     logger.info("=" * 80)
 
     try:
+        global ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE
+        ENABLE_WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE = False
+        logger.info(
+            "[中位数替换] test_model_walkforward已启用，以下因子在输入模型前会替换为当日横截面中位数: "
+            f"{', '.join(WALKFORWARD_DAILY_MEDIAN_NEUTRALIZE_FACTORS)}"
+        )
+
         import pandas as pd
         import numpy as np
         from pathlib import Path
@@ -15226,7 +14537,7 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-07',
                 'val_end': '2025-07-25',
                 # 'val_end': '2025-05-25',
-                'test_start': '2025-10-05',
+                'test_start': '2025-08-01',
                 'test_end': '2026-05-18'
                 # 'val_start': '2025-03-01',
                 # 'val_end': '2025-06-02',
@@ -17843,7 +17154,7 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
-        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
         # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"

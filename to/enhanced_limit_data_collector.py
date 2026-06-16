@@ -31,7 +31,7 @@ class CompleteLimitDataCollector:
     基于Tushare官方文档：https://tushare.pro/document/2?doc_id=298
     """
 
-    def __init__(self, token='022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000'):
+    def __init__(self, token='gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b'):
         """初始化收集器"""
         self.token = token
         ts.set_token(token)

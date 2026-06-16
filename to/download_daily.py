@@ -44,8 +44,91 @@ logging.basicConfig(
 logger = logging.getLogger("download_tushare_daily")
 
 # 全局配置
-MAX_WORKERS = 5  # 推荐 4-8，10000积分用户建议设为 5-6
-API_RETRY_COUNT = 7 # 最大重试次数
+# pro_bar(adj='qfq') 内部会额外访问 adj_factor。并发过高时很容易触发 adj_factor 500次/分钟限制。
+MAX_WORKERS = 4
+API_RETRY_COUNT = 20
+# pro_bar(qfq) 通常会触发 daily + adj_factor 等内部请求。
+# 0.18s 约等于 333次pro_bar/分钟，仍低于 adj_factor 500次/分钟上限；触发限流后会自动降速。
+API_MIN_INTERVAL_SECONDS = 0.18
+API_MIN_INTERVAL_FLOOR_SECONDS = 0.16
+API_MIN_INTERVAL_CEILING_SECONDS = 0.45
+API_RATE_LIMIT_COOLDOWN_SECONDS = 50
+
+
+class TushareRateLimiter:
+    """进程内全局自适应限速，避免多个下载线程同时打到 pro_bar/adj_factor 限流。"""
+    def __init__(
+        self,
+        min_interval_seconds: float,
+        floor_seconds: float = API_MIN_INTERVAL_FLOOR_SECONDS,
+        ceiling_seconds: float = API_MIN_INTERVAL_CEILING_SECONDS,
+    ):
+        self.floor_seconds = max(0.01, float(floor_seconds))
+        self.ceiling_seconds = max(self.floor_seconds, float(ceiling_seconds))
+        self.min_interval_seconds = min(max(float(min_interval_seconds), self.floor_seconds), self.ceiling_seconds)
+        self._lock = threading.Lock()
+        self._last_call_ts = 0.0
+        self._cooldown_until_ts = 0.0
+        self._success_since_adjust = 0
+
+    def wait(self):
+        with self._lock:
+            now = time.time()
+            interval_wait = self.min_interval_seconds - (now - self._last_call_ts)
+            cooldown_wait = self._cooldown_until_ts - now
+            wait_seconds = max(interval_wait, cooldown_wait)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds + random.random() * 0.05)
+            self._last_call_ts = time.time()
+
+    def cooldown(self, seconds: float):
+        with self._lock:
+            self._cooldown_until_ts = max(self._cooldown_until_ts, time.time() + float(seconds))
+
+    def record_success(self):
+        with self._lock:
+            self._success_since_adjust += 1
+            if self._success_since_adjust >= 120 and self.min_interval_seconds > self.floor_seconds:
+                old_interval = self.min_interval_seconds
+                self.min_interval_seconds = max(self.floor_seconds, self.min_interval_seconds * 0.96)
+                self._success_since_adjust = 0
+                if old_interval - self.min_interval_seconds >= 0.005:
+                    logger.info(
+                        f"[限流] 连续成功，API间隔自动下调: "
+                        f"{old_interval:.3f}s -> {self.min_interval_seconds:.3f}s"
+                    )
+
+    def record_rate_limit(self):
+        with self._lock:
+            old_interval = self.min_interval_seconds
+            self.min_interval_seconds = min(self.ceiling_seconds, max(self.min_interval_seconds * 1.25, self.min_interval_seconds + 0.03))
+            self._success_since_adjust = 0
+            logger.warning(
+                f"[限流] 检测到频率限制，API间隔自动上调: "
+                f"{old_interval:.3f}s -> {self.min_interval_seconds:.3f}s"
+            )
+
+    def current_interval(self) -> float:
+        with self._lock:
+            return float(self.min_interval_seconds)
+
+
+TUSHARE_RATE_LIMITER = TushareRateLimiter(API_MIN_INTERVAL_SECONDS)
+
+
+def _is_tushare_rate_limit_error(error_msg: str) -> bool:
+    rate_limit_keywords = [
+        '频率超限',
+        '每分钟',
+        '每小时',
+        '500次/分钟',
+        '访问接口',
+        'frequency',
+        'rate limit',
+        'limit',
+    ]
+    lower_msg = str(error_msg).lower()
+    return any(keyword.lower() in lower_msg for keyword in rate_limit_keywords)
 
 def get_stock_list_from_sw_sector():
     """获取所有股票列表，排除北交所"""
@@ -63,11 +146,12 @@ def get_stock_list_from_sw_sector():
         sector_data = json.load(f)
 
     all_stocks = list(sector_data.keys())
-    filtered_stocks = [stock for stock in all_stocks if not stock.endswith('.BJ')]
+    # filtered_stocks = [stock for stock in all_stocks if not stock.endswith('.BJ')]
 
     logger.info(f"原始股票数量: {len(all_stocks)}")
-    logger.info(f"过滤后股票数量（排除北交所）: {len(filtered_stocks)}")
-    return filtered_stocks
+    # logger.info(f"过滤后股票数量（排除北交所）: {len(filtered_stocks)}")
+    # return filtered_stocks
+    return all_stocks
 
 def retry_tushare_call(func):
     """
@@ -76,30 +160,37 @@ def retry_tushare_call(func):
     """
     def wrapper(*args, **kwargs):
         backoff = 1
+        last_exception = None
         for i in range(API_RETRY_COUNT):
             try:
-                return func(*args, **kwargs)
+                TUSHARE_RATE_LIMITER.wait()
+                result = func(*args, **kwargs)
+                TUSHARE_RATE_LIMITER.record_success()
+                return result
             except Exception as e:
+                last_exception = e
                 error_msg = str(e)
                 # 检查是否是频率限制错误
-                if "每分钟最多访问" in error_msg or "frequency" in error_msg:
-                    sleep_time = 60 + random.random() * 5 # 遇到分钟限制，强制休眠1分钟以上
-                    logger.warning(f"触发Tushare流控，休眠 {sleep_time:.1f} 秒后重试 (第 {i+1} 次)...")
+                if _is_tushare_rate_limit_error(error_msg):
+                    TUSHARE_RATE_LIMITER.record_rate_limit()
+                    sleep_time = API_RATE_LIMIT_COOLDOWN_SECONDS + random.random() * 12
+                    TUSHARE_RATE_LIMITER.cooldown(sleep_time)
+                    logger.warning(
+                        f"触发Tushare流控: {error_msg}；休眠 {sleep_time:.1f} 秒后重试 "
+                        f"(第 {i+1}/{API_RETRY_COUNT} 次)..."
+                    )
                     time.sleep(sleep_time)
                     backoff = 1 # 重置退避
-                elif "每小时" in error_msg:
-                    logger.error("触发小时级流控，程序将长时间休眠...")
-                    time.sleep(3600)
                 else:
                     # 其他网络错误，指数退避
                     sleep_time = backoff + random.random()
-                    logger.warning(f"API调用异常: {e}，{sleep_time:.1f} 秒后重试...")
+                    logger.warning(f"API调用异常: {e}，{sleep_time:.1f} 秒后重试 (第 {i+1}/{API_RETRY_COUNT} 次)...")
                     time.sleep(sleep_time)
                     backoff = min(backoff * 2, 30) # 最大等待30秒
         
         # 重试耗尽，抛出最后一次异常
         logger.error(f"重试 {API_RETRY_COUNT} 次后依然失败")
-        raise Exception(f"API Call Failed after retries")
+        raise RuntimeError(f"API Call Failed after {API_RETRY_COUNT} retries: {last_exception}") from last_exception
     return wrapper
 
 @retry_tushare_call
@@ -120,38 +211,52 @@ def download_daily_from_tushare(
     batch_size: int = 500, # 批次可以设大一点，因为内部是并发的
     rows_per_save: int = 50000,
     resume: bool = True,
-    progress_file: str = 'local_data/download_progress_tushare.pkl'
+    progress_file: str = 'local_data/download_progress_tushare.pkl',
+    max_workers: Optional[int] = None,
+    api_min_interval_seconds: Optional[float] = None,
 ) -> bool:
     """
     多线程下载主函数
     """
+    global TUSHARE_RATE_LIMITER
+    effective_max_workers = max(1, int(max_workers or MAX_WORKERS))
+    effective_api_interval = float(api_min_interval_seconds or API_MIN_INTERVAL_SECONDS)
+    TUSHARE_RATE_LIMITER = TushareRateLimiter(effective_api_interval)
+
     logger.info("=" * 100)
     logger.info("开始从Tushare下载日线数据 (极速多线程版)")
     logger.info("=" * 100)
-    logger.info(f"并发线程数: {MAX_WORKERS}")
+    logger.info(f"并发线程数: {effective_max_workers}")
+    logger.info(
+        f"API最小调用间隔: {effective_api_interval:.2f} 秒 "
+        f"(自适应范围 {API_MIN_INTERVAL_FLOOR_SECONDS:.2f}~{API_MIN_INTERVAL_CEILING_SECONDS:.2f} 秒)"
+    )
+    logger.info(f"API最大重试次数: {API_RETRY_COUNT}")
     logger.info(f"股票数量: {len(stock_list)}")
     
     # 初始化tushare API (在主线程初始化)
-    ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000') 
+    # ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c100qq') 
+    ts.set_token('gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b')
     pro = ts.pro_api()
-    df_st = pro.stock_st(trade_date='20250813')
+    # df_st = pro.stock_st(trade_date='20250813')
 
-    if df_st is not None and len(df_st) > 0:
-        st_list = df_st['ts_code'].tolist()
-        logger.info(f"ST股票数量: {len(st_list)}")
-        # 过滤ST股票
-        stock_list = [stock for stock in stock_list if stock not in st_list]
-        logger.info(f"过滤后股票数量: {len(stock_list)}")
-    else:
-        logger.warning("未获取到ST股票数据，跳过ST股票过滤")
+    # if df_st is not None and len(df_st) > 0:
+    #     st_list = df_st['ts_code'].tolist()
+    #     logger.info(f"ST股票数量: {len(st_list)}")
+    #     # 过滤ST股票
+    #     stock_list = [stock for stock in stock_list if stock not in st_list]
+    #     logger.info(f"过滤后股票数量: {len(stock_list)}")
+    # else:
+    #     logger.warning("未获取到ST股票数据，跳过ST股票过滤")
 
-    if '600721.SH' in stock_list:
-        logger.info(f"股票600721需要下载")
+    # if '600721.SH' in stock_list:
+    #     logger.info(f"股票600721需要下载")
 
     # 加载进度
     progress = _load_progress(progress_file) if resume else None
     if progress:
         logger.info(f"断点续传: 已有 {len(progress.get('completed_stocks', {}))} 个分区记录")
+        progress['failed_stocks'] = []
     else:
         progress = {
             'completed_stocks': {}, 
@@ -165,6 +270,8 @@ def download_daily_from_tushare(
     accumulated_data = []
     total_rows = 0
     failed_stocks = []
+    expected_dates_by_stock = {}
+    empty_stocks = set()
     
     for i in range(0, len(stock_list), batch_size):
         batch_stocks = stock_list[i:i + batch_size]
@@ -176,7 +283,7 @@ def download_daily_from_tushare(
         batch_data_list = []
         
         # === 核心优化：线程池并发下载 ===
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=effective_max_workers) as executor:
             # 提交任务
             future_to_stock = {
                 executor.submit(fetch_single_stock, stock, adj, start_date, end_date): stock 
@@ -195,6 +302,7 @@ def download_daily_from_tushare(
                     if df_raw is not None and not df_raw.empty:
                         # 转换数据格式
                         df_trans = _transform_tushare_data(df_raw, stock_code)
+                        expected_dates_by_stock[stock_code] = set(df_trans['date_str'].astype(str).tolist())
 
                         # 🐛 调试日志：600721.SH 下载详情
                         if stock_code == '600721.SH':
@@ -213,6 +321,7 @@ def download_daily_from_tushare(
                         batch_data_list.append(df_trans)
                     else:
                         # 空数据不一定是失败，可能是停牌或未上市
+                        empty_stocks.add(stock_code)
                         if stock_code == '600721.SH':
                             logger.warning(f"⚠️ [600721.SH] 下载成功但数据为空（可能停牌或未上市）")
                         pass
@@ -221,6 +330,10 @@ def download_daily_from_tushare(
                     if stock_code == '600721.SH':
                         logger.error(f"❌ [600721.SH] 下载失败: {e}")
                     failed_stocks.append(stock_code)
+                    for pending_future in future_to_stock:
+                        if pending_future is not future:
+                            pending_future.cancel()
+                    raise RuntimeError(f"股票 {stock_code} 下载失败，程序终止") from e
 
         # 合并当前批次数据
         if batch_data_list:
@@ -261,6 +374,14 @@ def download_daily_from_tushare(
     logger.info(f"\n所有下载完成，正在最终写入磁盘...")
     partition_cache.flush_all()
     partition_cache.clear() # [修复] 现在PartitionCache类中有clear方法了
+
+    _validate_saved_download_data(
+        expected_dates_by_stock=expected_dates_by_stock,
+        empty_stocks=empty_stocks,
+        start_date=start_date,
+        end_date=end_date,
+        base_dir=Path('local_data/daily')
+    )
 
     progress['end_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     _save_progress(progress, progress_file)
@@ -332,6 +453,79 @@ def _calculate_derived_fields(df: pd.DataFrame, capital_df: Optional[pd.DataFram
         df['turnover_rate'] = None
     return df
 
+
+def _iter_month_partitions(start_date: str, end_date: str) -> List[str]:
+    start_ts = pd.to_datetime(start_date, format='%Y%m%d')
+    end_ts = pd.to_datetime(end_date, format='%Y%m%d')
+    months = pd.period_range(start_ts, end_ts, freq='M')
+    return [str(month).replace('-', '') for month in months]
+
+
+def _validate_saved_download_data(
+    expected_dates_by_stock: Dict[str, set],
+    empty_stocks: set,
+    start_date: str,
+    end_date: str,
+    base_dir: Path,
+):
+    """校验本次接口成功返回的数据是否全部写入本地分区文件。"""
+    expected_pair_count = sum(len(dates) for dates in expected_dates_by_stock.values())
+    logger.info("=" * 100)
+    logger.info("[校验] 开始校验本次下载数据写盘结果")
+    logger.info(f"[校验] 接口成功返回股票数: {len(expected_dates_by_stock)}")
+    logger.info(f"[校验] 接口返回空数据股票数: {len(empty_stocks)}")
+    logger.info(f"[校验] 预期股票-日期记录数: {expected_pair_count:,}")
+
+    if expected_pair_count == 0:
+        logger.warning("[校验] 本次没有任何非空下载结果，跳过写盘完整性校验")
+        return
+
+    required_columns = {'stock_code', 'date_str', 'date', 'open', 'high', 'low', 'close', 'volume'}
+    saved_pairs = set()
+    loaded_rows = 0
+    missing_partition_files = []
+
+    for partition_key in _iter_month_partitions(start_date, end_date):
+        partition_file = base_dir / partition_key / 'daily_data.parquet'
+        if not partition_file.exists():
+            missing_partition_files.append(str(partition_file))
+            continue
+
+        df = pd.read_parquet(partition_file)
+        missing_columns = required_columns - set(df.columns)
+        if missing_columns:
+            raise RuntimeError(f"[校验失败] 分区文件 {partition_file} 缺少必要列: {sorted(missing_columns)}")
+
+        df['date_str'] = df['date_str'].astype(str)
+        mask = (df['date_str'] >= start_date) & (df['date_str'] <= end_date)
+        df = df.loc[mask, ['stock_code', 'date_str']]
+        loaded_rows += len(df)
+        saved_pairs.update(zip(df['stock_code'].astype(str), df['date_str'].astype(str)))
+
+    missing_pairs = []
+    for stock_code, expected_dates in expected_dates_by_stock.items():
+        for date_str in expected_dates:
+            if (str(stock_code), str(date_str)) not in saved_pairs:
+                missing_pairs.append((stock_code, date_str))
+
+    if missing_pairs:
+        logger.error("[校验失败] 接口已成功返回但本地parquet缺失以下股票-日期记录:")
+        for stock_code, date_str in missing_pairs[:100]:
+            logger.error(f"  {stock_code} {date_str}")
+        if len(missing_pairs) > 100:
+            logger.error(f"  ... 还有 {len(missing_pairs) - 100} 条缺失记录")
+        if missing_partition_files:
+            logger.error(f"[校验] 缺失分区文件: {missing_partition_files}")
+        raise RuntimeError(f"[校验失败] 本地写盘缺失 {len(missing_pairs)} 条成功下载记录，程序终止")
+
+    if missing_partition_files:
+        logger.warning(f"[校验] 以下月份无分区文件，但本次成功返回数据不涉及这些月份: {missing_partition_files}")
+
+    logger.info(f"[校验通过] 已加载本地范围内记录数: {loaded_rows:,}")
+    logger.info(f"[校验通过] 本次成功返回的 {expected_pair_count:,} 条股票-日期记录均已写入")
+    logger.info("=" * 100)
+
+
 class PartitionCache:
     """分区数据缓存，管理内存中的Parquet数据"""
     def __init__(self):
@@ -389,6 +583,12 @@ def _save_by_partition_with_cache(df: pd.DataFrame, partition_cache: PartitionCa
 # ==============================================================================
 if __name__ == "__main__":
     import argparse
+
+    # ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c100qq') 
+    # pro = ts.pro_api()
+
+    # df=pro.stk_auction_o(trade_date='20260417')
+    # logger.info(f"{df}")
     
     os.makedirs('local_data/log', exist_ok=True)
     os.makedirs('local_data/daily', exist_ok=True)
@@ -396,6 +596,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--start', '-s', type=str, default=None)
     parser.add_argument('--end', '-e', type=str, default=None)
+    parser.add_argument('--workers', type=int, default=MAX_WORKERS, help=f'并发下载线程数，默认 {MAX_WORKERS}')
+    parser.add_argument(
+        '--api_interval',
+        type=float,
+        default=API_MIN_INTERVAL_SECONDS,
+        help=f'Tushare pro_bar调用最小间隔秒数，默认 {API_MIN_INTERVAL_SECONDS}'
+    )
     args = parser.parse_args()
 
     if args.start is None:
@@ -414,5 +621,7 @@ if __name__ == "__main__":
         start_date=args.start,
         end_date=args.end,
         adj='qfq',
-        batch_size=500 
+        batch_size=500,
+        max_workers=args.workers,
+        api_min_interval_seconds=args.api_interval
     )

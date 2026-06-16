@@ -1,180 +1,262 @@
 窗口 3 训练模型使用的因子列表
-生成时间: 2026-06-03 17:18:01
-总因子数量: 78
+生成时间: 2026-06-15 03:04:56
+总因子数量: 118
 
 === 按类型分组的因子列表 ===
 
-Z-score归一化因子 (5个):
+Z-score归一化因子 (8个):
    1. pct_chg_intra_z
    2. return_10d_intra_z
    3. return_20d_intra_z
    4. return_3d_intra_z
    5. return_5d_intra_z
+   6. sector_liquidity_gated_turnover_z
+   7. sector_rotation_breakout_intra_z
+   8. sector_trend_gated_momentum_intra_z
 
-排名归一化因子 (3个):
+排名归一化因子 (4个):
    1. intra_sector_momentum_rank
    2. sector_excess_intra_rank
-   3. sector_leader_capture_rank
+   3. sector_momentum_accel_rank
+   4. sector_momentum_dispersion_rank
 
 行业内排名因子 (1个):
    1. sector_excess_intra_rank
 
-行业内Z-score因子 (5个):
+行业内Z-score因子 (7个):
    1. pct_chg_intra_z
    2. return_10d_intra_z
    3. return_20d_intra_z
    4. return_3d_intra_z
    5. return_5d_intra_z
+   6. sector_rotation_breakout_intra_z
+   7. sector_trend_gated_momentum_intra_z
 
-原始因子 (70个):
+原始因子 (106个):
    1. abnormal_turnover
-   2. amihud_illiquidity
-   3. beta_20d
-   4. beta_60d
-   5. cpv_factor_pct
-   6. distance_from_52w_high
-   7. distance_from_52w_low
-   8. downside_beta
-   9. emotion_quality_balance_v3
-  10. high_to_close_drawdown
-  11. high_volatility_pullback_alpha
-  12. intra_sector_breadth
-  13. kurtosis_20d
-  14. limit_down_3d
-  15. ma60_slope
-  16. ma_alignment_score
-  17. ma_convergence_score
-  18. market_60d_new_high_ratio
-  19. market_advance_decline_ratio
-  20. market_emotion_resonance_alpha
-  21. market_liquidity_change
-  22. market_sentiment_ad
-  23. market_trend_adaptive_beta
-  24. market_trend_strength
-  25. market_volatility_context
-  26. market_vols_adaptive_iv
-  27. mkt_emotion_stability_v2
-  28. mkt_liquidity_impulse_v2
-  29. mkt_ma5_followthrough_v3_exp
-  30. mkt_sector_dispersion
-  31. momentum_decay
-  32. momentum_peak_decay_3d
-  33. pct_chg_1d
-  34. pct_chg_2d
-  35. pct_chg_sector_mean
-  36. post_accumulation_supply_tightness
-  37. prev_day_blowoff_risk
-  38. prev_non_first_limit_up_performance_percentile_20d
-  39. price_impact
-  40. price_ma5_ratio_raw
-  41. price_ma60_ratio
-  42. reg_severe_up_10d_ratio_pct
-  43. regime_aware_reversal_alpha
-  44. relative_strength_20d
-  45. return_10d_sector_mean
-  46. return_20d_sector_mean
-  47. return_3d_sector_mean
-  48. return_5d_sector_mean
-  49. runup_ma5_exhaustion
-  50. sector_broken_resilience_alpha
-  51. sector_dispersion_leader_alpha
-  52. sector_hhi_change
-  53. sector_leadership_persistence_v3
-  54. sector_limit_overflow_alpha
-  55. sector_mkt_corr_20d
-  56. sector_weak_reversal_alpha
-  57. size_rotation_strength
-  58. stock_sector_pos_align
-  59. strong_stock_volume_confirmation_v3
-  60. sw2_high_low_position_return_spread
-  61. sw_circ_mv_rank_intra_sector
-  62. tightness_3d
-  63. top10_10d_strength_level_v3
-  64. trend_pullback_composite_alpha
-  65. true_turnover_10d
-  66. turnover_stability
-  67. turnover_z_20
-  68. value_growth_rotation
-  69. volatility_structure_alpha
-  70. volume_confirmed_pullback_alpha
+   2. alpha_001
+   3. alpha_002
+   4. alpha_017
+   5. amihud_illiquidity
+   6. beta_20d
+   7. body_efficiency
+   8. buy_lg_amount_rate_pct
+   9. buy_sm_amount_rate_pct
+  10. coskewness
+  11. cpv_factor_pct
+  12. distance_from_52w_high
+  13. distance_from_52w_low
+  14. downside_beta
+  15. efficiency_ratio
+  16. emotion_quality_balance_v3
+  17. gap_power
+  18. high_to_close_drawdown
+  19. high_to_close_drawdown_pct
+  20. high_volatility_pullback_alpha
+  21. intraday_clv
+  22. intraday_reversal
+  23. kdj_diff_9
+  24. kdj_golden_cross_strength
+  25. kdj_j_9
+  26. kdj_k_9
+  27. kurtosis_20d
+  28. limit_sustain_alpha
+  29. log_price_slope_10d
+  30. log_price_slope_20d
+  31. ma60_slope
+  32. ma_alignment_score
+  33. ma_convergence_score
+  34. main_outflow_retail_takeover
+  35. market_emotion_resonance_alpha
+  36. market_liquidity_change
+  37. market_sentiment_ad
+  38. market_trend_strength
+  39. market_volatility_context
+  40. market_vols_adaptive_iv
+  41. mass_index_reversal
+  42. max_drawdown_20d
+  43. max_rally_10d
+  44. max_rally_20d
+  45. mfi_strength
+  46. mkt_ma5_followthrough_v3_exp
+  47. mkt_sector_dispersion
+  48. momentum_decay
+  49. money_flow_pressure_pct
+  50. net_d5_amount_to_turnover
+  51. open_to_high_ratio
+  52. pct_chg_1d
+  53. pct_chg_2d
+  54. pct_chg_sector_mean
+  55. ppo_strength_pct
+  56. price_acceleration
+  57. price_impact
+  58. price_ma5_ratio
+  59. price_ma60_ratio
+  60. range_compression
+  61. regime_aware_reversal_alpha
+  62. resistance_distance
+  63. return_10d_sector_mean
+  64. return_10d_sector_mean_pct
+  65. return_20d_sector_mean
+  66. return_3d_sector_mean
+  67. return_5d_sector_mean
+  68. sector_breadth
+  69. sector_broken_resilience_alpha
+  70. sector_concentration
+  71. sector_correlation_20d
+  72. sector_dispersion
+  73. sector_hhi_change
+  74. sector_hotspot_concentration_v3
+  75. sector_leadership_persistence_v3
+  76. sector_limit_overflow_alpha
+  77. sector_mkt_corr_20d
+  78. sector_momentum_consistency
+  79. sector_rank_change_5d
+  80. sector_relative_strength_vs_market
+  81. sector_relative_volatility
+  82. sector_strong_leader_alpha
+  83. sector_turnover_change_5d_20d
+  84. sector_turnover_surge_pv_alpha
+  85. sector_volatility_5d
+  86. sector_vols_divergence_alpha
+  87. sector_weak_reversal_alpha
+  88. severe_abnormal_pressure_10d_pct
+  89. shadow_dominance_pct
+  90. size_rotation_strength
+  91. skewness_20d
+  92. stable_momentum
+  93. stock_sector_pos_align
+  94. strong_stock_volume_confirmation_v3
+  95. support_distance
+  96. sw2_high_low_position_return_spread
+  97. sw_circ_mv_rank_intra_sector
+  98. trend_acceleration
+  99. trend_consistency
+  100. trend_pullback_composite_alpha
+  101. turnover_stability
+  102. ulcer_index
+  103. value_growth_rotation
+  104. volatility_structure_alpha
+  105. volume_confirmed_pullback_alpha
+  106. volume_structure_alpha_pct
 
 === 完整因子列表 ===
 
   1. abnormal_turnover
-  2. amihud_illiquidity
-  3. beta_20d
-  4. beta_60d
-  5. cpv_factor_pct
-  6. distance_from_52w_high
-  7. distance_from_52w_low
-  8. downside_beta
-  9. emotion_quality_balance_v3
- 10. high_to_close_drawdown
- 11. high_volatility_pullback_alpha
- 12. intra_sector_breadth
- 13. intra_sector_momentum_rank
- 14. kurtosis_20d
- 15. limit_down_3d
- 16. ma60_slope
- 17. ma_alignment_score
- 18. ma_convergence_score
- 19. market_60d_new_high_ratio
- 20. market_advance_decline_ratio
- 21. market_emotion_resonance_alpha
- 22. market_liquidity_change
- 23. market_sentiment_ad
- 24. market_trend_adaptive_beta
- 25. market_trend_strength
- 26. market_volatility_context
- 27. market_vols_adaptive_iv
- 28. mkt_emotion_stability_v2
- 29. mkt_liquidity_impulse_v2
- 30. mkt_ma5_followthrough_v3_exp
- 31. mkt_sector_dispersion
- 32. momentum_decay
- 33. momentum_peak_decay_3d
- 34. pct_chg_1d
- 35. pct_chg_2d
- 36. pct_chg_intra_z
- 37. pct_chg_sector_mean
- 38. post_accumulation_supply_tightness
- 39. prev_day_blowoff_risk
- 40. prev_non_first_limit_up_performance_percentile_20d
- 41. price_impact
- 42. price_ma5_ratio_raw
- 43. price_ma60_ratio
- 44. reg_severe_up_10d_ratio_pct
- 45. regime_aware_reversal_alpha
- 46. relative_strength_20d
- 47. return_10d_intra_z
- 48. return_10d_sector_mean
- 49. return_20d_intra_z
- 50. return_20d_sector_mean
- 51. return_3d_intra_z
- 52. return_3d_sector_mean
- 53. return_5d_intra_z
- 54. return_5d_sector_mean
- 55. runup_ma5_exhaustion
- 56. sector_broken_resilience_alpha
- 57. sector_dispersion_leader_alpha
- 58. sector_excess_intra_rank
- 59. sector_hhi_change
- 60. sector_leader_capture_rank
- 61. sector_leadership_persistence_v3
- 62. sector_limit_overflow_alpha
- 63. sector_mkt_corr_20d
- 64. sector_weak_reversal_alpha
- 65. size_rotation_strength
- 66. stock_sector_pos_align
- 67. strong_stock_volume_confirmation_v3
- 68. sw2_high_low_position_return_spread
- 69. sw_circ_mv_rank_intra_sector
- 70. tightness_3d
- 71. top10_10d_strength_level_v3
- 72. trend_pullback_composite_alpha
- 73. true_turnover_10d
- 74. turnover_stability
- 75. turnover_z_20
- 76. value_growth_rotation
- 77. volatility_structure_alpha
- 78. volume_confirmed_pullback_alpha
+  2. alpha_001
+  3. alpha_002
+  4. alpha_017
+  5. amihud_illiquidity
+  6. beta_20d
+  7. body_efficiency
+  8. buy_lg_amount_rate_pct
+  9. buy_sm_amount_rate_pct
+ 10. coskewness
+ 11. cpv_factor_pct
+ 12. distance_from_52w_high
+ 13. distance_from_52w_low
+ 14. downside_beta
+ 15. efficiency_ratio
+ 16. emotion_quality_balance_v3
+ 17. gap_power
+ 18. high_to_close_drawdown
+ 19. high_to_close_drawdown_pct
+ 20. high_volatility_pullback_alpha
+ 21. intra_sector_momentum_rank
+ 22. intraday_clv
+ 23. intraday_reversal
+ 24. kdj_diff_9
+ 25. kdj_golden_cross_strength
+ 26. kdj_j_9
+ 27. kdj_k_9
+ 28. kurtosis_20d
+ 29. limit_sustain_alpha
+ 30. log_price_slope_10d
+ 31. log_price_slope_20d
+ 32. ma60_slope
+ 33. ma_alignment_score
+ 34. ma_convergence_score
+ 35. main_outflow_retail_takeover
+ 36. market_emotion_resonance_alpha
+ 37. market_liquidity_change
+ 38. market_sentiment_ad
+ 39. market_trend_strength
+ 40. market_volatility_context
+ 41. market_vols_adaptive_iv
+ 42. mass_index_reversal
+ 43. max_drawdown_20d
+ 44. max_rally_10d
+ 45. max_rally_20d
+ 46. mfi_strength
+ 47. mkt_ma5_followthrough_v3_exp
+ 48. mkt_sector_dispersion
+ 49. momentum_decay
+ 50. money_flow_pressure_pct
+ 51. net_d5_amount_to_turnover
+ 52. open_to_high_ratio
+ 53. pct_chg_1d
+ 54. pct_chg_2d
+ 55. pct_chg_intra_z
+ 56. pct_chg_sector_mean
+ 57. ppo_strength_pct
+ 58. price_acceleration
+ 59. price_impact
+ 60. price_ma5_ratio
+ 61. price_ma60_ratio
+ 62. range_compression
+ 63. regime_aware_reversal_alpha
+ 64. resistance_distance
+ 65. return_10d_intra_z
+ 66. return_10d_sector_mean
+ 67. return_10d_sector_mean_pct
+ 68. return_20d_intra_z
+ 69. return_20d_sector_mean
+ 70. return_3d_intra_z
+ 71. return_3d_sector_mean
+ 72. return_5d_intra_z
+ 73. return_5d_sector_mean
+ 74. sector_breadth
+ 75. sector_broken_resilience_alpha
+ 76. sector_concentration
+ 77. sector_correlation_20d
+ 78. sector_dispersion
+ 79. sector_excess_intra_rank
+ 80. sector_hhi_change
+ 81. sector_hotspot_concentration_v3
+ 82. sector_leadership_persistence_v3
+ 83. sector_limit_overflow_alpha
+ 84. sector_liquidity_gated_turnover_z
+ 85. sector_mkt_corr_20d
+ 86. sector_momentum_accel_rank
+ 87. sector_momentum_consistency
+ 88. sector_momentum_dispersion_rank
+ 89. sector_rank_change_5d
+ 90. sector_relative_strength_vs_market
+ 91. sector_relative_volatility
+ 92. sector_rotation_breakout_intra_z
+ 93. sector_strong_leader_alpha
+ 94. sector_trend_gated_momentum_intra_z
+ 95. sector_turnover_change_5d_20d
+ 96. sector_turnover_surge_pv_alpha
+ 97. sector_volatility_5d
+ 98. sector_vols_divergence_alpha
+ 99. sector_weak_reversal_alpha
+100. severe_abnormal_pressure_10d_pct
+101. shadow_dominance_pct
+102. size_rotation_strength
+103. skewness_20d
+104. stable_momentum
+105. stock_sector_pos_align
+106. strong_stock_volume_confirmation_v3
+107. support_distance
+108. sw2_high_low_position_return_spread
+109. sw_circ_mv_rank_intra_sector
+110. trend_acceleration
+111. trend_consistency
+112. trend_pullback_composite_alpha
+113. turnover_stability
+114. ulcer_index
+115. value_growth_rotation
+116. volatility_structure_alpha
+117. volume_confirmed_pullback_alpha
+118. volume_structure_alpha_pct

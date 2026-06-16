@@ -12,7 +12,7 @@ import logging
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterable
 
 # 自动添加xtquant路径到sys.path
 def _setup_xtquant_path():
@@ -71,6 +71,7 @@ _setup_xtquant_path()
 
 from .config import XtQuantConfig, TradingConfig, MarketTimeConfig, PathConfig
 from .order_manager_原始 import SmartOrderManager, LiveTradingCallback
+from .quote_cache import RealtimeQuoteCache
 
 
 class XtQuantTrader:
@@ -93,6 +94,9 @@ class XtQuantTrader:
 
         # 交易日历(由scheduler设置)
         self.trading_dates = []
+
+        # xtdata全推行情回调缓存。订阅后由callback维护最新tick和5分钟K。
+        self.quote_cache = RealtimeQuoteCache(self.logger)
     
     def connect(self) -> bool:
         """
@@ -169,16 +173,6 @@ class XtQuantTrader:
             self.logger.info("✅ 迅投API连接完成")
             self.logger.info("✅ 智能订单管理器已初始化")
 
-            # 提前初始化 xtdata，避免后续首次调用时冷启动导致数据不可用
-            try:
-                from xtquant import xtdata
-                xtdata.enable_hello = False
-                # 触发xtdata连接，让它有时间准备数据
-                xtdata.get_full_tick(['000001.SZ'])
-                self.logger.info("✅ xtdata行情数据已预热")
-            except Exception as e:
-                self.logger.warning(f"xtdata预热失败（不影响交易连接）: {e}")
-
             return True
             
         except Exception as e:
@@ -198,6 +192,12 @@ class XtQuantTrader:
             except Exception as e:
                 self.logger.warning(f"停止交易线程时出错: {e}")
                 self.connected = False
+
+    def ensure_market_quote_subscription(self, stock_codes: Optional[Iterable[str]] = None) -> bool:
+        """订阅指定股票的xtdata全推行情回调。"""
+        if stock_codes is None:
+            return True
+        return self.quote_cache.subscribe(stock_codes)
     
     def get_account_info(self) -> Optional[Dict]:
         """
@@ -358,7 +358,17 @@ class XtQuantTrader:
         try:
             from xtquant import xtdata
 
-            # 获取最新行情（带重试，应对xtdata冷启动延迟）
+            self.ensure_market_quote_subscription([stock_code])
+            cached_price = self.quote_cache.get_current_price(stock_code, max_age_seconds=15.0)
+            if cached_price is not None:
+                return cached_price
+
+            self.quote_cache.wait_first_tick(stock_code, timeout_seconds=2.0)
+            cached_price = self.quote_cache.get_current_price(stock_code, max_age_seconds=15.0)
+            if cached_price is not None:
+                return cached_price
+
+            # Fallback: 回调未就绪时短暂使用旧快照接口，避免交易流程直接中断。
             for attempt in range(3):
                 quote = xtdata.get_full_tick([stock_code])
 

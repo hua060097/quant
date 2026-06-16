@@ -73,6 +73,79 @@ class FactorDatasetStore:
                 except OSError:
                     pass
 
+    def save_factor_columns_streaming(
+        self,
+        index_data: pd.DataFrame,
+        factor_columns: dict,
+        *,
+        batch_rows: int = 100_000,
+    ) -> None:
+        """按行分块写入宽因子表，避免 pandas 一次性构造连续二维数组。"""
+        import gc
+        import logging
+        import os
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        missing_index = [c for c in self.index_columns if c not in index_data.columns]
+        if missing_index:
+            raise ValueError(f"index_data 缺少索引列: {missing_index}")
+
+        row_count = len(index_data)
+        logger = logging.getLogger(__name__)
+        bad_lengths = [name for name, values in factor_columns.items() if len(values) != row_count]
+        if bad_lengths:
+            raise ValueError(f"因子列长度与索引不一致: {bad_lengths[:5]}")
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        writer = None
+        try:
+            for start in range(0, row_count, batch_rows):
+                end = min(start + batch_rows, row_count)
+                batch = {
+                    name: index_data[name].iloc[start:end]
+                    for name in self.index_columns
+                }
+                batch.update({
+                    name: values.iloc[start:end]
+                    if isinstance(values, pd.Series)
+                    else values[start:end]
+                    for name, values in factor_columns.items()
+                })
+                table = pa.Table.from_pydict(batch)
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        temp_path,
+                        table.schema,
+                        compression='snappy',
+                        use_dictionary=True,
+                    )
+                writer.write_table(table, row_group_size=max(len(table), 1))
+                del batch, table
+                gc.collect()
+                if end == row_count or end % 1_000_000 == 0:
+                    logger.info(f"[低内存全量保存] 已写入 {end:,}/{row_count:,} 行")
+
+            if writer is None:
+                empty = pa.Table.from_pydict({
+                    name: index_data[name] for name in self.index_columns
+                })
+                writer = pq.ParquetWriter(temp_path, empty.schema, compression='snappy')
+                writer.write_table(empty)
+            writer.close()
+            writer = None
+            os.replace(temp_path, self.path)
+        finally:
+            if writer is not None:
+                writer.close()
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+
     def merge_incremental(self, new_data: pd.DataFrame) -> pd.DataFrame:
         if new_data is None or new_data.empty:
             return self.load()

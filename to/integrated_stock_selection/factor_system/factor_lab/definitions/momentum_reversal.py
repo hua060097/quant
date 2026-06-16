@@ -156,6 +156,7 @@ pct_chg_sector_mean = register_factor(
     FactorDefinition(
         name='pct_chg_sector_mean',
         required_columns={'stock_code', 'date', 'close', 'pct_chg'},
+        requires_sector_data=True,
         lookback_days=1,
         calculator=_make_return_factor(0, 'beta'),
         calculation_scope='target_cross_section',
@@ -180,6 +181,7 @@ return_3d_sector_mean = register_factor(
     FactorDefinition(
         name='return_3d_sector_mean',
         required_columns={'stock_code', 'date', 'close'},
+        requires_sector_data=True,
         lookback_days=5,
         calculator=_make_return_factor(3, 'beta'),
         calculation_scope='target_with_history_window',
@@ -204,6 +206,7 @@ return_5d_sector_mean = register_factor(
     FactorDefinition(
         name='return_5d_sector_mean',
         required_columns={'stock_code', 'date', 'close'},
+        requires_sector_data=True,
         lookback_days=10,
         calculator=_make_return_factor(5, 'beta'),
         calculation_scope='target_with_history_window',
@@ -228,6 +231,7 @@ return_10d_sector_mean = register_factor(
     FactorDefinition(
         name='return_10d_sector_mean',
         required_columns={'stock_code', 'date', 'close'},
+        requires_sector_data=True,
         lookback_days=15,
         calculator=_make_return_factor(10, 'beta'),
         calculation_scope='target_with_history_window',
@@ -252,6 +256,7 @@ return_20d_sector_mean = register_factor(
     FactorDefinition(
         name='return_20d_sector_mean',
         required_columns={'stock_code', 'date', 'close'},
+        requires_sector_data=True,
         lookback_days=30,
         calculator=_make_return_factor(20, 'beta'),
         calculation_scope='target_with_history_window',

@@ -149,8 +149,8 @@ class StrategyConfig:
     exhaustion_v3_return_20d_intra_z_threshold: float = 0.40  # R3仅在个股20日相对强度也偏弱时触发
     # v3 Rule4: 大盘流动性弱 + 个股三项至少其一
     exhaustion_v3_market_liq_threshold: float = 0.94  # market_liquidity_change < 此值
-    exhaustion_v3_ulcer_threshold: float = -0.80       # ulcer_index < 此值 (路径A)
-    exhaustion_v3_mom_peak_threshold: float = 1.0      # momentum_peak_decay_3d > 此值 (路径B)
+    exhaustion_v3_ulcer_threshold: float = -2.25       # ulcer_index < 此值 (路径A)
+    exhaustion_v3_mom_peak_threshold: float = 3.20     # momentum_peak_decay_3d > 此值 (路径B)
     exhaustion_v3_intra_sector_rank_threshold: float = 0.67  # intra_sector_momentum_rank < 此值 (路径C)
     # v3 Rule5: 市场熔断 — 安静熊市
     exhaustion_v3_mkt_disp_threshold: float = 0.98    # mkt_dispersion_shock_v2 < 此值
@@ -165,9 +165,9 @@ class StrategyConfig:
     exhaustion_v3_kdj_j_z_threshold: float = 0.75
     # v3 Rule9: 当日Top1模型分数相对候选池预测分布偏弱
     exhaustion_v3_score_z_in_day_threshold: float = 1.50
-    # v3 Rule10: 个股近10日超额涨幅横截面分位 >= 80% + 全市场涨跌比极低
-    exhaustion_v3_reg_severe_up_10d_pct_threshold: float = 0.80  # reg_severe_up_10d_ratio_pct >= 此值
-    exhaustion_v3_reg_adr_threshold: float = 0.45  # market_advance_decline_ratio <= 此值
+    # v3 Rule10: 个股近10日严重上涨占比处于当日最高2% + 市场涨跌比极热
+    exhaustion_v3_reg_severe_up_10d_pct_threshold: float = 0.98
+    exhaustion_v3_reg_hot_adr_threshold: float = 4.50
     # v3 Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20 → 高位衰竭
     exhaustion_v3_ma5_raw_threshold: float = 9.0   # price_ma5_ratio_raw >= 此值
     exhaustion_v3_ma_convergence_threshold: float = 0.20  # ma_convergence_score >= 此值
@@ -477,16 +477,12 @@ class BacktestStrategy:
         else:
             self._reset_failed_cont_watch(position)
 
-        profit_armed = True
-        if self.config.enable_profit_threshold_for_bearish_exit:
-            profit_armed = current_return >= self.config.profit_bearish_activation_return
-        peak_armed = position.highest_return_since_buy >= self.config.profit_bearish_min_peak_return
         drawdown_armed = (
             drawdown_from_highest is not None
             and drawdown_from_highest <= self.config.profit_bearish_trailing_drawdown
         )
         current_profit_ok = current_return >= self.config.profit_bearish_min_current_return
-        if profit_armed and peak_armed and drawdown_armed and current_profit_ok:
+        if drawdown_armed and current_profit_ok:
             position.risk_state = "PROFIT_PROTECT"
             if consecutive_bearish_in_profit >= self.config.profit_bearish_required_count:
                 return {
@@ -2753,15 +2749,6 @@ class BacktestStrategy:
                 and score_z_val <= score_z_th
             )
 
-            # Rule 10: 个股近10日超额涨幅 + 全市场涨跌比极低
-            reg_severe_pct_th = self.config.exhaustion_v3_reg_severe_up_10d_pct_threshold
-            reg_adr_th = self.config.exhaustion_v3_reg_adr_threshold
-            reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
-            rule10_hit = (
-                pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
-                and reg_severe_pct_val >= reg_severe_pct_th
-                and adr_val <= reg_adr_th
-            )
             # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
             ma5_raw_th = self.config.exhaustion_v3_ma5_raw_threshold
             ma_conv_th = self.config.exhaustion_v3_ma_convergence_threshold
@@ -2792,6 +2779,14 @@ class BacktestStrategy:
                 pd.notna(disp_val) and pd.notna(adr_val)
                 and disp_val < disp_th
                 and adr_val < adr_th
+            )
+            reg_severe_pct_th = self.config.exhaustion_v3_reg_severe_up_10d_pct_threshold
+            reg_hot_adr_th = self.config.exhaustion_v3_reg_hot_adr_threshold
+            reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
+            rule10_hit = (
+                pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
+                and reg_severe_pct_val >= reg_severe_pct_th
+                and adr_val >= reg_hot_adr_th
             )
 
             parts = []
@@ -2829,10 +2824,7 @@ class BacktestStrategy:
             if rule9_hit:
                 parts.append(f'score_z_in_day({score_z_val:.2f})<={score_z_th}')
             if rule10_hit:
-                parts.append(
-                    f'reg_severe_pct({reg_severe_pct_val:.2f})>={reg_severe_pct_th}'
-                    f' & adr({adr_val:.2f})<={reg_adr_th}'
-                )
+                parts.append(f'reg_severe_pct({reg_severe_pct_val:.4f})>={reg_severe_pct_th} & adr({adr_val:.2f})>={reg_hot_adr_th}')
             if rule11_hit:
                 parts.append(
                     f'ma5_raw({ma5_raw_val:.2f})>={ma5_raw_th}'
@@ -2887,6 +2879,7 @@ class BacktestStrategy:
             'rule7_hit': False,
             'rule8_hit': False,
             'rule9_hit': False,
+            'rule10_hit': False,
         }
 
     def _build_shadow_trade_record(
@@ -3034,6 +3027,7 @@ class BacktestStrategy:
             'exhaustion_rule7_hit': bool(exhaustion_info.get('rule7_hit', False)),
             'exhaustion_rule8_hit': bool(exhaustion_info.get('rule8_hit', False)),
             'exhaustion_rule9_hit': bool(exhaustion_info.get('rule9_hit', False)),
+            'exhaustion_rule10_hit': bool(exhaustion_info.get('rule10_hit', False)),
             'runup_ma5_exhaustion': exhaustion_info.get('runup_ma5_exhaustion', np.nan),
             'cpv_factor': exhaustion_info.get('cpv_factor', np.nan),
             'prev_day_blowoff_risk': exhaustion_info.get('prev_day_blowoff_risk', np.nan),
@@ -3611,7 +3605,17 @@ class BacktestStrategy:
                                     and score_z_val <= score_z_th
                                 )
 
-                                if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit:
+                                # Rule 10: 个股严重上涨占比极端 + 市场广度过热
+                                reg_severe_pct_th = self.config.exhaustion_v3_reg_severe_up_10d_pct_threshold
+                                reg_hot_adr_th = self.config.exhaustion_v3_reg_hot_adr_threshold
+                                reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
+                                rule10_hit = (
+                                    pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
+                                    and reg_severe_pct_val >= reg_severe_pct_th
+                                    and adr_val >= reg_hot_adr_th
+                                )
+
+                                if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit:
                                     blocked = True
                                     parts = []
                                     if rule1_hit:
@@ -3647,6 +3651,8 @@ class BacktestStrategy:
                                         parts.append(f'non_first_limit_pct20({non_first_pct20_val:.2f})>={non_first_pct20_th} & kdj_j_9_z({kdj_j_val:.2f})<={kdj_j_th}')
                                     if rule9_hit:
                                         parts.append(f'score_z_in_day({score_z_val:.2f})<={score_z_th}')
+                                    if rule10_hit:
+                                        parts.append(f'reg_severe_pct({reg_severe_pct_val:.4f})>={reg_severe_pct_th} & adr({adr_val:.2f})>={reg_hot_adr_th}')
                                     block_reason = ' | '.join(parts)
 
                             elif strategy in ('runup_ma5', 'runup_or_blowoff'):

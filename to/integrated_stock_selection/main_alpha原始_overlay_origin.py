@@ -6879,6 +6879,7 @@ def _get_rankpct_factors():
         'buy_lg_amount_rate',
         'buy_sm_amount_rate',
         'main_outflow_retail_takeover',
+        'ma_convergence_score',
     ]
 
 
@@ -7033,6 +7034,12 @@ def _get_stock_factors():
         'log_price_slope_10d',
         'log_price_slope_20d',
         'stock_sector_pos_align',
+        'runup_range_expansion_10d',
+        'runup_path_turbulence_10d',
+        'runup_signed_path_turbulence_10d',
+        'runup_volume_friction_10d',
+        'runup_upper_shadow_turbulence_10d',
+        'high_level_churn_risk_10d',
 
     # ===== 按日z-score =====
         'range_compression',
@@ -7144,10 +7151,38 @@ def _get_original_factors():
     # 目前没有需要保留原始值的因子
     # 如果未来需要，可以在这里添加
     return [
+        # "runup_path_turbulence_10d",
+        # "runup_turbulence_copula_10d",
+        # "high_level_churn_risk_10d",
+        # "runup_range_expansion_10d",
+        # "runup_path_turbulence_10d",
+        # "runup_signed_path_turbulence_10d",
+        # "runup_volume_friction_10d",
+        # "runup_upper_shadow_turbulence_10d",
+        # "high_level_churn_risk_10d",
+        # "prior_high_retest_setup_quality_60d_v2",
+        # "pre_breakout_local_knn_similarity_20d_v2",
+        # "pre_breakout_local_knn_quality_20d_v2",
+        # "prior_high_retest_quality_60d",
+        # "pre_breakout_local_prototype_similarity_20d",
+        # "pre_breakout_local_prototype_quality_20d",
         # 'market_advance_decline_ratio_percentile_20d',
         # 'ma_alignment_score',
-        'price_ma10_ratio',
-        'price_ma10_ratio_z',
+        # "position_reclaim_residual_20_60",
+        # "pre_breakout_causal_prototype_similarity_20d",
+        # "pre_second_breakout_shapelet_corr_20d_v2",
+        # "position_20_60_spread_v2",
+        # "close_position_20d_robust",
+        # "close_position_60d_robust",
+        # "close_rank_position_20d",
+        # "close_rank_position_60d",
+        # "position_20_60_spread",
+        # "position_pullback_setup_20_60",
+        # "position_20_60_alignment",
+        # 'gap_intraday_quality_score_5d',
+        # 'pre_second_breakout_shapelet_corr_20d',
+        # 'price_ma10_ratio',
+        # 'price_ma10_ratio_z',
         # 'prev_first_limit_up_performance',
         # 'prev_first_limit_up_performance_percentile_20d',
         # 'prev_non_first_limit_up_performance',
@@ -8936,7 +8971,7 @@ def run_generate_factors_mode(args):
         # 2. 过滤ST股票（需要检查股票名称）
         logger.info("🔍 开始ST股票过滤...")
         try:
-            st_filter = _filter_st_stocks(stock_data, logger)
+            st_filter = _filter_st_stocks_new(stock_data, logger)
             stock_data = stock_data[st_filter].copy()
             after_st_count = len(stock_data)
             st_filtered_count = after_bj_count - after_st_count

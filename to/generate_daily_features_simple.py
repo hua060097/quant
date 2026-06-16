@@ -11,8 +11,9 @@
 1. 基础数据-后复权: open, high, low, close, volume, amount, pct_chg, total_mv, circ_mv, turnover_rate
 2. 基础数据-前复权: open_front, high_front, low_front, close_front
 3. 涨跌停: is_limit_up, is_limit_down, is_zhaban, is_can_buy
-4. 未来收益: future_return_1d, future_return_2d, future_return_3d, future_return_4d, future_return_5d
-5. 元数据: stock_code, date, date_str
+4. ST标记: is_st
+5. 未来收益: future_return_1d, future_return_2d, future_return_3d, future_return_4d, future_return_5d
+6. 元数据: stock_code, date, date_str
 """
 
 import os
@@ -107,6 +108,59 @@ class SimpleLimitDataLoader:
             return pd.DataFrame()
 
 
+class SimpleSTDataLoader:
+    """ST 股票数据加载器 (来源: fetch_st_stocks.py 生成的 st.parquet)"""
+
+    def __init__(self):
+        self.data_file = Path("C:/Users/86151/.trae-cn/pythons/path/to/local_data/st.parquet")
+        self.logger = logging.getLogger(__name__)
+        self._all_data = None
+
+        self._preload_all_data()
+
+    def _preload_all_data(self):
+        try:
+            if self.data_file.exists():
+                self.logger.info(f"开始预加载ST数据: {self.data_file}")
+                df = pd.read_parquet(self.data_file)
+
+                # 字段标准化
+                if 'ts_code' in df.columns:
+                    df['stock_code'] = df['ts_code']
+
+                if 'trade_date' in df.columns:
+                    # 保持 trade_date 为 YYYYMMDD 字符串, 同时构造 date 列 (datetime)
+                    df['trade_date'] = df['trade_date'].astype(str)
+                    df['date'] = pd.to_datetime(df['trade_date'], format='%Y%m%d', errors='coerce')
+
+                # 仅保留需要的列
+                keep_cols = [c for c in ['date', 'trade_date', 'stock_code'] if c in df.columns]
+                self._all_data = df[keep_cols].drop_duplicates(subset=['date', 'stock_code']).copy()
+                self._all_data['is_st'] = 1
+
+                self.logger.info(f"ST数据预加载完成: {len(self._all_data)} 条记录")
+            else:
+                self.logger.warning(f"ST数据文件不存在: {self.data_file}")
+                self._all_data = pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"预加载ST数据失败: {e}")
+            self._all_data = pd.DataFrame()
+
+    def get_st_data(self, start_date, end_date):
+        """返回区间内的 ST 标记 DataFrame, 列: date, stock_code, is_st"""
+        if self._all_data is None or self._all_data.empty:
+            return pd.DataFrame()
+
+        try:
+            if 'trade_date' in self._all_data.columns:
+                mask = (self._all_data['trade_date'] >= start_date) & (self._all_data['trade_date'] <= end_date)
+                return self._all_data.loc[mask, ['date', 'stock_code', 'is_st']].copy()
+            return pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"加载日期范围 {start_date}-{end_date} 的ST数据失败: {e}")
+            return pd.DataFrame()
+
+
 class SimpleFeatureGenerator:
     """简化版特征生成器 - 修复停牌逻辑版"""
     
@@ -119,6 +173,7 @@ class SimpleFeatureGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.storage = ParquetDataStorage()
         self.limit_loader = SimpleLimitDataLoader()
+        self.st_loader = SimpleSTDataLoader()
         logger.info(f"特征生成器初始化完成, 输出目录: {self.output_dir}")
     
     def get_trading_days(self, start_date, end_date):
@@ -271,6 +326,18 @@ class SimpleFeatureGenerator:
             else:
                 df_all[col] = df_all[col].fillna(0).astype(int)
 
+        # 3.5 加载并合并 ST 数据
+        st_data = self.st_loader.get_st_data(load_start_date, load_end_date)
+        if st_data is not None and not st_data.empty:
+            if 'date' in st_data.columns and not pd.api.types.is_datetime64_any_dtype(st_data['date']):
+                st_data['date'] = pd.to_datetime(st_data['date'], format='%Y%m%d', errors='coerce')
+            df_all = df_all.merge(st_data[['date', 'stock_code', 'is_st']], on=['date', 'stock_code'], how='left')
+
+        if 'is_st' not in df_all.columns:
+            df_all['is_st'] = 0
+        else:
+            df_all['is_st'] = df_all['is_st'].fillna(0).astype(int)
+
         # 4. 执行向量化计算 (包含修复逻辑)
         df_all = self.calculate_future_returns_vectorized(df_all)
         
@@ -291,6 +358,7 @@ class SimpleFeatureGenerator:
             'total_mv', 'circ_mv', 'turnover_rate',
             'open_front', 'high_front', 'low_front', 'close_front',
             'is_limit_up', 'is_limit_down', 'is_zhaban', 'is_can_buy',
+            'is_st',
             'future_return_1d', 'future_return_2d', 'future_return_3d', 'future_return_4d', 'future_return_5d'
         ]
         

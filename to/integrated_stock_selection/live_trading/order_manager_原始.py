@@ -1662,6 +1662,20 @@ class SmartOrderManager:
         """
         try:
             from xtquant import xtdata
+
+            if hasattr(self.trader, "ensure_market_quote_subscription"):
+                self.trader.ensure_market_quote_subscription([stock_code])
+
+            quote_cache = getattr(self.trader, "quote_cache", None)
+            if quote_cache is not None:
+                cached_tick = quote_cache.get_tick(stock_code, max_age_seconds=15.0)
+                if cached_tick:
+                    return cached_tick
+                quote_cache.wait_first_tick(stock_code, timeout_seconds=2.0)
+                cached_tick = quote_cache.get_tick(stock_code, max_age_seconds=15.0)
+                if cached_tick:
+                    return cached_tick
+
             tick_data = xtdata.get_full_tick([stock_code])
             if not tick_data or stock_code not in tick_data:
                 return None
@@ -2306,6 +2320,21 @@ class SmartOrderManager:
         from xtquant import xtdata
 
         try:
+            if hasattr(self.trader, "ensure_market_quote_subscription"):
+                self.trader.ensure_market_quote_subscription([stock_code])
+
+            quote_cache = getattr(self.trader, "quote_cache", None)
+            if quote_cache is not None:
+                open_price = quote_cache.get_today_open(stock_code, max_age_seconds=60.0)
+                if open_price is not None and open_price > 0:
+                    self.logger.info(f"✅ {stock_code}: 从全推回调获取到开盘价 {open_price:.2f}")
+                    return float(open_price)
+                quote_cache.wait_first_tick(stock_code, timeout_seconds=2.0)
+                open_price = quote_cache.get_today_open(stock_code, max_age_seconds=60.0)
+                if open_price is not None and open_price > 0:
+                    self.logger.info(f"✅ {stock_code}: 从全推回调获取到开盘价 {open_price:.2f}")
+                    return float(open_price)
+
             # 1. 获取全推tick数据（实时快照）
             tick_data = xtdata.get_full_tick([stock_code])
 

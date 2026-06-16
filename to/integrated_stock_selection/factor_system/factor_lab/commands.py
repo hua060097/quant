@@ -24,6 +24,7 @@ def generate_factors(
     batch_size: int = 10,
     normalization_config: Optional[dict] = None,
     existing_factors: Optional[set] = None,
+    return_factor_data: bool = True,
 ) -> PipelineResult:
     pipe = pipeline or FactorPipeline()
     return pipe.compute(
@@ -37,6 +38,7 @@ def generate_factors(
         batch_size=batch_size,
         normalization_config=normalization_config,
         existing_factors=existing_factors,
+        return_factor_data=return_factor_data,
     )
 
 
@@ -225,6 +227,7 @@ def generate_and_store(
         batch_size=batch_size,
         normalization_config=None,  # 阶段1不进行归一化
         existing_factors=existing_raw_factors,
+        return_factor_data=not enable_batch_save,
     )
 
     if not enable_batch_save and not result.data.empty:
@@ -242,6 +245,22 @@ def generate_and_store(
         logger.info("✅ 无需计算任何因子")
         return result
 
+    # 阶段1原始因子已经落盘；只保留返回统计需要的索引，释放整张原始因子结果。
+    if list(result.data.columns) == store.index_columns:
+        phase1_result = result
+    else:
+        phase1_result = PipelineResult(
+            factors=list(result.factors),
+            data=(
+                result.data[store.index_columns].copy()
+                if all(c in result.data.columns for c in store.index_columns)
+                else pd.DataFrame(columns=store.index_columns)
+            ),
+            clipping_report=result.clipping_report,
+        )
+        del result
+    gc.collect()
+
     # ========== 阶段2：后处理与正式保存 ==========
 
     logger.info("🔄 阶段2：开始后处理（缩尾→清洗→归一化）")
@@ -251,12 +270,12 @@ def generate_and_store(
         all_raw_factors = store.load_raw()
         if all_raw_factors.empty:
             logger.warning("⚠️ 临时文件为空，无法进行后处理")
-            return result
+            return phase1_result
     except Exception as e:
         import traceback
         logger.error(f"加载临时文件失败: {e}")
         logger.error(f"错误详情: {traceback.format_exc()}")
-        return result
+        return phase1_result
 
     factor_count = len(all_raw_factors.columns) - len(store.index_columns)
     logger.info(f"📊 加载了 {factor_count} 个原始因子")
@@ -391,7 +410,36 @@ def generate_and_store(
     del all_raw_factors, computed, expanding_history
     gc.collect()
 
-    # 构建最终数据：一次性拼接，避免逐列插入导致 pandas block 反复扩容和碎片化。
+    result_factors = list(processed.keys())
+    large_full_save = (
+        not incremental_mode
+        and not add_factor_mode
+        and len(working) * max(len(processed), 1) > 50_000_000
+    )
+    if large_full_save:
+        logger.info(
+            f"[低内存全量保存] 按行分块写入 {len(processed)} 个因子，"
+            "跳过宽 pandas DataFrame 构建"
+        )
+        store.save_factor_columns_streaming(working[store.index_columns], processed)
+        logger.info(
+            f"[低内存全量保存] 保存完成: {store.path}, "
+            f"{len(working):,}行 × {len(processed) + len(store.index_columns)}列"
+        )
+        try:
+            store.cleanup_raw()
+        except Exception as e:
+            logger.warning(f"清理临时文件失败: {e}")
+        result_index = working
+        del processed
+        gc.collect()
+        return PipelineResult(
+            factors=result_factors,
+            data=result_index,
+            clipping_report=clipping_report,
+        )
+
+    # 增量/add_factor及小表继续使用原有 DataFrame 保存与合并逻辑。
     logger.info(f"[调试] 开始构建最终数据（一次性拼接 {len(processed)} 个因子）")
     try:
         factor_frame = pd.DataFrame(
@@ -614,7 +662,6 @@ def generate_and_store(
     except Exception as e:
         logger.warning(f"清理临时文件失败: {e}")
 
-    result_factors = list(processed.keys())
     result_index = working
     del processed, final_data
     gc.collect()

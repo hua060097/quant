@@ -1243,7 +1243,7 @@ def unsubscribe_quote(seq):
     return client.unsubscribe_quote(seq)
 
 
-def run():
+def  run():
     '''阻塞线程接收行情回调'''
     import time
     client = get_client()

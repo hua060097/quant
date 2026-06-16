@@ -152,14 +152,21 @@ class PositionMonitor5Min:
             open_price: T+1日开盘价（用于止盈止损的基准价，与回测一致）
         """
         # 止盈止损基准价：优先使用开盘价（与回测一致），fallback到成交均价
+        if hasattr(self.trader, "ensure_market_quote_subscription"):
+            self.trader.ensure_market_quote_subscription([stock_code])
+
         risk_ref_price = open_price if (open_price and open_price > 0) else entry_price
+        entry_date_obj = datetime.strptime(entry_date, '%Y-%m-%d').date()
+        historical_high = self._load_holding_period_high(stock_code, entry_date_obj, datetime.now().date())
+        seed_high = max(risk_ref_price, historical_high or risk_ref_price)
+        seed_high_return = (seed_high - risk_ref_price) / risk_ref_price if risk_ref_price > 0 else 0.0
 
         self.positions[stock_code] = {
             'stock_code': stock_code,
             'entry_price': entry_price,
             'open_price': open_price if open_price else 0.0,
             'risk_ref_price': risk_ref_price,
-            'entry_date': datetime.strptime(entry_date, '%Y-%m-%d').date(),
+            'entry_date': entry_date_obj,
             'entry_datetime': datetime.now(),
             'klines_after_entry': [],  # 买入后的5分钟K线
             'consecutive_bearish': 0,  # 兼容展示字段
@@ -174,8 +181,8 @@ class PositionMonitor5Min:
             'slot_index': slot_index,
             'target_pct': target_pct,
             'enable_closing_sell': enable_closing_sell,
-            'highest_price_since_buy': risk_ref_price,
-            'highest_return_since_buy': 0.0,
+            'highest_price_since_buy': seed_high,
+            'highest_return_since_buy': seed_high_return,
             't1_day_lowest_price': self._load_entry_day_low(stock_code, entry_date) or 0.0,
             'risk_state': 'IDLE',
             'failed_cont_watch_active': False,
@@ -190,6 +197,7 @@ class PositionMonitor5Min:
         self.logger.info(f"  买入价(实际均价): {entry_price:.2f}")
         if open_price and open_price > 0:
             self.logger.info(f"  开盘价(风控基准): {open_price:.2f}")
+        self.logger.info(f"  历史持仓高点初始化: high={seed_high:.2f}, peak_return={seed_high_return:.2%}")
         self.logger.info(f"  买入日期: {entry_date}")
 
     def remove_position(self, stock_code: str):
@@ -219,6 +227,70 @@ class PositionMonitor5Min:
         except Exception as e:
             self.logger.warning(f"{stock_code}: 读取T+1日低点失败: {e}")
         return None
+
+    def _load_holding_period_high(
+        self,
+        stock_code: str,
+        entry_date: datetime.date,
+        current_date: datetime.date,
+    ) -> Optional[float]:
+        """加载从T+1买入日至当前监控日前一交易日的最高价。
+
+        T+2启动时补T+1 high；T+3启动时补T+1/T+2 high。
+        当天盘中的高点由实时5分钟K线继续更新。
+        """
+        try:
+            from xtquant import xtdata
+
+            if current_date <= entry_date:
+                return None
+
+            if entry_date in self.trading_dates and current_date in self.trading_dates:
+                entry_idx = self.trading_dates.index(entry_date)
+                current_idx = self.trading_dates.index(current_date)
+                end_idx = current_idx - 1
+                if end_idx < entry_idx:
+                    return None
+                start_date = self.trading_dates[entry_idx]
+                end_date = self.trading_dates[end_idx]
+            else:
+                # 兜底：至少排除当前日，只补已经收盘的历史日线。
+                start_date = entry_date
+                end_date = current_date - timedelta(days=1)
+                if end_date < start_date:
+                    return None
+
+            start_compact = start_date.strftime('%Y%m%d')
+            end_compact = end_date.strftime('%Y%m%d')
+            expected_count = 1
+            if start_date in self.trading_dates and end_date in self.trading_dates:
+                expected_count = self.trading_dates.index(end_date) - self.trading_dates.index(start_date) + 1
+            daily_data = xtdata.get_market_data_ex(
+                stock_list=[stock_code],
+                period='1d',
+                start_time=start_compact,
+                end_time=end_compact,
+                count=max(expected_count, 1),
+                dividend_type="front",
+            )
+            if stock_code not in daily_data or len(daily_data[stock_code]) == 0:
+                self.logger.warning(f"{stock_code}: 未获取到持仓历史日线高点 {start_compact}~{end_compact}")
+                return None
+
+            high_series = pd.to_numeric(daily_data[stock_code].get('high'), errors='coerce').dropna()
+            if high_series.empty:
+                self.logger.warning(f"{stock_code}: 持仓历史日线high为空 {start_compact}~{end_compact}")
+                return None
+
+            historical_high = float(high_series.max())
+            self.logger.info(
+                f"{stock_code}: 持仓历史高点 {start_date}~{end_date} high={historical_high:.2f}"
+            )
+            return historical_high
+
+        except Exception as e:
+            self.logger.warning(f"{stock_code}: 读取持仓历史高点失败: {e}")
+            return None
 
     @staticmethod
     def _extract_time_hm(kline_time: str) -> str:
@@ -516,8 +588,6 @@ class PositionMonitor5Min:
                     drawdown_from_highest = (close_price - highest_price) / highest_price
                 if (
                     StopLossConfig.ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT
-                    and current_return >= StopLossConfig.PROFIT_BEARISH_ACTIVATION_RETURN
-                    and position.get('highest_return_since_buy', 0.0) >= StopLossConfig.PROFIT_BEARISH_MIN_PEAK_RETURN
                     and drawdown_from_highest is not None
                     and drawdown_from_highest <= StopLossConfig.PROFIT_BEARISH_TRAILING_DRAWDOWN
                     and current_return >= StopLossConfig.PROFIT_BEARISH_MIN_CURRENT_RETURN
@@ -862,8 +932,22 @@ class PositionMonitor5Min:
                         self.logger.debug(f"{stock_code}: 5分钟K线数据已存在（{time_str}），跳过收集")
                         continue
 
+                quote_cache = getattr(self.trader, "quote_cache", None)
+                cached_bar = None
+                if quote_cache is not None:
+                    cached_bar = quote_cache.get_realtime_5m_bar(stock_code, time_str)
+
                 # 获取当前最新价格
-                current_price = self.trader.get_current_price(stock_code)
+                current_price = None
+                if cached_bar:
+                    current_price = cached_bar.get('close')
+                if current_price is None or current_price <= 0:
+                    current_price = self.trader.get_current_price(stock_code)
+
+                try:
+                    current_price = float(current_price) if current_price is not None else None
+                except (TypeError, ValueError):
+                    current_price = None
 
                 if current_price is None or current_price <= 0:
                     self.logger.warning(f"{stock_code}: 获取当前价格失败，跳过5分钟K线收集")
@@ -888,12 +972,27 @@ class PositionMonitor5Min:
                         open_price = current_price
 
                 # 构建K线数据
+                if cached_bar:
+                    try:
+                        cached_high = float(cached_bar.get('high', current_price))
+                    except (TypeError, ValueError):
+                        cached_high = current_price
+                    try:
+                        cached_low = float(cached_bar.get('low', current_price))
+                    except (TypeError, ValueError):
+                        cached_low = current_price
+                    high_price = max(cached_high, open_price, current_price)
+                    low_price = min(cached_low, open_price, current_price)
+                else:
+                    high_price = max(open_price, current_price)
+                    low_price = min(open_price, current_price)
+
                 kline = {
                     'time': time_str,
                     'open': open_price,
                     'close': current_price,
-                    'high': max(open_price, current_price),
-                    'low': min(open_price, current_price),
+                    'high': high_price,
+                    'low': low_price,
                 }
 
                 # 添加到缓存

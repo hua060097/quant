@@ -329,7 +329,6 @@ class StockSelector:
             buy_sm_val = pd.to_numeric(row.get('buy_sm_amount_rate', np.nan), errors='coerce')
             non_first_pct20_val = pd.to_numeric(row.get('prev_non_first_limit_up_performance_percentile_20d', np.nan), errors='coerce')
             kdj_j_val = pd.to_numeric(row.get('kdj_j_9', np.nan), errors='coerce')
-            score_z_val = pd.to_numeric(row.get('score_z_in_day', np.nan), errors='coerce')
             reg_severe_pct_val = pd.to_numeric(row.get('reg_severe_up_10d_ratio_pct', np.nan), errors='coerce')
             ma5_raw_val = pd.to_numeric(row.get('price_ma5_ratio_raw', np.nan), errors='coerce')
             ma_conv_val = pd.to_numeric(row.get('ma_convergence_score', np.nan), errors='coerce')
@@ -368,8 +367,6 @@ class StockSelector:
             ) + ", " + (
                 f"kdj_j_9_z={kdj_j_val:.2f}" if pd.notna(kdj_j_val) else "kdj_j_9_z=NaN"
             ) + ", " + (
-                f"score_z_in_day={score_z_val:.2f}" if pd.notna(score_z_val) else "score_z_in_day=NaN"
-            ) + ", " + (
                 f"reg_severe_pct={reg_severe_pct_val:.4f}" if pd.notna(reg_severe_pct_val) else "reg_severe_pct=NaN"
             ) + ", " + (
                 f"ma5_raw={ma5_raw_val:.2f}" if pd.notna(ma5_raw_val) else "ma5_raw=NaN"
@@ -391,7 +388,6 @@ class StockSelector:
                 and (
                     (blowoff_val >= StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD)
                     or (blowoff_val > 5.0 and sector_val <= 0.50)   # XR2a: blowoff extreme
-                    or (blowoff_val > 1.0 and sector_val <= 0.15)   # XR2b: sector extreme
                 )
             )
             rule3_hit = (
@@ -429,15 +425,10 @@ class StockSelector:
                 and non_first_pct20_val >= StrategyConfig.EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD
                 and kdj_j_val <= StrategyConfig.EXHAUSTION_V3_KDJ_J_Z_THRESHOLD
             )
-            rule9_hit = (
-                pd.notna(score_z_val)
-                and score_z_val <= StrategyConfig.EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD
-            )
-            # Rule10: reg_severe_up_10d_ratio >= 0.18 AND market_advance_decline_ratio <= 0.45
             rule10_hit = (
                 pd.notna(reg_severe_pct_val) and pd.notna(adr_val)
                 and reg_severe_pct_val >= StrategyConfig.EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD
-                and adr_val <= StrategyConfig.EXHAUSTION_V3_REG_ADR_THRESHOLD
+                and adr_val >= StrategyConfig.EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD
             )
             # Rule11: MA5乖离率 >= 9% + 均线收敛度 >= 0.20
             rule11_hit = (
@@ -452,7 +443,7 @@ class StockSelector:
                 and ret_accel_val >= StrategyConfig.EXHAUSTION_V3_RET_3D_VS_10D_ACCEL_THRESHOLD
             )
 
-            if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule9_hit or rule10_hit or rule11_hit or rule12_hit:
+            if rule1_hit or rule2_hit or rule3_hit or rule4_hit or rule5_hit or rule6_hit or rule7_hit or rule8_hit or rule10_hit or rule11_hit or rule12_hit:
                 parts = []
                 if rule1_hit:
                     parts.append(
@@ -462,10 +453,8 @@ class StockSelector:
                 if rule2_hit:
                     if blowoff_val >= StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD and sector_val <= StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD:
                         r2r = f"blowoff({blowoff_val:.2f})>={StrategyConfig.EXHAUSTION_V3_BLOWOFF_THRESHOLD} & sector_accel({sector_val:.2f})<={StrategyConfig.EXHAUSTION_V3_SECTOR_ACCEL_THRESHOLD}"
-                    elif blowoff_val > 5.0:
-                        r2r = f"XR2a:blowoff({blowoff_val:.2f})>5.0 & sector_accel({sector_val:.2f})<=0.50"
                     else:
-                        r2r = f"XR2b:blowoff({blowoff_val:.2f})>1.0 & sector_accel({sector_val:.2f})<=0.15"
+                        r2r = f"XR2a:blowoff({blowoff_val:.2f})>5.0 & sector_accel({sector_val:.2f})<=0.50"
                     parts.append(r2r)
                 if rule3_hit:
                     parts.append(
@@ -501,14 +490,10 @@ class StockSelector:
                         f"non_first_limit_pct20({non_first_pct20_val:.2f})>={StrategyConfig.EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}"
                         f" & kdj_j_9_z({kdj_j_val:.2f})<={StrategyConfig.EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}"
                     )
-                if rule9_hit:
-                    parts.append(
-                        f"score_z_in_day({score_z_val:.2f})<={StrategyConfig.EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}"
-                    )
                 if rule10_hit:
                     parts.append(
-                        f"reg_severe_pct({reg_severe_pct_val:.2f})>={StrategyConfig.EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
-                        f" & adr({adr_val:.2f})<={StrategyConfig.EXHAUSTION_V3_REG_ADR_THRESHOLD}"
+                        f"reg_severe_up_10d_ratio_pct({reg_severe_pct_val:.4f})>={StrategyConfig.EXHAUSTION_V3_REG_SEVERE_UP_10D_PCT_THRESHOLD}"
+                        f" & adr({adr_val:.2f})>={StrategyConfig.EXHAUSTION_V3_REG_HOT_ADR_THRESHOLD}"
                     )
                 if rule11_hit:
                     parts.append(

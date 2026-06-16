@@ -118,6 +118,12 @@ from .risk_control import (
     max_rally_10d_raw,
     limit_down_3d,
 )  # noqa: F401
+from .gap_intraday_structure import (
+    gap_intraday_quality_score_5d,
+)
+from .pre_second_breakout_shapelet import (
+    pre_second_breakout_shapelet_corr_20d,
+)
 from .behavioral import (
     distance_from_52w_high,
     distance_from_52w_low,
@@ -268,6 +274,28 @@ from .moneyflow_features import (
 #     mkt_limit_balance_z10,
 #     mkt_emotion_heat_z10,
 # )
+from .advanced_retest_prototype_factors_v2_fixed import (
+    prior_high_retest_setup_quality_60d_v2,
+    pre_breakout_local_knn_similarity_20d_v2,
+    pre_breakout_local_knn_quality_20d_v2,
+)
+from .causal_adaptive_structure_factors_fixed import (
+    position_reclaim_residual_20_60,
+    pre_breakout_causal_prototype_similarity_20d,
+)
+from .structure_signal_factors_v2 import (
+    pre_second_breakout_shapelet_corr_20d_v2,
+    position_20_60_spread_v2,
+)
+from .position_structure_factors import (
+    close_position_20d_robust,
+    close_position_60d_robust,
+    close_rank_position_20d,
+    close_rank_position_60d,
+    position_20_60_spread,
+    position_pullback_setup_20_60,
+    position_20_60_alignment,
+)
 from .high_position_exhaustion import (
     close_position_20d,
     close_position_60d,
@@ -294,4 +322,9 @@ from .high_position_exhaustion import (
     close_below_ma5_after_runup,
     low_break_prev_low_after_runup,
     runup_ma5_exhaustion,
+)
+from .runup_turbulence_copula_core import (
+    runup_path_turbulence_10d,
+    runup_turbulence_copula_10d,
+    high_level_churn_risk_10d,
 )

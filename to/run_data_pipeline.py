@@ -156,33 +156,48 @@ def main():
             'args': ['--start', args.start, '--end', args.end]
         },
         {
+            'path': project_root / 'fetch_st_stocks.py',
+            'desc': '3. 下载st数据',
+            'args': ['--s', args.start, '--e', args.end]
+        },
+        {
+            'path': project_root / 'integrated_stock_selection' /  'scripts' / 'download_regulatory_indices.py',
+            'desc': '4. 下载指数数据',
+            'args': ['--start', args.start, '--end', args.end]
+        },
+        {
             'path': project_root / 'advanced_quant_data_fixed.py',
-            'desc': '3. 高级量化数据下载和存储',
+            'desc': '5. 高级量化数据下载和存储',
             'args': ['--start_date', args.start, '--end_date', args.end]
         },
         {
             'path': project_root / 'enhanced_limit_data_collector.py',
-            'desc': '4. 涨跌停数据收集器',
+            'desc': '6. 涨跌停数据收集器',
             'args': ['--start_date', args.start, '--end_date', args.end]
         },
         {
             'path': project_root / 'generate_daily_features_simple.py',
-            'desc': '5. 生成日线特征',
+            'desc': '7. 生成日线特征',
             'args': ['--start_date', args.start, '--end_date', args.end]
+        },
+        {
+            'path': project_root / 'download_moneyflow_ths.py',
+            'desc': '8. 下载个股资金流',
+            'args': ['--start', args.start, '--end', args.end]
         },
         {
             'path': project_root / 'market_status' / 'market_status_processor.py',
-            'desc': '6. 市场状态处理',
+            'desc': '9. 市场状态处理',
             'args': ['--start_date', args.start, '--end_date', args.end]
         },
         {
-            'path': project_root / 'integrated_stock_selection' / 'main.py',
-            'desc': '7. 生成因子数据',
+            'path': project_root / 'integrated_stock_selection' / 'main_alpha原始_overlay_origin.py',
+            'desc': '10. 生成因子数据',
             'args': [
                 '--mode', 'generate_factors',
-                '--start_date', args.start,
+                '--start_date', '20230601',  #args.start,
                 '--end_date', args.end,
-                '--incremental_save'
+                # '--incremental_save'
             ]
         },
     ]

@@ -158,6 +158,8 @@ def _ma_entanglement_target(data: pd.DataFrame, target_index: pd.Index, _: Facto
     ma_std = mas.std(axis=1)
     cv = ma_std / (ma_mean + 1e-9)
     entanglement = np.exp(-10.0 * cv)
+    # entanglement = -cv
+    # entanglement = -np.log(cv + 1e-6)
     return entanglement.astype('float64')
 
 ma_convergence_score = register_factor(

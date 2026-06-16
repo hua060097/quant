@@ -783,17 +783,18 @@ class DataLoader:
             stock_features = self.load_stock_features(start_date, end_date)
 
             # 加载板块特征数据
-            sector_features = self.load_sector_features(start_date, end_date)
+            # sector_features = self.load_sector_features(start_date, end_date)
 
             # 加载市场特征数据
             market_features = self.load_market_features(start_date, end_date)
 
             # 预处理数据
             stock_features = self._preprocess_stock_features(stock_features)
-            sector_features = self._preprocess_sector_features(sector_features)
+            # sector_features = self._preprocess_sector_features(sector_features)
+            sector_features = None
             # market_features已在load_market_features中预处理
 
-            self.logger.info(f"数据加载完成: 个股 {len(stock_features)} 条, 板块 {len(sector_features)} 条, 市场 {len(market_features)} 条")
+            self.logger.info(f"数据加载完成: 个股 {len(stock_features)} 条, 市场 {len(market_features)} 条")
 
             return {
                 'stock_features': stock_features,

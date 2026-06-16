@@ -99,6 +99,7 @@ class FactorPipeline:
         batch_size: int = 10,
         normalization_config: Optional[dict] = None,
         existing_factors: Optional[set] = None,
+        return_factor_data: bool = True,
     ) -> PipelineResult:
         factor_list = list(dict.fromkeys(factor_names))
         if not factor_list:
@@ -120,6 +121,7 @@ class FactorPipeline:
         target_mask = (working['date'] >= start_ts) & (working['date'] <= end_ts)
         target_rows = working.loc[target_mask].copy()
         target_index = target_rows.index
+        target_index_data = target_rows[['stock_code', 'date']].reset_index(drop=True)
 
         extra = dict(context_extra or {})
         extra['target_start_date'] = start_ts
@@ -153,17 +155,45 @@ class FactorPipeline:
 
             # 批次回调 (可选)
             if batch_callback and idx % batch_size == 0:
-                self._handle_batch(target_rows.reset_index(drop=True), factor_list[idx-batch_size:idx], computed_target, batch_callback)
+                batch_factors = factor_list[idx-batch_size:idx]
+                self._handle_batch(
+                    target_index_data,
+                    batch_factors,
+                    computed_target,
+                    batch_callback,
+                )
+                if not return_factor_data and normalization_config is None:
+                    for factor_name in batch_factors:
+                        computed_target.pop(factor_name, None)
 
         # 处理剩余批次
         if batch_callback:
             remaining = len(factor_list) % batch_size
             if remaining > 0:
-                self._handle_batch(target_rows.reset_index(drop=True), factor_list[-remaining:], computed_target, batch_callback)
+                remaining_factors = factor_list[-remaining:]
+                self._handle_batch(
+                    target_index_data,
+                    remaining_factors,
+                    computed_target,
+                    batch_callback,
+                )
+                if not return_factor_data and normalization_config is None:
+                    for factor_name in remaining_factors:
+                        computed_target.pop(factor_name, None)
+
+        # 原始因子已由批次回调落盘，直接返回索引，避免再复制完整 target_rows。
+        if not return_factor_data and normalization_config is None:
+            target_index_data.sort_values(['date', 'stock_code'], inplace=True)
+            return PipelineResult(
+                factors=factor_list,
+                data=target_index_data,
+                clipping_report={},
+            )
 
         # 4. 后处理 (核心修改处)
         # 只保留目标日期的数据进行后处理，节省内存
         working_target = target_rows.reset_index(drop=True)
+        del target_rows
         
         logger.info("开始后处理流程 (Inf清洗 -> 归一化)...")
         if normalization_config:
@@ -180,7 +210,17 @@ class FactorPipeline:
         else:
             report = {}
 
-        # 5. 组装结果
+        # 5. 组装结果。批次回调已持久化原始因子时，调用方可只取轻量索引，
+        # 避免在阶段切换期间继续持有一整张原始因子表。
+        if not return_factor_data:
+            result = target_index_data
+            result.sort_values(['date', 'stock_code'], inplace=True)
+            return PipelineResult(
+                factors=factor_list,
+                data=result,
+                clipping_report=report,
+            )
+
         result = working_target[['stock_code', 'date']].copy()
         for name, series in computed_target.items():
             result[name] = series.values
@@ -349,6 +389,8 @@ class FactorPipeline:
             return zscore.clip(-6.0, 6.0).astype('float32')
         else:
             return zscore.astype('float32')
+
+
 
     def _rankpct_normalize(self, series: pd.Series, data: pd.DataFrame) -> pd.Series:
         """Daily cross-sectional percentile in [0, 1]."""

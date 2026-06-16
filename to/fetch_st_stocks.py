@@ -12,10 +12,18 @@ import time
 import argparse
 
 # Tushare token
-TS_TOKEN = '022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000'
+# TS_TOKEN = '022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000'
+TS_TOKEN = 'gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b'
+
+# 接口限流配置 (stock_st: 500次/分钟)
+RATE_LIMIT_PER_MIN = 500
+SLEEP_INTERVAL = 0.15   # 每次请求后 sleep, 留安全余量, 实际约 400 次/分钟
+MAX_RETRIES = 5         # 单日最大重试次数
+RATE_LIMIT_SLEEP = 65   # 触发限流时等待秒数 (>60s 跨过限流窗口)
 
 # 输出文件路径
 OUTPUT_FILE = Path(__file__).parent / "local_data" / "st.parquet"
+FAILED_DATES_FILE = Path(__file__).parent / "local_data" / "st_failed_dates.txt"
 
 
 def parse_date_range(start_date, end_date):
@@ -121,71 +129,121 @@ def fetch_st_stocks(start_date, end_date):
 
     # 循环获取数据
     all_data = []
+    success_dates = []      # 实际成功获取(含空返回)的日期, 作为后续删除旧数据依据
+    failed_dates = []       # 重试后仍失败的日期, 旧数据保持不动
     success_count = 0
     skip_count = 0
     error_count = 0
 
     for i, trade_date in enumerate(dates_to_fetch, 1):
-        try:
-            print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 的ST股票列表...", end='', flush=True)
+        print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 的ST股票列表...", end='', flush=True)
 
-            # 调用Tushare API
-            df_st = pro.stock_st(trade_date=trade_date)
+        df_st = None
+        last_error = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                df_st = pro.stock_st(trade_date=trade_date)
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                err_msg = str(e)
+                # 限流错误: 长 sleep 跨过限流窗口
+                if '频率超限' in err_msg or 'rate' in err_msg.lower() or '每分钟' in err_msg:
+                    wait = RATE_LIMIT_SLEEP
+                    print(f"\r[{i}/{len(dates_to_fetch)}] {trade_date} 第{attempt}次触发限流, 等待 {wait}s 后重试...")
+                    time.sleep(wait)
+                else:
+                    # 其它错误: 指数退避
+                    wait = min(30, 2 ** attempt)
+                    print(f"\r[{i}/{len(dates_to_fetch)}] {trade_date} 第{attempt}次失败({err_msg[:60]}), 等待 {wait}s 后重试...")
+                    time.sleep(wait)
 
-            if df_st is not None and len(df_st) > 0:
-                all_data.append(df_st)
-                success_count += 1
-                print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 成功: {len(df_st)} 只ST股票")
-            else:
-                print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date}: 无ST股票")
-                skip_count += 1
-
-            # API限流：每秒最多3次请求
-            # time.sleep(0.35)
-
-        except Exception as e:
+        if last_error is not None:
+            # 重试耗尽仍失败
             error_count += 1
-            print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 失败: {e}")
+            failed_dates.append(trade_date)
+            print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 最终失败({MAX_RETRIES}次重试均失败): {last_error}")
+            continue
+
+        # 成功 (含空返回)
+        success_dates.append(trade_date)
+        if df_st is not None and len(df_st) > 0:
+            all_data.append(df_st)
+            success_count += 1
+            print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date} 成功: {len(df_st)} 只ST股票")
+        else:
+            skip_count += 1
+            print(f"\r[{i}/{len(dates_to_fetch)}] 获取 {trade_date}: 无ST股票")
+
+        # API限流: 主动 sleep 避免触发限流
+        time.sleep(SLEEP_INTERVAL)
 
     print(f"\n\n{'=' * 80}")
     print("数据获取完成")
     print(f"{'=' * 80}")
     print(f"成功: {success_count} 天")
-    print(f"跳过: {skip_count} 天")
+    print(f"跳过(无ST): {skip_count} 天")
     print(f"失败: {error_count} 天")
 
-    if not all_data:
-        print("\n[WARNING] 未获取到任何数据")
+    # 持久化失败日期, 便于后续单独重跑
+    if failed_dates:
+        try:
+            FAILED_DATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(FAILED_DATES_FILE, 'w', encoding='utf-8') as f:
+                for d in failed_dates:
+                    f.write(f"{d}\n")
+            print(f"[INFO] 失败日期已写入: {FAILED_DATES_FILE}")
+            print(f"[INFO] 可使用 -s {failed_dates[0]} -e {failed_dates[-1]} 重跑失败区间")
+        except Exception as e:
+            print(f"[WARNING] 写入失败日期文件出错: {e}")
+
+    if not all_data and not success_dates:
+        print("\n[WARNING] 未获取到任何数据, 不更新文件")
         return
 
-    # 合并数据
-    new_df = pd.concat(all_data, ignore_index=True)
+    # 合并数据 (可能为空, 即所有成功日期均无 ST 股票)
+    if all_data:
+        new_df = pd.concat(all_data, ignore_index=True)
+    else:
+        new_df = pd.DataFrame()
     print(f"\n[INFO] 获取数据总量: {len(new_df)} 条记录")
 
-    # 保存或更新数据
-    save_data(new_df, existing_df, dates_to_fetch)
+    # 保存或更新数据 (仅以 success_dates 作为删除依据, 失败日期旧数据保持不动)
+    save_data(new_df, existing_df, success_dates)
 
 
-def save_data(new_df, existing_df, dates_to_fetch):
-    """保存数据到parquet文件"""
+def save_data(new_df, existing_df, success_dates):
+    """保存数据到parquet文件
+
+    Args:
+        new_df: 本次成功获取的数据 (可能为空 DataFrame)
+        existing_df: 已有数据
+        success_dates: 本次确认成功获取的日期列表 (含空返回); 仅这些日期的旧数据会被替换
+    """
     print(f"\n[INFO] 保存数据到: {OUTPUT_FILE}")
 
     try:
         if existing_df is None:
-            # 没有现有数据，直接保存
+            # 没有现有数据
+            if new_df is None or len(new_df) == 0:
+                print("[INFO] 无现有数据且本次未获取到 ST 记录, 不创建文件")
+                return
             new_df.to_parquet(OUTPUT_FILE, index=False)
             print(f"[SUCCESS] 数据已保存: {len(new_df)} 条记录")
         else:
-            # 有现有数据，合并并去重
-            dates_to_fetch_set = set(dates_to_fetch)
+            # 有现有数据, 仅删除本次确认成功获取的日期, 失败日期旧数据保留
+            success_dates_set = set(str(d) for d in success_dates)
 
-            # 删除现有数据中与要获取日期重叠的部分
             existing_df_filtered = existing_df[
-                ~existing_df['trade_date'].astype(str).isin(dates_to_fetch_set)
+                ~existing_df['trade_date'].astype(str).isin(success_dates_set)
             ]
 
-            # 合并数据
-            merged_df = pd.concat([existing_df_filtered, new_df], ignore_index=True)
+            # 合并数据 (new_df 可能为空)
+            if new_df is not None and len(new_df) > 0:
+                merged_df = pd.concat([existing_df_filtered, new_df], ignore_index=True)
+            else:
+                merged_df = existing_df_filtered.reset_index(drop=True)
 
             # 按日期排序
             if 'trade_date' in merged_df.columns:
@@ -194,11 +252,14 @@ def save_data(new_df, existing_df, dates_to_fetch):
             # 保存
             merged_df.to_parquet(OUTPUT_FILE, index=False)
 
+            removed = len(existing_df) - len(existing_df_filtered)
+            added = len(new_df) if new_df is not None else 0
             print(f"[SUCCESS] 数据已更新:")
-            print(f"  - 删除了 {len(existing_df) - len(existing_df_filtered)} 条旧记录")
-            print(f"  - 新增了 {len(new_df)} 条记录")
+            print(f"  - 替换了 {removed} 条旧记录 (来自 {len(success_dates_set)} 个成功日期)")
+            print(f"  - 新增了 {added} 条记录")
             print(f"  - 总记录数: {len(merged_df)} 条")
-            print(f"  - 日期范围: {merged_df['trade_date'].min()} ~ {merged_df['trade_date'].max()}")
+            if len(merged_df) > 0 and 'trade_date' in merged_df.columns:
+                print(f"  - 日期范围: {merged_df['trade_date'].min()} ~ {merged_df['trade_date'].max()}")
 
     except Exception as e:
         print(f"[ERROR] 保存数据失败: {e}")

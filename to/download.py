@@ -145,41 +145,29 @@ def down_sw_sector():
 
 
 
-def download_a_shares_tick_data(start_date=None, end_date=None):
-    # 获取沪深A股所有股票代码
+def download_a_shares_tick_data(start_date=None, end_date=None, batch_size=500):
+    """
+    分批下载沪深A股日线数据
+
+    迅投 xtdata.download_history_data2 内部限制每次最多约500只股票，
+    超过限制会导致下载极慢或部分失败。此函数将全量股票列表分批下载。
+
+    Args:
+        start_date: 开始日期，格式YYYYMMDD，默认 '20260101'
+        end_date:   结束日期，格式YYYYMMDD，默认 '20260126'
+        batch_size: 每批下载股票数量，默认500
+    """
     try:
         # Ensure connection
         if not xtdata.get_client().is_connected():
             logger.info("Connecting to xtdata API...")
             xtdata.get_client().connect()
             time.sleep(1) # Allow time for connection
-        # xtdata.download_sector_data()
-        # sector_list = xtdata.get_sector_list()
-        # print(f"板块列表: {sector_list}")
-        # stock_list = xtdata.get_stock_list_in_sector('沪深A股')
-        # from data_loaders import get_bj_stock_list
-        # stock_list = get_bj_stock_list()
-    #     # stock_list = xtdata.get_stock_list_in_sector('GN北交所')
-    #     # stock_list.extend(bj_stock_list)
-    #     print(f"获取到的股票代码数量: {len(stock_list)} , 股票列表: {stock_list}")
-    #     if not stock_list:
-    #         print("未能获取到股票列表，请检查API连接或权限。")
-    #         return
-    #     # Print first few stocks for confirmation
-    #     print(f"股票列表前几个: {stock_list[:5]}")
     except Exception as e:
-        print(f"获取股票列表时出错: {e}")
+        print(f"连接API时出错: {e}")
         return
 
-
-    # INDEX_LIST = [
-    #     '399006.SZ',  # 创业板指数（主要关注）
-    #     '000001.SH',  # 上证指数
-    #     '000688.SH',  # 科创50
-    #     '899050.BJ',  # 北证50
-    # ]
-
-    period = "5m"
+    period = "1d"
 
     # 设置时间范围：如果未提供参数则使用默认值
     if start_date is None:
@@ -187,71 +175,77 @@ def download_a_shares_tick_data(start_date=None, end_date=None):
     if end_date is None:
         end_date = '20260126'
 
+    # 获取股票列表
     test_list = get_stock_list()
+    test_list = test_list + ['399006.SZ']
+    total_stocks = len(test_list)
+    total_batches = (total_stocks + batch_size - 1) // batch_size
     print(f"下载时间范围: {start_date} - {end_date}")
+    print(f"总股票: {total_stocks} 只, 每批 {batch_size} 只, 共 {total_batches} 批")
 
-    #初始化下载进度跟踪器
-    progress = DownloadProgress()
+    # 分批下载
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, total_stocks)
+        batch = test_list[start_idx:end_idx]
+        batch_num = batch_idx + 1
 
-    test_list = test_list #+ ['399006.SZ']
-    # test_list =  ['399006.SZ']
+        print(f"\n{'='*60}")
+        print(f"第 {batch_num}/{total_batches} 批: {len(batch)} 只 ({batch[0]} ~ {batch[-1]})")
+        print(f"{'='*60}")
 
+        progress = DownloadProgress()
+        result = xtdata.download_history_data2(
+            stock_list=batch,
+            period=period,
+            start_time=start_date,
+            end_time=end_date,
+            callback=progress.on_progress,
+            incrementally=True
+        )
+        print(f"第{batch_num}批下载请求已发出，等待完成...")
 
+        start_wait_time = time.time()
+        timeout_seconds = 1800  # 每批30分钟超时
 
+        while not progress.check_finished():
+            current_has, current_total = progress.get_progress()
+            elapsed = time.time() - start_wait_time
+            overall_done = start_idx + min(current_has, current_total)
+            print(f"  批次: {current_has}/{current_total}, 总体: {overall_done}/{total_stocks}, 耗时: {elapsed:.0f}s", flush=True)
+            if elapsed > timeout_seconds:
+                print(f"  第{batch_num}批超时({timeout_seconds}s)，继续下一批...")
+                break
+            time.sleep(3)
 
-    # test_list = ['399006.SZ','899050.BJ']
-    # 下载tick数据
-    print("开始下载沪深A股 1d数据...")
-    # Use 5m period as originally intended
-    result = xtdata.download_history_data2(
-        stock_list= test_list,
-        period=period,
-        start_time=start_date,
-        end_time=end_date,
-        callback=progress.on_progress,
-        incrementally = False
-    )
-    print(f"下载请求已发出 ({result})，等待下载完成...")
+        if progress.check_finished():
+            print(f"第{batch_num}批完成。")
+        else:
+            print(f"第{batch_num}批未完成或超时。")
 
-    # 新增：等待下载完成的循环
-    start_wait_time = time.time()
-    timeout_seconds = 3600 * 2 # Example: 2 hour timeout
-    while not progress.check_finished():
-        current_has, current_total = progress.get_progress()
-        elapsed_time = time.time() - start_wait_time
-        print(f"等待中... 进度: {current_has}/{current_total}. 已耗时: {elapsed_time:.1f} 秒", flush=True)
-        if elapsed_time > timeout_seconds:
-             print(f"下载超时 ({timeout_seconds}秒).")
-             break
-        time.sleep(5) # Check every 5 seconds
+        # 批次间短暂休息
+        if batch_num < total_batches:
+            time.sleep(0.5)
 
-    if progress.check_finished():
-        print("主程序检测到下载已完成。")
-    else:
-        print("主程序退出等待，下载可能未完成或超时。")
+    print(f"\n{'='*60}")
+    print(f"全部 {total_batches} 批下载完成，共 {total_stocks} 只股票")
+    print(f"{'='*60}")
 
-
-    # 测试获取某只股票的tick数据
-    test_code = '399006.SZ'  # 贵州茅台
-    print(f"验证股票 {test_code} 的1d钟数据...")
-
+    # 验证数据
+    test_code = '399006.SZ'
+    print(f"\n验证股票 {test_code} 的 {period} 数据...")
     try:
         test_data = xtdata.get_market_data(
-            field_list=[], # Empty list to get all available fields
+            field_list=[],
             stock_list=[test_code],
             period=period,
-            # start_time='20230316093500',
-            # end_time='20230317094500'
             start_time=end_date,
             end_time=end_date,
             dividend_type='front'
         )
-
-        print(f"验证数据获取成功 : {test_data}.")
-
-
+        print(f"验证成功: {list(test_data.keys()) if test_data else '空数据'}")
     except Exception as e:
-        print(f"验证数据时出错: {e}")
+        print(f"验证时出错: {e}")
 
 
 def download_and_verify_stock_data():
@@ -798,17 +792,17 @@ if __name__ == "__main__":
     # 调用完善后的down_sw_sector函数
     # success = down_sw_sector()
 
-    test_data = xtdata.get_market_data(
-            field_list=[], # Empty list to get all available fields
-            stock_list=['399006.SZ'],
-            period='1d',
-            # start_time='20230316093500',
-            # end_time='20230317094500'
-            start_time='20241224',
-            end_time='20241224',
-            dividend_type='front'
-        )
-    print(test_data)
+    # test_data = xtdata.get_market_data(
+    #         field_list=[], # Empty list to get all available fields
+    #         stock_list=['300689.SZ'],
+    #         period='5m',
+    #         # start_time='20230316093500',
+    #         # end_time='20230317094500'
+    #         start_time='20250612',
+    #         end_time='20250612',
+    #         dividend_type='front'
+    #     )
+    # print(test_data)
     # ts.set_token('022fe0122b7c9829941beb898d20d5c19db0eb0c62ea8fee51c10000')
     # df = ts.pro_bar(ts_code='300622.SZ', adj='qfq', start_date='20221001', end_date='20251231')
     # # 只打印 20240813~20240819 日的数据
@@ -824,5 +818,42 @@ if __name__ == "__main__":
 
     # 其他可用函数（注释状态）
     # download_a_shares_tick_data(start_date=args.start, end_date=args.end)
+    ts.set_token('gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b')
+    pro = ts.pro_api()
+    df_st = pro.stock_st(trade_date='20250813')
+    print(df_st)
+
     # download_and_verify_stock_data()
     # download_and_check_financial_data()
+    # ts.set_token('gg99b01a244311f7742512463d9e1588954d174b86d695f8a9f1cc4b')
+    # pro = ts.pro_api()
+
+    # #获取浦发银行60000.SH的历史分钟数据
+
+    # df = pro.stk_mins(ts_code='600000.SH', freq='5min', start_date='2023-08-25 09:00:00', end_date='2023-08-25 19:00:00')
+
+    # try:
+    #     # Ensure connection
+    #     if not xtdata.get_client().is_connected():
+    #         logger.info("Connecting to xtdata API...")
+    #         xtdata.get_client().connect()
+    #         time.sleep(1) # Allow time for connection
+    # except Exception as e:
+    #     print(f"连接API时出错: {e}")
+    # seq =  xtdata.subscribe_whole_quote(['301188.SZ'])
+    # xtdata.unsubscribe_quote(seq)
+    # while 1:
+    #     full_tick = xtdata.get_full_tick(['301188.SZ'])
+    #     print(full_tick['301188.SZ']['lastPrice'])  # 最新价
+    #     time.sleep(3)  # 每3秒更新
+   
+    # def on_data(datas):
+    #     # datas 是一个字典，格式为 { stock1 : data1, stock2 : data2, ... }
+    #     print(datas)  # 打印所有变动的数据
+    #     # 例如，获取最新价：datas['301188.SZ']['lastPrice']
+
+    # # 订阅并传入回调函数
+    # seq = xtdata.subscribe_whole_quote(['301188.SZ'], callback=on_data)
+
+    # # 进入消息循环，等待并处理回调事件
+    # xtdata.run()
