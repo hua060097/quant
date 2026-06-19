@@ -93,6 +93,19 @@ def _floor_price(price: float, tick_size: float = 0.01) -> float:
     except Exception:
         return float(price)
 
+
+def _ceil_price(price: float, tick_size: float = 0.01) -> float:
+    """Ceil price to A-share tick size (default 0.01)."""
+    import numpy as np
+    try:
+        if price is None or not np.isfinite(price):
+            return float("nan")
+        price = max(float(price), tick_size)
+        ticks = math.ceil(price / tick_size - 1e-12)
+        return float(max(tick_size, ticks * tick_size))
+    except Exception:
+        return float(price)
+
 # 允许的最大追价（相对当日开盘价）
 # 例：0.010 表示最多追到 open * 1.01
 BUY_SLIPPAGE_CAP_PCT = 0.010
@@ -131,6 +144,7 @@ MAX_TICK_FAILURES_BEFORE_ABORT = 5
 
 # 每片最多撤单重试次数
 BUY_MAX_RETRIES_PER_SLICE = 3
+BUY_EXECUTION_MAX_SECONDS = 1800.0
 
 # 快涨/快跌判定阈值（相对开盘价）
 FAST_UP_TH = 0.008
@@ -158,6 +172,8 @@ DEEP_REBOUND_MAX_REL_FROM_OPEN = 0.004
 DEEP_REBOUND_MIN_UP_STREAK = 2
 DEEP_REBOUND_MAX_SLICE_RATIO = 0.35
 DEEP_REBOUND_BUY_SLIPPAGE_CAP_PCT = 0.015
+DEEP_REBOUND_CANCEL_REL_FROM_OPEN = -0.028
+DEEP_REBOUND_CANCEL_DRAWDOWN_FROM_ORDER = -0.008
 
 # 入场二阶段保护：先允许成交一部分，观察开盘后走势；若转弱则停止补剩余仓位。
 # 这不是选股过滤，而是防止“09:30 几秒内买满后当天一路下跌”的执行层保护。
@@ -329,17 +345,17 @@ class SmartOrderManager:
                                    cap_price: Optional[float] = None,
                                    up_limit: Optional[float] = None,
                                    tick_size: float = DEFAULT_TICK_SIZE) -> float:
-        """买单最终价格规整：先截断到 cap/up_limit，再按最小价差向下规整。"""
-        normalized = float(price)
+        """买单最终价格规整：买入优先向上贴近对手价，但绝不越过 cap/up_limit。"""
+        upper_bound = None
         if cap_price is not None:
-            normalized = min(normalized, float(cap_price))
+            upper_bound = _floor_price(float(cap_price), tick_size)
         if up_limit is not None and float(up_limit) > 0:
-            normalized = min(normalized, float(up_limit))
-        normalized = _floor_price(normalized, tick_size)
-        if cap_price is not None:
-            normalized = min(normalized, _floor_price(float(cap_price), tick_size))
-        if up_limit is not None and float(up_limit) > 0:
-            normalized = min(normalized, _floor_price(float(up_limit), tick_size))
+            limit_bound = _floor_price(float(up_limit), tick_size)
+            upper_bound = limit_bound if upper_bound is None else min(upper_bound, limit_bound)
+
+        normalized = _ceil_price(float(price), tick_size)
+        if upper_bound is not None and normalized > upper_bound:
+            normalized = upper_bound
         return float(normalized)
 
     def _get_slice_wait_seconds(self, is_fast_up: bool, is_fast_down: bool) -> float:
@@ -513,6 +529,59 @@ class SmartOrderManager:
             return 2
         return BUY_SLICES
 
+    def _get_opening_gap_thresholds(self,
+                                    target_rank: int = 1,
+                                    is_weak_market_env: bool = False) -> tuple[float, float]:
+        if int(target_rank) == 1:
+            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_TOP1
+        elif int(target_rank) == 2 and is_weak_market_env:
+            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_WEAK_TOP2
+        elif int(target_rank) == 2:
+            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_STRONG_TOP2
+        else:
+            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_NON_TOP1
+        return float(gap_down_threshold), float(StrategyConfig.GAP_UP_THRESHOLD)
+
+    def _evaluate_dynamic_entry_price_band(self,
+                                           prev_close: Optional[float],
+                                           current_price: float,
+                                           target_rank: int = 1,
+                                           is_weak_market_env: bool = False) -> Dict[str, Any]:
+        """复用开盘跳空风控阈值，动态约束后续每次补仓价格。"""
+        if prev_close is None or not prev_close or prev_close <= 0:
+            return {'can_order': False, 'reason': 'no_prev_close', 'price_vs_prev_close': float("nan")}
+        if not current_price or current_price <= 0:
+            return {'can_order': False, 'reason': 'invalid_current_price', 'price_vs_prev_close': float("nan")}
+
+        gap_down_threshold, gap_up_threshold = self._get_opening_gap_thresholds(
+            target_rank=target_rank,
+            is_weak_market_env=is_weak_market_env,
+        )
+        price_vs_prev_close = (float(current_price) - float(prev_close)) / (float(prev_close) + 1e-12)
+        if price_vs_prev_close < gap_down_threshold:
+            return {
+                'can_order': False,
+                'reason': f"price_below_gap_band({price_vs_prev_close:.2%} < {gap_down_threshold:.2%})",
+                'price_vs_prev_close': price_vs_prev_close,
+                'gap_down_threshold': gap_down_threshold,
+                'gap_up_threshold': gap_up_threshold,
+            }
+        if price_vs_prev_close > gap_up_threshold:
+            return {
+                'can_order': False,
+                'reason': f"price_above_gap_band({price_vs_prev_close:.2%} > {gap_up_threshold:.2%})",
+                'price_vs_prev_close': price_vs_prev_close,
+                'gap_down_threshold': gap_down_threshold,
+                'gap_up_threshold': gap_up_threshold,
+            }
+        return {
+            'can_order': True,
+            'reason': 'inside_gap_band',
+            'price_vs_prev_close': price_vs_prev_close,
+            'gap_down_threshold': gap_down_threshold,
+            'gap_up_threshold': gap_up_threshold,
+        }
+
     def _evaluate_entry_execution_governor(self,
                                            stock_code: str,
                                            buy_volume: int,
@@ -679,6 +748,7 @@ class SmartOrderManager:
     def smart_buy_full_position(self, stock_code: str,
                                 buy_date: str,
                                 target_volume: int = None,
+                                target_amount: float = None,
                                 wait_for_open: bool = None,
                                 apply_opening_risk: bool = None,
                                 target_rank: int = 1,
@@ -694,7 +764,9 @@ class SmartOrderManager:
           - MiniQMT 普通权限只有五档/一档，对“真正的盘口速度”无法完全拟合，本实现尽量稳健。
         """
         self.logger.info("=" * 60)
-        if target_volume:
+        if target_amount is not None and target_amount > 0:
+            self.logger.info(f"开始指定金额买入: {stock_code}, 计划金额={float(target_amount):.2f}")
+        elif target_volume:
             self.logger.info(f"开始指定数量买入: {stock_code}, {target_volume}股")
         else:
             self.logger.info(f"开始全仓买入: {stock_code}")
@@ -721,7 +793,18 @@ class SmartOrderManager:
         # -------------------------
         # 3) 查询资金/计算目标买入数量（trade 模式）
         # -------------------------
-        if target_volume is None:
+        if target_amount is not None and target_amount > 0:
+            asset = self.trader.query_stock_asset(self.trader.account)
+            if not asset:
+                self.logger.error("查询账户资金失败")
+                return None
+            account_cash = float(asset.cash)
+            available_cash = min(float(target_amount), account_cash)
+            self.logger.info(
+                f"计划使用资金: {float(target_amount):.2f}元, "
+                f"账户可用现金: {account_cash:.2f}元, 本次可用: {available_cash:.2f}元"
+            )
+        elif target_volume is None:
             asset = self.trader.query_stock_asset(self.trader.account)
             if not asset:
                 self.logger.error("查询账户资金失败")
@@ -754,6 +837,10 @@ class SmartOrderManager:
             return None
 
         # trade 模式：开盘风控（你原来的 _check_opening_gap_risk 仍保留）
+        gap_down_threshold, gap_up_threshold = self._get_opening_gap_thresholds(
+            target_rank=target_rank,
+            is_weak_market_env=is_weak_market_env,
+        )
         if apply_opening_risk:
             risk_check = self._check_opening_gap_risk(
                 stock_code,
@@ -779,9 +866,18 @@ class SmartOrderManager:
         cap_price = open_px * (1.0 + BUY_SLIPPAGE_CAP_PCT)
         if up_limit and up_limit > 0:
             cap_price = min(cap_price, up_limit)  # cap 不能越过涨停
+        if apply_opening_risk and prev_close and prev_close > 0:
+            cap_price = min(cap_price, prev_close * (1.0 + gap_up_threshold))
 
         # 计算目标买入量
-        if target_volume is None:
+        if target_amount is not None and target_amount > 0:
+            ref_price_for_size = min(cap_price, max(ask1, last_px) if (ask1 and ask1 > 0) else open_px)
+            buy_volume = self._calculate_buy_volume_full(float(available_cash), ref_price_for_size)
+            self.logger.info(
+                f"[{stock_code}] 按开盘后参考价计算目标股数: usable_cash={float(available_cash):.2f}, "
+                f"ref_price={ref_price_for_size:.2f}, target_volume={buy_volume}"
+            )
+        elif target_volume is None:
             ref_price_for_size = min(cap_price, max(ask1, last_px) if (ask1 and ask1 > 0) else open_px)
             buy_volume = self._calculate_buy_volume_full(available_cash, ref_price_for_size)
         else:
@@ -806,19 +902,20 @@ class SmartOrderManager:
         session_low_rel = 0.0
         session_low_price = float(open_px)
         deep_rebound_streak = 0
-        max_order_attempts = effective_slices + 2
         attempt_no = 0
         observe_rounds = 0
         fast_down_wait_logged = False
         fast_down_rel_tracker: List[tuple] = []  # (elapsed_seconds, rel) for stabilization detection
         tick_failures = 0
+        stop_reason = 'completed'
+        max_rel_from_open = 0.0
         entry_stage_guard_released = not ENTRY_STAGE_GUARD_ENABLED
         entry_stage_guard_aborted = False
         entry_stage_initial_target = max(100, int((buy_volume * ENTRY_STAGE_INITIAL_MAX_RATIO) // 100) * 100)
         entry_stage_initial_target = min(int(buy_volume), entry_stage_initial_target)
         execution_governor_state: Dict[str, Any] = {}
 
-        while attempt_no < max_order_attempts:
+        while True:
             observe_rounds += 1
             exec_state = self._get_order_execution_totals(stock_code, attempted_order_ids)
             filled_so_far = int(exec_state['filled_volume'])
@@ -845,11 +942,13 @@ class SmartOrderManager:
                             f"[{stock_code}] 已按真实成交/挂单更新剩余仓位: filled={filled_so_far}, "
                             f"outstanding={outstanding_so_far}, remaining_to_order={remaining}，停止继续下单"
                         )
+                        stop_reason = 'completed'
                         break
                 else:
                     self.logger.info(
                         f"[{stock_code}] 已按真实成交更新剩余仓位: filled={filled_so_far}, remaining={remaining}，停止继续下单"
                     )
+                    stop_reason = 'completed'
                     break
 
             if ENTRY_STAGE_GUARD_ENABLED and not entry_stage_guard_released:
@@ -939,6 +1038,7 @@ class SmartOrderManager:
                 )
                 if tick_failures >= MAX_TICK_FAILURES_BEFORE_ABORT:
                     self.logger.error(f"[{stock_code}] 连续获取 tick 失败，放弃当日买入")
+                    stop_reason = 'tick_failures'
                     return None
                 time.sleep(FAST_DOWN_RECHECK_WAIT_SECONDS)
                 continue
@@ -955,6 +1055,8 @@ class SmartOrderManager:
             cap_price2 = open_px2 * (1.0 + current_cap_pct)
             if up_limit and up_limit > 0:
                 cap_price2 = min(cap_price2, up_limit)
+            if apply_opening_risk and prev_close and prev_close > 0:
+                cap_price2 = min(cap_price2, prev_close * (1.0 + gap_up_threshold))
 
             # 窗口进度（用于急跌策略）
             try:
@@ -966,6 +1068,16 @@ class SmartOrderManager:
             except Exception:
                 prog = 1.0
                 elapsed_seconds = 999.0
+
+            if elapsed_seconds >= BUY_EXECUTION_MAX_SECONDS:
+                self.logger.warning(
+                    f"[{stock_code}] 买入执行超过 {BUY_EXECUTION_MAX_SECONDS:.0f}s，"
+                    f"停止继续补仓 (filled={filled_so_far}/{buy_volume}, remaining={remaining})"
+                )
+                stop_reason = 'execution_timeout'
+                if filled_so_far > 0:
+                    break
+                return None
 
             current_rel = (last_px2 - open_px2) / (open_px2 + 1e-12)
             preview_quotes = (recent_quotes + [{
@@ -986,6 +1098,7 @@ class SmartOrderManager:
                 down_streak=fast_down_streak,
             )
             rel = float(micro['rel'])
+            max_rel_from_open = max(float(max_rel_from_open), rel)
             is_fast_up = bool(micro['is_fast_up'])
             is_fast_down = bool(micro['is_fast_down'])
             fast_up_streak = int(micro['up_streak'])
@@ -1018,6 +1131,24 @@ class SmartOrderManager:
                 'bid1': float(bid1_2) if bid1_2 and bid1_2 > 0 else float("nan"),
             }
             recent_quotes = preview_quotes
+
+            dynamic_band = self._evaluate_dynamic_entry_price_band(
+                prev_close=prev_close,
+                current_price=float(last_px2),
+                target_rank=target_rank,
+                is_weak_market_env=is_weak_market_env,
+            )
+            if apply_opening_risk and not bool(dynamic_band.get('can_order', True)):
+                if (not fast_down_wait_logged) or (observe_rounds % 3 == 0):
+                    self.logger.info(
+                        f"[{stock_code}] 动态开盘风控带外，暂不下单，等待修复: "
+                        f"{dynamic_band.get('reason')}, last={last_px2:.2f}, "
+                        f"vs_prev={dynamic_band.get('price_vs_prev_close', float('nan')):.2%}, "
+                        f"filled={filled_so_far}/{buy_volume}, remaining={remaining}"
+                    )
+                stop_reason = str(dynamic_band.get('reason') or 'dynamic_entry_band_wait')
+                time.sleep(FAST_DOWN_RECHECK_WAIT_SECONDS)
+                continue
 
             if is_fast_down and remaining >= 100:
                 # 记录rel用于趋稳检测
@@ -1071,7 +1202,9 @@ class SmartOrderManager:
                                 f"且未趋稳，放弃当日买入 (rel={rel:.2%}, remaining={remaining})"
                             )
                             if filled_so_far > 0:
+                                stop_reason = 'fast_down_not_stabilized'
                                 break
+                            stop_reason = 'fast_down_not_stabilized'
                             return None
                     else:
                         self.logger.warning(
@@ -1079,7 +1212,9 @@ class SmartOrderManager:
                             f"(rel={rel:.2%}, remaining={remaining})"
                         )
                         if filled_so_far > 0:
+                            stop_reason = 'fast_down_observe_timeout'
                             break
+                        stop_reason = 'fast_down_observe_timeout'
                         return None
             fast_down_wait_logged = False
 
@@ -1143,7 +1278,9 @@ class SmartOrderManager:
                         f"(rel={rel:.2%}, remaining={remaining})"
                     )
                     if filled_so_far > 0:
+                        stop_reason = 'whipsaw_fast_down_timeout'
                         break
+                    stop_reason = 'whipsaw_fast_down_timeout'
                     return None
 
             if EXECUTION_GOVERNOR_ENABLED and filled_so_far > 0:
@@ -1174,6 +1311,7 @@ class SmartOrderManager:
                     self.logger.warning(
                         f"[{stock_code}] 执行闸门停止补剩余仓位: {governor_decision.get('reason')}"
                     )
+                    stop_reason = f"execution_governor_abort:{governor_decision.get('reason')}"
                     break
                 if governor_action == 'wait':
                     sleep_s = float(governor_decision.get('sleep') or EXECUTION_RECHECK_SECONDS)
@@ -1203,8 +1341,19 @@ class SmartOrderManager:
                 cap_price2 = open_px2 * (1.0 + current_cap_pct)
                 if up_limit and up_limit > 0:
                     cap_price2 = min(cap_price2, up_limit)
+                if apply_opening_risk and prev_close and prev_close > 0:
+                    cap_price2 = min(cap_price2, prev_close * (1.0 + gap_up_threshold))
                 if slice_qty < remaining:
-                    slice_qty = self._cap_slice_by_ratio(slice_qty=remaining, remaining=remaining, ratio=FAST_BREAKOUT_MAX_SLICE_RATIO)
+                    breakout_slice_ratio = (
+                        DEEP_REBOUND_MAX_SLICE_RATIO
+                        if session_low_rel <= DEEP_REBOUND_MIN_DRAWDOWN
+                        else FAST_BREAKOUT_MAX_SLICE_RATIO
+                    )
+                    slice_qty = self._cap_slice_by_ratio(
+                        slice_qty=remaining,
+                        remaining=remaining,
+                        ratio=breakout_slice_ratio,
+                    )
                 self.logger.info(
                     f"[{stock_code}] 检测到 fast_up，切换为aggressive模式："
                     f"剩余仓位分段追单，cap_pct={current_cap_pct:.2%}, qty={slice_qty}"
@@ -1245,6 +1394,8 @@ class SmartOrderManager:
                 deep_rebound_cap = open_px2 * (1.0 + DEEP_REBOUND_BUY_SLIPPAGE_CAP_PCT)
                 if up_limit and up_limit > 0:
                     deep_rebound_cap = min(deep_rebound_cap, up_limit)
+                if apply_opening_risk and prev_close and prev_close > 0:
+                    deep_rebound_cap = min(deep_rebound_cap, prev_close * (1.0 + gap_up_threshold))
                 base = ask1_2 if (ask1_2 and ask1_2 > 0) else last_px2
                 order_price = min(base, deep_rebound_cap)
             elif is_fast_up:
@@ -1287,7 +1438,8 @@ class SmartOrderManager:
             fill_timeout_seconds = self._get_slice_fill_timeout(is_fast_up, is_fast_down)
 
             self.logger.info(
-                f"[{stock_code}] 第{attempt_no}/{effective_slices}片 | qty={slice_qty} | state={open_state} | rel={rel:.2%} | "
+                f"[{stock_code}] 第{attempt_no}次尝试(计划{effective_slices}片) | "
+                f"qty={slice_qty} | state={open_state} | rel={rel:.2%} | "
                 f"fast_up={is_fast_up} fast_down={is_fast_down} | "
                 f"low_rel={session_low_rel:.2%} rebound_low={rebound_from_low:.2%} | "
                 f"price_raw={order_price_raw:.4f} -> price={order_price:.2f} "
@@ -1308,6 +1460,7 @@ class SmartOrderManager:
                 stock_code=stock_code,
                 open_px=open_px2,
                 initial_state=open_state,
+                initial_rel=rel,
             )
             if filled:
                 order_info_after_fill = self._get_order_info(order_id)
@@ -1336,6 +1489,7 @@ class SmartOrderManager:
                                 stock_code=stock_code,
                                 open_px=open_px_retry,
                                 initial_state='FAST_BREAKDOWN',
+                                initial_rel=rel_retry,
                             )
                             if filled:
                                 order_info_after_fill = self._get_order_info(order_id)
@@ -1374,6 +1528,18 @@ class SmartOrderManager:
             last_order_id=last_order_id,
             open_px=open_px,
         )
+        execution_result['stop_reason'] = stop_reason
+        execution_result['unfilled_volume'] = max(
+            0,
+            int(execution_result['requested_volume']) - int(execution_result['filled_volume']),
+        )
+        execution_result['session_low_rel_from_open'] = float(session_low_rel)
+        execution_result['session_high_rel_from_open'] = float(max_rel_from_open)
+        execution_result['session_rebound_from_low'] = (
+            (float(last_px2) - float(session_low_price)) / (float(session_low_price) + 1e-12)
+            if 'last_px2' in locals() and session_low_price and session_low_price > 0 and last_px2 and last_px2 > 0
+            else 0.0
+        )
 
         if execution_result['filled_volume'] <= 0:
             unfilled = max(0, int(execution_result['requested_volume']) - int(execution_result['filled_volume']))
@@ -1383,7 +1549,7 @@ class SmartOrderManager:
         self.logger.info(
             f"✅ {stock_code} 买入汇总: requested={execution_result['requested_volume']} "
             f"filled={execution_result['filled_volume']} avg_price={execution_result['avg_price']:.4f} "
-            f"fully_filled={execution_result['fully_filled']}"
+            f"fully_filled={execution_result['fully_filled']} stop_reason={execution_result['stop_reason']}"
         )
         if execution_result['filled_volume'] < execution_result['requested_volume']:
             self.logger.warning(
@@ -1731,7 +1897,12 @@ class SmartOrderManager:
             ask1 = last_price
 
         order_price = min(float(ask1) * (1.0 + BUY_SMALL_PREMIUM), cap_price, float(up_limit))
-        return float(_round_price(order_price))
+        return self._normalize_buy_order_price(
+            order_price,
+            cap_price=cap_price,
+            up_limit=float(up_limit),
+            tick_size=DEFAULT_TICK_SIZE,
+        )
 
     def _place_buy_order(self, stock_code: str, volume: int,
                          price: float) -> Optional[str]:
@@ -2016,7 +2187,8 @@ class SmartOrderManager:
                              timeout: float = 10,
                              stock_code: Optional[str] = None,
                              open_px: Optional[float] = None,
-                             initial_state: str = 'NORMAL') -> bool:
+                             initial_state: str = 'NORMAL',
+                             initial_rel: Optional[float] = None) -> bool:
         """
         等待订单成交
 
@@ -2064,6 +2236,7 @@ class SmartOrderManager:
                     stock_code=stock_code,
                     open_px=float(open_px),
                     initial_state=initial_state,
+                    initial_rel=initial_rel,
                 )
                 if should_abort:
                     self.logger.warning(
@@ -2086,7 +2259,8 @@ class SmartOrderManager:
     def _should_abort_waiting_buy_order(self,
                                         stock_code: str,
                                         open_px: float,
-                                        initial_state: str) -> tuple[bool, str]:
+                                        initial_state: str,
+                                        initial_rel: Optional[float] = None) -> tuple[bool, str]:
         """等待成交期间发现盘口明显转坏时，提前撤掉未成交买单。"""
         try:
             tick = self._get_tick(stock_code)
@@ -2102,6 +2276,20 @@ class SmartOrderManager:
             spread_rel = 0.0
             if ask1 and ask1 > 0 and bid1 and bid1 > 0:
                 spread_rel = max(0.0, (ask1 - bid1) / (open_px + 1e-12))
+
+            if initial_state == 'DEEP_REBOUND':
+                if initial_rel is not None and rel <= float(initial_rel) + DEEP_REBOUND_CANCEL_DRAWDOWN_FROM_ORDER:
+                    return True, (
+                        f"deep_rebound deteriorated: rel={rel:.2%}, "
+                        f"order_rel={float(initial_rel):.2%}, "
+                        f"delta={rel - float(initial_rel):.2%} <= {DEEP_REBOUND_CANCEL_DRAWDOWN_FROM_ORDER:.2%}"
+                    )
+                if rel <= DEEP_REBOUND_CANCEL_REL_FROM_OPEN:
+                    return True, (
+                        f"deep_rebound failed: rel={rel:.2%} <= "
+                        f"DEEP_REBOUND_CANCEL_REL_FROM_OPEN({DEEP_REBOUND_CANCEL_REL_FROM_OPEN:.2%})"
+                    )
+                return False, ''
 
             if rel <= FAST_DOWN_TH:
                 return True, f"rel={rel:.2%} <= FAST_DOWN_TH({FAST_DOWN_TH:.2%})"
@@ -2397,15 +2585,10 @@ class SmartOrderManager:
         gap_ratio = (buy_open - prev_close) / prev_close
         self.logger.info(f"  跳空幅度: {gap_ratio:.4f} ({gap_ratio:.2%})")
 
-        if int(target_rank) == 1:
-            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_TOP1
-        elif int(target_rank) == 2 and is_weak_market_env:
-            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_WEAK_TOP2
-        elif int(target_rank) == 2:
-            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_STRONG_TOP2
-        else:
-            gap_down_threshold = StrategyConfig.GAP_DOWN_THRESHOLD_NON_TOP1
-        gap_up_threshold = StrategyConfig.GAP_UP_THRESHOLD
+        gap_down_threshold, gap_up_threshold = self._get_opening_gap_thresholds(
+            target_rank=target_rank,
+            is_weak_market_env=is_weak_market_env,
+        )
         self.logger.info(
             f"  风控阈值: rank={int(target_rank)}, weak_env={is_weak_market_env}, "
             f"gap_down={gap_down_threshold:.2%}, gap_up={gap_up_threshold:.2%}"

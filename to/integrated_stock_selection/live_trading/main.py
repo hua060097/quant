@@ -707,31 +707,40 @@ def run_trade_mode(args):
             planned_amount = float(StrategyConfig.STRATEGY_CAPITAL * target_pct)
             target_rank = int(candidate.get('target_rank', 1))
             is_weak_market_env = bool(candidate.get('is_weak_market_env', False))
-            target_volume, ref_price = _calculate_target_volume(trader, candidate_code, planned_amount)
 
             logger.info(
                 f"尝试开仓: {candidate_code}, 槽位={slot_index + 1}/{StrategyConfig.MAX_CONCURRENT_POSITIONS}, "
-                f"目标仓位={target_pct:.0%}, 计划金额={planned_amount:.2f}, 参考价={ref_price if ref_price else 0:.2f}, "
-                f"目标股数={target_volume}"
+                f"目标仓位={target_pct:.0%}, 计划金额={planned_amount:.2f}"
             )
 
-            if target_volume >= 100:
+            if planned_amount > 0:
                 execution_result = trader.order_manager.smart_buy_full_position(
                     candidate_code,
                     today_str,
-                    target_volume=target_volume,
+                    target_amount=planned_amount,
                     wait_for_open=True,
                     apply_opening_risk=True,
                     target_rank=target_rank,
                     is_weak_market_env=is_weak_market_env,
                 )
                 if execution_result:
+                    requested_volume = int(execution_result.get('requested_volume', 0) or 0)
                     filled_volume = int(execution_result.get('filled_volume', 0) or 0)
                     entry_price = float(execution_result.get('avg_price', 0.0) or 0.0)
                     open_price = float(execution_result.get('open_price', 0.0) or 0.0)
                     entry_date = execution_result.get('first_fill_date') or today_str
                     last_order_id = execution_result.get('last_order_id')
                     order_ids = {candidate_code: last_order_id} if last_order_id else {}
+                    execution_report = {
+                        'requested_volume': requested_volume,
+                        'filled_volume': filled_volume,
+                        'unfilled_volume': int(execution_result.get('unfilled_volume', max(0, requested_volume - filled_volume)) or 0),
+                        'fully_filled': bool(execution_result.get('fully_filled', filled_volume >= requested_volume)),
+                        'stop_reason': execution_result.get('stop_reason'),
+                        'session_low_rel_from_open': float(execution_result.get('session_low_rel_from_open', 0.0) or 0.0),
+                        'session_high_rel_from_open': float(execution_result.get('session_high_rel_from_open', 0.0) or 0.0),
+                        'session_rebound_from_low': float(execution_result.get('session_rebound_from_low', 0.0) or 0.0),
+                    }
                     scheduler.save_trade_record(
                         today_compact,
                         'buy',
@@ -746,15 +755,24 @@ def run_trade_mode(args):
                         strategy_capital=float(StrategyConfig.STRATEGY_CAPITAL),
                         target_rank=target_rank,
                         open_price=open_price,
+                        execution_report=execution_report,
                     )
-                    logger.info(
-                        f"✅ 买入成功: {candidate_code}, filled={filled_volume}/{target_volume}, "
-                        f"avg_price={entry_price:.4f}, first_fill_date={entry_date}, order_id={last_order_id}"
-                    )
+                    fully_filled = bool(execution_result.get('fully_filled', filled_volume >= requested_volume))
+                    if fully_filled:
+                        logger.info(
+                            f"✅ 买入成功: {candidate_code}, filled={filled_volume}/{requested_volume}, "
+                            f"avg_price={entry_price:.4f}, first_fill_date={entry_date}, order_id={last_order_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ 买入仅部分成交: {candidate_code}, filled={filled_volume}/{requested_volume}, "
+                            f"avg_price={entry_price:.4f}, first_fill_date={entry_date}, "
+                            f"stop_reason={execution_report['stop_reason']}, order_id={last_order_id}"
+                        )
                 else:
                     logger.warning(f"买入未成交或被风控跳过: {candidate_code}")
             else:
-                logger.warning(f"{candidate_code} 目标股数不足1手，跳过开仓")
+                logger.warning(f"{candidate_code} 计划金额无效，跳过开仓")
     elif not free_slots:
         logger.info("当前无空闲槽位，跳过新开仓")
 

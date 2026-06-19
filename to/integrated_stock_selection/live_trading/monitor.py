@@ -58,8 +58,15 @@ class PositionMonitor5Min:
         # 尾盘卖出时间（14:55）
         self.closing_sell_time = "14:55:00"
 
+        # 状态机诊断轨迹 JSONL 输出（按日切分）
+        self._state_trace_fh = None
+        self._state_trace_day = None
+        self._state_trace_path = None
+
         # 5分钟K线采样边界容忍秒数
         self.kline_boundary_tolerance_seconds = 10
+        # 收盘边界读取的行情必须足够新；否则宁可漏一根，也不使用陈旧快照伪造K线
+        self.kline_max_quote_age_seconds = 30.0
 
     def _load_trading_calendar(self):
         """加载交易日历"""
@@ -346,6 +353,15 @@ class PositionMonitor5Min:
         self.is_monitoring = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
+        # 关闭状态机轨迹文件句柄
+        if self._state_trace_fh is not None:
+            try:
+                self._state_trace_fh.flush()
+                self._state_trace_fh.close()
+            except Exception:
+                pass
+            self._state_trace_fh = None
+            self._state_trace_day = None
         self.logger.info("停止5分钟K线监控")
 
     def _5m_monitor_loop(self):
@@ -426,6 +442,34 @@ class PositionMonitor5Min:
             self.logger.error(traceback.format_exc())
             return False
 
+    def _write_state_trace(self, record: Dict):
+        """
+        将单根5分钟K线的状态机诊断变量以一行 JSON 形式写入当日轨迹文件。
+
+        输出路径: live_trading/logs/state_trace_YYYYMMDD.jsonl
+        每行一个独立的 JSON 对象，便于事后用 pandas.read_json(lines=True) 解析。
+        """
+        try:
+            today_str = datetime.now().strftime('%Y%m%d')
+            if self._state_trace_day != today_str:
+                # 跨天时关闭旧句柄并切换到新文件
+                if self._state_trace_fh is not None:
+                    try:
+                        self._state_trace_fh.close()
+                    except Exception:
+                        pass
+                trace_path = PathConfig.LOG_DIR / f"state_trace_{today_str}.jsonl"
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                self._state_trace_fh = open(trace_path, 'a', encoding='utf-8')
+                self._state_trace_day = today_str
+                self._state_trace_path = trace_path
+                self.logger.info(f"📝 状态机轨迹文件: {trace_path}")
+            self._state_trace_fh.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
+            self._state_trace_fh.flush()
+        except Exception as e:
+            # 状态轨迹写入失败不能影响交易主流程
+            self.logger.warning(f"写入状态机轨迹失败: {e}")
+
     def _check_position_risk_5m(self, stock_code: str, position: Dict):
         """与当前分钟回测一致的状态机风控。"""
         try:
@@ -492,6 +536,84 @@ class PositionMonitor5Min:
                     position['consecutive_bearish_in_profit'] = 0
                     position['consecutive_weak_in_profit'] = 0
                     position['consecutive_bearish'] = 0
+
+                # 计算回撤（同时供下方 ProfitProtect 与诊断日志共用）
+                highest_price = float(position.get('highest_price_since_buy') or 0.0)
+                drawdown_from_highest = None
+                if highest_price > 0:
+                    drawdown_from_highest = (close_price - highest_price) / highest_price
+
+                # 诊断日志：状态机每根K线的中间变量，便于回放判断路径
+                peak_armed = position.get('highest_return_since_buy', 0.0) >= StopLossConfig.SMALL_PROFIT_ACTIVATION_RETURN
+                drawdown_armed = (
+                    drawdown_from_highest is not None
+                    and drawdown_from_highest <= StopLossConfig.PROFIT_BEARISH_TRAILING_DRAWDOWN
+                )
+                current_profit_ok = current_return >= StopLossConfig.PROFIT_BEARISH_MIN_CURRENT_RETURN
+                t1_low_dbg = position.get('t1_day_lowest_price')
+                t1_low_str = f"{float(t1_low_dbg):.2f}" if t1_low_dbg else "N/A"
+                drawdown_str = f"{drawdown_from_highest:.2%}" if drawdown_from_highest is not None else "N/A"
+                self.logger.info(
+                    f"[STATE] {stock_code} {kline_time} HD{holding_day_offset} {time_hm} "
+                    f"O={open_price:.2f} C={close_price:.2f} H={high_price:.2f} "
+                    f"ref={risk_ref:.2f} ret={current_return:.2%} "
+                    f"hi={highest_price:.2f} hi_ret={position.get('highest_return_since_buy', 0.0):.2%} "
+                    f"dd={drawdown_str} "
+                    f"bearish={position['consecutive_bearish_in_profit']} "
+                    f"peak_armed={peak_armed} dd_armed={drawdown_armed} cur_ok={current_profit_ok} "
+                    f"t1_low={t1_low_str} "
+                    f"fc_active={position.get('failed_cont_watch_active', False)} "
+                    f"fc_break={position.get('failed_cont_watch_break_level', 0.0):.2f} "
+                    f"fc_bear={position.get('failed_cont_watch_bearish_bars', 0)}"
+                )
+
+                # 同步写入结构化 JSONL 轨迹（便于事后用 pandas 解析复盘）
+                self._write_state_trace({
+                    'wall_ts': datetime.now().isoformat(timespec='seconds'),
+                    'kline_time': kline_time,
+                    'stock_code': stock_code,
+                    'entry_date': str(position.get('entry_date')),
+                    'entry_price': position.get('entry_price'),
+                    'risk_ref_price': risk_ref,
+                    'holding_day_offset': holding_day_offset,
+                    'time_hm': time_hm,
+                    'open': open_price,
+                    'high': high_price,
+                    'close': close_price,
+                    'body_ratio': body_ratio,
+                    'is_bearish': is_bearish,
+                    'is_neutral': is_neutral,
+                    'current_return': current_return,
+                    'highest_price_since_buy': highest_price,
+                    'highest_return_since_buy': position.get('highest_return_since_buy', 0.0),
+                    'drawdown_from_highest': drawdown_from_highest,
+                    'consecutive_bearish_in_profit': position['consecutive_bearish_in_profit'],
+                    'consecutive_weak_in_profit': position.get('consecutive_weak_in_profit', 0),
+                    'peak_armed': peak_armed,
+                    'drawdown_armed': drawdown_armed,
+                    'current_profit_ok': current_profit_ok,
+                    't1_day_lowest_price': float(t1_low_dbg) if t1_low_dbg else None,
+                    'failed_cont_watch_active': position.get('failed_cont_watch_active', False),
+                    'failed_cont_watch_break_level': position.get('failed_cont_watch_break_level', 0.0),
+                    'failed_cont_watch_bearish_bars': position.get('failed_cont_watch_bearish_bars', 0),
+                    'failed_cont_watch_bars_seen': position.get('failed_cont_watch_bars_seen', 0),
+                    'risk_state': position.get('risk_state'),
+                    'max_decline_from_entry': position.get('max_decline_from_entry'),
+                    'thresholds': {
+                        'small_profit_activation': StopLossConfig.SMALL_PROFIT_ACTIVATION_RETURN,
+                        'small_profit_bearish_required': StopLossConfig.SMALL_PROFIT_BEARISH_REQUIRED_COUNT,
+                        'profit_bearish_min_current': StopLossConfig.PROFIT_BEARISH_MIN_CURRENT_RETURN,
+                        'profit_bearish_trailing_dd': StopLossConfig.PROFIT_BEARISH_TRAILING_DRAWDOWN,
+                        'profit_bearish_required_count': StopLossConfig.PROFIT_BEARISH_REQUIRED_COUNT,
+                        'profit_bearish_activation': StopLossConfig.PROFIT_BEARISH_ACTIVATION_RETURN,
+                        'profit_bearish_min_peak': StopLossConfig.PROFIT_BEARISH_MIN_PEAK_RETURN,
+                        't2_0935_hard_stop': StopLossConfig.T2_0935_HARD_STOP_THRESHOLD,
+                        't2_1000_soft_stop': StopLossConfig.T2_1000_SOFT_STOP_THRESHOLD,
+                        't2_close_breakeven': StopLossConfig.T2_CLOSE_BREAKEVEN_STOP_THRESHOLD,
+                        't3_0935_breakeven': StopLossConfig.T3_0935_BREAKEVEN_STOP_THRESHOLD,
+                        'max_stop_loss': StopLossConfig.MAX_STOP_LOSS_PCT,
+                    },
+                })
 
                 # FailFast
                 if (
@@ -581,11 +703,7 @@ class PositionMonitor5Min:
                 else:
                     self._reset_failed_cont_watch(position)
 
-                # ProfitProtect
-                drawdown_from_highest = None
-                highest_price = float(position.get('highest_price_since_buy') or 0.0)
-                if highest_price > 0:
-                    drawdown_from_highest = (close_price - highest_price) / highest_price
+                # ProfitProtect（drawdown_from_highest 已在前面计算）
                 if (
                     StopLossConfig.ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT
                     and drawdown_from_highest is not None
@@ -892,12 +1010,10 @@ class PositionMonitor5Min:
 
     def _collect_5min_kline_data(self):
         """
-        收集5分钟实时K线数据
+        收集由全推逐笔行情聚合出的真实5分钟OHLC。
 
-        在每个5分钟整数倍时间点（如9:35, 9:40）获取当前最新价格，
-        构建实时5分钟K线：
-        - 第一根K线（9:35）：open=9:30开盘价, close=9:35价格
-        - 后续K线：open=上一根的close, close=当前价格
+        不再使用“上一根收盘 + 当前快照”拼接伪K线。完整bar尚未形成或
+        行情已经陈旧时直接跳过，等待下一轮，避免错误阴阳线触发风控。
         """
         try:
             from datetime import datetime
@@ -913,8 +1029,13 @@ class PositionMonitor5Min:
                 return
 
             boundary_time = now.replace(second=0, microsecond=0)
-            if boundary_time.strftime('%H:%M') == '09:30':
-                self.logger.info("09:30开盘点不生成风控K线，等待09:35第一根5分钟K收盘后检查")
+            boundary_hm = boundary_time.strftime('%H:%M')
+            if boundary_hm in {'09:30', '13:00'}:
+                session = "开盘" if boundary_hm == '09:30' else "午后开盘"
+                self.logger.info(
+                    f"{boundary_hm}{session}点不生成风控K线，"
+                    f"等待{'09:35' if boundary_hm == '09:30' else '13:05'}首根5分钟K收盘"
+                )
                 return
 
             time_str = boundary_time.strftime('%Y%m%d %H:%M:00')
@@ -933,59 +1054,47 @@ class PositionMonitor5Min:
                         continue
 
                 quote_cache = getattr(self.trader, "quote_cache", None)
-                cached_bar = None
-                if quote_cache is not None:
-                    cached_bar = quote_cache.get_realtime_5m_bar(stock_code, time_str)
-
-                # 获取当前最新价格
-                current_price = None
-                if cached_bar:
-                    current_price = cached_bar.get('close')
-                if current_price is None or current_price <= 0:
-                    current_price = self.trader.get_current_price(stock_code)
-
-                try:
-                    current_price = float(current_price) if current_price is not None else None
-                except (TypeError, ValueError):
-                    current_price = None
-
-                if current_price is None or current_price <= 0:
-                    self.logger.warning(f"{stock_code}: 获取当前价格失败，跳过5分钟K线收集")
+                if quote_cache is None:
+                    self.logger.warning(f"{stock_code}: 全推行情缓存不可用，跳过真实5分钟K线收集")
                     continue
 
-                # 确定open价格
-                if len(self.kline_cache[stock_code]) > 0:
-                    # 后续K线：使用上一根K线的close作为当前K线的open
-                    open_price = self.kline_cache[stock_code][-1]['close']
-                else:
-                    # 第一根K线：获取今日开盘价（9:30的价格）
-                    try:
-                        # 通过 trader.order_manager 获取今日开盘价
-                        open_price = self.trader.order_manager._get_today_open_price_from_tick(stock_code)
-                        if open_price is None or open_price <= 0:
-                            self.logger.warning(f"{stock_code}: 获取今日开盘价失败，使用当前价格")
-                            open_price = current_price
-                        else:
-                            self.logger.info(f"✅ {stock_code}: 第一根K线使用今日开盘价 {open_price:.2f}")
-                    except Exception as e:
-                        self.logger.error(f"{stock_code}: 获取今日开盘价异常 - {e}，使用当前价格")
-                        open_price = current_price
+                fresh_tick = quote_cache.get_tick(
+                    stock_code,
+                    max_age_seconds=self.kline_max_quote_age_seconds,
+                )
+                if not fresh_tick:
+                    self.logger.warning(
+                        f"{stock_code}: 行情超过{self.kline_max_quote_age_seconds:.0f}秒未更新，"
+                        f"拒绝采集 {time_str} K线"
+                    )
+                    continue
 
-                # 构建K线数据
-                if cached_bar:
-                    try:
-                        cached_high = float(cached_bar.get('high', current_price))
-                    except (TypeError, ValueError):
-                        cached_high = current_price
-                    try:
-                        cached_low = float(cached_bar.get('low', current_price))
-                    except (TypeError, ValueError):
-                        cached_low = current_price
-                    high_price = max(cached_high, open_price, current_price)
-                    low_price = min(cached_low, open_price, current_price)
-                else:
-                    high_price = max(open_price, current_price)
-                    low_price = min(open_price, current_price)
+                cached_bar = quote_cache.get_realtime_5m_bar(stock_code, time_str)
+                if not cached_bar:
+                    self.logger.warning(
+                        f"{stock_code}: {time_str} 真实5分钟OHLC尚未形成，跳过本轮"
+                    )
+                    continue
+
+                try:
+                    open_price = float(cached_bar['open'])
+                    high_price = float(cached_bar['high'])
+                    low_price = float(cached_bar['low'])
+                    current_price = float(cached_bar['close'])
+                except (KeyError, TypeError, ValueError) as e:
+                    self.logger.warning(f"{stock_code}: {time_str} OHLC字段无效({e})，跳过")
+                    continue
+
+                prices = (open_price, high_price, low_price, current_price)
+                if any(price <= 0 for price in prices):
+                    self.logger.warning(f"{stock_code}: {time_str} OHLC含非正价格，跳过")
+                    continue
+                if high_price < max(open_price, current_price) or low_price > min(open_price, current_price):
+                    self.logger.warning(
+                        f"{stock_code}: {time_str} OHLC关系异常 "
+                        f"O={open_price}, H={high_price}, L={low_price}, C={current_price}，跳过"
+                    )
+                    continue
 
                 kline = {
                     'time': time_str,
@@ -1008,7 +1117,8 @@ class PositionMonitor5Min:
 
                 self.logger.info(
                     f"📊 {stock_code} 5分钟K线: {time_str} | "
-                    f"开:{open_price:.2f} 收:{current_price:.2f} | "
+                    f"开:{open_price:.2f} 高:{high_price:.2f} "
+                    f"低:{low_price:.2f} 收:{current_price:.2f} | "
                     f"跌幅:{change_pct:+.2f}% | "
                     f"{'🔴阴线' if is_bearish else '🟢阳线'}"
                 )

@@ -137,6 +137,23 @@ class StrategyConfig:
     profit_bearish_activation_return: float = 0.05
     enable_top1_state_machine_risk: bool = False
 
+    # 🆕 高峰位强保护：当峰值已达到大盈利门槛但常规ProfitProtect因 current_return<6%
+    # 被一票否决时（典型场景：峰值12%+ → 回撤到+2%~+3%），用更宽松的当前收益门槛
+    # 但更严的回撤门槛和更敏感的连续阴线计数来锁定胜利果实。
+    enable_high_peak_protect: bool = False
+    high_peak_threshold: float = 0.09             # 峰值收益 ≥ 9% 才进入此分支
+    high_peak_drawdown_threshold: float = -0.05   # 自峰值回撤 ≤ -5% 触发
+    high_peak_min_current_return: float = 0.0     # 当前仍 ≥ 0% 即可（不再要求 6%）
+    high_peak_required_count: int = 2             # 连续 2 根弱K线即可（比常规 3 根更敏感）
+
+    # 🆕 深度回撤补救分支（独立于 ProfitProtect/HighPeakProtect，仅回测中启用）
+    # 设计目标：补 "peak 10% → current 4% 一路下跌但永远不满足 ProfitProtect 的 current≥6%" 漏洞
+    # 触发条件：drawdown ≤ -7% AND 连续弱K线 ≥ 2 根（不要求 peak 阈值，不要求 current 阈值）
+    # 仅在 T+2/T+3 生效（依赖 consecutive_bearish_in_profit 在外部已限定到 T+2/T+3）
+    enable_deep_drawdown_protect: bool = False
+    deep_drawdown_threshold: float = -0.07        # 自峰值回撤 ≤ -7% 触发
+    deep_drawdown_required_count: int = 2         # 连续 2 根弱K线即可
+
     # Exhaustion factor buy filter (高位衰竭因子买入过滤)
     # strategy: 'three_rule_v3' (默认) | 'runup_or_blowoff' | 'runup_ma5' | 'close_below_ma5'
     enable_exhaustion_filter: bool = False
@@ -482,6 +499,35 @@ class BacktestStrategy:
             and drawdown_from_highest <= self.config.profit_bearish_trailing_drawdown
         )
         current_profit_ok = current_return >= self.config.profit_bearish_min_current_return
+
+        # 🆕 高峰位强保护分支：先于常规ProfitProtect检查
+        # 触发条件比常规分支更严（更深回撤、峰值更高），但 current_return 门槛更宽松（≥0%）。
+        # 设计目标：当峰值已经很高（如12%+）、回撤已经很深（如-10%+）时，
+        # 即使当前收益已被吞回到+2%~+3%，也要果断锁定避免继续吞噬。
+        if (
+            self.config.enable_high_peak_protect
+            and position.highest_return_since_buy >= self.config.high_peak_threshold
+            and drawdown_from_highest is not None
+            and drawdown_from_highest <= self.config.high_peak_drawdown_threshold
+            and current_return >= self.config.high_peak_min_current_return
+            and consecutive_bearish_in_profit >= self.config.high_peak_required_count
+        ):
+            position.risk_state = "HIGH_PEAK_PROTECT"
+            return {
+                'should_exit': True,
+                'reason': (
+                    f'高峰位保护: 峰值{position.highest_return_since_buy:.2%}'
+                    f' 回撤{drawdown_from_highest:.2%}'
+                    f' | 连续{consecutive_bearish_in_profit}根弱K线'
+                    f' | 当前{current_return:.2%}'
+                ),
+                'exit_price': close_price,
+                'exit_time': exit_time,
+                'current_return_pct': current_return * 100,
+                'consecutive_bearish': consecutive_bearish_in_profit,
+                'risk_state': position.risk_state,
+            }
+
         if drawdown_armed and current_profit_ok:
             position.risk_state = "PROFIT_PROTECT"
             if consecutive_bearish_in_profit >= self.config.profit_bearish_required_count:
@@ -498,6 +544,32 @@ class BacktestStrategy:
                     'consecutive_bearish': consecutive_bearish_in_profit,
                     'risk_state': position.risk_state,
                 }
+
+        # 🆕 深度回撤补救分支（独立于 ProfitProtect）：
+        # 当 drawdown ≤ -7% 且连续走坏 ≥ 2 根时，无视 current_return，立即出场
+        # 设计目标：补 "current<6% 永远卡死" 漏洞 —— peak 已经吐回但还有些浮盈/浮亏的样本
+        # consecutive_bearish_in_profit 在外部已限定为 T+2/T+3 范围内累计
+        if (
+            self.config.enable_deep_drawdown_protect
+            and drawdown_from_highest is not None
+            and drawdown_from_highest <= self.config.deep_drawdown_threshold
+            and consecutive_bearish_in_profit >= self.config.deep_drawdown_required_count
+        ):
+            position.risk_state = "DEEP_DRAWDOWN_PROTECT"
+            return {
+                'should_exit': True,
+                'reason': (
+                    f'深度回撤保护: 回撤{drawdown_from_highest:.2%}'
+                    f' | 连续{consecutive_bearish_in_profit}根弱K线'
+                    f' | 峰值{position.highest_return_since_buy:.2%}'
+                    f' | 当前{current_return:.2%}'
+                ),
+                'exit_price': close_price,
+                'exit_time': exit_time,
+                'current_return_pct': current_return * 100,
+                'consecutive_bearish': consecutive_bearish_in_profit,
+                'risk_state': position.risk_state,
+            }
 
         position.risk_state = "TREND_HOLD" if current_return > 0 else "WEAK_HOLD"
         return None
@@ -4218,6 +4290,7 @@ def get_minute_trade_cache_rule_signature(config: Optional[StrategyConfig] = Non
         f"_pbp{cfg.profit_bearish_min_peak_return:.3f}"
         f"_pbd{cfg.profit_bearish_trailing_drawdown:.3f}"
         f"_pbc{cfg.profit_bearish_min_current_return:.3f}"
+        f"_dd{int(cfg.enable_deep_drawdown_protect)}_{cfg.deep_drawdown_threshold:.3f}_{int(cfg.deep_drawdown_required_count)}"
         f"_exf{int(cfg.enable_exhaustion_filter)}"
         f"_exs{cfg.exhaustion_filter_strategy}"
         f"_exv3c{cfg.exhaustion_v3_cpv_threshold:.3f}"

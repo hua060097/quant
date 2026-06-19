@@ -1,0 +1,148 @@
+# 230 baseline ProfitProtect 分析报告
+# 数据源: walkforward_selections_20260618_202018.json, walkforward_shadow_skipped_opportunities_20260618_202018.csv
+
+========== 主交易 (实际持仓) (n=101) ==========
+
+出场分类分布：
+  利润保护                :  43 笔, 平均收益 +14.38%
+  持有到期                :  25 笔, 平均收益 +11.26%
+  T2_1000_软止损         :  10 笔, 平均收益  -3.23%
+  T2_0935_硬止损         :   8 笔, 平均收益  -7.08%
+  T2_1455_时间止损        :   8 笔, 平均收益  -0.88%
+  小盈利失败延续             :   3 笔, 平均收益  -2.55%
+  其他                  :   3 笔, 平均收益  -5.32%
+  T3_0935_时间止损        :   1 笔, 平均收益  -1.76%
+
+利润保护触发样本 (n=43)：
+  峰值收益:  mean=+20.54%, median=+18.88%, min=+11.53%, max=+43.91%
+  实现收益:  mean=+14.38%, median=+12.89%
+  吐回峰值:  mean=+6.15%, median=+5.74%, max=+13.54%
+  按峰值分桶（实现收益分布）：
+    [9%, 12%): n= 1, actual_mean=+6.73%, give_back_mean=+4.80%
+    [12%, 18%): n=18, actual_mean=+9.15%, give_back_mean=+5.84%
+    [18%, 100%): n=24, actual_mean=+18.63%, give_back_mean=+6.44%
+
+持有到期样本 (n=25)：
+  实现收益:  mean=+11.26%, median=+10.95%, min=-3.24%, max=+38.96%
+  按实现收益分桶：
+    [-100%, +0%): n= 5, mean=-1.46%
+    [+0%, +3%): n= 2, mean=+2.36%
+    [+3%, +6%): n= 4, mean=+4.85%
+    [+10%, +100%): n=14, mean=+18.90%
+
+  ⚠️ 持有到期但 actual_return<6% 的样本 (n=11)：
+    688530.SH   | buy=2026-05-06 | actual=-3.24% | exit=到期
+    603538.SH   | buy=2026-04-01 | actual=-2.20% | exit=到期
+    301529.SZ   | buy=2026-01-08 | actual=-1.15% | exit=到期
+    002196.SZ   | buy=2026-01-05 | actual=-0.47% | exit=到期
+    688131.SH   | buy=2025-10-28 | actual=-0.25% | exit=到期
+    002407.SZ   | buy=2025-11-25 | actual=+2.18% | exit=到期
+    688069.SH   | buy=2026-05-11 | actual=+2.55% | exit=到期
+    002350.SZ   | buy=2026-03-05 | actual=+3.90% | exit=到期
+    603311.SH   | buy=2026-05-27 | actual=+4.36% | exit=到期
+    002378.SZ   | buy=2025-08-29 | actual=+5.16% | exit=到期
+    002104.SZ   | buy=2025-08-22 | actual=+5.98% | exit=到期
+
+  💥 利润保护触发后吐回最大 top10：
+    301292.SZ   | peak=+43.91% actual=+30.37% giveback=+13.54% bearish=3.0
+    000975.SZ   | peak=+15.26% actual=+6.05% giveback=+9.21% bearish=3.0
+    688523.SH   | peak=+34.58% actual=+25.83% giveback=+8.75% bearish=3.0
+    300437.SZ   | peak=+19.65% actual=+11.51% giveback=+8.14% bearish=3.0
+    301319.SZ   | peak=+25.08% actual=+17.64% giveback=+7.44% bearish=3.0
+    301308.SZ   | peak=+17.36% actual=+9.94% giveback=+7.42% bearish=3.0
+    688261.SH   | peak=+14.47% actual=+7.06% giveback=+7.41% bearish=3.0
+    301188.SZ   | peak=+27.27% actual=+20.34% giveback=+6.93% bearish=3.0
+    688693.SH   | peak=+23.55% actual=+16.69% giveback=+6.86% bearish=3.0
+    688717.SH   | peak=+13.61% actual=+6.77% giveback=+6.84% bearish=3.0
+
+  策略总平均收益: +7.71% (n=101)
+
+========== 影子交易 (满仓跳过的机会) (n=19) ==========
+
+出场分类分布：
+  T2_0935_硬止损         :   9 笔, 平均收益  -8.62%
+  利润保护                :   4 笔, 平均收益 +13.22%
+  T2_1000_软止损         :   3 笔, 平均收益  -2.79%
+  T2_1455_时间止损        :   2 笔, 平均收益  -2.48%
+  持有到期                :   1 笔, 平均收益  -1.07%
+
+利润保护触发样本 (n=4)：
+  峰值收益:  mean=+19.75%, median=+18.27%, min=+13.71%, max=+28.73%
+  实现收益:  mean=+13.22%, median=+11.40%
+  吐回峰值:  mean=+6.52%, median=+6.31%, max=+8.06%
+  按峰值分桶（实现收益分布）：
+    [12%, 18%): n= 2, actual_mean=+7.73%, give_back_mean=+6.31%
+    [18%, 100%): n= 2, actual_mean=+18.72%, give_back_mean=+6.74%
+
+持有到期样本 (n=1)：
+  实现收益:  mean=-1.07%, median=-1.07%, min=-1.07%, max=-1.07%
+  按实现收益分桶：
+    [-100%, +0%): n= 1, mean=-1.07%
+
+  ⚠️ 持有到期但 actual_return<6% 的样本 (n=1)：
+    301123.SZ   | buy=2025-12-25 | actual=-1.07% | exit=到期
+
+  💥 利润保护触发后吐回最大 top10：
+    002348.SZ   | peak=+22.18% actual=+14.12% giveback=+8.06% bearish=3.0
+    603738.SH   | peak=+13.71% actual=+6.77% giveback=+6.94% bearish=3.0
+    300604.SZ   | peak=+14.37% actual=+8.68% giveback=+5.69% bearish=3.0
+    688108.SH   | peak=+28.73% actual=+23.32% giveback=+5.41% bearish=3.0
+
+  策略总平均收益: -2.06% (n=19)
+
+========== 合并 (主交易 + 影子) (n=120) ==========
+
+出场分类分布：
+  利润保护                :  47 笔, 平均收益 +14.29%
+  持有到期                :  26 笔, 平均收益 +10.78%
+  T2_0935_硬止损         :  17 笔, 平均收益  -7.90%
+  T2_1000_软止损         :  13 笔, 平均收益  -3.13%
+  T2_1455_时间止损        :  10 笔, 平均收益  -1.20%
+  小盈利失败延续             :   3 笔, 平均收益  -2.55%
+  其他                  :   3 笔, 平均收益  -5.32%
+  T3_0935_时间止损        :   1 笔, 平均收益  -1.76%
+
+利润保护触发样本 (n=47)：
+  峰值收益:  mean=+20.47%, median=+18.88%, min=+11.53%, max=+43.91%
+  实现收益:  mean=+14.29%, median=+12.89%
+  吐回峰值:  mean=+6.19%, median=+5.74%, max=+13.54%
+  按峰值分桶（实现收益分布）：
+    [9%, 12%): n= 1, actual_mean=+6.73%, give_back_mean=+4.80%
+    [12%, 18%): n=20, actual_mean=+9.01%, give_back_mean=+5.89%
+    [18%, 100%): n=26, actual_mean=+18.63%, give_back_mean=+6.47%
+
+持有到期样本 (n=26)：
+  实现收益:  mean=+10.78%, median=+10.92%, min=-3.24%, max=+38.96%
+  按实现收益分桶：
+    [-100%, +0%): n= 6, mean=-1.40%
+    [+0%, +3%): n= 2, mean=+2.36%
+    [+3%, +6%): n= 4, mean=+4.85%
+    [+10%, +100%): n=14, mean=+18.90%
+
+  ⚠️ 持有到期但 actual_return<6% 的样本 (n=12)：
+    688530.SH   | buy=2026-05-06 | actual=-3.24% | exit=到期
+    603538.SH   | buy=2026-04-01 | actual=-2.20% | exit=到期
+    301529.SZ   | buy=2026-01-08 | actual=-1.15% | exit=到期
+    301123.SZ   | buy=2025-12-25 | actual=-1.07% | exit=到期
+    002196.SZ   | buy=2026-01-05 | actual=-0.47% | exit=到期
+    688131.SH   | buy=2025-10-28 | actual=-0.25% | exit=到期
+    002407.SZ   | buy=2025-11-25 | actual=+2.18% | exit=到期
+    688069.SH   | buy=2026-05-11 | actual=+2.55% | exit=到期
+    002350.SZ   | buy=2026-03-05 | actual=+3.90% | exit=到期
+    603311.SH   | buy=2026-05-27 | actual=+4.36% | exit=到期
+    002378.SZ   | buy=2025-08-29 | actual=+5.16% | exit=到期
+    002104.SZ   | buy=2025-08-22 | actual=+5.98% | exit=到期
+
+  💥 利润保护触发后吐回最大 top10：
+    301292.SZ   | peak=+43.91% actual=+30.37% giveback=+13.54% bearish=3.0
+    000975.SZ   | peak=+15.26% actual=+6.05% giveback=+9.21% bearish=3.0
+    688523.SH   | peak=+34.58% actual=+25.83% giveback=+8.75% bearish=3.0
+    300437.SZ   | peak=+19.65% actual=+11.51% giveback=+8.14% bearish=3.0
+    002348.SZ   | peak=+22.18% actual=+14.12% giveback=+8.06% bearish=3.0
+    301319.SZ   | peak=+25.08% actual=+17.64% giveback=+7.44% bearish=3.0
+    301308.SZ   | peak=+17.36% actual=+9.94% giveback=+7.42% bearish=3.0
+    688261.SH   | peak=+14.47% actual=+7.06% giveback=+7.41% bearish=3.0
+    603738.SH   | peak=+13.71% actual=+6.77% giveback=+6.94% bearish=3.0
+    301188.SZ   | peak=+27.27% actual=+20.34% giveback=+6.93% bearish=3.0
+
+  策略总平均收益: +6.16% (n=120)

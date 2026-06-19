@@ -983,7 +983,8 @@ class TradingScheduler:
                           exit_reason: str = None, profit_pct: float = None,
                           slot_index: int = None, target_pct: float = None,
                           planned_amount: float = None, strategy_capital: float = None,
-                          target_rank: int = None, open_price: float = None):
+                          target_rank: int = None, open_price: float = None,
+                          execution_report: Dict[str, Any] = None):
         """
         保存交易记录（增强版）
 
@@ -1037,6 +1038,8 @@ class TradingScheduler:
                     record['target_rank'] = int(target_rank)
                 if open_price is not None and open_price > 0:
                     record['open_price'] = float(open_price)
+                if execution_report:
+                    record['execution_report'] = execution_report
 
             # 卖出记录的额外字段
             if action == 'sell' and exit_reason:

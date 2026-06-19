@@ -104,8 +104,15 @@ SMALL_PROFIT_TRAILING_DRAWDOWN = -0.04
 SMALL_PROFIT_BEARISH_REQUIRED_COUNT = 2
 SMALL_PROFIT_WATCH_WINDOW_BARS = 3
 ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT = True
-PROFIT_BEARISH_ACTIVATION_RETURN = 0.05
+PROFIT_BEARISH_ACTIVATION_RETURN = 0.09
+PROFIT_BEARISH_MIN_PEAK_RETURN = 0.09
+PROFIT_BEARISH_TRAILING_DRAWDOWN = -0.04
+PROFIT_BEARISH_MIN_CURRENT_RETURN = 0.06
 ENABLE_TOP1_STATE_MACHINE_RISK = True
+# 🆕 深度回撤补救分支（仅回测启用，不影响 live_trading）
+ENABLE_DEEP_DRAWDOWN_PROTECT = True
+DEEP_DRAWDOWN_THRESHOLD = -0.07
+DEEP_DRAWDOWN_REQUIRED_COUNT = 3
 
 # 预测前特征量化诊断：
 # 这些因子存在离散档位/大量重复值/边界值，LightGBM 可能被 float32 尾差跨阈值影响。
@@ -299,7 +306,7 @@ PREDICTION_FEATURE_ROUND_COLUMNS = [
 # ============================================================
 # Exhaustion factor buy filter (高位衰竭因子买入过滤)
 # ============================================================
-ENABLE_EXHAUSTION_BUY_FILTER = False
+ENABLE_EXHAUSTION_BUY_FILTER = True
 
 # 策略选择:
 #   'three_rule_v3' (默认):       [runup_ma5_exhaustion > 0.8 AND cpv_factor <= -0.4]
@@ -2145,7 +2152,8 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子218_round.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子235_round.log',#claude --resume b032710d-7a54-432d-985e-d489618cef59 因子问题
+        #claude --resume 36ef445b-2464-40dd-8c6f-ae1509daac63 回测逻辑优化
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -13935,6 +13943,12 @@ def _run_minute_level_backtest(
             "small_profit_watch_window_bars": SMALL_PROFIT_WATCH_WINDOW_BARS,
             "enable_profit_threshold_for_bearish_exit": ENABLE_PROFIT_THRESHOLD_FOR_BEARISH_EXIT,
             "profit_bearish_activation_return": PROFIT_BEARISH_ACTIVATION_RETURN,
+            "profit_bearish_min_peak_return": PROFIT_BEARISH_MIN_PEAK_RETURN,
+            "profit_bearish_trailing_drawdown": PROFIT_BEARISH_TRAILING_DRAWDOWN,
+            "profit_bearish_min_current_return": PROFIT_BEARISH_MIN_CURRENT_RETURN,
+            "enable_deep_drawdown_protect": ENABLE_DEEP_DRAWDOWN_PROTECT,
+            "deep_drawdown_threshold": DEEP_DRAWDOWN_THRESHOLD,
+            "deep_drawdown_required_count": DEEP_DRAWDOWN_REQUIRED_COUNT,
             "enable_top1_state_machine_risk": ENABLE_TOP1_STATE_MACHINE_RISK,
             "enable_dynamic_rank_switch": bool(use_live_default_scheme),
             # Exhaustion filter: 在策略层检查Top1实际选中股票（不预过滤候选池）
@@ -14000,8 +14014,13 @@ def _run_minute_level_backtest(
             f"(peak>={minute_strategy_overrides['small_profit_activation_return']:.2%}, "
             f"break_T1_low_then_bearish>={minute_strategy_overrides['small_profit_bearish_required_count']}, "
             f"reclaim_cancel=True), "
-            f"bearish3_after_profit={minute_strategy_overrides['enable_profit_threshold_for_bearish_exit']}@"
-            f"{minute_strategy_overrides['profit_bearish_activation_return']:.2%}, "
+            f"profit_protect={minute_strategy_overrides['enable_profit_threshold_for_bearish_exit']}@"
+            f"(arm_peak>={minute_strategy_overrides['profit_bearish_min_peak_return']:.2%}, "
+            f"drawdown<={minute_strategy_overrides['profit_bearish_trailing_drawdown']:.2%}, "
+            f"current>={minute_strategy_overrides['profit_bearish_min_current_return']:.2%}), "
+            f"deep_drawdown_protect={minute_strategy_overrides['enable_deep_drawdown_protect']}@"
+            f"(drawdown<={minute_strategy_overrides['deep_drawdown_threshold']:.2%}, "
+            f"bearish>={minute_strategy_overrides['deep_drawdown_required_count']}), "
             f"state_machine_risk={minute_strategy_overrides['enable_top1_state_machine_risk']}, "
             f"profit_bearish_count={minute_strategy_overrides['profit_bearish_required_count']}, "
             f"delayed_entry_mode={minute_strategy_overrides['delayed_entry_mode']}, "
@@ -18119,7 +18138,7 @@ def run_test_model_walkforward_mode(args):
                 'val_start': '2025-03-07',
                 'val_end': '2025-07-25',
                 # 'val_end': '2025-05-25',
-                'test_start': '2026-01-17',
+                'test_start': '2025-08-01',
                 'test_end': '2026-06-11'
                 # 'val_start': '2025-03-01',
                 # 'val_end': '2025-06-02',
@@ -21118,6 +21137,12 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # lgb_pattern = f"lightgbm_model_window3_20260302_175124.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260302_202830.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
+        import os
+        logger.info(f"[DEBUG] cwd = {os.getcwd()}")
+        logger.info(f"[DEBUG] results_dir abs = {results_dir.resolve()}")
+        logger.info(f"[DEBUG] looking for: {results_dir / lgb_pattern}")
+        logger.info(f"[DEBUG] file exists: {(results_dir / lgb_pattern).exists()}")
+        logger.info(f"[DEBUG] glob result count: {len(lgb_files)}")
 
         model_result = None
 

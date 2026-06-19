@@ -1397,7 +1397,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子复现9.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子复现10.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3159,8 +3159,8 @@ def _get_lgb_search_space():
         'min_data_in_leaf': [400],
         'feature_fraction': [0.8],
         'bagging_fraction': [0.6],
-        'reg_alpha': [4.9,5.05,5.2],
-        'reg_lambda': [5.1,5.05,4.9],
+        'reg_alpha': [5],
+        'reg_lambda': [5],
         'scale_pos_weight': [90], # 处理正负样本不平衡
         'random_state': [42],
         # 'min_gain_to_split':[0.1,1,2,10],
@@ -3276,7 +3276,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # 'random_state': 40
         }
 
-        SEARCH_ITER = 8
+        SEARCH_ITER = 1
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
@@ -6434,8 +6434,12 @@ def _load_trading_calendar(logger=None):
         logger = logging.getLogger(__name__)
 
     try:
+        logger.info(f"路径:{Path(__file__).parent.parent}")
         # 交易日历文件路径
-        calendar_path = Path(__file__).parent.parent / "to" / "local_data" / "calendar" / "trading_calendar.parquet"
+        #todo 20260619 这个地址不对，变成了 path\to\to\local_data\calendar\trading_calendar.parquet，所以被我注释掉
+        # calendar_path = Path(__file__).parent.parent / "to" / "local_data" / "calendar" / "trading_calendar.parquet"
+        calendar_path = Path(__file__).parent.parent / "local_data" / "calendar" / "trading_calendar.parquet"
+
 
         if not calendar_path.exists():
             logger.error(f"[FILTER] 交易日历文件不存在: {calendar_path}")
@@ -17153,8 +17157,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
-        # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
         # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"
@@ -17166,6 +17170,13 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         # lgb_pattern = f"lightgbm_model_window3_20260302_175124.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260302_202830.pkl"
         lgb_files = list(results_dir.glob(lgb_pattern))
+
+        import os
+        logger.info(f"[DEBUG] cwd = {os.getcwd()}")
+        logger.info(f"[DEBUG] results_dir abs = {results_dir.resolve()}")
+        logger.info(f"[DEBUG] looking for: {results_dir / lgb_pattern}")
+        logger.info(f"[DEBUG] file exists: {(results_dir / lgb_pattern).exists()}")
+        logger.info(f"[DEBUG] glob result count: {len(lgb_files)}")
 
         model_result = None
 

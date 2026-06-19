@@ -8971,7 +8971,7 @@ def run_generate_factors_mode(args):
         # 2. 过滤ST股票（需要检查股票名称）
         logger.info("🔍 开始ST股票过滤...")
         try:
-            st_filter = _filter_st_stocks_new(stock_data, logger)
+            st_filter = _filter_st_stocks(stock_data, logger)
             stock_data = stock_data[st_filter].copy()
             after_st_count = len(stock_data)
             st_filtered_count = after_bj_count - after_st_count

@@ -87,7 +87,7 @@ class StrategyConfig:
     ENABLE_DYNAMIC_RANK_SWITCH = False
 
     # 策略级可用总资金上限（独立于账户总资产）
-    STRATEGY_CAPITAL = 98_000.0
+    STRATEGY_CAPITAL = 78_000.0
 
     # 并行槽位和固定槽位仓位
     MAX_CONCURRENT_POSITIONS = 3
