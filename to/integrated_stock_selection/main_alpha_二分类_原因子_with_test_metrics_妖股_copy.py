@@ -315,7 +315,7 @@ ENABLE_EXHAUSTION_BUY_FILTER = True
 #                              OR [market_liquidity_change < 0.94 AND (ulcer_index < -2.25 OR momentum_peak_decay_3d > 3.20 OR intra_sector_momentum_rank < 0.67)]
 #                              OR [mkt_dispersion_shock_v2 < 0.98 AND market_advance_decline_ratio < 0.38]
 #                              OR [limit_down_3d == 1]
-#                              OR [top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate <= -0.20]
+#                              OR [top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate_pct <= 0.50]
 #                              OR [prev_non_first_limit_up_performance_percentile_20d >= 0.80 AND kdj_j_9 <= 0.75]
 #                              OR [score_z_in_day <= 1.50]
 #                              OR [reg_severe_up_10d_ratio_pct >= 0.98 AND market_advance_decline_ratio >= 4.50]
@@ -346,7 +346,10 @@ EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38       # market_advance_decline_ratio < �
 ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True       # 是否启用近3日跌停过滤
 # v3 Rule7: 极强股伴随小单资金流出 → 高位承接不足
 EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.80    # top10_10d_strength_level_v3 >= 此值
-EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -0.20    # buy_sm_amount_rate <= 此值
+EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD = 0.50  # buy_sm_amount_rate_pct <= 此值（当前Rule7）
+EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.50    # 备用Rule7: buy_sm_amount_rate <= 此值；pct版本不稳定时切回
+EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD = 0.999  # Rule7豁免: 极强趋势环境
+EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD = 0.85          # Rule7豁免: 近3日头部强势延续
 # v3 Rule8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱 → 热点接力退潮风险
 EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # prev_non_first_limit_up_performance_percentile_20d >= 此值
 EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75                         # kdj_j_9 <= 此值；注意此处为截面robust z-score后的J值
@@ -2152,7 +2155,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子235_round.log',#claude --resume b032710d-7a54-432d-985e-d489618cef59 因子问题
+        'stock_selection_test_mode_walkforward_分类模型_原因子238_round.log',#claude --resume b032710d-7a54-432d-985e-d489618cef59 因子问题
         #claude --resume 36ef445b-2464-40dd-8c6f-ae1509daac63 回测逻辑优化
         encoding='utf-8'
     )
@@ -7411,6 +7414,10 @@ def _get_intra_sector_zscore_factors():
 def _get_exhaustion_filter_extra_factors():
     """获取买入过滤规则需要、但不作为模型特征强制引入的额外因子。"""
     return [
+        'buy_sm_amount_rate',
+        'buy_sm_amount_rate_pct',
+        'reg_severe_up_10d_ratio_pct',
+        'top10_3d_recent3_strength_v3',
         'prev_non_first_limit_up_performance_percentile_20d',
         'kdj_j_9',
     ]
@@ -13968,7 +13975,10 @@ def _run_minute_level_backtest(
             "exhaustion_v3_mkt_adr_threshold": EXHAUSTION_V3_MKT_ADR_THRESHOLD,
             "enable_exhaustion_limit_down_3d": ENABLE_EXHAUSTION_LIMIT_DOWN_3D,
             "exhaustion_v3_top10_strength_threshold": EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD,
-            "exhaustion_v3_buy_sm_amount_threshold": EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD,
+            "exhaustion_v3_buy_sm_amount_pct_threshold": EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD,
+            "exhaustion_v3_buy_sm_amount_backup_raw_threshold": EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD,
+            "exhaustion_v3_rule7_reg_severe_exempt_pct_threshold": EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD,
+            "exhaustion_v3_rule7_top10_3d_exempt_threshold": EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD,
             "exhaustion_v3_non_first_limit_up_perf_pct20_threshold": EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD,
             "exhaustion_v3_kdj_j_z_threshold": EXHAUSTION_V3_KDJ_J_Z_THRESHOLD,
             "exhaustion_v3_score_z_in_day_threshold": EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD,
@@ -14046,7 +14056,10 @@ def _run_minute_level_backtest(
             f"mkt_adr_th={EXHAUSTION_V3_MKT_ADR_THRESHOLD}, "
             f"limit_down_3d={ENABLE_EXHAUSTION_LIMIT_DOWN_3D}, "
             f"v3_top10_th={EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}, "
-            f"v3_buy_sm_th={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}, "
+            f"v3_buy_sm_pct_th={EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD}, "
+            f"v3_buy_sm_backup_raw_th={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}, "
+            f"v3_rule7_exempt_reg_severe_pct_th={EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD}, "
+            f"v3_rule7_exempt_top10_3d_th={EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD}, "
             f"v3_non_first_limit_pct20_th={EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD}, "
             f"v3_kdj_j_z_th={EXHAUSTION_V3_KDJ_J_Z_THRESHOLD}, "
             f"v3_score_z_in_day_th={EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD}, "
@@ -18687,16 +18700,28 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
         )
 
         # ================================================================
-        # 规则7: top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate <= -0.20
-        # 含义：短期极强股伴随小单资金流出 → 高位承接不足
+        # 规则7: top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate_pct <= 0.50
+        #        AND NOT (reg_severe_up_10d_ratio_pct >= 0.999 AND top10_3d_recent3_strength_v3 >= 0.85)
+        # 含义：短期极强股伴随小单买入占比横截面偏低 → 高位承接不足；
+        #       但极强趋势环境下小单流出不直接解释为衰竭，避免误杀强趋势延续票。
+        # 备用口径：top10_10d_strength_level_v3 >= 0.80 AND buy_sm_amount_rate <= -1.50
         # ================================================================
         top10_val = row.get('top10_10d_strength_level_v3', np.nan)
         buy_sm_val = row.get('buy_sm_amount_rate', np.nan)
-        rule7_hit = (
-            pd.notna(top10_val) and pd.notna(buy_sm_val)
+        buy_sm_pct_val = row.get('buy_sm_amount_rate_pct', np.nan)
+        rule7_base_hit = (
+            pd.notna(top10_val) and pd.notna(buy_sm_pct_val)
             and top10_val >= EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD
-            and buy_sm_val <= EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD
+            and buy_sm_pct_val <= EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD
         )
+        rule7_reg_severe_pct_val = row.get('reg_severe_up_10d_ratio_pct', np.nan)
+        rule7_top10_3d_val = row.get('top10_3d_recent3_strength_v3', np.nan)
+        rule7_exempt_hit = (
+            pd.notna(rule7_reg_severe_pct_val) and pd.notna(rule7_top10_3d_val)
+            and rule7_reg_severe_pct_val >= EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD
+            and rule7_top10_3d_val >= EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD
+        )
+        rule7_hit = rule7_base_hit and not rule7_exempt_hit
 
         # ================================================================
         # 规则8: prev_non_first_limit_up_performance_percentile_20d >= 0.80
@@ -18791,7 +18816,10 @@ def _is_exhaustion_filtered_row(row: pd.Series) -> tuple[bool, str]:
             if rule7_hit:
                 parts.append(
                     f"top10_strength({top10_val:.2f})>={EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}"
-                    f" AND buy_sm_amount({buy_sm_val:.2f})<={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}"
+                    f" AND buy_sm_amount_pct({buy_sm_pct_val:.2f})<={EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD}"
+                    f" AND NOT(rule7_reg_severe_pct({rule7_reg_severe_pct_val:.4f})>={EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD}"
+                    f" & top10_3d_recent3_strength({rule7_top10_3d_val:.2f})>={EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD})"
+                    f" [raw_buy_sm={buy_sm_val:.2f}, backup_raw_th={EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}]"
                 )
             if rule8_hit:
                 parts.append(
@@ -20573,6 +20601,18 @@ def _backtest_on_window(test_data, model_result, window, args):
                     f"胜率={seg_win_rate:.2f} ({seg_positive}/{len(seg_returns)}个样本)"
                 )
 
+        # 🆕 选股过滤需与标签屏蔽口径一致：补齐 valid_cs_mask（True=非ST且非新股）
+        #     valid_cs_mask = st_keep & new_keep（见 _build_valid_cs_mask），与标签生成处口径相同
+        if 'valid_cs_mask' not in test_data_with_pred.columns:
+            try:
+                _vcm, _, _ = _build_valid_cs_mask(test_data_with_pred, logger)
+                test_data_with_pred['valid_cs_mask'] = _vcm.reindex(test_data_with_pred.index).fillna(False).astype(bool)
+            except Exception as _e:
+                logger.warning(f"[FILTER] Top-K统计重建valid_cs_mask失败，跳过ST/新股过滤: {_e}")
+                test_data_with_pred['valid_cs_mask'] = True
+        else:
+            test_data_with_pred['valid_cs_mask'] = test_data_with_pred['valid_cs_mask'].fillna(False).astype(bool)
+
         # 确保test_data_with_pred包含必要的列
         if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
             # 按日期分组计算topk
@@ -20583,11 +20623,12 @@ def _backtest_on_window(test_data, model_result, window, args):
                 if len(date_data) >= 5:  # 确保有足够的股票
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
-                     # 🆕 过滤掉当日的涨跌停、炸板股票
+                     # 🆕 过滤掉当日的涨跌停、炸板股票，并过滤ST/新股（与标签口径一致）
                     date_sorted_filtered = date_sorted[
                         (date_sorted['is_limit_up'] != 1) &
                         (date_sorted['is_limit_down'] != 1) &
-                        (date_sorted['is_zhaban'] != 1)
+                        (date_sorted['is_zhaban'] != 1) &
+                        (date_sorted['valid_cs_mask'])
                     ]
 
                     if len(date_sorted_filtered) < 5:
@@ -20651,11 +20692,12 @@ def _backtest_on_window(test_data, model_result, window, args):
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
 
-                    # 过滤掉涨跌停、炸板股票
+                    # 过滤掉涨跌停、炸板股票，并过滤ST/新股（与标签口径一致）
                     date_sorted_filtered = date_sorted[
                         (date_sorted['is_limit_up'] != 1) &
                         (date_sorted['is_limit_down'] != 1) &
-                        (date_sorted['is_zhaban'] != 1)
+                        (date_sorted['is_zhaban'] != 1) &
+                        (date_sorted['valid_cs_mask'])
                     ]
 
                     if len(date_sorted_filtered) < 5:
@@ -21126,6 +21168,8 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
         lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260429_202824.pkl"
         lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        # lgb_pattern = f"lightgbm_model_window3_20260621_200600.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260620_104411.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260608_131809.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"

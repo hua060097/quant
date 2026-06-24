@@ -41,7 +41,7 @@ class RiskControlStrategy:
 class RiskControlConfig:
     """风控配置"""
     # 风控策略选择（默认使用日线MA5跌破策略）
-    STRATEGY = RiskControlStrategy.DAILY_MA5_BREAK
+    STRATEGY = RiskControlStrategy.T1_LOW_BREAK_WITH_HIGH_DRAWDOWN
 
     # 日线MA5跌破策略参数
     MA5_CONSECUTIVE_BREAKS = 2  # 连续跌破MA5的次数（连续N个5分钟收盘价低于MA5）
@@ -71,7 +71,7 @@ class EntryRiskControlConfig:
     # 涨跌幅风控参数（保持原有逻辑）
     GAP_MAX_DOWN_THRESHOLD = -0.03  # 跌空超过3%禁止买入
     GAP_MAX_UP_THRESHOLD = 0.05  # 高开超过5%禁止买入
-    GAP_MAX_DOWN_THRESHOLD_NON_TOP1 = -0.03  # 非Top1跌空超过5%禁止买入
+    GAP_MAX_DOWN_THRESHOLD_NON_TOP1 = -0.05  # 非Top1跌空超过5%禁止买入
 
 @dataclass
 class StrategyConfig:

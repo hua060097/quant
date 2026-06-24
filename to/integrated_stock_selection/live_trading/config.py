@@ -116,7 +116,10 @@ class StrategyConfig:
     EXHAUSTION_V3_MKT_ADR_THRESHOLD = 0.38     # market_advance_decline_ratio < 此值
     ENABLE_EXHAUSTION_LIMIT_DOWN_3D = True      # Rule6: 近3日跌停过滤
     EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD = 0.80   # top10_10d_strength_level_v3 >= 此值 (Rule7)
-    EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -0.20   # buy_sm_amount_rate <= 此值 (Rule7)
+    EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD = 0.50  # buy_sm_amount_rate_pct <= 此值 (Rule7当前口径)
+    EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD = -1.50   # 备用Rule7: buy_sm_amount_rate <= 此值；pct版本不稳定时切回
+    EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD = 0.999  # Rule7豁免: 极强趋势环境
+    EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD = 0.85          # Rule7豁免: 近3日头部强势延续
     EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD = 0.80  # Rule8: 连板情绪近20日高分位
     EXHAUSTION_V3_KDJ_J_Z_THRESHOLD = 0.75  # Rule8: kdj_j_9为截面robust z-score后的J值
     EXHAUSTION_V3_SCORE_Z_IN_DAY_THRESHOLD = 1.50  # Rule9: 当日Top1相对候选池预测强度不足

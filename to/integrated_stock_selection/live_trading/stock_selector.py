@@ -327,9 +327,11 @@ class StockSelector:
             sector_rank_val = pd.to_numeric(row.get('intra_sector_momentum_rank', np.nan), errors='coerce')
             top10_val = pd.to_numeric(row.get('top10_10d_strength_level_v3', np.nan), errors='coerce')
             buy_sm_val = pd.to_numeric(row.get('buy_sm_amount_rate', np.nan), errors='coerce')
+            buy_sm_pct_val = pd.to_numeric(row.get('buy_sm_amount_rate_pct', np.nan), errors='coerce')
             non_first_pct20_val = pd.to_numeric(row.get('prev_non_first_limit_up_performance_percentile_20d', np.nan), errors='coerce')
             kdj_j_val = pd.to_numeric(row.get('kdj_j_9', np.nan), errors='coerce')
             reg_severe_pct_val = pd.to_numeric(row.get('reg_severe_up_10d_ratio_pct', np.nan), errors='coerce')
+            rule7_top10_3d_val = pd.to_numeric(row.get('top10_3d_recent3_strength_v3', np.nan), errors='coerce')
             ma5_raw_val = pd.to_numeric(row.get('price_ma5_ratio_raw', np.nan), errors='coerce')
             ma_conv_val = pd.to_numeric(row.get('ma_convergence_score', np.nan), errors='coerce')
             ma5_pullback_val = pd.to_numeric(row.get('ma5_pullback_depth_10d', np.nan), errors='coerce')
@@ -359,6 +361,8 @@ class StockSelector:
             ) + ", " + (
                 f"buy_sm={buy_sm_val:.2f}" if pd.notna(buy_sm_val) else "buy_sm=NaN"
             ) + ", " + (
+                f"buy_sm_pct={buy_sm_pct_val:.2f}" if pd.notna(buy_sm_pct_val) else "buy_sm_pct=NaN"
+            ) + ", " + (
                 f"disp={disp_val:.2f}" if pd.notna(disp_val) else "disp=NaN"
             ) + ", " + (
                 f"adr={adr_val:.2f}" if pd.notna(adr_val) else "adr=NaN"
@@ -368,6 +372,8 @@ class StockSelector:
                 f"kdj_j_9_z={kdj_j_val:.2f}" if pd.notna(kdj_j_val) else "kdj_j_9_z=NaN"
             ) + ", " + (
                 f"reg_severe_pct={reg_severe_pct_val:.4f}" if pd.notna(reg_severe_pct_val) else "reg_severe_pct=NaN"
+            ) + ", " + (
+                f"top10_3d={rule7_top10_3d_val:.2f}" if pd.notna(rule7_top10_3d_val) else "top10_3d=NaN"
             ) + ", " + (
                 f"ma5_raw={ma5_raw_val:.2f}" if pd.notna(ma5_raw_val) else "ma5_raw=NaN"
             ) + ", " + (
@@ -415,11 +421,17 @@ class StockSelector:
                 StrategyConfig.ENABLE_EXHAUSTION_LIMIT_DOWN_3D
                 and row.get('limit_down_3d', 0) == 1
             )
-            rule7_hit = (
-                pd.notna(top10_val) and pd.notna(buy_sm_val)
+            rule7_base_hit = (
+                pd.notna(top10_val) and pd.notna(buy_sm_pct_val)
                 and top10_val >= StrategyConfig.EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD
-                and buy_sm_val <= StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD
+                and buy_sm_pct_val <= StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD
             )
+            rule7_exempt_hit = (
+                pd.notna(reg_severe_pct_val) and pd.notna(rule7_top10_3d_val)
+                and reg_severe_pct_val >= StrategyConfig.EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD
+                and rule7_top10_3d_val >= StrategyConfig.EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD
+            )
+            rule7_hit = rule7_base_hit and not rule7_exempt_hit
             rule8_hit = (
                 pd.notna(non_first_pct20_val) and pd.notna(kdj_j_val)
                 and non_first_pct20_val >= StrategyConfig.EXHAUSTION_V3_NON_FIRST_LIMIT_UP_PERF_PCT20_THRESHOLD
@@ -483,7 +495,10 @@ class StockSelector:
                 if rule7_hit:
                     parts.append(
                         f"top10_strength({top10_val:.2f})>={StrategyConfig.EXHAUSTION_V3_TOP10_STRENGTH_THRESHOLD}"
-                        f" & buy_sm_amount({buy_sm_val:.2f})<={StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}"
+                        f" & buy_sm_amount_pct({buy_sm_pct_val:.2f})<={StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_PCT_THRESHOLD}"
+                        f" & NOT(rule7_reg_severe_pct({reg_severe_pct_val:.4f})>={StrategyConfig.EXHAUSTION_V3_RULE7_REG_SEVERE_EXEMPT_PCT_THRESHOLD}"
+                        f" & top10_3d_recent3_strength({rule7_top10_3d_val:.2f})>={StrategyConfig.EXHAUSTION_V3_RULE7_TOP10_3D_EXEMPT_THRESHOLD})"
+                        f" [raw_buy_sm={buy_sm_val:.2f}, backup_raw_th={StrategyConfig.EXHAUSTION_V3_BUY_SM_AMOUNT_THRESHOLD}]"
                     )
                 if rule8_hit:
                     parts.append(

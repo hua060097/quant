@@ -731,7 +731,16 @@ def _evaluate_candidate_with_topk_label_return_ratio_binary(
     }
 
 
-def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original, eval_dates, eval_data_raw, minute_cache_df, num_iteration=None):
+def _evaluate_candidate_with_minute_cache_binary(
+    model,
+    X_eval,
+    y_eval_original,
+    eval_dates,
+    eval_data_raw,
+    minute_cache_df,
+    num_iteration=None,
+    eval_detail_mode="full",
+):
     """
     LightGBM/Optuna 专用分钟级验证评分。
 
@@ -741,6 +750,7 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
     3. 不再使用过重的分段硬惩罚，避免所有 trial 分数被少数片段打成极端负值；
     4. 同时输出 Top1、Top3、Top5、AUC 之外的高分区交易诊断，便于判断“分类学到了但交易无效”的情况。
     """
+    eval_detail_mode = str(eval_detail_mode or "full").lower()
     if minute_cache_df is None or len(minute_cache_df) == 0:
         return None
 
@@ -823,6 +833,51 @@ def _evaluate_candidate_with_minute_cache_binary(model, X_eval, y_eval_original,
     invalid_rate = float(np.mean(~top1_merged['label_valid'] | top1_merged['adj_factor_changed']))
     stoploss_rate = float(np.mean(top1_merged.loc[top1_merged['eval_usable'], 'stoploss_hit'])) if top1_merged['eval_usable'].any() else 0.0
     profit_bearish_rate = float(np.mean(top1_merged.loc[top1_merged['eval_usable'], 'profit_bearish_hit'])) if top1_merged['eval_usable'].any() else 0.0
+
+    if eval_detail_mode == "light":
+        dd_abs = abs(max_drawdown)
+        risk_flags = []
+        if dd_abs > 0.40:
+            risk_flags.append('DD_GT_40')
+        if median_return < 0:
+            risk_flags.append('MEDIAN_NEG')
+        if win_rate < 0.50:
+            risk_flags.append('WIN_LT_50')
+        if stoploss_rate > 0.20:
+            risk_flags.append('STOP_GT_20')
+        if q10 < -0.06:
+            risk_flags.append('Q10_LT_NEG6')
+        score = (
+            70000.0 * mean_return
+            + 45000.0 * median_return
+            + 25000.0 * max(0.0, win_rate - 0.50)
+            - 30000.0 * max(0.0, -0.06 - q10)
+            - 18000.0 * max(0.0, dd_abs - 0.25)
+            - 900.0 * stoploss_rate
+        )
+        return {
+            'score': float(score),
+            'score_cum_clipped': float(np.clip(cumulative_return, -0.80, 1.50)),
+            'risk_flags': ','.join(risk_flags) if risk_flags else 'OK',
+            'days': int(len(top1_merged)),
+            'usable_rate': usable_rate,
+            'cumulative_return': cumulative_return,
+            'calmar_like': float(calmar_like),
+            'sharpe_like': float(sharpe_like),
+            'sortino_like': float(sortino_like),
+            'mean_return': mean_return,
+            'median_return': median_return,
+            'win_rate': win_rate,
+            'q10': q10,
+            'q25': q25,
+            'max_drawdown': max_drawdown,
+            'stoploss_rate': stoploss_rate,
+            'profit_bearish_rate': profit_bearish_rate,
+            'skip_rate': skip_rate,
+            'missing_rate': missing_rate,
+            'invalid_rate': invalid_rate,
+            'eval_detail_mode': 'light',
+        }
 
     # 分段稳健诊断：早停/选模不再让复利cum主导，而是看多段均值/中位数/左尾稳定性。
     segment_metrics = []
@@ -1182,6 +1237,7 @@ def _evaluate_minute_checkpoints_binary(
     X_auc=None,
     y_auc=None,
     label="Optuna",
+    eval_detail_mode="full",
 ):
     """在多个 boosting iteration 上评估分钟Top1交易分数，避免只用AUC best_iteration。"""
     results = []
@@ -1205,7 +1261,14 @@ def _evaluate_minute_checkpoints_binary(
     clean = sorted(clean)
     for it in clean:
         diag = _evaluate_candidate_with_minute_cache_binary(
-            model, X_eval, y_eval_original, eval_dates, eval_data_raw, minute_cache_df, num_iteration=it
+            model,
+            X_eval,
+            y_eval_original,
+            eval_dates,
+            eval_data_raw,
+            minute_cache_df,
+            num_iteration=it,
+            eval_detail_mode=eval_detail_mode,
         )
         if diag is None:
             continue
@@ -1222,21 +1285,209 @@ def _evaluate_minute_checkpoints_binary(
                     logloss = float(log_loss(y_arr[mask], np.clip(pred_auc[mask], 1e-6, 1 - 1e-6)))
             except Exception:
                 pass
-        logger.info(
-            f"[{label}-CHK] iter={it} score={diag.get('score', 0.0):.2f} cum={diag.get('cumulative_return',0.0):.3%} "
-            f"dd={diag.get('max_drawdown',0.0):.2%} mean={diag.get('mean_return',0.0):.3%} "
-            f"median={diag.get('median_return',0.0):.3%} win={diag.get('win_rate',0.0):.1%} "
-            f"q10={diag.get('q10',0.0):.3%} seg_med={diag.get('segment_median_median',0.0):.3%} "
-            f"worst_seg_mean={diag.get('segment_mean_worst',0.0):.3%} top3_mean={diag.get('top3_mean_return',0.0):.3%} "
-            f"pct_med={diag.get('top1_pct_chg_median', float('nan')):.3f} prof_pen={diag.get('profile_penalty',0.0):.1f} "
-            f"flags={diag.get('risk_flags','')} auc={auc if auc is not None else 'NA'} logloss={logloss if logloss is not None else 'NA'}"
-        )
+        if str(eval_detail_mode).lower() == "light":
+            logger.info(
+                f"[{label}-CHK] mode=light iter={it} score={diag.get('score', 0.0):.2f} "
+                f"cum={diag.get('cumulative_return',0.0):.3%} dd={diag.get('max_drawdown',0.0):.2%} "
+                f"mean={diag.get('mean_return',0.0):.3%} median={diag.get('median_return',0.0):.3%} "
+                f"win={diag.get('win_rate',0.0):.1%} q10={diag.get('q10',0.0):.3%} "
+                f"stop={diag.get('stoploss_rate',0.0):.1%} flags={diag.get('risk_flags','')} "
+                f"auc={auc if auc is not None else 'NA'} logloss={logloss if logloss is not None else 'NA'}"
+            )
+        else:
+            logger.info(
+                f"[{label}-CHK] mode={eval_detail_mode} iter={it} score={diag.get('score', 0.0):.2f} cum={diag.get('cumulative_return',0.0):.3%} "
+                f"dd={diag.get('max_drawdown',0.0):.2%} mean={diag.get('mean_return',0.0):.3%} "
+                f"median={diag.get('median_return',0.0):.3%} win={diag.get('win_rate',0.0):.1%} "
+                f"q10={diag.get('q10',0.0):.3%} seg_med={diag.get('segment_median_median',0.0):.3%} "
+                f"worst_seg_mean={diag.get('segment_mean_worst',0.0):.3%} top3_mean={diag.get('top3_mean_return',0.0):.3%} "
+                f"pct_med={diag.get('top1_pct_chg_median', float('nan')):.3f} prof_pen={diag.get('profile_penalty',0.0):.1f} "
+                f"flags={diag.get('risk_flags','')} auc={auc if auc is not None else 'NA'} logloss={logloss if logloss is not None else 'NA'}"
+            )
         diag = dict(diag)
         diag['iteration'] = it
         diag['val_auc_at_iter'] = auc
         diag['val_logloss_at_iter'] = logloss
         results.append(diag)
     return results
+
+
+def _train_lgbm_fixed_then_sparse_eval_binary(
+    params,
+    train_data,
+    val_data,
+    valid_sets,
+    valid_names,
+    max_boost_round,
+    checkpoints,
+    X_trade,
+    y_trade_original,
+    trade_dates,
+    trade_data_raw,
+    minute_cache_df,
+    X_auc=None,
+    y_auc=None,
+    label="TRAIN",
+    log_period=100,
+    eval_detail_mode="light",
+):
+    """Train once to max(checkpoints), then choose iteration by sparse minute Top1 eval."""
+    import lightgbm as lgb
+
+    clean_checkpoints = []
+    for it in checkpoints or []:
+        try:
+            it = int(it)
+        except Exception:
+            continue
+        if it > 0 and it not in clean_checkpoints:
+            clean_checkpoints.append(it)
+    clean_checkpoints = sorted(clean_checkpoints)
+    if not clean_checkpoints:
+        raise ValueError(f"[{label}-SPARSE] checkpoints不能为空")
+    max_boost_round = int(max(max_boost_round or 0, max(clean_checkpoints)))
+    callbacks = []
+    if log_period and log_period > 0:
+        callbacks.append(lgb.log_evaluation(period=int(log_period)))
+
+    logger.info(
+        f"[{label}-SPARSE] fixed_train_then_sparse_eval: max_round={max_boost_round}, "
+        f"checkpoints={clean_checkpoints}, eval_detail={eval_detail_mode}"
+    )
+    model = lgb.train(
+        params,
+        train_data,
+        num_boost_round=max_boost_round,
+        valid_sets=valid_sets,
+        valid_names=valid_names,
+        keep_training_booster=True,
+        callbacks=callbacks,
+    )
+    checkpoint_diags = _evaluate_minute_checkpoints_binary(
+        model,
+        clean_checkpoints,
+        X_trade,
+        y_trade_original,
+        trade_dates,
+        trade_data_raw,
+        minute_cache_df,
+        X_auc=X_auc,
+        y_auc=y_auc,
+        label=label,
+        eval_detail_mode=eval_detail_mode,
+    )
+    if not checkpoint_diags:
+        logger.warning(f"[{label}-SPARSE] 所有稀疏checkpoint都无法计算分钟交易评分")
+        return model, [], None
+    best_diag = max(checkpoint_diags, key=lambda d: float(d.get('score', float('-inf'))))
+    best_iter = int(best_diag.get('iteration', 0) or 0)
+    if best_iter > 0:
+        try:
+            model.best_iteration = best_iter
+        except Exception:
+            pass
+        try:
+            model._selected_iteration = best_iter
+        except Exception:
+            pass
+    try:
+        model._optuna_checkpoint_diags = list(checkpoint_diags)
+        model._checkpoint_eval_version = TIE_BREAKING_VERSION
+    except Exception:
+        pass
+    logger.info(
+        f"[{label}-SPARSE-BEST] iter={best_iter} score={best_diag.get('score', 0.0):.2f} "
+        f"cum={best_diag.get('cumulative_return', 0.0):.3%} dd={best_diag.get('max_drawdown', 0.0):.2%} "
+        f"median={best_diag.get('median_return', 0.0):.3%} flags={best_diag.get('risk_flags', '')}"
+    )
+    return model, checkpoint_diags, best_diag
+
+
+def _train_lgbm_fixed_then_eval_binary(
+    params,
+    train_data,
+    val_data,
+    valid_sets,
+    valid_names,
+    num_boost_round,
+    X_trade,
+    y_trade_original,
+    trade_dates,
+    trade_data_raw,
+    minute_cache_df,
+    X_auc=None,
+    y_auc=None,
+    label="TRAIN",
+    log_period=100,
+    eval_detail_mode="light",
+):
+    """Train to one fixed iteration and evaluate once with minute Top1 scoring."""
+    import lightgbm as lgb
+
+    fixed_iter = int(num_boost_round or 0)
+    if fixed_iter <= 0:
+        raise ValueError(f"[{label}-FIXED] num_boost_round必须为正数")
+    callbacks = []
+    if log_period and log_period > 0:
+        callbacks.append(lgb.log_evaluation(period=int(log_period)))
+
+    logger.info(
+        f"[{label}-FIXED] fixed_train_then_eval: iter={fixed_iter}, eval_detail={eval_detail_mode}"
+    )
+    model = lgb.train(
+        params,
+        train_data,
+        num_boost_round=fixed_iter,
+        valid_sets=valid_sets,
+        valid_names=valid_names,
+        keep_training_booster=True,
+        callbacks=callbacks,
+    )
+    diag = _evaluate_candidate_with_minute_cache_binary(
+        model,
+        X_trade,
+        y_trade_original,
+        trade_dates,
+        trade_data_raw,
+        minute_cache_df,
+        num_iteration=fixed_iter,
+        eval_detail_mode=eval_detail_mode,
+    )
+    if diag is None:
+        logger.warning(f"[{label}-FIXED] 固定迭代分钟交易评分为空")
+        return model, None
+    try:
+        pred_auc = None
+        pred_logloss = None
+        if X_auc is not None and y_auc is not None:
+            pred = model.predict(X_auc, num_iteration=fixed_iter)
+            y_arr = np.asarray(y_auc)
+            pred_arr = np.asarray(pred)
+            mask = ~pd.isna(y_arr)
+            y_arr = y_arr[mask]
+            pred_arr = pred_arr[mask]
+            if len(np.unique(y_arr)) >= 2:
+                pred_auc = float(roc_auc_score(y_arr, pred_arr))
+                pred_logloss = float(log_loss(y_arr, np.clip(pred_arr, 1e-6, 1 - 1e-6)))
+        diag = dict(diag)
+        diag['val_auc_at_iter'] = pred_auc
+        diag['val_logloss_at_iter'] = pred_logloss
+    except Exception:
+        diag = dict(diag)
+        diag['val_auc_at_iter'] = None
+        diag['val_logloss_at_iter'] = None
+    diag['iteration'] = fixed_iter
+    try:
+        model.best_iteration = fixed_iter
+        model._selected_iteration = fixed_iter
+    except Exception:
+        pass
+    logger.info(
+        f"[{label}-FIXED-BEST] iter={fixed_iter} score={diag.get('score', 0.0):.2f} "
+        f"cum={diag.get('cumulative_return', 0.0):.3%} dd={diag.get('max_drawdown', 0.0):.2%} "
+        f"median={diag.get('median_return', 0.0):.3%} flags={diag.get('risk_flags', '')}"
+    )
+    return model, diag
 
 
 def _train_lgbm_with_minute_checkpoint_earlystop_binary(
@@ -2174,7 +2425,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子v10_16.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子v17_4.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -4048,9 +4299,53 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'scale_pos_weight': 1,
         }
 
+        # 稳定单模型选参配置：
+        # 1) Optuna只在val_search上搜索；
+        # 2) top trials再用多个seed在val_search/val_oot复评；
+        # 3) multi-seed只用于稳定性评估，最终只选择一个代表性booster交易Top1。
+        ENABLE_STABLE_OOT_SELECTION = True
+        STRICT_MINUTE_PRIMARY_EVAL = True
+        STABLE_VAL_OOT_FRACTION = 0.33
+        STABLE_VAL_MIN_OOT_DAYS = 36
+        STABLE_VAL_MIN_SEARCH_DAYS = 36
+        STABLE_LABEL_HORIZON_DAYS = 3
+        STABLE_VAL_SEARCH_OOT_EMBARGO_DAYS = STABLE_LABEL_HORIZON_DAYS
+        STABLE_VAL_TEST_EMBARGO_DAYS = STABLE_LABEL_HORIZON_DAYS
+        STRICT_STABLE_SPLIT_REQUIRED = True
+        SPEED_FIRST_STABLE_SEARCH = True
+        STABLE_TOP_TRIALS = 24
+        # Speed-first筛选阶段先用3个seed判断参数区域是否稳定；如果出现候选不过veto，
+        # 再把这里扩回[11, 17, 23, 31, 47]做更严格审计。
+        STABLE_SEEDS = [11, 17, 31]
+        FINAL_MODEL_MODE = "single"
+        ENABLE_STABLE_SINGLE_MODEL_SELECTION = True
+        FINAL_SINGLE_MODEL_POLICY = "representative_seed"
+        ENABLE_LOCAL_NEIGHBOR_CHECK = False
+        ENABLE_STRESS_VETO_CHECK = False
+        # LOCAL_NEIGHBOR 是后续阶段才启用的局部鲁棒性测试；当前单模型稳定选参版本不启用邻域扰动。
+        LOCAL_NEIGHBOR = {
+            "learning_rate": [0.95, 1.05],
+            "num_leaves": [-4, 4],
+            "min_data_in_leaf": [0.90, 1.10],
+            "min_sum_hessian_in_leaf": [0.90, 1.10],
+            "feature_fraction": [-0.02, 0.02],
+            "bagging_fraction": [-0.02, 0.02],
+            "lambda_l1": [0.90, 1.10],
+            "lambda_l2": [0.90, 1.10],
+        }
+        # STRESS_NEIGHBOR 只是压力测试/veto，不是微小邻域；当前单模型稳定选参版本不启用压力扰动。
+        STRESS_NEIGHBOR = {
+            "lambda_l1": [0.50, 2.00],
+            "lambda_l2": [0.50, 2.00],
+            "min_data_in_leaf": [0.80, 1.20],
+            "num_leaves": [-8, 8],
+            "feature_fraction": [-0.05, 0.05],
+            "bagging_fraction": [-0.05, 0.05],
+        }
+
         # 为了避免“搜索只看最近一小段、最终重训全量”的错位，默认搜索使用完整 train/val 日期。
         # 如果后续要提速，可以手动把 *_DATE_FRAC 调小，但必须在日志里保留。
-        OPTUNA_N_TRIALS = 3  # 诊断阶段不做大规模搜索；先看checkpoint/分桶诊断
+        OPTUNA_N_TRIALS = 48
         OPTUNA_SEARCH_TRAIN_DATE_FRAC = 1.00
         OPTUNA_SEARCH_VAL_DATE_FRAC = 1.00
         OPTUNA_SEARCH_MIN_TRAIN_DAYS = 120
@@ -4062,6 +4357,23 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         CHECKPOINT_EVAL_PERIOD = 50
         CHECKPOINT_PATIENCE = 4
         CHECKPOINT_MIN_DELTA = 0.0
+        # Fast screen first: fixed iteration is used to find stable parameter regions.
+        # Sparse checkpoint is reserved for the smaller Stage2/final review set.
+        OPTUNA_CHECKPOINT_MODE = "fixed_fast"
+        OPTUNA_FAST_FIXED_ITERATION = 400
+        OPTUNA_SEARCH_CHECKPOINTS = [200, 400, 600]
+        STABLE_REVIEW_CHECKPOINTS = [200, 300, 400, 500, 600, 700]
+        FINAL_SINGLE_RECHECK_OFFSETS = [-100, -50, 0, 50, 100]
+        ENABLE_TWO_STAGE_STABLE_REVIEW = True
+        STABLE_FAST_SCREEN_MODE = True
+        STABLE_STAGE1_TOP_TRIALS = 16
+        STABLE_STAGE1_SEED = 11
+        STABLE_STAGE1_FIXED_ITERATION = 400
+        STABLE_STAGE2_TOP_TRIALS = 3
+        RESUME_STABLE_REVIEW_FROM_OPTUNA_LOG = False
+        OPTUNA_RESUME_LOG_PATH = "stock_selection_test_mode_walkforward_分类模型_原因子v17_2.log"
+        RESUME_STAGE2_FROM_STAGE1_LOG = False
+        STAGE1_RESUME_LOG_PATH = "stock_selection_test_mode_walkforward_分类模型_原因子v17_3.log"
         best_top1_return = -float('inf')
         best_model = None
         best_params_found = None
@@ -4080,9 +4392,15 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             if use_minute_primary_eval:
                 logger.info(f"[MINUTE-PRIMARY] rows={len(minute_cache_df):,}, dates={minute_cache_df['date'].nunique():,}")
             else:
-                logger.warning("[MINUTE-PRIMARY] no minute cache, fallback to Top1/Top5 atr_return_label profit/drawdown eval")
+                logger.warning("[MINUTE-PRIMARY] no minute cache")
         except Exception as e:
             logger.warning(f"[MINUTE-PRIMARY] 读取失败: {e}")
+
+        if STRICT_MINUTE_PRIMARY_EVAL and not use_minute_primary_eval:
+            raise RuntimeError(
+                "[STRICT-MINUTE] 当前稳定选参必须使用分钟真实路径收益；minute cache加载失败或为空，"
+                "禁止fallback到atr_return_label/日频代理标签继续选参。"
+            )
 
         def _build_recent_date_mask(dates, keep_frac=1.0, min_days=0):
             if dates is None:
@@ -4097,24 +4415,191 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             mask = dates_ts.isin(keep_date_set).values
             return mask, unique_dates[-keep_days:]
 
+        def _format_day_range(days):
+            if days is None or len(days) == 0:
+                return "EMPTY"
+            days = np.array(sorted(days))
+            return f"{pd.Timestamp(days[0]).strftime('%Y-%m-%d')}~{pd.Timestamp(days[-1]).strftime('%Y-%m-%d')}"
+
+        def _build_val_search_oot_masks(
+            dates,
+            oot_frac=0.33,
+            min_oot_days=36,
+            min_search_days=36,
+            search_oot_embargo_days=3,
+            val_test_embargo_days=3,
+            has_test=True,
+        ):
+            """按交易日构造search / embargo / OOT / val-test embargo四段。"""
+            if dates is None:
+                return None
+            dates_ts = pd.to_datetime(pd.Series(dates)).dt.normalize()
+            unique_days = np.array(sorted(dates_ts.dropna().unique()))
+            if len(unique_days) == 0:
+                return None
+
+            test_embargo_n = int(val_test_embargo_days) if has_test else 0
+            test_embargo_n = min(test_embargo_n, max(0, len(unique_days) - 1))
+            val_test_embargo_days_arr = unique_days[-test_embargo_n:] if test_embargo_n > 0 else np.array([], dtype=unique_days.dtype)
+            score_days = unique_days[:-test_embargo_n] if test_embargo_n > 0 else unique_days
+
+            search_oot_embargo_n = int(search_oot_embargo_days)
+            min_total = int(min_search_days) + int(min_oot_days) + search_oot_embargo_n
+            if len(score_days) < min_total:
+                logger.warning(
+                    f"[STABLE-SPLIT] 验证交易日不足以满足min_search={min_search_days}, "
+                    f"min_oot={min_oot_days}, embargo={search_oot_embargo_n}, val_test_embargo={test_embargo_n}; "
+                    f"score_days={len(score_days)}，将减少OOT天数但保留search/OOT embargo。"
+                )
+
+            available_for_oot = len(score_days) - int(min_search_days) - search_oot_embargo_n
+            if available_for_oot <= 0:
+                return None
+            desired_oot = max(int(math.ceil(len(score_days) * oot_frac)), int(min_oot_days))
+            oot_days_n = min(desired_oot, available_for_oot)
+            if oot_days_n < int(min_oot_days):
+                logger.warning(
+                    f"[STABLE-SPLIT] OOT天数从{min_oot_days}降为{oot_days_n}，"
+                    "仍保留search/OOT embargo；这是样本不足下的保守降级。"
+                )
+            if oot_days_n <= 0:
+                return None
+
+            oot_days_arr = score_days[-oot_days_n:]
+            embargo_start = len(score_days) - oot_days_n - search_oot_embargo_n
+            embargo_end = len(score_days) - oot_days_n
+            search_oot_embargo_days_arr = score_days[embargo_start:embargo_end] if search_oot_embargo_n > 0 else np.array([], dtype=unique_days.dtype)
+            search_days_arr = score_days[:embargo_start]
+
+            if len(search_days_arr) < int(min_search_days) or len(search_oot_embargo_days_arr) < search_oot_embargo_n:
+                return None
+
+            def _mask(day_arr):
+                return dates_ts.isin(set(day_arr)).values
+
+            return {
+                'val_search_mask': _mask(search_days_arr),
+                'val_search_oot_embargo_mask': _mask(search_oot_embargo_days_arr),
+                'val_oot_mask': _mask(oot_days_arr),
+                'val_test_embargo_mask': _mask(val_test_embargo_days_arr),
+                'search_days': search_days_arr,
+                'search_oot_embargo_days': search_oot_embargo_days_arr,
+                'oot_days': oot_days_arr,
+                'val_test_embargo_days': val_test_embargo_days_arr,
+            }
+
+        val_fit_search_mask = val_fit_oot_mask = None
+        val_fit_search_oot_embargo_mask = val_fit_test_embargo_mask = None
+        val_eval_search_mask = val_eval_oot_mask = None
+        val_eval_search_oot_embargo_mask = val_eval_test_embargo_mask = None
+        stable_search_days = stable_oot_days = None
+        stable_search_oot_embargo_days = stable_val_test_embargo_days = None
+        if ENABLE_STABLE_OOT_SELECTION:
+            stable_split = _build_val_search_oot_masks(
+                val_dates,
+                oot_frac=STABLE_VAL_OOT_FRACTION,
+                min_oot_days=STABLE_VAL_MIN_OOT_DAYS,
+                min_search_days=STABLE_VAL_MIN_SEARCH_DAYS,
+                search_oot_embargo_days=STABLE_VAL_SEARCH_OOT_EMBARGO_DAYS,
+                val_test_embargo_days=STABLE_VAL_TEST_EMBARGO_DAYS,
+                has_test=(test_data_raw is not None and len(test_data_raw) > 0),
+            )
+            if stable_split is not None:
+                val_fit_search_mask = stable_split['val_search_mask']
+                val_fit_search_oot_embargo_mask = stable_split['val_search_oot_embargo_mask']
+                val_fit_oot_mask = stable_split['val_oot_mask']
+                val_fit_test_embargo_mask = stable_split['val_test_embargo_mask']
+                stable_search_days = stable_split['search_days']
+                stable_search_oot_embargo_days = stable_split['search_oot_embargo_days']
+                stable_oot_days = stable_split['oot_days']
+                stable_val_test_embargo_days = stable_split['val_test_embargo_days']
+
+            if stable_oot_days is not None and val_eval_dates is not None:
+                eval_dates_norm = pd.to_datetime(pd.Series(val_eval_dates)).dt.normalize()
+                search_day_set = set(stable_search_days)
+                search_oot_embargo_day_set = set(stable_search_oot_embargo_days)
+                oot_day_set = set(stable_oot_days)
+                val_test_embargo_day_set = set(stable_val_test_embargo_days)
+                val_eval_search_mask = eval_dates_norm.isin(search_day_set).values
+                val_eval_search_oot_embargo_mask = eval_dates_norm.isin(search_oot_embargo_day_set).values
+                val_eval_oot_mask = eval_dates_norm.isin(oot_day_set).values
+                val_eval_test_embargo_mask = eval_dates_norm.isin(val_test_embargo_day_set).values
+
+        if (
+            ENABLE_STABLE_OOT_SELECTION
+            and val_fit_search_mask is not None
+            and val_fit_oot_mask is not None
+            and val_eval_search_mask is not None
+            and val_eval_oot_mask is not None
+            and int(val_fit_search_mask.sum()) > 0
+            and int(val_fit_oot_mask.sum()) > 0
+            and int(val_eval_search_mask.sum()) > 0
+            and int(val_eval_oot_mask.sum()) > 0
+        ):
+            logger.info(
+                f"[STABLE-SPLIT] label_horizon_days={STABLE_LABEL_HORIZON_DAYS}, "
+                f"search_oot_embargo_days={STABLE_VAL_SEARCH_OOT_EMBARGO_DAYS}, "
+                f"val_test_embargo_days={STABLE_VAL_TEST_EMBARGO_DAYS}"
+            )
+            logger.info(f"[STABLE-SPLIT] search: {_format_day_range(stable_search_days)}, days={len(stable_search_days)}")
+            logger.info(f"[STABLE-SPLIT] embargo_search_oot: {_format_day_range(stable_search_oot_embargo_days)}, days={len(stable_search_oot_embargo_days)}")
+            logger.info(f"[STABLE-SPLIT] oot: {_format_day_range(stable_oot_days)}, days={len(stable_oot_days)}")
+            logger.info(f"[STABLE-SPLIT] embargo_val_test: {_format_day_range(stable_val_test_embargo_days)}, days={len(stable_val_test_embargo_days)}")
+            logger.info(
+                f"[STABLE-SPLIT] rows: val_fit_search={int(val_fit_search_mask.sum()):,}, "
+                f"val_fit_embargo={int(val_fit_search_oot_embargo_mask.sum()):,}, "
+                f"val_fit_oot={int(val_fit_oot_mask.sum()):,}, "
+                f"val_fit_test_embargo={int(val_fit_test_embargo_mask.sum()):,}, "
+                f"trade_search={int(val_eval_search_mask.sum()):,}, "
+                f"trade_oot={int(val_eval_oot_mask.sum()):,}"
+            )
+        else:
+            msg = (
+                "[STRICT-STABLE-SPLIT] 无法构造 search/embargo/OOT/val-test-embargo，"
+                "停止训练，避免退回单验证集挖参。"
+            )
+            if STRICT_STABLE_SPLIT_REQUIRED:
+                logger.error(msg)
+                raise RuntimeError(msg)
+            logger.warning(
+                "[STABLE-SPLIT] 验证集不足以构造 search / embargo / OOT / val-test embargo；"
+                "STRICT_STABLE_SPLIT_REQUIRED=False，降级禁用stable OOT selection。"
+            )
+            ENABLE_STABLE_OOT_SELECTION = False
+
         # v10关键修复：Optuna搜索阶段与最终模型阶段必须共用完全相同的数据对象。
-        # 不再使用 OPTUNA_SEARCH_TRAIN_DATE_FRAC / OPTUNA_SEARCH_VAL_DATE_FRAC 构造 search 子集，
-        # 避免“搜索口径”和“最终口径”在后续维护中发生隐性分叉。
+        # 现在只在验证集内部做 search/OOT 拆分；训练集仍然完整复用最终训练对象。
         X_train_search = X_train_scaled
         y_train_search = y_train
         sample_weights_search = sample_weights
-        X_val_search = X_val_scaled
-        y_val_search = y_val
+        X_val_search = X_val_scaled[val_fit_search_mask] if ENABLE_STABLE_OOT_SELECTION else X_val_scaled
+        y_val_search = y_val[val_fit_search_mask] if ENABLE_STABLE_OOT_SELECTION else y_val
         val_sample_weights_search = val_sample_weights
-        y_val_original_search = y_val_original
-        val_dates_search = val_dates
-        val_data_raw_search = val_data_raw
+        if ENABLE_STABLE_OOT_SELECTION:
+            val_sample_weights_search = val_sample_weights[val_fit_search_mask]
+        y_val_original_search = y_val_original[val_fit_search_mask] if ENABLE_STABLE_OOT_SELECTION else y_val_original
+        val_dates_search = val_dates[val_fit_search_mask] if ENABLE_STABLE_OOT_SELECTION else val_dates
+        val_data_raw_search = val_data_raw.iloc[val_fit_search_mask].reset_index(drop=True) if ENABLE_STABLE_OOT_SELECTION and val_data_raw is not None else val_data_raw
+
+        X_val_oot = X_val_scaled[val_fit_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
+        y_val_oot = y_val[val_fit_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
+        val_dates_oot = val_dates[val_fit_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
 
         # 交易评分也直接使用完整验证候选池。
-        X_val_eval_search = X_val_eval_scaled
-        y_val_eval_original_search = y_val_eval_original
-        val_eval_dates_search = val_eval_dates
-        val_eval_data_raw_search = val_eval_data_raw
+        X_val_eval_search = X_val_eval_scaled[val_eval_search_mask] if ENABLE_STABLE_OOT_SELECTION else X_val_eval_scaled
+        y_val_eval_original_search = y_val_eval_original[val_eval_search_mask] if ENABLE_STABLE_OOT_SELECTION else y_val_eval_original
+        val_eval_dates_search = val_eval_dates[val_eval_search_mask] if ENABLE_STABLE_OOT_SELECTION else val_eval_dates
+        val_eval_data_raw_search = val_eval_data_raw.iloc[val_eval_search_mask].reset_index(drop=True) if ENABLE_STABLE_OOT_SELECTION and val_eval_data_raw is not None else val_eval_data_raw
+
+        X_val_eval_oot = X_val_eval_scaled[val_eval_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
+        y_val_eval_original_oot = y_val_eval_original[val_eval_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
+        val_eval_dates_oot = val_eval_dates[val_eval_oot_mask] if ENABLE_STABLE_OOT_SELECTION else None
+        val_eval_data_raw_oot = val_eval_data_raw.iloc[val_eval_oot_mask].reset_index(drop=True) if ENABLE_STABLE_OOT_SELECTION and val_eval_data_raw is not None else None
+        val_eval_safe_mask = (val_eval_search_mask | val_eval_oot_mask) if ENABLE_STABLE_OOT_SELECTION else None
+        X_val_eval_safe = X_val_eval_scaled[val_eval_safe_mask] if ENABLE_STABLE_OOT_SELECTION else X_val_eval_scaled
+        y_val_eval_original_safe = y_val_eval_original[val_eval_safe_mask] if ENABLE_STABLE_OOT_SELECTION else y_val_eval_original
+        val_eval_dates_safe = val_eval_dates[val_eval_safe_mask] if ENABLE_STABLE_OOT_SELECTION else val_eval_dates
+        val_eval_data_raw_safe = val_eval_data_raw.iloc[val_eval_safe_mask].reset_index(drop=True) if ENABLE_STABLE_OOT_SELECTION and val_eval_data_raw is not None else val_eval_data_raw
         minute_cache_search = minute_cache_df
 
         logger.info(
@@ -4123,12 +4608,26 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             f"val_auc={len(X_val_search):,}/{len(X_val_scaled):,} "
             f"val_trade={len(X_val_eval_search):,}/{len(X_val_eval_scaled):,} "
             f"boost_round={OPTUNA_SEARCH_NUM_BOOST_ROUND} "
-            f"early_stop=checkpoint_top1(period={CHECKPOINT_EVAL_PERIOD},patience={CHECKPOINT_PATIENCE})"
+            f"checkpoint_mode={OPTUNA_CHECKPOINT_MODE}"
+        )
+        logger.info(
+            f"[Optuna] checkpoint_mode={OPTUNA_CHECKPOINT_MODE}, "
+            f"fixed_iter={OPTUNA_FAST_FIXED_ITERATION}, checkpoints={OPTUNA_SEARCH_CHECKPOINTS}, eval_detail=light"
         )
 
-        # v10关键修复：Optuna直接复用最终训练用 Dataset 对象，不再重复构造 search Dataset。
+        # v10关键修复：训练集Dataset继续复用；验证Dataset按val_search拆分，避免Optuna直接挖完整验证集尾部。
         train_data_search = train_data
-        val_data_search = val_data
+        if ENABLE_STABLE_OOT_SELECTION:
+            val_data_search = lgb.Dataset(
+                X_val_search,
+                label=y_val_search,
+                weight=val_sample_weights_search,
+                reference=train_data_search,
+                params={'feature_pre_filter': False},
+                free_raw_data=False,
+            )
+        else:
+            val_data_search = val_data
 
         # ================================================================
         # Optuna 贝叶斯搜索 (TPE sampler + Median pruner)
@@ -4138,19 +4637,29 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
 
 
         lgb_optuna_search_space = {
-            'num_leaves': [31, 63],
-            'min_data_in_leaf': [400, 600, 700],
-            'reg_alpha': [12, 15, 20],
-            'reg_lambda': [20, 30, 45],
+            'max_depth': [-1, 7],
+            'num_leaves': [31, 63, 127],
+            'min_data_in_leaf': [400, 600, 900, 1200],
+            'min_sum_hessian_in_leaf': [150, 250],
+            'reg_alpha': [7, 12, 20],
+            'reg_lambda': [5,10, 30, 60],
             'scale_pos_weight': [1],
         }
 
         total_lgb_optuna_combinations = (
-            len(lgb_optuna_search_space['num_leaves'])
+            len(lgb_optuna_search_space['max_depth'])
+            * len(lgb_optuna_search_space['num_leaves'])
             *len(lgb_optuna_search_space['min_data_in_leaf'])
+            * len(lgb_optuna_search_space['min_sum_hessian_in_leaf'])
             * len(lgb_optuna_search_space['reg_alpha'])
             * len(lgb_optuna_search_space['reg_lambda'])
             * len(lgb_optuna_search_space['scale_pos_weight'])
+        )
+        actual_optuna_trials = min(OPTUNA_N_TRIALS, total_lgb_optuna_combinations)
+        logger.info(
+            f"[Optuna] grid总组合数={total_lgb_optuna_combinations}, "
+            f"配置trials={OPTUNA_N_TRIALS}, 实际trials={actual_optuna_trials}, "
+            f"speed_first={SPEED_FIRST_STABLE_SEARCH}"
         )
 
         logger.info(f"[Optuna] 开始创建study...")
@@ -4161,8 +4670,68 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         )
         logger.info(
             f"[Optuna] study创建完成，使用GridSampler避免重复参数；"
-            f"搜索空间共{total_lgb_optuna_combinations}组，开始optimize ({OPTUNA_N_TRIALS} trials)..."
+            f"搜索空间共{total_lgb_optuna_combinations}组，开始optimize ({actual_optuna_trials} trials)..."
         )
+
+        class _LoggedOptunaTrial:
+            def __init__(self, number, value, params):
+                self.number = int(number)
+                self.value = float(value)
+                self.params = dict(params)
+                self.user_attrs = {}
+
+            def set_user_attr(self, key, value):
+                self.user_attrs[key] = value
+
+        def _load_completed_trials_from_optuna_log(log_path):
+            import re
+            path = Path(log_path)
+            if not path.exists():
+                raise FileNotFoundError(f"[RESUME-STABLE] 找不到Optuna日志: {log_path}")
+            text = path.read_text(encoding='utf-8', errors='ignore')
+            pattern = re.compile(
+                r"\[Optuna\] trial #(\d+) 完成: score=([-+\d.]+).*?"
+                r"(?:max_depth=(-?\d+) )?"
+                r"leaves=(\d+) scale_pos_weight=([-+\d.]+) min_leaf=(\d+) "
+                r"(?:min_hess=([-+\d.]+) )?"
+                r"alpha=([-+\d.]+) lambda=([-+\d.]+)"
+            )
+            parsed = []
+            seen = set()
+            for m in pattern.finditer(text):
+                trial_number = int(m.group(1))
+                if trial_number in seen:
+                    continue
+                seen.add(trial_number)
+                params = {
+                    'num_leaves': int(m.group(4)),
+                    'min_data_in_leaf': int(m.group(6)),
+                    'reg_alpha': float(m.group(8)),
+                    'reg_lambda': float(m.group(9)),
+                    'scale_pos_weight': float(m.group(5)),
+                }
+                if m.group(3) is not None:
+                    params['max_depth'] = int(m.group(3))
+                if m.group(7) is not None:
+                    params['min_sum_hessian_in_leaf'] = float(m.group(7))
+                full_params = base_params.copy()
+                full_params.update(params)
+                trial = _LoggedOptunaTrial(trial_number, float(m.group(2)), params)
+                trial.user_attrs['full_params'] = full_params
+                trial.user_attrs['resumed_from_log'] = str(path)
+                parsed.append(trial)
+            parsed = sorted(parsed, key=lambda t: float(t.value), reverse=True)
+            if not parsed:
+                raise RuntimeError(f"[RESUME-STABLE] 日志中没有解析到已完成Optuna trial: {log_path}")
+            logger.info(
+                f"[RESUME-STABLE] 从Optuna日志恢复completed_trials: file={path}, "
+                f"n={len(parsed)}, best_trial=#{parsed[0].number}, best_score={parsed[0].value:.2f}"
+            )
+            logger.info(
+                "[RESUME-STABLE] top trials: %s",
+                [(t.number, round(float(t.value), 2), t.params) for t in parsed[:min(10, len(parsed))]]
+            )
+            return parsed
 
         _trial_count = [0]
         # v10关键修复：保存Optuna过程中真正训练出的最佳trial booster。
@@ -4185,11 +4754,17 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             logger.info(f"[Optuna] trial #{trial.number} (第{_tn}个) 开始...")
 
             current_params = base_params.copy()
+            current_params['max_depth'] = trial.suggest_categorical(
+                'max_depth', lgb_optuna_search_space['max_depth']
+            )
             current_params['num_leaves'] = trial.suggest_categorical(
                 'num_leaves', lgb_optuna_search_space['num_leaves']
             )
             current_params['min_data_in_leaf'] = trial.suggest_categorical(
                 'min_data_in_leaf', lgb_optuna_search_space['min_data_in_leaf']
+            )
+            current_params['min_sum_hessian_in_leaf'] = trial.suggest_categorical(
+                'min_sum_hessian_in_leaf', lgb_optuna_search_space['min_sum_hessian_in_leaf']
             )
             current_params['reg_alpha'] = trial.suggest_categorical(
                 'reg_alpha', lgb_optuna_search_space['reg_alpha']
@@ -4200,37 +4775,80 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             current_params['scale_pos_weight'] = trial.suggest_categorical(
                 'scale_pos_weight', lgb_optuna_search_space['scale_pos_weight']
             )
+            trial.set_user_attr('full_params', current_params.copy())
             logger.info(f"[Optuna] trial #{trial.number} 参数采样完成，开始训练LightGBM...")
 
             search_eval_result = {}
-            # 搜索阶段使用“分钟Top1 checkpoint交易早停”，不再固定训练完整轮数后统一挑选。
-            # AUC/logloss只作为诊断输出，不参与early stopping。
+            # 搜索阶段默认只做固定迭代快评，用来找到稳定参数区域；
+            # checkpoint只在Stage2/final少数候选里启用，避免过早过拟合selected_iteration。
             score = float('-inf')
             minute_diag = None
             checkpoint_diags = []
             if use_minute_primary_eval:
-                model, checkpoint_diags, minute_diag = _train_lgbm_with_minute_checkpoint_earlystop_binary(
-                    current_params,
-                    train_data_search,
-                    val_data_search,
-                    valid_sets=[train_data_search, val_data_search],
-                    valid_names=['train', 'valid'],
-                    max_boost_round=OPTUNA_SEARCH_NUM_BOOST_ROUND,
-                    checkpoint_start=CHECKPOINT_EVAL_START,
-                    checkpoint_period=CHECKPOINT_EVAL_PERIOD,
-                    checkpoint_patience=CHECKPOINT_PATIENCE,
-                    checkpoint_min_delta=CHECKPOINT_MIN_DELTA,
-                    X_trade=X_val_eval_search,
-                    y_trade_original=y_val_eval_original_search,
-                    trade_dates=val_eval_dates_search,
-                    trade_data_raw=val_eval_data_raw_search,
-                    minute_cache_df=minute_cache_search,
-                    X_auc=X_val_search,
-                    y_auc=y_val_search,
-                    label=f"Optuna#{trial.number}",
-                    log_period=100,
-                )
-                logger.info(f"[Optuna] trial #{trial.number} LightGBM checkpoint交易早停完成，开始汇总评估...")
+                if OPTUNA_CHECKPOINT_MODE == "fixed_fast":
+                    model, minute_diag = _train_lgbm_fixed_then_eval_binary(
+                        current_params,
+                        train_data_search,
+                        val_data_search,
+                        valid_sets=[train_data_search, val_data_search],
+                        valid_names=['train', 'valid'],
+                        num_boost_round=OPTUNA_FAST_FIXED_ITERATION,
+                        X_trade=X_val_eval_search,
+                        y_trade_original=y_val_eval_original_search,
+                        trade_dates=val_eval_dates_search,
+                        trade_data_raw=val_eval_data_raw_search,
+                        minute_cache_df=minute_cache_search,
+                        X_auc=X_val_search,
+                        y_auc=y_val_search,
+                        label=f"Optuna#{trial.number}",
+                        log_period=100,
+                        eval_detail_mode="light",
+                    )
+                    logger.info(f"[Optuna] trial #{trial.number} LightGBM fixed-fast评估完成，开始汇总评估...")
+                elif OPTUNA_CHECKPOINT_MODE == "sparse_posthoc":
+                    model, checkpoint_diags, minute_diag = _train_lgbm_fixed_then_sparse_eval_binary(
+                        current_params,
+                        train_data_search,
+                        val_data_search,
+                        valid_sets=[train_data_search, val_data_search],
+                        valid_names=['train', 'valid'],
+                        max_boost_round=max(OPTUNA_SEARCH_CHECKPOINTS),
+                        checkpoints=OPTUNA_SEARCH_CHECKPOINTS,
+                        X_trade=X_val_eval_search,
+                        y_trade_original=y_val_eval_original_search,
+                        trade_dates=val_eval_dates_search,
+                        trade_data_raw=val_eval_data_raw_search,
+                        minute_cache_df=minute_cache_search,
+                        X_auc=X_val_search,
+                        y_auc=y_val_search,
+                        label=f"Optuna#{trial.number}",
+                        log_period=100,
+                        eval_detail_mode="light",
+                    )
+                    logger.info(f"[Optuna] trial #{trial.number} LightGBM sparse posthoc checkpoint完成，开始汇总评估...")
+                else:
+                    model, checkpoint_diags, minute_diag = _train_lgbm_with_minute_checkpoint_earlystop_binary(
+                        current_params,
+                        train_data_search,
+                        val_data_search,
+                        valid_sets=[train_data_search, val_data_search],
+                        valid_names=['train', 'valid'],
+                        max_boost_round=OPTUNA_SEARCH_NUM_BOOST_ROUND,
+                        checkpoint_start=CHECKPOINT_EVAL_START,
+                        checkpoint_period=CHECKPOINT_EVAL_PERIOD,
+                        checkpoint_patience=CHECKPOINT_PATIENCE,
+                        checkpoint_min_delta=CHECKPOINT_MIN_DELTA,
+                        X_trade=X_val_eval_search,
+                        y_trade_original=y_val_eval_original_search,
+                        trade_dates=val_eval_dates_search,
+                        trade_data_raw=val_eval_data_raw_search,
+                        minute_cache_df=minute_cache_search,
+                        X_auc=X_val_search,
+                        y_auc=y_val_search,
+                        label=f"Optuna#{trial.number}",
+                        log_period=100,
+                    )
+                    logger.info(f"[Optuna] trial #{trial.number} LightGBM checkpoint交易早停完成，开始汇总评估...")
                 if minute_diag is not None:
                     score = float(minute_diag['score'])
                     trial.set_user_attr('best_checkpoint_iteration', int(minute_diag.get('iteration', 0)))
@@ -4245,8 +4863,17 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     )
                 else:
                     logger.warning(f"[Optuna][CHK-BEST] trial #{trial.number}: checkpoint交易评分为空，转入fallback")
+                    if STRICT_MINUTE_PRIMARY_EVAL:
+                        raise RuntimeError(
+                            f"[STRICT-MINUTE] trial #{trial.number} checkpoint分钟评分为空，"
+                            "禁止fallback到日频标签选参。"
+                        )
             else:
                 logger.warning(f"[Optuna] trial #{trial.number}: 无分钟缓存，使用固定轮数训练并走fallback评估")
+                if STRICT_MINUTE_PRIMARY_EVAL:
+                    raise RuntimeError(
+                        f"[STRICT-MINUTE] trial #{trial.number} 没有分钟主评估，禁止fallback到日频标签选参。"
+                    )
                 model = lgb.train(
                     current_params, train_data_search, num_boost_round=OPTUNA_SEARCH_NUM_BOOST_ROUND,
                     valid_sets=[train_data_search, val_data_search], valid_names=['train', 'valid'],
@@ -4300,6 +4927,10 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                 logger.debug(f"[Optuna] AUC辅助评估失败: {e}")
 
             if score == float('-inf'):
+                if STRICT_MINUTE_PRIMARY_EVAL:
+                    raise RuntimeError(
+                        f"[STRICT-MINUTE] trial #{trial.number} 没有得到分钟评分，禁止fallback到atr_return_label。"
+                    )
                 fallback_diag = _evaluate_candidate_with_topk_label_return_ratio_binary(
                     model, X_val_eval_search, val_eval_dates_search, val_eval_data_raw_search,
                     label_column='atr_return_label', top_k=5, min_group_size=5
@@ -4333,9 +4964,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             logger.info(
                 f"[Optuna] trial #{trial.number} 完成: "
                 f"score={score:.1f} time={_elapsed:.0f}s "
+                f"max_depth={current_params['max_depth']} "
                 f"leaves={current_params['num_leaves']} "
                 f"scale_pos_weight={current_params['scale_pos_weight']} "
                 f"min_leaf={current_params['min_data_in_leaf']} "
+                f"min_hess={current_params['min_sum_hessian_in_leaf']} "
                 f"alpha={current_params['reg_alpha']} lambda={current_params['reg_lambda']}"
             )
             if score > best_top1_return:
@@ -4365,10 +4998,598 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     pass
             return score
 
-        study.optimize(_objective, n_trials=OPTUNA_N_TRIALS, show_progress_bar=False)
-        logger.info(f"[Optuna] optimize完成，共{len(study.trials)}个trial")
+        def _with_lgb_seed(params, seed):
+            seeded = dict(params or {})
+            seeded['random_state'] = int(seed)
+            seeded['bagging_seed'] = int(seed)
+            seeded['feature_fraction_seed'] = int(seed) + 101
+            seeded['drop_seed'] = int(seed) + 303
+            seeded['extra_seed'] = int(seed) + 404
+            return seeded
 
-        if study.best_trial is not None and best_trial_state.get('model') is not None:
+        def _diag_value(diag, key, default=0.0):
+            try:
+                if not isinstance(diag, dict):
+                    return float(default)
+                val = diag.get(key, default)
+                if val is None or pd.isna(val):
+                    return float(default)
+                return float(val)
+            except Exception:
+                return float(default)
+
+        def _calc_seed_selection_stability(seed_models):
+            if not ENABLE_STABLE_OOT_SELECTION or not seed_models or len(seed_models) < 2:
+                return {'exact_top1_agreement': 1.0, 'top1_in_other_seed_top5_rate': 1.0, 'selection_instability_penalty': 0.0}
+            try:
+                top1_by_seed = []
+                top5_by_seed = []
+                for seed_model in seed_models:
+                    iter_num = getattr(seed_model, '_selected_iteration', None) or getattr(seed_model, 'best_iteration', None)
+                    top1 = _calc_daily_rank_panel_binary(
+                        seed_model, X_val_eval_oot, y_val_eval_original_oot, val_eval_dates_oot, val_eval_data_raw_oot,
+                        rank_position=1, num_iteration=iter_num
+                    )
+                    top5 = _calc_daily_topk_selection_rows_binary(
+                        seed_model, X_val_eval_oot, y_val_eval_original_oot, val_eval_dates_oot, val_eval_data_raw_oot,
+                        top_k=5, num_iteration=iter_num
+                    )
+                    if top1 is None or top1.empty or top5 is None or top5.empty:
+                        continue
+                    top1 = top1.copy()
+                    top5 = top5.copy()
+                    top1['date'] = pd.to_datetime(top1['date']).dt.normalize()
+                    top5['date'] = pd.to_datetime(top5['date']).dt.normalize()
+                    top1_by_seed.append(dict(zip(top1['date'], top1['stock_code'].astype(str))))
+                    top5_by_seed.append(top5.groupby('date')['stock_code'].apply(lambda s: set(s.astype(str))).to_dict())
+                if len(top1_by_seed) < 2:
+                    return {'exact_top1_agreement': 1.0, 'top1_in_other_seed_top5_rate': 1.0, 'selection_instability_penalty': 0.0}
+                exact_hits = 0
+                exact_total = 0
+                top5_hits = 0
+                top5_total = 0
+                for i in range(len(top1_by_seed)):
+                    for j in range(len(top1_by_seed)):
+                        if i == j:
+                            continue
+                        common_days = set(top1_by_seed[i]).intersection(top1_by_seed[j])
+                        for day in common_days:
+                            exact_total += 1
+                            top5_total += 1
+                            code_i = top1_by_seed[i][day]
+                            if code_i == top1_by_seed[j][day]:
+                                exact_hits += 1
+                            if code_i in top5_by_seed[j].get(day, set()):
+                                top5_hits += 1
+                exact_rate = exact_hits / exact_total if exact_total else 1.0
+                top5_rate = top5_hits / top5_total if top5_total else 1.0
+                # exact top1只诊断；惩罚主要看Top1是否仍在其他seed Top5池内。
+                penalty = 220.0 * max(0.0, 0.70 - top5_rate) + 60.0 * max(0.0, 0.25 - exact_rate)
+                return {
+                    'exact_top1_agreement': float(exact_rate),
+                    'top1_in_other_seed_top5_rate': float(top5_rate),
+                    'selection_instability_penalty': float(penalty),
+                }
+            except Exception as e:
+                logger.warning(f"[STABLE-SELECTION] Top1/Top5稳定性计算失败: {e}")
+                return {'exact_top1_agreement': 1.0, 'top1_in_other_seed_top5_rate': 1.0, 'selection_instability_penalty': 0.0}
+
+        def _stable_score_from_seed_rows(seed_rows, selection_stability):
+            search_scores = np.array([r['search_score'] for r in seed_rows], dtype=float)
+            oot_scores = np.array([r['oot_score'] for r in seed_rows], dtype=float)
+            mean_search = float(np.mean(search_scores)) if len(search_scores) else float('-inf')
+            std_search = float(np.std(search_scores)) if len(search_scores) > 1 else 0.0
+            mean_oot = float(np.mean(oot_scores)) if len(oot_scores) else float('-inf')
+            std_oot = float(np.std(oot_scores)) if len(oot_scores) > 1 else 0.0
+            decay = max(0.0, mean_search - mean_oot)
+            oot_q10_worst = min([r['oot_q10'] for r in seed_rows], default=0.0)
+            oot_dd_worst = min([r['oot_max_drawdown'] for r in seed_rows], default=0.0)
+            oot_stoploss_mean = float(np.mean([r['oot_stoploss_rate'] for r in seed_rows])) if seed_rows else 0.0
+            oot_positive_seed_count = int(sum(1 for r in seed_rows if float(r.get('oot_score', 0.0)) > 0.0))
+            oot_nonbad_seed_count = int(sum(
+                (float(r.get('oot_q10', 0.0)) >= -0.08)
+                and (abs(float(r.get('oot_max_drawdown', 0.0))) <= 0.35)
+                and not (
+                    float(r.get('oot_score', 0.0)) <= 0.0
+                    and float(r.get('oot_median', 0.0)) < 0.0
+                    and abs(float(r.get('oot_max_drawdown', 0.0))) > 0.30
+                )
+                for r in seed_rows
+            ))
+            big_loss_penalty = 5200.0 * max(0.0, -0.06 - oot_q10_worst) + 900.0 * oot_stoploss_mean
+            max_drawdown_penalty = 4500.0 * max(0.0, abs(oot_dd_worst) - 0.25)
+            selection_penalty = float(selection_stability.get('selection_instability_penalty', 0.0))
+            param_veto_flags = []
+            if oot_q10_worst < -0.08:
+                param_veto_flags.append('PARAM_VETO_OOT_Q10_LT_NEG8')
+            if abs(oot_dd_worst) > 0.35:
+                param_veto_flags.append('PARAM_VETO_OOT_DD_GT_35')
+            if float(selection_stability.get('top1_in_other_seed_top5_rate', 1.0)) < 0.55:
+                param_veto_flags.append('PARAM_VETO_TOP1_IN_TOP5_LT_55')
+            if oot_nonbad_seed_count < 2:
+                param_veto_flags.append('PARAM_VETO_NONBAD_SEEDS_LT_2')
+            stable_score = (
+                mean_search
+                - 0.50 * std_search
+                - 0.80 * decay
+                - 0.50 * std_oot
+                - 0.50 * big_loss_penalty
+                - 0.30 * max_drawdown_penalty
+                - 0.20 * selection_penalty
+            )
+            return {
+                'stable_score': float(stable_score),
+                'mean_search_score': mean_search,
+                'std_search_score': std_search,
+                'mean_oot_score': mean_oot,
+                'std_oot_score': std_oot,
+                'search_oot_decay': float(decay),
+                'oot_q10_worst': float(oot_q10_worst),
+                'oot_dd_worst': float(oot_dd_worst),
+                'oot_stoploss_mean': float(oot_stoploss_mean),
+                'oot_positive_seed_count': int(oot_positive_seed_count),
+                'oot_nonbad_seed_count': int(oot_nonbad_seed_count),
+                'big_loss_penalty': float(big_loss_penalty),
+                'max_drawdown_penalty': float(max_drawdown_penalty),
+                'param_veto': bool(param_veto_flags),
+                'param_veto_flags': ','.join(param_veto_flags) if param_veto_flags else 'OK',
+                **selection_stability,
+            }
+
+        def _run_stable_seed_review(top_trials):
+            if not ENABLE_STABLE_OOT_SELECTION or not use_minute_primary_eval:
+                return None
+            stable_rows = []
+            best_candidate = None
+            best_any_candidate = None
+            for rank_idx, trial in enumerate(top_trials, 1):
+                params = trial.user_attrs.get('full_params')
+                if not isinstance(params, dict):
+                    params = base_params.copy()
+                    params.update(trial.params)
+                logger.info(
+                    f"[STABLE] trial seed review: trial #{trial.number} rank={rank_idx}/{len(top_trials)} 开始seed复评: "
+                    f"search_score={trial.value:.2f}, params={params}"
+                )
+                seed_rows = []
+                seed_models = []
+                for seed in STABLE_SEEDS:
+                    seed_params = _with_lgb_seed(params, seed)
+                    try:
+                        seed_model, seed_ckpts, seed_search_diag = _train_lgbm_fixed_then_sparse_eval_binary(
+                            seed_params,
+                            train_data_search,
+                            val_data_search,
+                            valid_sets=[train_data_search, val_data_search],
+                            valid_names=['train', 'valid_search'],
+                            max_boost_round=max(STABLE_REVIEW_CHECKPOINTS),
+                            checkpoints=STABLE_REVIEW_CHECKPOINTS,
+                            X_trade=X_val_eval_search,
+                            y_trade_original=y_val_eval_original_search,
+                            trade_dates=val_eval_dates_search,
+                            trade_data_raw=val_eval_data_raw_search,
+                            minute_cache_df=minute_cache_search,
+                            X_auc=X_val_search,
+                            y_auc=y_val_search,
+                            label=f"STABLE-T{trial.number}-S{seed}",
+                            log_period=200,
+                            eval_detail_mode="light",
+                        )
+                        selected_iter = None
+                        if isinstance(seed_search_diag, dict):
+                            selected_iter = seed_search_diag.get('iteration')
+                        if selected_iter is not None and int(selected_iter) > 0:
+                            seed_model.best_iteration = int(selected_iter)
+                            seed_model._selected_iteration = int(selected_iter)
+                        oot_diag = _evaluate_candidate_with_minute_cache_binary(
+                            seed_model,
+                            X_val_eval_oot,
+                            y_val_eval_original_oot,
+                            val_eval_dates_oot,
+                            val_eval_data_raw_oot,
+                            minute_cache_df,
+                            num_iteration=getattr(seed_model, '_selected_iteration', None) or getattr(seed_model, 'best_iteration', None),
+                            eval_detail_mode="light",
+                        )
+                        if oot_diag is None:
+                            logger.warning(f"[STABLE] trial #{trial.number} seed={seed}: OOT评分为空，跳过")
+                            continue
+                        row = {
+                            'trial_number': int(trial.number),
+                            'seed': int(seed),
+                            'search_score': _diag_value(seed_search_diag, 'score', float(trial.value or 0.0)),
+                            'search_cum': _diag_value(seed_search_diag, 'cumulative_return', 0.0),
+                            'search_mean': _diag_value(seed_search_diag, 'mean_return', 0.0),
+                            'search_median': _diag_value(seed_search_diag, 'median_return', 0.0),
+                            'search_win_rate': _diag_value(seed_search_diag, 'win_rate', 0.0),
+                            'search_q10': _diag_value(seed_search_diag, 'q10', 0.0),
+                            'search_max_drawdown': _diag_value(seed_search_diag, 'max_drawdown', 0.0),
+                            'search_stoploss_rate': _diag_value(seed_search_diag, 'stoploss_rate', 0.0),
+                            'oot_score': _diag_value(oot_diag, 'score', 0.0),
+                            'oot_cum': _diag_value(oot_diag, 'cumulative_return', 0.0),
+                            'oot_mean': _diag_value(oot_diag, 'mean_return', 0.0),
+                            'oot_median': _diag_value(oot_diag, 'median_return', 0.0),
+                            'oot_win_rate': _diag_value(oot_diag, 'win_rate', 0.0),
+                            'oot_q10': _diag_value(oot_diag, 'q10', 0.0),
+                            'oot_max_drawdown': _diag_value(oot_diag, 'max_drawdown', 0.0),
+                            'oot_stoploss_rate': _diag_value(oot_diag, 'stoploss_rate', 0.0),
+                            'selected_iteration': int(getattr(seed_model, '_selected_iteration', None) or getattr(seed_model, 'best_iteration', 0) or 0),
+                            'risk_flags': oot_diag.get('risk_flags', 'OK') if isinstance(oot_diag, dict) else 'NA',
+                        }
+                        seed_model._stable_seed = int(seed)
+                        seed_model._stable_trial_number = int(trial.number)
+                        seed_model._stable_search_diag = seed_search_diag
+                        seed_model._stable_oot_diag = oot_diag
+                        seed_rows.append(row)
+                        seed_models.append(seed_model)
+                        logger.info(
+                            f"[STABLE] trial #{trial.number} seed={seed}: "
+                            f"search={row['search_score']:.2f}, oot={row['oot_score']:.2f}, "
+                            f"oot_cum={row['oot_cum']:.2%}, dd={row['oot_max_drawdown']:.2%}, "
+                            f"q10={row['oot_q10']:.2%}, iter={row['selected_iteration']}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[STABLE] trial #{trial.number} seed={seed} 复评失败: {e}")
+                if not seed_rows:
+                    continue
+                selection_stability = _calc_seed_selection_stability(seed_models)
+                score_pack = _stable_score_from_seed_rows(seed_rows, selection_stability)
+                candidate = {
+                    'trial_number': int(trial.number),
+                    'params': params.copy(),
+                    'seed_rows': seed_rows,
+                    'seed_models': seed_models,
+                    **score_pack,
+                }
+                stable_rows.append(candidate)
+                logger.info(
+                    f"[STABLE-SUMMARY] trial #{trial.number}: stable_score={candidate['stable_score']:.2f}, "
+                    f"mean_search={candidate['mean_search_score']:.2f}, std_search={candidate['std_search_score']:.2f}, "
+                    f"mean_oot={candidate['mean_oot_score']:.2f}, std_oot={candidate['std_oot_score']:.2f}, "
+                    f"decay={candidate['search_oot_decay']:.2f}, top1_in_top5={candidate['top1_in_other_seed_top5_rate']:.1%}, "
+                    f"exact_top1={candidate['exact_top1_agreement']:.1%}, veto={candidate['param_veto_flags']}"
+                )
+                if best_any_candidate is None or candidate['stable_score'] > best_any_candidate['stable_score']:
+                    best_any_candidate = candidate
+                if candidate.get('param_veto'):
+                    logger.warning(
+                        f"[STABLE-VETO] trial #{trial.number} 参数组触发veto: {candidate.get('param_veto_flags')}"
+                    )
+                    continue
+                if best_candidate is None or candidate['stable_score'] > best_candidate['stable_score']:
+                    best_candidate = candidate
+
+            try:
+                flat_rows = []
+                for cand in stable_rows:
+                    for row in cand['seed_rows']:
+                        out = {k: v for k, v in cand.items() if k not in ('seed_rows', 'seed_models', 'params')}
+                        out.update(row)
+                        flat_rows.append(out)
+                if flat_rows:
+                    stable_df = pd.DataFrame(flat_rows)
+                    stable_file = Path('results') / f"stable_seed_review_{preprocessed_data.get('window_name', 'window').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    stable_df.to_csv(stable_file, index=False, encoding='utf-8-sig')
+                    logger.info(f"[STABLE-SAVE] seed稳定性复评已保存: {stable_file}")
+            except Exception as e:
+                logger.warning(f"[STABLE-SAVE] 保存seed稳定性复评失败: {e}")
+            if best_candidate is None and best_any_candidate is not None:
+                logger.warning("[STABLE-WARN] all candidates vetoed; fallback to highest stable_score among vetoed candidates")
+                best_candidate = best_any_candidate
+            return best_candidate
+
+        def _stage1_filter_stable_trials(top_trials):
+            if not ENABLE_TWO_STAGE_STABLE_REVIEW:
+                return top_trials
+            if not ENABLE_STABLE_OOT_SELECTION or not use_minute_primary_eval:
+                return top_trials
+            stage1_trials = top_trials[:min(STABLE_STAGE1_TOP_TRIALS, len(top_trials))]
+            stage1_rows = []
+            logger.info(
+                f"[STABLE-STAGE1] start: top_trials={len(stage1_trials)}, "
+                f"mode={'fixed_fast' if STABLE_FAST_SCREEN_MODE else 'sparse_posthoc'}, "
+                f"seed={STABLE_STAGE1_SEED}, fixed_iter={STABLE_STAGE1_FIXED_ITERATION}, "
+                f"checkpoints={STABLE_REVIEW_CHECKPOINTS}, "
+                f"stage2_top={STABLE_STAGE2_TOP_TRIALS}"
+            )
+            for rank_idx, trial in enumerate(stage1_trials, 1):
+                params = trial.user_attrs.get('full_params')
+                if not isinstance(params, dict):
+                    params = base_params.copy()
+                    params.update(trial.params)
+                seed_params = _with_lgb_seed(params, STABLE_STAGE1_SEED)
+                try:
+                    if STABLE_FAST_SCREEN_MODE:
+                        stage1_model, stage1_search_diag = _train_lgbm_fixed_then_eval_binary(
+                            seed_params,
+                            train_data_search,
+                            val_data_search,
+                            valid_sets=[train_data_search, val_data_search],
+                            valid_names=['train', 'valid_search'],
+                            num_boost_round=STABLE_STAGE1_FIXED_ITERATION,
+                            X_trade=X_val_eval_search,
+                            y_trade_original=y_val_eval_original_search,
+                            trade_dates=val_eval_dates_search,
+                            trade_data_raw=val_eval_data_raw_search,
+                            minute_cache_df=minute_cache_search,
+                            X_auc=X_val_search,
+                            y_auc=y_val_search,
+                            label=f"STABLE-STAGE1-T{trial.number}-S{STABLE_STAGE1_SEED}",
+                            log_period=300,
+                            eval_detail_mode="light",
+                        )
+                    else:
+                        stage1_model, _stage1_ckpts, stage1_search_diag = _train_lgbm_fixed_then_sparse_eval_binary(
+                            seed_params,
+                            train_data_search,
+                            val_data_search,
+                            valid_sets=[train_data_search, val_data_search],
+                            valid_names=['train', 'valid_search'],
+                            max_boost_round=max(STABLE_REVIEW_CHECKPOINTS),
+                            checkpoints=STABLE_REVIEW_CHECKPOINTS,
+                            X_trade=X_val_eval_search,
+                            y_trade_original=y_val_eval_original_search,
+                            trade_dates=val_eval_dates_search,
+                            trade_data_raw=val_eval_data_raw_search,
+                            minute_cache_df=minute_cache_search,
+                            X_auc=X_val_search,
+                            y_auc=y_val_search,
+                            label=f"STABLE-STAGE1-T{trial.number}-S{STABLE_STAGE1_SEED}",
+                            log_period=300,
+                            eval_detail_mode="light",
+                        )
+                    stage1_oot_diag = _evaluate_candidate_with_minute_cache_binary(
+                        stage1_model,
+                        X_val_eval_oot,
+                        y_val_eval_original_oot,
+                        val_eval_dates_oot,
+                        val_eval_data_raw_oot,
+                        minute_cache_df,
+                        num_iteration=getattr(stage1_model, '_selected_iteration', None) or getattr(stage1_model, 'best_iteration', None),
+                        eval_detail_mode="light",
+                    )
+                    if stage1_search_diag is None or stage1_oot_diag is None:
+                        logger.warning(f"[STABLE-STAGE1] trial #{trial.number}: search/OOT diag为空，跳过")
+                        continue
+                    search_score = float(stage1_search_diag.get('score', float(trial.value or 0.0)))
+                    oot_score = float(stage1_oot_diag.get('score', 0.0))
+                    oot_q10 = float(stage1_oot_diag.get('q10', 0.0))
+                    oot_dd = float(stage1_oot_diag.get('max_drawdown', 0.0))
+                    oot_median = float(stage1_oot_diag.get('median_return', 0.0))
+                    num_leaves = int(params.get('num_leaves', 0) or 0)
+                    min_leaf = int(params.get('min_data_in_leaf', 0) or 0)
+                    min_hess = float(params.get('min_sum_hessian_in_leaf', 0.0) or 0.0)
+                    max_depth = int(params.get('max_depth', 0) or 0)
+                    # Effective capacity matters more than raw num_leaves. A 127-leaf tree
+                    # with min_leaf=400+ is materially different from an unconstrained 127-leaf tree.
+                    effective_capacity = (num_leaves / max(float(min_leaf), 1.0)) * 400.0
+                    complexity_penalty = (
+                        100.0 * max(0.0, effective_capacity - 63.0) / 64.0
+                        + 80.0 * max(0.0, (400 - min_leaf) / 200.0)
+                        + 40.0 * max(0.0, (150.0 - min_hess) / 100.0)
+                        + 30.0 * (1.0 if (max_depth == -1 and min_leaf < 400) else 0.0)
+                    )
+                    risk_penalty = (
+                        5200.0 * max(0.0, -0.08 - oot_q10)
+                        + 4500.0 * max(0.0, abs(oot_dd) - 0.35)
+                        + 1500.0 * max(0.0, -oot_median)
+                    )
+                    stage1_score = (
+                        search_score
+                        - 0.60 * max(0.0, search_score - oot_score)
+                        - risk_penalty
+                        - complexity_penalty
+                    )
+                    stage1_rows.append({
+                        'trial': trial,
+                        'trial_number': int(trial.number),
+                        'rank_idx': int(rank_idx),
+                        'stage1_score': float(stage1_score),
+                        'search_score': search_score,
+                        'oot_score': oot_score,
+                        'oot_q10': oot_q10,
+                        'oot_dd': oot_dd,
+                        'complexity_penalty': float(complexity_penalty),
+                        'selected_iteration': int(getattr(stage1_model, '_selected_iteration', None) or getattr(stage1_model, 'best_iteration', 0) or 0),
+                    })
+                    logger.info(
+                        f"[STABLE-STAGE1] trial #{trial.number}: stage1_score={stage1_score:.2f}, "
+                        f"search={search_score:.2f}, oot={oot_score:.2f}, q10={oot_q10:.2%}, "
+                        f"dd={oot_dd:.2%}, eff_cap={effective_capacity:.1f}, "
+                        f"complexity_penalty={complexity_penalty:.1f}, "
+                        f"iter={stage1_rows[-1]['selected_iteration']}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[STABLE-STAGE1] trial #{trial.number} failed: {e}")
+            if not stage1_rows:
+                logger.warning("[STABLE-STAGE1] 没有有效stage1结果，回退到原top trials")
+                return top_trials[:min(STABLE_STAGE2_TOP_TRIALS, len(top_trials))]
+            stage1_rows = sorted(stage1_rows, key=lambda r: r['stage1_score'], reverse=True)
+            selected_rows = stage1_rows[:min(STABLE_STAGE2_TOP_TRIALS, len(stage1_rows))]
+            logger.info(
+                f"[STABLE-STAGE1] selected for stage2: "
+                f"{[(r['trial_number'], round(r['stage1_score'], 2)) for r in selected_rows]}"
+            )
+            logger.info(
+                f"[STABLE-STAGE1] selected params: "
+                f"{[(r['trial_number'], r['trial'].params) for r in selected_rows]}"
+            )
+            return [r['trial'] for r in selected_rows]
+
+        def _load_stage2_trials_from_stage1_log(stage1_log_path, completed_trials):
+            import re
+            path = Path(stage1_log_path)
+            if not path.exists():
+                raise FileNotFoundError(f"[RESUME-STAGE2] 找不到Stage1日志: {stage1_log_path}")
+            text = path.read_text(encoding='utf-8', errors='ignore')
+            matches = re.findall(r"\[STABLE-STAGE1\] selected for stage2: \[(.*?)\]", text)
+            if not matches:
+                raise RuntimeError(f"[RESUME-STAGE2] 日志中没有找到selected for stage2: {stage1_log_path}")
+            selected_text = matches[-1]
+            trial_numbers = [int(x) for x in re.findall(r"\((\d+),\s*[-+\d.]+\)", selected_text)]
+            if not trial_numbers:
+                raise RuntimeError(f"[RESUME-STAGE2] 无法解析Stage2 trial列表: {selected_text}")
+            trial_by_number = {int(t.number): t for t in completed_trials}
+            missing = [n for n in trial_numbers if n not in trial_by_number]
+            if missing:
+                raise RuntimeError(f"[RESUME-STAGE2] Stage1选出的trial在Optuna恢复列表中不存在: {missing}")
+            resumed = [trial_by_number[n] for n in trial_numbers]
+            logger.info(
+                f"[RESUME-STAGE2] 从Stage1日志恢复Stage2 trials: file={path}, "
+                f"trials={trial_numbers}"
+            )
+            return resumed
+
+        if RESUME_STABLE_REVIEW_FROM_OPTUNA_LOG:
+            logger.warning(
+                f"[RESUME-STABLE] 已启用从日志恢复stable review，跳过本次Optuna搜索: "
+                f"log={OPTUNA_RESUME_LOG_PATH}"
+            )
+            completed_trials = _load_completed_trials_from_optuna_log(OPTUNA_RESUME_LOG_PATH)
+        else:
+            study.optimize(_objective, n_trials=actual_optuna_trials, show_progress_bar=False)
+            logger.info(f"[Optuna] optimize完成，共{len(study.trials)}个trial")
+            completed_trials = [
+                t for t in study.trials
+                if t.value is not None and np.isfinite(float(t.value))
+            ]
+            completed_trials = sorted(completed_trials, key=lambda t: float(t.value), reverse=True)
+        stable_candidate = None
+        if completed_trials:
+            top_trials = completed_trials[:min(STABLE_TOP_TRIALS, len(completed_trials))]
+            if RESUME_STAGE2_FROM_STAGE1_LOG:
+                top_trials = _load_stage2_trials_from_stage1_log(STAGE1_RESUME_LOG_PATH, completed_trials)
+            elif ENABLE_TWO_STAGE_STABLE_REVIEW:
+                top_trials = _stage1_filter_stable_trials(top_trials)
+            logger.info(
+                f"[STABLE] 开始top trials稳定性复评: top={len(top_trials)}, "
+                f"seeds={STABLE_SEEDS}, final_model_mode={FINAL_MODEL_MODE}, "
+                f"local_neighbor={ENABLE_LOCAL_NEIGHBOR_CHECK}, stress_veto={ENABLE_STRESS_VETO_CHECK}"
+            )
+            stable_candidate = _run_stable_seed_review(top_trials)
+        else:
+            logger.warning("[STABLE] 没有completed trials，跳过稳定性复评")
+
+        final_single_model = None
+        final_single_params = None
+        final_single_seed = None
+        final_single_trial_number = None
+        final_single_selected_iteration = None
+        final_single_search_diag = None
+        final_single_oot_diag = None
+        stable_single_winner = None
+        if stable_candidate is not None and stable_candidate.get('seed_models'):
+            seed_rows = list(stable_candidate['seed_rows'])
+            mean_search_for_group = float(stable_candidate.get('mean_search_score', np.mean([r['search_score'] for r in seed_rows])))
+            selected_iters = np.array([float(r.get('selected_iteration', 0) or 0) for r in seed_rows], dtype=float)
+            median_selected_iter = float(np.median(selected_iters)) if len(selected_iters) else 0.0
+            model_by_seed = {int(getattr(m, '_stable_seed', -1)): m for m in stable_candidate['seed_models']}
+            seed_candidates = []
+            for row in seed_rows:
+                search_score = float(row.get('search_score', 0.0))
+                oot_score = float(row.get('oot_score', 0.0))
+                seed_decay = max(0.0, search_score - oot_score)
+                selected_iter = int(row.get('selected_iteration', 0) or 0)
+                iter_distance = abs(float(selected_iter) - median_selected_iter)
+                iter_distance_penalty = iter_distance / max(50.0, median_selected_iter if median_selected_iter > 0 else 50.0)
+                seed_risk_penalty = (
+                    5200.0 * max(0.0, -0.06 - float(row.get('oot_q10', 0.0)))
+                    + 4500.0 * max(0.0, abs(float(row.get('oot_max_drawdown', 0.0))) - 0.25)
+                    + 900.0 * float(row.get('oot_stoploss_rate', 0.0))
+                )
+                seed_veto_flags = []
+                oot_score = float(row.get('oot_score', 0.0))
+                oot_median = float(row.get('oot_median', 0.0))
+                oot_q10 = float(row.get('oot_q10', 0.0))
+                oot_dd = float(row.get('oot_max_drawdown', 0.0))
+                oot_stoploss = float(row.get('oot_stoploss_rate', 0.0))
+                if oot_q10 < -0.08:
+                    seed_veto_flags.append('SEED_VETO_OOT_Q10_LT_NEG8')
+                if abs(oot_dd) > 0.35:
+                    seed_veto_flags.append('SEED_VETO_OOT_DD_GT_35')
+                if oot_score <= 0.0 and oot_median < 0.0 and abs(oot_dd) > 0.30:
+                    seed_veto_flags.append('SEED_VETO_OOT_SCORE_MEDIAN_DD_BAD')
+                if oot_stoploss > 0.25:
+                    seed_veto_flags.append('SEED_VETO_STOPLOSS_GT_25')
+                single_model_score = (
+                    search_score
+                    - 0.70 * seed_decay
+                    - 0.20 * abs(search_score - mean_search_for_group)
+                    - 0.10 * iter_distance_penalty
+                    - seed_risk_penalty
+                )
+                seed_candidates.append({
+                    **row,
+                    'seed_decay': float(seed_decay),
+                    'iter_distance': float(iter_distance),
+                    'iter_distance_penalty': float(iter_distance_penalty),
+                    'seed_risk_penalty': float(seed_risk_penalty),
+                    'single_model_score': float(single_model_score),
+                    'seed_veto': bool(seed_veto_flags),
+                    'seed_veto_flags': ','.join(seed_veto_flags) if seed_veto_flags else 'OK',
+                })
+            non_veto_seeds = [r for r in seed_candidates if not r['seed_veto']]
+            if not non_veto_seeds:
+                logger.warning("[STABLE-SINGLE-WARN] all seeds vetoed; fallback to highest single_model_score among vetoed seeds")
+                eligible_seed_rows = seed_candidates
+            else:
+                eligible_seed_rows = non_veto_seeds
+            stable_single_winner = max(eligible_seed_rows, key=lambda r: float(r.get('single_model_score', float('-inf'))))
+            final_single_seed = int(stable_single_winner['seed'])
+            final_single_model = model_by_seed.get(final_single_seed)
+            if final_single_model is None:
+                raise RuntimeError(f"[STABLE-SINGLE] 找不到winner seed对应模型: seed={final_single_seed}")
+            model = final_single_model
+            best_params_found = stable_candidate.get('params') or base_params.copy()
+            final_single_params = best_params_found
+            final_single_trial_number = int(stable_candidate['trial_number'])
+            final_single_selected_iteration = int(stable_single_winner.get('selected_iteration', 0) or 0)
+            final_single_search_diag = getattr(final_single_model, '_stable_search_diag', None)
+            final_single_oot_diag = getattr(final_single_model, '_stable_oot_diag', None)
+            best_top1_return = float(stable_candidate.get('stable_score', float('-inf')))
+            best_minute_diag = final_single_search_diag or best_minute_diag
+            try:
+                model._stable_single_model = True
+                model._stable_score = float(stable_candidate.get('stable_score', 0.0))
+                model._stable_single_score = float(stable_single_winner.get('single_model_score', 0.0))
+                model._stable_params = best_params_found.copy() if isinstance(best_params_found, dict) else best_params_found
+                model._selected_iteration = final_single_selected_iteration
+                model.best_iteration = final_single_selected_iteration
+            except Exception:
+                pass
+            logger.info(
+                f"[STABLE-WINNER] trial #{stable_candidate['trial_number']} wins: "
+                f"stable_score={stable_candidate['stable_score']:.2f}, "
+                f"mean_search={stable_candidate['mean_search_score']:.2f}, std_search={stable_candidate['std_search_score']:.2f}, "
+                f"mean_oot={stable_candidate['mean_oot_score']:.2f}, std_oot={stable_candidate['std_oot_score']:.2f}, "
+                f"decay={stable_candidate['search_oot_decay']:.2f}, "
+                f"param_veto={stable_candidate.get('param_veto_flags', 'OK')}, "
+                f"top1_in_top5={stable_candidate['top1_in_other_seed_top5_rate']:.1%}"
+            )
+            logger.info(
+                f"[STABLE-SINGLE-WINNER] trial={final_single_trial_number}, seed={final_single_seed}, "
+                f"single_score={stable_single_winner['single_model_score']:.2f}, "
+                f"search={stable_single_winner['search_score']:.2f}, oot={stable_single_winner['oot_score']:.2f}, "
+                f"decay={stable_single_winner['seed_decay']:.2f}, iter={final_single_selected_iteration}, "
+                f"q10={stable_single_winner['oot_q10']:.2%}, dd={stable_single_winner['oot_max_drawdown']:.2%}, "
+                f"stoploss={stable_single_winner['oot_stoploss_rate']:.1%}, veto={stable_single_winner['seed_veto_flags']}"
+            )
+            try:
+                winner_file = Path('results') / f"stable_single_winner_{preprocessed_data.get('window_name', 'window').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                winner_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(winner_file, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'trial_number': final_single_trial_number,
+                        'seed': final_single_seed,
+                        'selected_iteration': final_single_selected_iteration,
+                        'stable_candidate': {k: v for k, v in stable_candidate.items() if k not in ('seed_models', 'seed_rows', 'params')},
+                        'single_winner': stable_single_winner,
+                        'params': best_params_found,
+                    }, f, ensure_ascii=False, indent=2, default=str)
+                logger.info(f"[STABLE-SINGLE-SAVE] winner已保存: {winner_file}")
+            except Exception as e:
+                logger.warning(f"[STABLE-SINGLE-SAVE] 保存winner失败: {e}")
+        elif study.best_trial is not None and best_trial_state.get('model') is not None:
             # v10关键修复：直接复用Optuna过程中真正训练出来的最佳trial booster，不再final retrain。
             # 注意：study.best_value与best_trial_state['score']理论上应一致；若因异常不一致，以实际保存的booster为准并记录日志。
             best_top1_return = float(best_trial_state.get('score', study.best_value))
@@ -4406,17 +5627,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         else:
             logger.warning("[Optuna] 没有可复用的最佳trial booster，使用默认参数训练一次fallback模型")
             if use_minute_primary_eval:
-                model, _final_es_diags, _final_es_best = _train_lgbm_with_minute_checkpoint_earlystop_binary(
+                model, _final_es_diags, _final_es_best = _train_lgbm_fixed_then_sparse_eval_binary(
                     base_params,
                     train_data,
                     val_data,
                     valid_sets=[train_data, val_data],
                     valid_names=['train', 'valid'],
-                    max_boost_round=OPTUNA_FINAL_NUM_BOOST_ROUND,
-                    checkpoint_start=CHECKPOINT_EVAL_START,
-                    checkpoint_period=CHECKPOINT_EVAL_PERIOD,
-                    checkpoint_patience=CHECKPOINT_PATIENCE,
-                    checkpoint_min_delta=CHECKPOINT_MIN_DELTA,
+                    max_boost_round=max(STABLE_REVIEW_CHECKPOINTS),
+                    checkpoints=STABLE_REVIEW_CHECKPOINTS,
                     X_trade=X_val_eval_scaled,
                     y_trade_original=y_val_eval_original,
                     trade_dates=val_eval_dates,
@@ -4424,8 +5642,9 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     minute_cache_df=minute_cache_df,
                     X_auc=X_val_scaled,
                     y_auc=y_val,
-                    label="FINAL-ES-DEFAULT",
-                    log_period=50,
+                    label="FINAL-SPARSE-DEFAULT",
+                    log_period=100,
+                    eval_detail_mode="light",
                 )
             else:
                 model = lgb.train(
@@ -4433,15 +5652,108 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                     valid_sets=[train_data, val_data], valid_names=['train', 'valid'], callbacks=callbacks
                 )
 
+        if use_minute_primary_eval and getattr(model, '_stable_single_model', False):
+            try:
+                selected_iter_for_recheck = getattr(model, '_selected_iteration', None) or getattr(model, 'best_iteration', None)
+                if selected_iter_for_recheck is not None:
+                    selected_iter_for_recheck = int(selected_iter_for_recheck)
+                    candidate_iters = sorted({
+                        int(selected_iter_for_recheck + int(offset))
+                        for offset in FINAL_SINGLE_RECHECK_OFFSETS
+                        if 50 <= int(selected_iter_for_recheck + int(offset)) <= max(STABLE_REVIEW_CHECKPOINTS)
+                    })
+                    if candidate_iters:
+                        logger.info(
+                            f"[FINAL-SINGLE-RECHECK] selected_iter={selected_iter_for_recheck}, "
+                            f"candidate_iters={candidate_iters}, eval_detail=light"
+                        )
+                        recheck_diags = _evaluate_minute_checkpoints_binary(
+                            model,
+                            candidate_iters,
+                            X_val_eval_search,
+                            y_val_eval_original_search,
+                            val_eval_dates_search,
+                            val_eval_data_raw_search,
+                            minute_cache_df,
+                            X_auc=X_val_search,
+                            y_auc=y_val_search,
+                            label="FINAL-SINGLE-RECHECK",
+                            eval_detail_mode="light",
+                        )
+                        if recheck_diags:
+                            selected_recheck = max(recheck_diags, key=lambda d: float(d.get('score', float('-inf'))))
+                            selected_recheck_iter = int(selected_recheck.get('iteration', selected_iter_for_recheck))
+                            model.best_iteration = selected_recheck_iter
+                            try:
+                                model._selected_iteration = selected_recheck_iter
+                            except Exception:
+                                pass
+                            final_single_selected_iteration = selected_recheck_iter
+                            if stable_single_winner is not None:
+                                stable_single_winner['selected_iteration_after_recheck'] = selected_recheck_iter
+                                stable_single_winner['recheck_score'] = float(selected_recheck.get('score', 0.0))
+                            logger.info(
+                                f"[FINAL-SINGLE-RECHECK-BEST] iter={selected_recheck_iter} "
+                                f"score={selected_recheck.get('score', 0.0):.2f} "
+                                f"cum={selected_recheck.get('cumulative_return', 0.0):.3%} "
+                                f"dd={selected_recheck.get('max_drawdown', 0.0):.2%} "
+                                f"flags={selected_recheck.get('risk_flags', '')}"
+                            )
+            except Exception as _recheck_e:
+                logger.warning(f"[FINAL-SINGLE-RECHECK] 局部iteration精修失败: {_recheck_e}")
+
         # 最终重训模型已使用checkpoint交易早停；这里再次保存/打印checkpoint排行榜，确保最终选择可审计。
         final_minute_diag = None
         if use_minute_primary_eval:
             try:
+                if getattr(model, '_stable_single_model', False):
+                    final_single_search_eval = _evaluate_candidate_with_minute_cache_binary(
+                        model,
+                        X_val_eval_search,
+                        y_val_eval_original_search,
+                        val_eval_dates_search,
+                        val_eval_data_raw_search,
+                        minute_cache_df,
+                        num_iteration=getattr(model, '_selected_iteration', None) or getattr(model, 'best_iteration', None),
+                    )
+                    if final_single_search_eval is not None:
+                        logger.info(
+                            f"[FINAL-SINGLE-SEARCH] score={final_single_search_eval.get('score', 0.0):.2f}, "
+                            f"cum={final_single_search_eval.get('cumulative_return', 0.0):.3%}, "
+                            f"mean={final_single_search_eval.get('mean_return', 0.0):.3%}, "
+                            f"median={final_single_search_eval.get('median_return', 0.0):.3%}, "
+                            f"win={final_single_search_eval.get('win_rate', 0.0):.1%}, "
+                            f"q10={final_single_search_eval.get('q10', 0.0):.3%}, "
+                            f"dd={final_single_search_eval.get('max_drawdown', 0.0):.2%}, "
+                            f"stoploss={final_single_search_eval.get('stoploss_rate', 0.0):.1%}, "
+                            f"flags={final_single_search_eval.get('risk_flags','')}"
+                        )
+                    final_single_oot_eval = _evaluate_candidate_with_minute_cache_binary(
+                        model,
+                        X_val_eval_oot,
+                        y_val_eval_original_oot,
+                        val_eval_dates_oot,
+                        val_eval_data_raw_oot,
+                        minute_cache_df,
+                        num_iteration=getattr(model, '_selected_iteration', None) or getattr(model, 'best_iteration', None),
+                    )
+                    if final_single_oot_eval is not None:
+                        logger.info(
+                            f"[FINAL-SINGLE-OOT] score={final_single_oot_eval.get('score', 0.0):.2f}, "
+                            f"cum={final_single_oot_eval.get('cumulative_return', 0.0):.3%}, "
+                            f"mean={final_single_oot_eval.get('mean_return', 0.0):.3%}, "
+                            f"median={final_single_oot_eval.get('median_return', 0.0):.3%}, "
+                            f"win={final_single_oot_eval.get('win_rate', 0.0):.1%}, "
+                            f"q10={final_single_oot_eval.get('q10', 0.0):.3%}, "
+                            f"dd={final_single_oot_eval.get('max_drawdown', 0.0):.2%}, "
+                            f"stoploss={final_single_oot_eval.get('stoploss_rate', 0.0):.1%}, "
+                            f"flags={final_single_oot_eval.get('risk_flags','')}"
+                        )
                 final_checkpoints = [100, 200, 300, 400, 500, 600, 700, 800, getattr(model, '_selected_iteration', None) or getattr(model, 'best_iteration', None), getattr(model, 'current_iteration', lambda: None)()]
                 final_checkpoint_diags = _evaluate_minute_checkpoints_binary(
                     model, final_checkpoints,
-                    X_val_eval_scaled, y_val_eval_original, val_eval_dates, val_eval_data_raw, minute_cache_df,
-                    X_auc=X_val_scaled, y_auc=y_val, label="FINAL"
+                    X_val_eval_safe, y_val_eval_original_safe, val_eval_dates_safe, val_eval_data_raw_safe, minute_cache_df,
+                    X_auc=X_val_search, y_auc=y_val_search, label="FINAL-SINGLE-VAL-FULL-SAFE"
                 )
                 if final_checkpoint_diags:
                     try:
@@ -4463,13 +5775,14 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                         logger.info(f"[FINAL-CHK-SAVE] checkpoint排行榜已保存: {ckpt_out}")
                     except Exception as _e:
                         logger.warning(f"[FINAL-CHK-SAVE] 保存checkpoint排行榜失败: {_e}")
-                    if getattr(model, '_trial_booster_reused', False):
+                    if getattr(model, '_stable_single_model', False) or getattr(model, '_trial_booster_reused', False):
                         # v10关键修复：复用Optuna最佳trial booster时，最终阶段只做审计，不再重新选择iteration，
                         # 避免FINAL审计列表遗漏某些trial checkpoint或再次引入不同选择口径。
                         logger.info(
-                            f"[FINAL-ITER-SELECT] 已复用Optuna最佳trial booster，跳过FINAL二次选点；"
+                            f"[FINAL-ITER-SELECT] 已选定final single/trial booster，跳过FINAL二次选点；"
                             f"selected_iteration={getattr(model, '_selected_iteration', getattr(model, 'best_iteration', None))}, "
-                            f"trial={getattr(model, '_optuna_trial_number', None)}"
+                            f"trial={getattr(model, '_stable_trial_number', getattr(model, '_optuna_trial_number', None))}, "
+                            f"seed={getattr(model, '_stable_seed', None)}"
                         )
                     else:
                         selected_final = max(final_checkpoint_diags, key=lambda d: float(d.get('score', float('-inf'))))
@@ -4489,11 +5802,12 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
                             except Exception as _e:
                                 logger.warning(f"[FINAL-ITER-SELECT] 设置model.best_iteration失败，将继续使用LightGBM默认best_iteration: {_e}")
                 final_minute_diag = _evaluate_candidate_with_minute_cache_binary(
-                    model, X_val_eval_scaled, y_val_eval_original, val_eval_dates, val_eval_data_raw, minute_cache_df
+                    model, X_val_eval_safe, y_val_eval_original_safe, val_eval_dates_safe, val_eval_data_raw_safe, minute_cache_df,
+                    num_iteration=getattr(model, '_selected_iteration', None) or getattr(model, 'best_iteration', None)
                 )
                 if final_minute_diag is not None:
                     logger.info(
-                        f"[FINAL-MINUTE] days={final_minute_diag.get('days', 0)}, usable={final_minute_diag.get('usable_rate', 0.0):.1%}, "
+                        f"[FINAL-SINGLE-VAL-FULL-SAFE] days={final_minute_diag.get('days', 0)}, usable={final_minute_diag.get('usable_rate', 0.0):.1%}, "
                         f"score={final_minute_diag.get('score', 0.0):.2f}, cum={final_minute_diag.get('cumulative_return', 0.0):.3%}, "
                         f"flags={final_minute_diag.get('risk_flags','')}, mean={final_minute_diag.get('mean_return', 0.0):.3%}, median={final_minute_diag.get('median_return', 0.0):.3%}, "
                         f"win={final_minute_diag.get('win_rate', 0.0):.1%}, q10={final_minute_diag.get('q10', 0.0):.3%}, "
@@ -4566,11 +5880,11 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         )
         try:
             _log_prediction_diagnostics_binary(
-                model, X_val_eval_scaled, y_val_eval_original, val_eval_dates,
-                eval_data_raw=val_eval_data_raw, minute_cache_df=minute_cache_df, label="FINAL-VAL-FULL"
+                model, X_val_eval_safe, y_val_eval_original_safe, val_eval_dates_safe,
+                eval_data_raw=val_eval_data_raw_safe, minute_cache_df=minute_cache_df, label="FINAL-SINGLE-VAL-FULL-SAFE"
             )
         except Exception as e:
-            logger.warning(f"[FINAL-VAL-FULL-DIAG] 诊断失败: {e}")
+            logger.warning(f"[FINAL-SINGLE-VAL-FULL-SAFE-DIAG] 诊断失败: {e}")
 
         if use_minute_primary_eval:
             logger.info(f"[SUCCESS] 二分类脚本当前为分钟主评估选模: score={best_top1_return:.4f}")
@@ -4611,7 +5925,9 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
         
         model_results = {
             'model': model,
+            'models': [model],
             'scaler': None,
+            'scalers': [None],
             'feature_names': feature_columns,
             'label_stats': label_stats,
             'performance': {'train_auc': train_auc, 'val_auc': val_auc},
@@ -4619,6 +5935,13 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             'model_params': best_params_found if best_params_found else base_params,
             'feature_importance': dict(zip(feature_columns, feature_importance)),
             'model_type': 'lightgbm',
+            'model_types': ['lightgbm'],
+            'model_mode': FINAL_MODEL_MODE,
+            'stable_single_seed': final_single_seed,
+            'stable_single_trial_number': final_single_trial_number,
+            'stable_single_selected_iteration': final_single_selected_iteration,
+            'stable_single_winner': stable_single_winner,
+            'stable_selection': stable_candidate,
         }
 
         return model_results
@@ -17452,18 +18775,31 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
             model_file = Path("results") / f"{model_type}_model_window{window_idx}_{timestamp}.pkl"
 
             with open(model_file, 'wb') as f:
+                model_list = model_result.get('models') or [model_result['model']]
+                scaler_list = model_result.get('scalers') or [model_result.get('scaler')]
+                model_type_list = model_result.get('model_types') or [model_type] * len(model_list)
                 pickle.dump({
-                    'model': model_result['model'],
+                    'model': model_list[0],
+                    'ensemble_models': model_list,
                     'scaler': model_result['scaler'],
+                    'ensemble_scalers': scaler_list,
                     'feature_names': model_result['feature_names'],
                     'winsorization_thresholds': {},  # 因子已在生成阶段完成winsorize
                     'model_type': model_type,
+                    'ensemble_model_types': model_type_list,
+                    'model_mode': model_result.get('model_mode', 'single' if len(model_list) == 1 else 'ensemble'),
+                    'stable_single_seed': model_result.get('stable_single_seed'),
+                    'stable_single_trial_number': model_result.get('stable_single_trial_number'),
+                    'stable_single_selected_iteration': model_result.get('stable_single_selected_iteration'),
+                    'stable_single_winner': model_result.get('stable_single_winner'),
                     'window_idx': window_idx,
                     'best_params': best_params if model_type == 'xgboost' else None,
+                    'model_params': model_result.get('model_params'),
                     'performance': model_result.get('performance', {})
                 }, f)
 
-            logger.info(f"[OK] {model_type.upper()}模型已保存: {model_file.name}")
+            save_mode = model_result.get('model_mode', 'single' if len(model_list) == 1 else 'ensemble')
+            logger.info(f"[OK] {model_type.upper()}模型已保存: {model_file.name} (model_mode={save_mode}, models={len(model_list)})")
             model_files.append(model_file)
 
         # [强化] 5. 计算模型权重(基于验证集RankIC) - 排序模型专用
@@ -17484,15 +18820,38 @@ def _train_final_model_for_window(train_data, val_data, test_data, best_params, 
         if industry_mapping is None:
             logger.info(f"model_result中industry_mapping为none")
         # 返回集成结果
+        models_out = []
+        scalers_out = []
+        model_types_out = []
+        model_performances_out = []
+        for model_result in ensemble_results:
+            model_list = model_result.get('models') or [model_result['model']]
+            scaler_list = model_result.get('scalers') or [model_result.get('scaler')] * len(model_list)
+            model_type_list = model_result.get('model_types') or [model_result.get('model_type', 'xgboost')] * len(model_list)
+            models_out.extend(model_list)
+            scalers_out.extend(scaler_list)
+            model_types_out.extend(model_type_list)
+            perf = model_result.get('performance', {})
+            perf_weight = perf.get('rank_ic')
+            if perf_weight is None:
+                perf_weight = 1.0
+            model_performances_out.extend([perf_weight] * len(model_list))
+
         return {
-            'models': [m['model'] for m in ensemble_results],
-            'scalers': [m['scaler'] for m in ensemble_results],
+            'models': models_out,
+            'scalers': scalers_out,
             'feature_names': ensemble_results[0]['feature_names'],  # 所有模型使用相同特征
             'winsorization_thresholds': {},  # 因子已在生成阶段完成winsorize
             'model_files': model_files,
-            'model_performances': model_performances,
-            'model_types': [m.get('model_type', 'xgboost') for m in ensemble_results],
-            'industry_mapping': industry_mapping
+            'model_performances': model_performances_out,
+            'model_types': model_types_out,
+            'industry_mapping': industry_mapping,
+            'model_mode': ensemble_results[0].get('model_mode', 'single' if len(models_out) == 1 else 'ensemble'),
+            'stable_single_seed': ensemble_results[0].get('stable_single_seed'),
+            'stable_single_trial_number': ensemble_results[0].get('stable_single_trial_number'),
+            'stable_single_selected_iteration': ensemble_results[0].get('stable_single_selected_iteration'),
+            'stable_single_winner': ensemble_results[0].get('stable_single_winner'),
+            'stable_selection': ensemble_results[0].get('stable_selection'),
         }
 
     except Exception as e:
@@ -17511,6 +18870,12 @@ def _backtest_on_window(test_data, model_result, window, args):
         # 原因：确保训练和测试使用完全相同的特征
         feature_columns = model_result['feature_names']
         logger.info(f"[CHART] 使用训练时的特征列表: {len(feature_columns)}个特征")
+        logger.info(
+            f"[MODEL-MODE] model_mode={model_result.get('model_mode', 'unknown')}, "
+            f"stable_single_trial={model_result.get('stable_single_trial_number')}, "
+            f"seed={model_result.get('stable_single_seed')}, "
+            f"iter={model_result.get('stable_single_selected_iteration')}"
+        )
 
         # [SW行业编码] 检查是否需要为测试集添加行业特征
         test_data_with_industry = test_data.copy()
@@ -17597,7 +18962,11 @@ def _backtest_on_window(test_data, model_result, window, args):
             model_performances = model_result.get('model_performances', [1.0] * len(models))
             model_types = model_result.get('model_types', ['xgboost'] * len(models))
 
-        logger.info(f"[CHART] 使用{len(models)}个模型进行集成预测")
+        model_mode = model_result.get('model_mode', 'single' if len(models) == 1 else 'ensemble')
+        if model_mode == 'single' or len(models) == 1:
+            logger.info(f"[SINGLE] 使用单模型进行Top1预测: model_type={model_types[0] if model_types else 'unknown'}")
+        else:
+            logger.info(f"[CHART] 使用{len(models)}个模型进行集成预测")
 
         X_test_prediction, rounded_features = _round_prediction_feature_matrix(
             X_test_aligned,
@@ -17629,9 +18998,18 @@ def _backtest_on_window(test_data, model_result, window, args):
 
             all_predictions.append(y_pred_single)
 
-        y_pred, std_pred = _aggregate_model_predictions(all_predictions, model_performances, logger)
-        if len(all_predictions) > 1:
+        if model_mode == 'single' or len(all_predictions) == 1:
+            y_pred = np.asarray(all_predictions[0], dtype=float)
+            std_pred = np.zeros_like(y_pred, dtype=float)
+        else:
+            y_pred, std_pred = _aggregate_model_predictions(all_predictions, model_performances, logger)
+        if len(all_predictions) > 1 and model_mode != 'single':
             logger.info(f"[CHART] 预测分歧度: 均值={std_pred.mean():.4f}, 最大={std_pred.max():.4f}")
+        if model_mode == 'single' or len(all_predictions) == 1:
+            logger.info(
+                f"[FINAL-SINGLE-TEST] 单模型测试集预测完成: rows={len(y_pred):,}, "
+                f"pred_mean={float(np.mean(y_pred)):.6f}, pred_std={float(np.std(y_pred)):.6f}"
+            )
 
         if run_rounding_diagnostic and all_predictions_before_round:
             y_pred_before_round, _ = _aggregate_model_predictions(
@@ -18416,17 +19794,33 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
                     lgb_data = pickle.load(f)
 
                 # 构建model_result（单模型）
+                loaded_models = lgb_data.get('ensemble_models')
+                if not loaded_models:
+                    loaded_models = [lgb_data['model']]
+                loaded_scalers = lgb_data.get('ensemble_scalers')
+                if not loaded_scalers:
+                    loaded_scalers = [lgb_data.get('scaler')] * len(loaded_models)
+                loaded_model_types = lgb_data.get('ensemble_model_types')
+                if not loaded_model_types:
+                    loaded_model_types = ['lightgbm'] * len(loaded_models)
                 model_result = {
-                    'models': [lgb_data['model']],
-                    'scalers': [lgb_data['scaler']],
+                    'models': loaded_models,
+                    'scalers': loaded_scalers,
                     'feature_names': lgb_data['feature_names'],
                     'winsorization_thresholds': {},  # 因子已在生成阶段完成winsorize
                     'model_files': [latest_lgb_file],
-                    'model_performances': [1.0],
-                    'model_types': ['lightgbm']
+                    'model_performances': [1.0] * len(loaded_models),
+                    'model_types': loaded_model_types,
+                    'model_mode': lgb_data.get('model_mode', 'single' if len(loaded_models) == 1 else 'ensemble'),
+                    'stable_single_seed': lgb_data.get('stable_single_seed'),
+                    'stable_single_trial_number': lgb_data.get('stable_single_trial_number'),
+                    'stable_single_selected_iteration': lgb_data.get('stable_single_selected_iteration'),
                 }
 
-                logger.info(f"[OK] 成功加载Window {window_idx}的LightGBM模型")
+                logger.info(
+                    f"[OK] 成功加载Window {window_idx}的LightGBM模型: "
+                    f"model_mode={model_result['model_mode']}, models={len(loaded_models)}"
+                )
 
             except Exception as e:
                 logger.warning(f"[WARNING] 加载模型失败: {e}")

@@ -175,8 +175,12 @@ class StrategyConfig:
     # v3 Rule6: 近3日跌停过滤
     enable_exhaustion_limit_down_3d: bool = True       # 是否启用近3日跌停过滤
     # v3 Rule7: 短强但散户资金流出
-    exhaustion_v3_top10_strength_threshold: float = 0.70    # top10_10d_strength_level_v3 >= 此值
-    exhaustion_v3_buy_sm_amount_threshold: float = -1.25    # buy_sm_amount_rate <= 此值
+    exhaustion_v3_top10_strength_threshold: float = 0.80    # top10_10d_strength_level_v3 >= 此值
+    exhaustion_v3_buy_sm_amount_pct_threshold: float = 0.50  # buy_sm_amount_rate_pct <= 此值（当前Rule7）
+    exhaustion_v3_buy_sm_amount_backup_raw_threshold: float = -1.50  # 备用Rule7: buy_sm_amount_rate <= 此值
+    exhaustion_v3_buy_sm_amount_threshold: float = -1.50    # 兼容旧字段名，保持与 backup_raw 同值
+    exhaustion_v3_rule7_reg_severe_exempt_pct_threshold: float = 0.999  # Rule7豁免: 极强趋势环境
+    exhaustion_v3_rule7_top10_3d_exempt_threshold: float = 0.85          # Rule7豁免: 近3日头部强势延续
     # v3 Rule8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
     exhaustion_v3_non_first_limit_up_perf_pct20_threshold: float = 0.80
     exhaustion_v3_kdj_j_z_threshold: float = 0.75
@@ -2793,14 +2797,26 @@ class BacktestStrategy:
 
             # Rule 7: 短强但散户资金流出 — 主力出货嫌疑
             top10_th = self.config.exhaustion_v3_top10_strength_threshold
-            buy_sm_th = self.config.exhaustion_v3_buy_sm_amount_threshold
+            buy_sm_pct_th = self.config.exhaustion_v3_buy_sm_amount_pct_threshold
+            buy_sm_raw_th = self.config.exhaustion_v3_buy_sm_amount_threshold
+            rule7_reg_severe_exempt_th = self.config.exhaustion_v3_rule7_reg_severe_exempt_pct_threshold
+            rule7_top10_3d_exempt_th = self.config.exhaustion_v3_rule7_top10_3d_exempt_threshold
             top10_val = stock.get('top10_10d_strength_level_v3', np.nan)
             buy_sm_val = stock.get('buy_sm_amount_rate', np.nan)
-            rule7_hit = (
-                pd.notna(top10_val) and pd.notna(buy_sm_val)
+            buy_sm_pct_val = stock.get('buy_sm_amount_rate_pct', np.nan)
+            rule7_reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
+            rule7_top10_3d_val = stock.get('top10_3d_recent3_strength_v3', np.nan)
+            rule7_base_hit = (
+                pd.notna(top10_val) and pd.notna(buy_sm_pct_val)
                 and top10_val >= top10_th
-                and buy_sm_val <= buy_sm_th
+                and buy_sm_pct_val <= buy_sm_pct_th
             )
+            rule7_exempt_hit = (
+                pd.notna(rule7_reg_severe_pct_val) and pd.notna(rule7_top10_3d_val)
+                and rule7_reg_severe_pct_val >= rule7_reg_severe_exempt_th
+                and rule7_top10_3d_val >= rule7_top10_3d_exempt_th
+            )
+            rule7_hit = rule7_base_hit and not rule7_exempt_hit
 
             # Rule 8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
             non_first_pct20_th = self.config.exhaustion_v3_non_first_limit_up_perf_pct20_threshold
@@ -2890,7 +2906,13 @@ class BacktestStrategy:
             if rule6_hit:
                 parts.append('limit_down_3d=1')
             if rule7_hit:
-                parts.append(f'top10({top10_val:.2f})>={top10_th} & buy_sm({buy_sm_val:.2f})<={buy_sm_th}')
+                parts.append(
+                    f'top10({top10_val:.2f})>={top10_th} '
+                    f'& buy_sm_pct({buy_sm_pct_val:.2f})<={buy_sm_pct_th} '
+                    f'& NOT(rule7_reg_severe_pct({rule7_reg_severe_pct_val:.4f})>={rule7_reg_severe_exempt_th} '
+                    f'& top10_3d_recent3_strength({rule7_top10_3d_val:.2f})>={rule7_top10_3d_exempt_th}) '
+                    f'[raw_buy_sm={buy_sm_val:.2f}, backup_raw_th={buy_sm_raw_th}]'
+                )
             if rule8_hit:
                 parts.append(f'non_first_limit_pct20({non_first_pct20_val:.2f})>={non_first_pct20_th} & kdj_j_9_z({kdj_j_val:.2f})<={kdj_j_th}')
             if rule9_hit:
@@ -3649,14 +3671,26 @@ class BacktestStrategy:
 
                                 # Rule 7: 短强但散户资金流出
                                 top10_th = self.config.exhaustion_v3_top10_strength_threshold
+                                buy_sm_pct_th = self.config.exhaustion_v3_buy_sm_amount_pct_threshold
                                 buy_sm_th = self.config.exhaustion_v3_buy_sm_amount_threshold
+                                rule7_reg_severe_exempt_th = self.config.exhaustion_v3_rule7_reg_severe_exempt_pct_threshold
+                                rule7_top10_3d_exempt_th = self.config.exhaustion_v3_rule7_top10_3d_exempt_threshold
                                 top10_val = stock.get('top10_10d_strength_level_v3', np.nan)
                                 buy_sm_val = stock.get('buy_sm_amount_rate', np.nan)
-                                rule7_hit = (
-                                    pd.notna(top10_val) and pd.notna(buy_sm_val)
+                                buy_sm_pct_val = stock.get('buy_sm_amount_rate_pct', np.nan)
+                                rule7_reg_severe_pct_val = stock.get('reg_severe_up_10d_ratio_pct', np.nan)
+                                rule7_top10_3d_val = stock.get('top10_3d_recent3_strength_v3', np.nan)
+                                rule7_base_hit = (
+                                    pd.notna(top10_val) and pd.notna(buy_sm_pct_val)
                                     and top10_val >= top10_th
-                                    and buy_sm_val <= buy_sm_th
+                                    and buy_sm_pct_val <= buy_sm_pct_th
                                 )
+                                rule7_exempt_hit = (
+                                    pd.notna(rule7_reg_severe_pct_val) and pd.notna(rule7_top10_3d_val)
+                                    and rule7_reg_severe_pct_val >= rule7_reg_severe_exempt_th
+                                    and rule7_top10_3d_val >= rule7_top10_3d_exempt_th
+                                )
+                                rule7_hit = rule7_base_hit and not rule7_exempt_hit
 
                                 # Rule 8: 连板情绪高分位 + 个股KDJ-J截面动能偏弱
                                 non_first_pct20_th = self.config.exhaustion_v3_non_first_limit_up_perf_pct20_threshold
@@ -3718,7 +3752,13 @@ class BacktestStrategy:
                                     if rule6_hit:
                                         parts.append('limit_down_3d=1')
                                     if rule7_hit:
-                                        parts.append(f'top10({top10_val:.2f})>={top10_th} & buy_sm({buy_sm_val:.2f})<={buy_sm_th}')
+                                        parts.append(
+                                            f'top10({top10_val:.2f})>={top10_th} '
+                                            f'& buy_sm_pct({buy_sm_pct_val:.2f})<={buy_sm_pct_th} '
+                                            f'& NOT(rule7_reg_severe_pct({rule7_reg_severe_pct_val:.4f})>={rule7_reg_severe_exempt_th} '
+                                            f'& top10_3d_recent3_strength({rule7_top10_3d_val:.2f})>={rule7_top10_3d_exempt_th}) '
+                                            f'[raw_buy_sm={buy_sm_val:.2f}, backup_raw_th={buy_sm_th}]'
+                                        )
                                     if rule8_hit:
                                         parts.append(f'non_first_limit_pct20({non_first_pct20_val:.2f})>={non_first_pct20_th} & kdj_j_9_z({kdj_j_val:.2f})<={kdj_j_th}')
                                     if rule9_hit:
@@ -4301,6 +4341,11 @@ def get_minute_trade_cache_rule_signature(config: Optional[StrategyConfig] = Non
         f"_exv3sz{cfg.exhaustion_v3_score_z_in_day_threshold:.3f}"
         f"_exr{cfg.exhaustion_runup_ma5_threshold:.3f}"
         f"_ext{cfg.exhaustion_top10_10d_strength_threshold:.3f}"
+        f"_exv3top{cfg.exhaustion_v3_top10_strength_threshold:.3f}"
+        f"_exv3bps{cfg.exhaustion_v3_buy_sm_amount_pct_threshold:.3f}"
+        f"_exv3br{cfg.exhaustion_v3_buy_sm_amount_threshold:.3f}"
+        f"_exv3r7rsp{cfg.exhaustion_v3_rule7_reg_severe_exempt_pct_threshold:.3f}"
+        f"_exv3r7t3{cfg.exhaustion_v3_rule7_top10_3d_exempt_threshold:.3f}"
         f"_exb{cfg.exhaustion_prev_day_blowoff_threshold:.3f}"
         f"_exw{cfg.exhaustion_sector_momentum_accel_weak_threshold:.3f}"
         f"_exm{cfg.exhaustion_market_advance_decline_ratio_threshold:.3f}"

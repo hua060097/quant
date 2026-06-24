@@ -1397,7 +1397,7 @@ def setup_logging():
 
     # 文件handler
     file_handler = logging.FileHandler(
-        'stock_selection_test_mode_walkforward_分类模型_原因子复现10.log',
+        'stock_selection_test_mode_walkforward_分类模型_原因子复现16.log',
         encoding='utf-8'
     )
     file_handler.setFormatter(formatter)
@@ -3151,6 +3151,7 @@ def _get_lgb_search_space():
 #   {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 0.6, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 10}
 #    {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.05, 'max_depth': 7, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 400, 'random_state': 42, 'num_leaves': 15, 'min_data_in_leaf': 500, 'feature_fraction': 1.0, 'bagging_fraction': 1.0, 'reg_alpha': 1, 'reg_lambda': 10, 'scale_pos_weight': 60}, top1_return:5237.797392723667
 # {'objective': 'binary', 'metric': 'auc', 'boosting_type': 'gbdt', 'learning_rate': 0.02, 'max_depth': -1, 'bagging_freq': 1, 'n_jobs': -1, 'verbosity': -1, 'n_estimators': 500, 'random_state': 42, 'num_leaves': 127, 'min_data_in_leaf': 400, 'feature_fraction': 0.8, 'bagging_fraction': 0.6, 'reg_alpha': 5, 'reg_lambda': 5, 'scale_pos_weight': 90}, score:7414.455930008164
+# : 0.6, 'reg_alpha': 5.2, 'reg_lambda': 8.4, 'scale_pos_weight': 90, 'random_state': 42}, score:53263.760026752214
 
     space = {
         'learning_rate': [0.02],
@@ -3159,8 +3160,10 @@ def _get_lgb_search_space():
         'min_data_in_leaf': [400],
         'feature_fraction': [0.8],
         'bagging_fraction': [0.6],
-        'reg_alpha': [5],
-        'reg_lambda': [5],
+        "reg_alpha":[5.2],
+        "reg_lambda":[4.1],
+        # 'reg_alpha': [4,5,6,7,8,9, 4.1,5.1,6.1,7.1,8.1,9.1, 4.2,5.2,6.2,7.2,8.2,9.2, 4.3,5.3,6.3,7.3,8.3,9.3, 4.4,5.4,6.4,7.4,8.4,9.4, 4.5,5.5,6.5,7.5,8.5,9.5],
+        # 'reg_lambda': [4,5,6,7,8,9, 4.1,5.1,6.1,7.1,8.1,9.1, 4.2,5.2,6.2,7.2,8.2,9.2, 4.3,5.3,6.3,7.3,8.3,9.3, 4.4,5.4,6.4,7.4,8.4,9.4, 4.5,5.5,6.5,7.5,8.5,9.5],
         'scale_pos_weight': [90], # 处理正负样本不平衡
         'random_state': [42],
         # 'min_gain_to_split':[0.1,1,2,10],
@@ -3272,7 +3275,7 @@ def _train_lightgbm_model(raw_data, labels, feature_columns, label_stats=None, p
             # 'max_bin': 31,
             'n_jobs': -1,
             'verbosity': -1,
-            'n_estimators': 1000, #500
+            'n_estimators': 500, #500
             # 'random_state': 40
         }
 
@@ -16595,6 +16598,18 @@ def _backtest_on_window(test_data, model_result, window, args):
                     f"胜率={seg_win_rate:.2f} ({seg_positive}/{len(seg_returns)}个样本)"
                 )
 
+        # 🆕 选股过滤需与标签屏蔽口径一致：补齐 valid_cs_mask（True=非ST且非新股）
+        #     valid_cs_mask = st_keep & new_keep（见 _build_valid_cs_mask），与标签生成处口径相同
+        if 'valid_cs_mask' not in test_data_with_pred.columns:
+            try:
+                _vcm, _, _ = _build_valid_cs_mask(test_data_with_pred, logger)
+                test_data_with_pred['valid_cs_mask'] = _vcm.reindex(test_data_with_pred.index).fillna(False).astype(bool)
+            except Exception as _e:
+                logger.warning(f"[FILTER] Top-K统计重建valid_cs_mask失败，跳过ST/新股过滤: {_e}")
+                test_data_with_pred['valid_cs_mask'] = True
+        else:
+            test_data_with_pred['valid_cs_mask'] = test_data_with_pred['valid_cs_mask'].fillna(False).astype(bool)
+
         # 确保test_data_with_pred包含必要的列
         if all(col in test_data_with_pred.columns for col in ['date', 'predicted_return', 'atr_return_label']):
             # 按日期分组计算topk
@@ -16605,11 +16620,12 @@ def _backtest_on_window(test_data, model_result, window, args):
                 if len(date_data) >= 5:  # 确保有足够的股票
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
-                     # 🆕 过滤掉当日的涨跌停、炸板股票
+                     # 🆕 过滤掉当日的涨跌停、炸板股票，并过滤ST/新股（与标签口径一致）
                     date_sorted_filtered = date_sorted[
                         (date_sorted['is_limit_up'] != 1) &
                         (date_sorted['is_limit_down'] != 1) &
-                        (date_sorted['is_zhaban'] != 1)
+                        (date_sorted['is_zhaban'] != 1) &
+                        (date_sorted['valid_cs_mask'])
                     ]
 
                     if len(date_sorted_filtered) < 5:
@@ -16673,11 +16689,12 @@ def _backtest_on_window(test_data, model_result, window, args):
                     # 按预测值降序排列
                     date_sorted = date_data.sort_values('predicted_return', ascending=False)
 
-                    # 过滤掉涨跌停、炸板股票
+                    # 过滤掉涨跌停、炸板股票，并过滤ST/新股（与标签口径一致）
                     date_sorted_filtered = date_sorted[
                         (date_sorted['is_limit_up'] != 1) &
                         (date_sorted['is_limit_down'] != 1) &
-                        (date_sorted['is_zhaban'] != 1)
+                        (date_sorted['is_zhaban'] != 1) &
+                        (date_sorted['valid_cs_mask'])
                     ]
 
                     if len(date_sorted_filtered) < 5:
@@ -17157,8 +17174,9 @@ def _process_walkforward_window(window, factor_data, args, window_idx, total_win
 
         # 查找当前窗口的LightGBM模型
         # lgb_pattern = f"lightgbm_model_window{window_idx}_20260107_033514.pkl"
-        # lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
-        lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
+        lgb_pattern = f"lightgbm_model_window{window_idx}_2027*.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260620_104411.pkl"
+        # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"#alpha 20260502
         # lgb_pattern = f"lightgbm_model_window3_20260427_231053.pkl"
         # lgb_pattern = f"lightgbm_model_window3_20260419_234602.pkl"
         # lgb_pattern = f"lightgbm_model_window3_incremental_20260412_110759.pkl"
