@@ -11,7 +11,8 @@
   T7 值指纹（vfp）按截止日隔离
   T8 结构性排除集（fps_covered）随截止日隔离
   T9 越界截止日被拒绝（check_data_cut）
-  T10 生产台账自检：迁移后遗留标记齐全
+   T10 生产台账自检：迁移后遗留标记齐全
+  T12 VWAP/C2C 的 UCB/精英/腿库证据池按标签隔离
 
 用法：python selftest_cut.py
 """
@@ -154,6 +155,23 @@ def main() -> int:
                               retest_before='2999-01-01')
     check('T11c', 'retest_before 未来时刻 ⇒ 全部重新纳入（显式换代杠杆）',
           len(h_future) == 0, 'n=%d' % len(h_future))
+
+    # ---- T12 profile evidence isolation: same formula/cut, distinct label rewards
+    lg3 = _tmp_ledger()
+    shared = parse('TS_MEAN(CLOSE,20)/CLOSE')
+    lg3.log('local', shared, 1, family='M1_return', label='c2c',
+            data_cut='2025-12-31', data={'tier1': {'sia': 0.01, 'turnover': 0.1}})
+    lg3.log('local', shared, 1, family='M1_return', label='vwap',
+            data_cut='2025-12-31', data={'tier1': {'sia': 0.03, 'turnover': 0.1}})
+    c2c_evidence = lg3.evidence_pool_for('2025-12-31', label='c2c')
+    vwap_evidence = lg3.evidence_pool_for('2025-12-31', label='vwap')
+    check('T12', '证据池按目标标签隔离且测试分母可分标签查询',
+          len(c2c_evidence) == len(vwap_evidence) == 1
+          and c2c_evidence[0]['sia'] == 0.01 and vwap_evidence[0]['sia'] == 0.03
+          and c2c_evidence[0]['label'] == 'c2c' and vwap_evidence[0]['label'] == 'vwap'
+          and lg3.count_tested('2025-12-31', label='c2c') == 1
+          and lg3.count_tested('2025-12-31', label='vwap') == 1,
+          'c2c=%d vwap=%d' % (len(c2c_evidence), len(vwap_evidence)))
 
     # ---- T10 生产台账自检（迁移后遗留标记齐全）
     prod = Ledger()

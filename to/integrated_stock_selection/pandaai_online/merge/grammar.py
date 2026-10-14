@@ -217,8 +217,8 @@ def validate(node: Node, allow_documented: bool = False,
         if n.op == 'FIELD':
             if n.name in PLATFORM_FIELDS:
                 continue
-            # 本地专用字段（层2）：随 allow_documented 通道放行；含它的公式禁止上平台
-            # （export/upload 链路按 formula_uses_local 硬拦截），仅 vwap 自用。
+            # 本地专用字段：本地能力 profile 可搜索/求值；含本地字段的公式只在 C2C
+            # export/upload adapter 按 formula_uses_local 硬拦截，不影响 local shortlist。
             if n.name in LOCAL_ONLY_FIELDS and allow_documented:
                 continue
             return False, f'unknown field {n.name}'
@@ -598,8 +598,8 @@ def m13_tech(rng: random.Random) -> Node:
 def m14_context(rng: random.Random) -> Node:
     """市场/行业上下文族（2026-09-24 层2，本地专用）：MKT_RET/IND_RET/BETA60 交互。
 
-    全部 VERIFIED 算子 + 三个本地字段；含本地字段的公式禁止上传（formula_uses_local 硬闸门），
-    仅 vwap 自用线。随 allow_documented 通道启用生成；run_search 需 --local-context 撒种。
+    全部 VERIFIED 算子 + 三个本地字段；含本地字段的公式禁止 C2C 上传，但保留本地搜索/评估。
+    随 local-context 能力启用生成。
     """
     ret = virtual_node('RET1')
     mkt = field('MKT_RET')
@@ -737,7 +737,7 @@ def m16_ctx_interaction(rng: random.Random) -> Node:
       逐股上下文: RET1−IND_RET（残量动量）、RET1−BETA60×MKT_RET（alpha）
       行业状态:   IND_RET（行业收益——TS 算子下即行业动量/波动）、DISP（行业内分化）
       广播:       MKT_RET（同日全市场同值——截面秩恒 0.5，仅 form0 状态门可用）
-    含本地字段 → 禁上平台（formula_uses_local），仅 vwap 自用；随 allow_documented。"""
+    含本地字段 → C2C adapter 禁止上传（formula_uses_local），本地 profile 保留评估；随 local-context 启用。"""
     ret = virtual_node('RET1')
     ctx_legs = [
         lambda rng: Node('SUB', (ret, field('IND_RET'))),
@@ -797,7 +797,7 @@ def m17_context_factor(rng: random.Random) -> Node:
 
     跨截面有变异（131 个行业→131 个不同值），可被截面 IC 框架评估；
     但有效截面 N = 行业数（131）而非股票数——ICIR 显著性需自行折扣。
-    含本地字段 → 禁上平台；随 allow_documented。"""
+    含本地字段 → C2C adapter 禁止上传；本地 profile 保留评估；随 local-context 启用。"""
     ind_ret = field('IND_RET')
     disp = field('DISP')
     mkt = field('MKT_RET')

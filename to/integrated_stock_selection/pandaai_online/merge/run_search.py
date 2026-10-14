@@ -6,7 +6,11 @@
   3) 每轴保留精英，精英内变异精化
   4) 幸存者进入全量窗评估（多标签一次评估：因子值只算一次）
   5) 贪婪 ΔComb + 残差 IC 诊断 + 短名单 JSON + Markdown 报告
-多标签：--label c2c --label vwap；生成排除按"公式×标签"证据判断（全部标签测过才跳过）。
+默认 profile=local-vwap；可用 --profile competition-c2c 运行竞赛扩展。
+附加标签用 --label c2c/--label vwap；附加标签只作测量，不自动变成主标签或必过门。
+
+本地 VWAP 为默认 profile；C2C 是可选竞赛适配 profile。平台表达能力只约束 export/upload，
+本地 evaluator、grammar、筛选与 vwap 榜保留 local-only/行业上下文候选。
 
 子命令：
   search   见上
@@ -36,7 +40,7 @@ import pool_legacy as pool_mod
 from dedup import max_abs_corr, monthly_spearman
 from cache_utils import find_stock_features
 from evaluator import Evaluator, ensure_local_fields, load_panel, value_fingerprint
-from executor import estimate_credits, validate_file, write_candidates
+from executor import competition_status, estimate_credits, validate_file, write_candidates
 from field_catalog import formula_uses_local
 from explain import explain
 from fitness import (
@@ -60,6 +64,45 @@ OUT_DIR = Path(__file__).resolve().parent / 'out'
 
 def node_name(family: str, node) -> str:
     return f"MG-{family.split('_')[0]}-{expression_hash(node)[:8]}"
+
+
+def resolve_search_profile(args) -> tuple[str, str, list[str]]:
+    """返回 (profile, primary_label, labels)，C2C 上传能力不参与本地搜索 profile 解析。
+
+    显式 --profile 优先决定 primary；旧式 --label 列表仍兼容（首标签为 primary）；
+    完全省略时默认本地 vwap。
+    """
+    requested = list(getattr(args, 'label', None) or [])
+    profile = getattr(args, 'profile', None)
+    profile_to_label = {'local-vwap': 'vwap', 'competition-c2c': 'c2c'}
+    if profile is None:
+        primary = requested[0] if requested else 'vwap'
+        profile = 'competition-c2c' if primary == 'c2c' else 'local-vwap'
+    else:
+        if profile not in profile_to_label:
+            raise ValueError(f'unknown search profile {profile!r}')
+        primary = profile_to_label[profile]
+    labels = list(dict.fromkeys([primary] + requested))
+    return profile, primary, labels
+
+
+def valid_rows_for_label(rows: list[dict], label: str) -> list[dict]:
+    """Per-label valid candidates; independent of C2C export capability."""
+    return [r for r in rows
+            if bool(((r.get('labels') or {}).get(label) or {}).get('valid'))]
+
+
+def label_search_value(tier: dict, label: str) -> float:
+    """Profile-specific search reward; keep the raw C2C SiA intact for competition reports."""
+    if label == 'vwap':
+        values = [tier.get('rank_ic'), tier.get('rank_ic_ir'), tier.get('rank_ic_win')]
+        if all(v is not None and np.isfinite(v) for v in values):
+            return float(abs(values[0]) * abs(values[1]) * abs(values[2]))
+    return float(tier.get('sia') or 0.0)
+
+
+def label_search_metric(label: str) -> str:
+    return 'rank_sia' if label == 'vwap' else 'sia'
 
 
 def member_rhos(ctx: DataContext, values, member_panel: pd.DataFrame,
@@ -86,10 +129,8 @@ def _axis_plan(ledger: Ledger, n: int, allow_documented: bool = False,
     旧版 w=0.5+0.5×(best-ever/global-best)+未测+0.25 的缺陷：冠军轴永久锁 w=1.0、
     未测轴 w=0.75 反而低于冠军 → 探索被系统性压制；best 还混用 fast/full 两种 SiA 口径。
 
-    reward（T1 修正）：--reward-label c2c|vwap|blend（默认 blend）。
-      实测 M14 的 c2c 证据弱但 vwap 传递比 3-5 倍——只认 c2c 会系统性低估 context 轴。
-      blend = 0.5×c2c_reward + 0.5×vwap_reward（各自组内归一：norm = sia/该组该来源全局
-      最大 sia；某标签无数据时用另一标签的 reward 补位）。
+    reward：search CLI 默认 auto（按 primary label 隔离）；blend 仅在显式选择时混合。
+    本地 VWAP 搜索不读取 C2C 竞赛 reward，防止平台目标改变本地机制配额。
 
     其余不变：
       base = max(近 recent_days 天均值, 0.5×全期均值)；w = base + ucb_c×sqrt(ln(n_total)/n_axis)
@@ -232,13 +273,15 @@ def _node_from_row(row: dict):
     return node
 
 
-def _pending_from_ledger(ledger: Ledger) -> list[tuple]:
+def _pending_from_ledger(ledger: Ledger, label: str) -> list[tuple]:
     out = []
     for _, view in ledger.latest().items():
         events = view['events']
         if 'proposed' not in events or 'local' in events or 'fast' in events:
             continue
         rec = events['proposed']
+        if rec.get('label') not in (None, label):
+            continue
         node = _node_from_row({'formula': rec.get('formula', '')})
         if node is not None:
             out.append(('proposal', node, rec.get('hypothesis', '')))
@@ -274,26 +317,50 @@ class SearchRun:
         self.ledger.data_version = self.data_version
         self.use_legacy_evidence = bool(getattr(args, 'use_legacy_evidence', False))
         self._pool_reported = False
-        self.labels = list(args.label or ['c2c'])
+        self.profile, self.primary, self.labels = resolve_search_profile(args)
         for lab in self.labels:
             if lab not in LABELS:
                 raise SystemExit(f'unknown label {lab!r}; available: {LABELS}')
-        self.primary = self.labels[0]
-        self.secondary = self.labels[1] if len(self.labels) > 1 else None
+        self.secondary = next((lab for lab in self.labels if lab != self.primary), None)
+        self.reward_label = str(getattr(args, 'reward_label', 'auto') or 'auto')
+        if self.reward_label == 'auto':
+            self.reward_label = self.primary
+        if self.reward_label not in ('c2c', 'vwap', 'blend'):
+            raise SystemExit(f'unknown reward label {self.reward_label!r}')
         self.dual_gate = bool(getattr(args, 'dual_gate', False) and self.secondary)
         self.dual_min_sia = float(getattr(args, 'dual_min_sia', 0.0012))
         self.dual_min_ratio = float(getattr(args, 'dual_min_ratio', 0.25))
-        self.turnover_ref = (None if getattr(args, 'no_turnover_penalty', False)
-                             else float(getattr(args, 'turnover_ref', 0.3)))
+        if getattr(args, 'no_turnover_penalty', False):
+            self.turnover_ref = None
+        elif getattr(args, 'turnover_ref', None) is not None:
+            self.turnover_ref = float(args.turnover_ref)
+        else:
+            # 0.3 是 C2C 大赛 C 口径的官方 floor，不应静默成为本地 VWAP 排序门。
+            self.turnover_ref = 0.3 if self.primary == 'c2c' else None
+        if getattr(args, 'oos_sia', None) is None:
+            # 旧 0.004 holdout 触发阈值来自 C2C 使用习惯；VWAP profile 默认不据此
+            # 触发/排序内部 holdout，用户可显式提供自己的阈值。
+            args.oos_sia = 0.004 if self.primary == 'c2c' else 0.0
+        fast_keep = getattr(args, 'fast_keep_sia', None)
+        self.fast_keep_sia = (0.0012 if self.primary == 'c2c' else 0.0) \
+            if fast_keep is None else float(fast_keep)
+        args.fast_keep_sia = self.fast_keep_sia
+        if getattr(args, 'platform_prior', False) and self.primary != 'c2c':
+            raise SystemExit('--platform-prior 仅适用于 competition-c2c profile；VWAP 本地排序不使用平台校准先验')
+        local_context = getattr(args, 'local_context', None)
+        self.local_context = True if local_context is None else bool(local_context)
+        args.local_context = self.local_context
+        args.allow_documented = bool(getattr(args, 'allow_documented', False))
         frame = load_panel()
         # 层2（2026-09-24）：--local-context 时在全量面板上预计算 MKT_RET/IND_RET/BETA60，
-        # fast 抽样面板由同一 frame 切片继承（市场/行业收益不因抽样而失真）
-        if getattr(args, 'local_context', False):
+        # fast 抽样面板由同一 frame 切片继承（市场/行业收益不因抽样而失真）。
+        # 默认本地搜索开放上下文字段；--no-local-context 仅用于兼容/对照，不是 C2C 门禁。
+        if self.local_context:
             ensure_local_fields(frame)
             if not args.allow_documented:
                 args.allow_documented = True
-                print('note: --local-context 隐含 --allow-documented'
-                      '（M14_context 本地字段随该通道放行）')
+                print('note: local context enabled: 本地 evaluator 可计算的上下文/文档模板进入搜索；'
+                      'C2C 上传能力仅在 export/upload 校验')
         # 评估窗上界 = 数据截止日（2026-10-11）：指纹记的截止日必须与实际用到的
         # 数据一致，否则记录说谎。全量/快评两个 context 与 fast 面板都用该上界。
         _cut_ts = pd.Timestamp(self.data_cut)
@@ -439,16 +506,15 @@ class SearchRun:
         return {lab: ctxs[lab].screen(node, name=name) for lab in self.labels}
 
     def _dual(self, tiers: dict) -> dict:
-        """vwap 诊断（2026-09-16 起不再必过）。
+        """次标签诊断；profile 的 primary 独立决定主 shortlist。
 
-        默认 dual_gate=False：vwap 指标照算并入库（供用户 LightGBM 项目查询），
-        但不参与筛选。若显式 --dual-gate，则恢复"次标签 SiA≥dual_min_sia 且比值≥dual_min_ratio"
-        的旧必过口径（历史实验用）。
+        默认 dual_gate=False：附加标签照算并入库，但不参与 primary 筛选。若显式 --dual-gate，
+        则将 primary 与第一个附加标签作用户指定的双标签筛选。
         """
         sec = tiers.get(self.secondary) or {}
         pri = tiers.get(self.primary) or {}
-        sec_sia = float(sec.get('sia') or 0.0)
-        pri_sia = float(pri.get('sia') or 0.0)
+        sec_sia = label_search_value(sec, self.secondary) if self.secondary else 0.0
+        pri_sia = label_search_value(pri, self.primary)
         ratio = (sec_sia / pri_sia) if pri_sia > 0 else 0.0
         ok = bool(self.dual_gate and sec_sia >= self.dual_min_sia
                   and ratio >= self.dual_min_ratio)
@@ -515,14 +581,19 @@ class SearchRun:
         sparse_hit = 0 < sparse_median < SPARSE_UNIQUE
         if sparse_hit:
             self.stats['sparse_tie'] += 1
-        score = rank_score(tiers[self.primary], node,
+        primary_search_value = label_search_value(tiers[self.primary], self.primary)
+        score_tier = {**tiers[self.primary], 'sia': primary_search_value}
+        score = rank_score(score_tier, node,
                            turnover_ref=self.turnover_ref)
-        score_nopen = rank_score(tiers[self.primary], node, turnover_ref=None)
+        score_nopen = rank_score(score_tier, node, turnover_ref=None)
         for lab in self.labels:
+            search_value = label_search_value(tiers[lab], lab)
             self.ledger.log('fast', node, int(screens[lab].get('direction', 1)),
                             family=family, label=lab, struct_fp=fp,
                             data_cut=self.data_cut,
                             data={'fast': screens[lab], 'tier1': tiers[lab],
+                                  'search_value': search_value,
+                                  'search_metric': label_search_metric(lab),
                                   'source': source, 'dual': dual,
                                   'stability': stability, 'vfp': vfp,
                                   'sparse_tie_median': sparse_median,
@@ -534,6 +605,7 @@ class SearchRun:
         return {'name': name, 'family': family, 'formula': render(node),
                 'expression_hash': h, 'node': node, 'source': source, 'vfp': vfp,
                 'fast': tiers[self.primary], 'fast_labels': tiers,
+                'fast_search_value': primary_search_value,
                 'fast_score': score, 'fast_score_nopen': score_nopen,
                 'stability': stability, 'sparse_tie_median': sparse_median,
                 'sparse_hit': sparse_hit, **dual}
@@ -556,6 +628,7 @@ class SearchRun:
             t['nmi'] = d.get('nmi')
             t['jsd'] = d.get('jsd')
         primary = tiers[self.primary]
+        primary_search_value = label_search_value(primary, self.primary)
         rhos, rho_max, rho_member = {}, None, None
         if self.member_panel is not None:
             values = self.ctx.values(node)
@@ -564,7 +637,7 @@ class SearchRun:
             rho_max, rho_member = max_abs_corr(rhos)
         direction = int(screens[self.primary].get('direction', 1))
         train = holdout = None
-        if primary['valid'] and args.oos_sia and primary['sia'] >= args.oos_sia:
+        if primary['valid'] and args.oos_sia and primary_search_value >= args.oos_sia:
             split = train_holdout(self.ctx, node, name=name, cut=args.cut)
             train = tier1(split['train'])
             holdout = tier1(split['holdout'])
@@ -575,8 +648,10 @@ class SearchRun:
                 rm = resid_metrics(self.ctx, node, name=name)
             except Exception as exc:
                 rm = {'error': str(exc)[:160]}
-        base = train['sia'] if train else primary['sia']
-        oos = holdout['sia'] if holdout else None
+        train_search_value = label_search_value(train, self.primary) if train else None
+        holdout_search_value = label_search_value(holdout, self.primary) if holdout else None
+        base = train_search_value if train_search_value is not None else primary_search_value
+        oos = holdout_search_value
         drop = (rm or {}).get('drop')
         dual = self._dual(tiers)
         stability = stability_of(screens[self.primary])
@@ -591,16 +666,21 @@ class SearchRun:
                            node, rho_max, oos, drop, args.resid_weight,
                            turnover_ref=self.turnover_ref, platform_prior=prior)
         score_nopen = rank_score({'sia': base, 'turnover_month': primary.get('turnover_month'),
-                                  'turnover': primary.get('turnover')},
-                                 node, rho_max, oos, drop, args.resid_weight,
-                                 turnover_ref=None)
+                                   'turnover': primary.get('turnover')},
+                                  node, rho_max, oos, drop, args.resid_weight,
+                                  turnover_ref=None)
         for lab in self.labels:
+            search_value = label_search_value(tiers[lab], lab)
             extra = ({'train': train, 'holdout': holdout, 'pool_corr': rhos,
                       'score': score, 'score_nopen': score_nopen, 'stability': stability,
+                      'search_value': search_value,
+                      'search_metric': label_search_metric(lab),
                       'resid': rm, 'dual': dual,
                       'source': rec.get('source', 'template')}
-                     if lab == self.primary else
-                     {'source': rec.get('source', 'template')})
+                      if lab == self.primary else
+                      {'search_value': search_value,
+                       'search_metric': label_search_metric(lab),
+                       'source': rec.get('source', 'template')})
             self.ledger.log('local', node, int(screens[lab].get('direction', 1)),
                             family=rec['family'], label=lab,
                             struct_fp=structural_fingerprint(node),
@@ -612,8 +692,12 @@ class SearchRun:
                 'expression_hash': h, 'direction': direction, 'node': node,
                 'label_directions': {lab: int(screens[lab].get('direction', 1))
                                      for lab in self.labels},
-                'source': rec.get('source', 'template'), 'valid': primary['valid'],
-                'sia': primary['sia'], 'train': train, 'holdout': holdout,
+                 'source': rec.get('source', 'template'), 'valid': primary['valid'],
+                 'sia': primary['sia'], 'train': train, 'holdout': holdout,
+                 'search_metric': label_search_metric(self.primary),
+                 'search_value': primary_search_value,
+                 'train_search_value': train_search_value,
+                 'holdout_search_value': holdout_search_value,
                 'turnover': primary['turnover'],
                 'turnover_month': primary.get('turnover_month'),
                 'c_proxy': primary.get('c_proxy'),
@@ -627,10 +711,10 @@ class SearchRun:
                 'explain': explain(node, direction)}
 
     def _leg_library(self, max_legs: int = 40, max_turn: float = 0.20) -> list:
-        """腿库：台账中已评估、单次换手≤20% 的慢腿，按 A 分降序（comp6 式重组原料）。
+        """腿库：台账中当前 primary label 已评估、单次换手≤20% 的慢腿，按对应 SiA 排序。
 
         2026-09-24 起从台账 sidecar 的 evidence_pool 读取（免 17MB 全量 JSON 扫）；
-        过滤语义与旧实现逐条一致：fast/local、c2c、换手过滤先于首见 hash 去重、
+        过滤语义与旧实现逐条一致：fast/local、目标标签、换手过滤先于首见 hash 去重、
         node_count≤12。SiA 加权抽样与多样性去重在 _seeds 消费端做。
         2026-10-11：证据池按**数据截止日**隔离（旧 winner 系遗留窗口选出，不得复用）。
         """
@@ -658,15 +742,15 @@ class SearchRun:
         恢复全量（历史重放用）。首次调用会打印被排除的条数，避免"池子变空"被误读。
         """
         if self.use_legacy_evidence:
-            return self.ledger.evidence_pool_for(None)
-        pool = self.ledger.evidence_pool_for(self.data_cut)
+            return self.ledger.evidence_pool_for(None, label=self.primary)
+        pool = self.ledger.evidence_pool_for(self.data_cut, label=self.primary)
         if not self._pool_reported:
             self._pool_reported = True
             total = len(self.ledger.summary().get('evidence_pool') or [])
             if total != len(pool):
                 self._progress(
                     f'evidence pool: {len(pool)}/{total} 条属于 '
-                    f'(data_cut={self.data_cut}, data_version={self.data_version})'
+                    f'(label={self.primary}, data_cut={self.data_cut}, data_version={self.data_version})'
                     f'（其余为其他口径，已排除；--use-legacy-evidence 可全量）')
         return pool
 
@@ -695,7 +779,7 @@ class SearchRun:
             self.ledger, args.n, allow_documented=args.allow_documented,
             ucb_c=float(getattr(args, 'ucb_c', 0.3)),
             recent_days=int(getattr(args, 'axis_recent_days', 90)),
-            reward_label=str(getattr(args, 'reward_label', 'blend')),
+            reward_label=self.reward_label,
             data_cut=self.data_cut)
         fams_by_axis = axis_families(allow_documented=args.allow_documented)
         print('axis plan: ' + ' '.join(
@@ -712,7 +796,7 @@ class SearchRun:
         for axis, quota in sorted(quotas.items()):
             fams = fams_by_axis[axis]
             if axis == 'context' and not getattr(args, 'local_context', False):
-                continue  # M14_context 需显式 --local-context（本地字段公式禁上传）
+                continue  # 显式 --no-local-context 用于对照/兼容，不是 C2C 搜索门
             axis_winners = winners.get(axis) or []
             for _ in range(quota):
                 picked = None
@@ -765,8 +849,7 @@ class SearchRun:
                 if picked is not None:
                     seeds.append(picked)
         if getattr(args, 'local_context', False):
-            # 层2 保底配额：M14_context 不走 UCB（其 c2c 证据无上传价值，reward 会低估
-            # 它的 vwap 价值），固定 min(2, n/8) 保底撒种
+            # 本地上下文探索保底配额：不让早期历史 reward 把 context 机制轴挤出搜索。
             n_ctx = max(2, args.n // 8)
             added = 0
             for _ in range(n_ctx * 6):
@@ -781,7 +864,7 @@ class SearchRun:
                 seeds.append((fam_c, node_c))
                 added += 1
             if added:
-                print(f'context seeding: +{added} M14_context（本地专用，vwap 自用）',
+                print(f'context seeding: +{added} M14_context（本地上下文候选）',
                       flush=True)
         if n_elite:
             print(f'elite seeding: {n_elite}/{len(seeds)} seeds from ledger winners '
@@ -792,17 +875,24 @@ class SearchRun:
         args = self.args
         t0 = time.time()
         proposal_nodes = []
+        n_profile_mismatch = 0
         for path in (args.proposals or []):
             for row in _load_proposal_rows(path):
+                source_profile = row.get('profile')
+                if source_profile and source_profile != self.profile:
+                    n_profile_mismatch += 1
+                    continue
                 node = _node_from_row(row)
                 if node is not None:
                     proposal_nodes.append(('proposal', node, str(row.get('hypothesis', ''))))
         if args.from_ledger:
-            proposal_nodes += _pending_from_ledger(self.ledger)
+            proposal_nodes += _pending_from_ledger(self.ledger, self.primary)
         self._progress(f'start seed={args.seed} strategy={args.strategy} '
                        f'labels={self.labels} allow_documented={args.allow_documented} '
                        f'n={args.n} full_cap={args.full_cap} proposals={len(proposal_nodes)} '
                        f'fast={"on" if args.fast else "off"}')
+        if n_profile_mismatch:
+            self._progress(f'proposal scope: skipped {n_profile_mismatch} explicitly tagged for another profile')
 
         fast_rows = []
         seed_total = args.n
@@ -812,7 +902,8 @@ class SearchRun:
                 fast_rows.append(rec)
                 self._progress(
                     f'[seed {i}/{seed_total}] {rec["name"]} fscore={rec["fast_score"]:.4f} '
-                    f'sia={rec["fast"]["sia"]:.4f} dual={rec.get("pass_dual")} '
+                    f'{label_search_metric(self.primary)}={rec["fast_search_value"]:.4f} '
+                    f'dual={rec.get("pass_dual")} '
                     f'elapsed={time.time() - t0:.0f}s')
                 if self._note_score(rec['fast_score']):
                     self._progress(f'stall stop at seeds ({self.stall})')
@@ -820,8 +911,9 @@ class SearchRun:
         mut_stats: dict = {}
         if args.strategy == 'mechanism' and fast_rows and args.refine_children > 0:
             # T6（2026-09-25）：编辑分支成败统计（mini-AlphaMemo）——持久化于
-            # out/mutation_stats.json，下一轮按"分支→平均增益"加权指派变异分支
-            mut_path = OUT_DIR / 'mutation_stats.json'
+            # 按目标标签隔离；C2C 历史文件沿用旧路径，VWAP 不消费 C2C 奖励。
+            mut_path = (OUT_DIR / 'mutation_stats.json' if self.primary == 'c2c'
+                        else OUT_DIR / f'mutation_stats_{self.primary}.json')
             if mut_path.exists():
                 try:
                     mut_stats = json.loads(mut_path.read_text(encoding='utf-8'))
@@ -864,7 +956,8 @@ class SearchRun:
                             fast_rows.append(rec)
                             self._progress(
                                 f'[refine] {rec["name"]} fscore={rec["fast_score"]:.4f} '
-                                f'sia={rec["fast"]["sia"]:.4f} dual={rec.get("pass_dual")} '
+                                f'{label_search_metric(self.primary)}={rec["fast_search_value"]:.4f} '
+                                f'dual={rec.get("pass_dual")} '
                                 f'elapsed={time.time() - t0:.0f}s')
                             if self._note_score(rec['fast_score']):
                                 self._progress(f'stall stop at refine ({self.stall})')
@@ -884,7 +977,7 @@ class SearchRun:
                            f'min_ratio={self.dual_min_ratio})')
         if args.fast:
             keep = [r for r in fast_rows
-                    if (r['fast'] or {}).get('sia', 0) >= args.fast_keep_sia and dual_ok(r)]
+                    if r.get('fast_search_value', 0) >= self.fast_keep_sia and dual_ok(r)]
             if args.fast_top_frac > 0 and fast_rows:
                 ranked_fast = sorted([r for r in fast_rows if dual_ok(r)],
                                      key=lambda r: -r['fast_score'])
@@ -931,23 +1024,24 @@ class SearchRun:
                                f'elapsed={time.time() - t0:.0f}s')
 
         for r in full_rows:
-            # 层2（2026-09-24）：含本地字段的候选禁上平台——c2c 短名单不占位，仅进 vwap 榜
+            # 本地能力与竞赛上传能力分开记录。C2C field/operator 限制只由 export/upload 消费。
             r['local_only'] = formula_uses_local(r['formula'])
+            r['competition_uploadable'], r['competition_reject_reason'] = \
+                competition_status(r['formula'])
         valid = [r for r in full_rows if r['valid']]
-        valid_up = [r for r in valid if not r['local_only']]
-        n_local_only = len(valid) - len(valid_up)
+        n_local_only = sum(1 for r in valid if r['local_only'])
         if self.dual_gate:
-            dual_pass = [r for r in valid_up if r.get('pass_dual', False)]
-            dual_rejected = [r for r in valid_up if not r.get('pass_dual', False)]
+            dual_pass = [r for r in valid if r.get('pass_dual', False)]
+            dual_rejected = [r for r in valid if not r.get('pass_dual', False)]
         else:
-            dual_pass, dual_rejected = valid_up, []
+            dual_pass, dual_rejected = valid, []
         # T2/T3（2026-09-25）：衰减诊断 + 可选硬门槛（在截断前应用，避免被淘汰者占名额）
         if dual_pass:
             from fitness import decay_metrics as _dm, field_dominance as _fd
             for r in dual_pass[:max(args.top * 3, 30)]:
                 try:
                     _vals = self.ctx.values(r['node'])
-                    _dec = {'c2c': _dm(self.ctx, _vals)}
+                    _dec = {self.primary: _dm(self.ctx, _vals)}
                     r['field_dom'] = _fd(self.ctx, _vals)
                     if self.secondary:
                         _sec = self.ctxs[self.secondary]
@@ -959,8 +1053,8 @@ class SearchRun:
                 _md = float(args.max_decay)
                 _before = len(dual_pass)
                 dual_pass = [r for r in dual_pass
-                             if not r.get('decay') or (r['decay'].get('c2c') or {}).get('decay_ratio') is None
-                             or r['decay']['c2c']['decay_ratio'] >= _md]
+                             if not r.get('decay') or (r['decay'].get(self.primary) or {}).get('decay_ratio') is None
+                             or r['decay'][self.primary]['decay_ratio'] >= _md]
                 if len(dual_pass) < _before:
                     self._progress(f'max_decay 门槛（decay_ratio≥{_md}）：淘汰 '
                                    f'{_before - len(dual_pass)} 个后半段衰减候选')
@@ -1068,11 +1162,13 @@ class SearchRun:
                              else ('栖息地稀释' if _mean_r < 0.7 else None))
                     if _kind is None:
                         continue
-                    _eid = f'auto-habitat-{_fam}'
+                    _eid = f'auto-habitat-{self.profile}-{_fam}'
                     if _eid in _existing:
                         continue
                     _kb_append({
                         'id': _eid, 'status': 'rule', 'family': _fam,
+                        'profile': self.profile, 'label': self.primary,
+                        'data_cut': self.data_cut,
                         'mechanism': f'自动回填：{_fam} 在热点子集(hot5_q80)的 RankIC 为'
                                      f'全市场的 {_mean_r:.2f}×（{_kind}），样本 n={len(_ratios)}',
                         'evidence': 'search cond_ic 诊断跨候选聚合；全市场 IC 高≠栖息地内有用',
@@ -1086,20 +1182,25 @@ class SearchRun:
                                    f'（{", ".join(_new)}）')
             except Exception as exc:
                 self._progress(f'warning: KB 栖息地回填失败 {exc}')
-        vwap_rows = [r for r in full_rows
-                     if (r['labels'].get(self.secondary) or {}).get('sia') is not None]
-
-        def _vwap_key(r: dict) -> float:
-            t = r['labels'][self.secondary]
+        def _rank_sia(r: dict, label: str) -> float:
+            t = r['labels'][label]
             rk, ir, w = t.get('rank_ic'), t.get('rank_ic_ir'), t.get('rank_ic_win')
             if all(v is not None and np.isfinite(v) for v in (rk, ir, w)):
                 return abs(float(rk)) * abs(float(ir)) * abs(float(w))
             return float(t.get('sia') or 0.0)
 
-        vwap_rows.sort(key=lambda r: -_vwap_key(r))
+        vwap_rows = valid_rows_for_label(full_rows, 'vwap')
+        vwap_rows.sort(key=lambda r: -_rank_sia(r, 'vwap'))
         vwap_n = int(getattr(args, 'vwap_top', 20))
         vwap_top = [{k: v for k, v in r.items() if k != 'node'}
                     for r in vwap_rows[:vwap_n]]
+        c2c_rows = valid_rows_for_label(full_rows, 'c2c')
+        c2c_rows.sort(key=lambda r: -float((r['labels'].get('c2c') or {}).get('sia') or 0.0))
+        c2c_n = int(getattr(args, 'c2c_top', 20))
+        c2c_top = [{k: v for k, v in r.items() if k != 'node'}
+                    for r in c2c_rows[:c2c_n]]
+        competition_top = [{k: v for k, v in r.items() if k != 'node'}
+                           for r in c2c_rows if r.get('competition_uploadable')][:c2c_n]
 
         greedy = None
         if args.greedy_top > 0 and final:
@@ -1139,12 +1240,23 @@ class SearchRun:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = OUT_DIR / f'shortlist_{datetime.now():%Y%m%d_%H%M%S}_seed{args.seed}.json'
         clean = [{k: v for k, v in r.items() if k != 'node'} for r in final]
-        dual_rej = [{'name': r['name'], 'sia': r['sia'], 'dual_sia': r.get('dual_sia'),
+        n_tested_by_label = {
+            lab: self.ledger.count_tested(self.data_cut, label=lab)
+            for lab in self.labels
+        }
+        dual_rej = [{'name': r['name'], 'sia': r.get('search_value', r['sia']),
+                     'dual_sia': r.get('dual_sia'),
                      'dual_ratio': r.get('dual_ratio'), 'score': r['score']}
                     for r in sorted(dual_rejected, key=lambda r: -r['score'])]
         payload = {'generated_at': datetime.now().isoformat(timespec='seconds'),
                    'seed': args.seed, 'cycle': args.cycle, 'cut': args.cut,
-                   'strategy': args.strategy, 'labels': self.labels,
+                   'strategy': args.strategy, 'profile': self.profile,
+                   'primary_label': self.primary,
+                   'primary_search_metric': label_search_metric(self.primary),
+                   'labels': self.labels, 'reward_label': self.reward_label,
+                   'label_semantics': ({'vwap': 'vwap_formula_only'}
+                                       if 'vwap' in self.labels else {}),
+                   'local_context': self.local_context,
                    'turnover_ref': self.turnover_ref,
                    'dual_gate': ({'secondary': self.secondary,
                                   'min_sia': self.dual_min_sia,
@@ -1156,16 +1268,19 @@ class SearchRun:
                    'n_dual_rejected_fast': n_dual_fast_rej,
                    'n_local_only': n_local_only,
                    'oos_sia_threshold': args.oos_sia,
+                   'fast_keep_sia': self.fast_keep_sia,
                    'data_cut': self.data_cut,
                    'data_version': self.data_version,
-                   'n_tested': self.ledger.count_tested(),
+                   'n_tested': n_tested_by_label.get(self.primary, 0),
                    'n_tested_cut': self.ledger.count_tested(self.data_cut),
+                   'n_tested_by_label': n_tested_by_label,
                    'ctx_rows': int(self.ctx.n_rows), 'ctx_sections': len(self.ctx.ud),
                    'max_decay_gate': getattr(args, 'max_decay', None),
                    'min_rank_ic_gate': getattr(args, 'min_rank_ic', None),
                    'resid_weight': args.resid_weight, 'stats': self.stats,
-                   'greedy': greedy, 'dual_rejected': dual_rej,
-                   'shortlist': clean, 'vwap_top': vwap_top}
+                    'greedy': greedy, 'dual_rejected': dual_rej,
+                    'shortlist': clean, 'vwap_top': vwap_top,
+                    'c2c_top': c2c_top, 'competition_top': competition_top}
         out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
                             encoding='utf-8')
         jsonl_path = out_path.with_suffix('.jsonl')
@@ -1175,51 +1290,56 @@ class SearchRun:
                 row['labels'] = {lab: t for lab, t in r['labels'].items()}
                 f.write(json.dumps(row, ensure_ascii=False, default=str) + '\n')
         self._progress(f'shortlist -> {out_path}')
-        self._progress(f'jsonl     -> {jsonl_path}（含 vwap 指标，供 LightGBM 项目）')
+        self._progress(f'jsonl     -> {jsonl_path}（本地多标签榜单；C2C 上传能力另由 adapter 过滤）')
         if mut_stats:
             try:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
-                (OUT_DIR / 'mutation_stats.json').write_text(
+                mut_path = (OUT_DIR / 'mutation_stats.json' if self.primary == 'c2c'
+                            else OUT_DIR / f'mutation_stats_{self.primary}.json')
+                mut_path.write_text(
                     json.dumps(mut_stats, ensure_ascii=False, indent=2), encoding='utf-8')
             except Exception:
                 pass
         if dual_rejected:
-            self._progress(f'注：{len(dual_rejected)} 个候选 c2c 有效但 vwap 未过'
-                           f'（已不再拦截，仅诊断）')
+            self._progress(f'注：{len(dual_rejected)} 个候选未过显式双标签门 '
+                           f'({self.primary} × {self.secondary})；该门默认关闭')
         if n_local_only:
-            self._progress(f'注：{n_local_only} 个候选含本地上下文字段（MKT_RET/IND_RET/'
-                           f'BETA60）——禁上平台，已从 c2c 短名单排除，仅进 vwap 榜')
+            self._progress(f'注：{n_local_only} 个本地 shortlist 候选含 LOCAL_ONLY 字段/算子；'
+                           '保留在本地搜索结果，C2C adapter 会单独过滤不可上传项')
         for r in final:
             oos = r['holdout']['sia'] if r['holdout'] else float('nan')
             drop = (r.get('resid') or {}).get('drop')
             ind_drop = (r.get('resid_ind') or {}).get('drop_ind')
-            vwap_t = r['labels'].get(self.secondary) if self.secondary else None
-            vwap_sia = (vwap_t or {}).get('sia')
-            print('%-22s %-8s dir=%d score=%.4f nopen=%.4f sia=%.4f oos=%s '
-                  'resid_drop=%s ind_drop=%s decay=%s dom=%s turn=%5.1f%% net=%+.2f vwap=%s' % (
+            local_vwap_t = r['labels'].get('vwap')
+            local_vwap_sia = (local_vwap_t or {}).get('sia')
+            print('%-22s %-8s dir=%d score=%.4f nopen=%.4f %s_sia=%.4f oos=%s '
+                  'resid_drop=%s ind_drop=%s decay=%s dom=%s turn=%5.1f%% net=%+.2f vwap=%s c2c=%s' % (
                       r['name'], r['source'], r['direction'], r['score'],
-                      r['score_nopen'] or 0.0, r['sia'],
+                      r['score_nopen'] or 0.0, self.primary, r['sia'],
                       ('%.4f' % oos) if oos == oos else '-',
                       ('%.2f' % drop) if drop is not None and drop == drop else '-',
                       ('%.2f' % ind_drop) if ind_drop is not None and ind_drop == ind_drop else '-',
-                      ('%.2f' % (r.get('decay') or {}).get('c2c', {}).get('decay_ratio')
-                       or float('nan')) if (r.get('decay') or {}).get('c2c', {}).get('decay_ratio') is not None else '-',
+                      ('%.2f' % (r.get('decay') or {}).get(self.primary, {}).get('decay_ratio')
+                       or float('nan')) if (r.get('decay') or {}).get(self.primary, {}).get('decay_ratio') is not None else '-',
                       ('%.2f@%s' % ((r.get('field_dom') or {}).get('max') or 0,
                                     (r.get('field_dom') or {}).get('field', '?'))
                        ) if (r.get('field_dom') or {}).get('max') is not None else '-',
                       (r['turnover'] or -1) * 100, (r['net'] or 0.0) * 100,
-                      ('%.4f' % vwap_sia) if vwap_sia is not None else '-'), flush=True)
+                      ('%.4f' % local_vwap_sia) if local_vwap_sia is not None else '-',
+                      ('%.4f' % (r['labels'].get('c2c') or {}).get('sia'))
+                      if (r['labels'].get('c2c') or {}).get('sia') is not None else '-'), flush=True)
         if vwap_rows:
-            print('\n-- vwap top%d（非比赛口径，供 LightGBM 项目） --' % vwap_n, flush=True)
+            print('\n-- local VWAP top%d（formula-only label; 本地 profile） --' % vwap_n, flush=True)
             for r in vwap_rows[:vwap_n]:
-                vt = r['labels'][self.secondary]
-                ratio = (vt['sia'] or 0.0) / r['sia'] if r['sia'] else 0.0
+                vt = r['labels']['vwap']
+                c2c_sia = float((r['labels'].get('c2c') or {}).get('sia') or 0.0)
+                ratio = (float(vt['sia'] or 0.0) / c2c_sia) if c2c_sia else float('nan')
                 print('%-22s %-13s vwap=%.4f ratio=%.2f RankIC=%s IC=%s ICIR=%s mono=%s turn=%5.1f%%' % (
                     r['name'], r['family'], vt['sia'] or 0.0, ratio,
                     ('%.4f' % vt['rank_ic']) if vt.get('rank_ic') is not None else '-',
                     ('%.4f' % vt['ic']) if vt.get('ic') is not None else '-',
                     ('%.3f' % vt['ic_ir']) if vt.get('ic_ir') is not None else '-',
-                    ('%.3f' % vt['mono']) if vt.get('mono') is not None else '-',
+                       ('%.3f' % vt['mono']) if vt.get('mono') is not None else '-',
                     (r['turnover'] or -1) * 100), flush=True)
         if final and any(r.get('offset_diag') for r in final):
             print('\n-- 采样稳健性：RankIC(offset 0/1/2，方向按各标签 offset-0 冻结；'
@@ -1280,48 +1400,79 @@ def _ledger_with_cut(args) -> Ledger:
 def cmd_search(args) -> None:
     t0 = time.time()
     run = SearchRun(args)
-    print(f'labels={run.labels} | ctx rows={run.ctx.n_rows:,} sections={len(run.ctx.ud)} | '
+    print(f'profile={run.profile} primary={run.primary} labels={run.labels} | '
+          f'ctx rows={run.ctx.n_rows:,} sections={len(run.ctx.ud)} | '
           f'fast rows={run.fast_frame is not None and len(run.fast_frame) or 0:,} | '
-          f'ledger tested={run.ledger.count_tested()} | {time.time() - t0:.0f}s', flush=True)
+          f'ledger tested[{run.primary}]={run.ledger.count_tested(run.data_cut, label=run.primary)} | '
+          f'{time.time() - t0:.0f}s', flush=True)
     run.run()
-    try:
-        from knowledge import auto_reflow
-        added = auto_reflow(ledger=run.ledger)
-        if added:
-            print(f'knowledge auto-reflow: +{len(added)} failed entries '
-                  f'({", ".join(a["id"] for a in added)})')
-    except Exception as exc:
-        print(f'warning: knowledge auto-reflow failed: {exc}')
+    if run.primary == 'c2c':
+        try:
+            from knowledge import auto_reflow
+            added = auto_reflow(ledger=run.ledger, label=run.primary,
+                                data_cut=run.data_cut, profile=run.profile)
+            if added:
+                print(f'knowledge auto-reflow: +{len(added)} failed entries '
+                      f'({", ".join(a["id"] for a in added)})')
+        except Exception as exc:
+            print(f'warning: knowledge auto-reflow failed {exc}')
+    else:
+        print('knowledge auto-reflow: skipped for local VWAP (profile-specific failure cutoff '
+              'is not yet calibrated)')
+
+
+def _payload_primary(payload: dict, which: str | None = None) -> str:
+    if payload.get('primary_label'):
+        return str(payload['primary_label'])
+    labels = payload.get('labels') or []
+    if labels:
+        return str(labels[0])
+    if which == 'c2c' and payload.get('c2c_top'):
+        return 'c2c'
+    if which == 'vwap' and payload.get('vwap_top'):
+        return 'vwap'
+    return 'vwap'
 
 
 def cmd_export(args) -> None:
     payload = json.loads(Path(args.shortlist).read_text(encoding='utf-8'))
-    rows = payload['shortlist']
+    primary = _payload_primary(payload, args.list)
+    rows = _upload_rows(payload, args.list)
+    if not rows:
+        raise SystemExit(f'no {args.list} candidates in this run; run the matching label/profile first')
+    target_label = args.list if args.list in ('c2c', 'vwap') else primary
+    if args.min_holdout_sia > 0 and target_label != primary:
+        raise SystemExit('--min-holdout-sia applies only to the run primary label; '
+                         'rerun with that profile primary or omit this filter')
     if args.min_holdout_sia > 0:
         rows = [r for r in rows
-                if (r.get('holdout') or {}).get('sia', 0) >= args.min_holdout_sia]
+                if r.get('holdout_search_value',
+                        (r.get('holdout') or {}).get('sia', 0)) >= args.min_holdout_sia]
     if args.max_abs_pool_corr is not None:
         rows = [r for r in rows
                 if not (r.get('rho_max') == r.get('rho_max'))
                 or r.get('rho_max', 0) <= args.max_abs_pool_corr]
+    rows, rejected = prepare_competition_rows(rows, target_label, primary)
+    if rejected:
+        print(f'export 适配器：{len(rejected)} 个候选不符合 C2C 字段/算子/方向合同；'
+              '仅从本次竞赛批次排除，本地搜索结果保留')
+        for r in rejected[:8]:
+            print(f"  {r['name']}: {r['reason']}")
     rows = rows[:args.top]
-    # 层2 硬闸门：含本地上下文字段的公式禁止上平台（batch.py 校验也会拒绝，此处提前拦截）
-    n_local = sum(1 for r in rows if formula_uses_local(r.get('formula', '')))
-    if n_local:
-        rows = [r for r in rows if not formula_uses_local(r.get('formula', ''))]
-        print(f'export 闸门：剔除 {n_local} 个含本地上下文字段（MKT_RET/IND_RET/BETA60）'
-              '的候选——禁上平台')
     if not rows:
         raise SystemExit('no candidates left after filters')
     out_path = Path(args.out) if args.out else (
         Path(__file__).resolve().parent / f'candidates_{args.tag}.txt')
     result = write_candidates(rows, out_path, tag=args.tag,
-                              notes=tuple(args.note or ()))
+                              notes=(f"profile={payload.get('profile', 'legacy')} "
+                                     f"selection_label={target_label}",
+                                     *(args.note or ())))
     ok, msg = validate_file(out_path)
     if not ok:
         raise SystemExit(f'exported file failed batch.py validation: {msg}')
     est = estimate_credits(len(rows), args.per_run)
-    print(f"wrote {result['txt']} ({result['n']} candidates)\nmeta {result['meta']}\n{msg}")
+    print(f"wrote {result['txt']} ({result['n']} candidates; selection label={target_label})\n"
+          f"meta {result['meta']}\n{msg}")
     print(f"credit estimate: probe≈{est['probe_credits']} + full≈{est['full_estimate']} "
           f"= {est['total_estimate']} (per_run={args.per_run})")
     print('next (after explicit approval + NO_PROXY): '
@@ -1336,12 +1487,17 @@ CREDITS_PER_RUN = 2.2  # 2026-09-16 实测：12 run = 26 credit
 
 
 def _upload_rows(payload: dict, which: str) -> list[dict]:
+    primary = _payload_primary(payload, which)
     if which == 'vwap':
-        rows = payload.get('vwap_top') or []
+        rows = payload.get('vwap_top') or (
+            payload.get('shortlist') if primary == 'vwap' else [])
     elif which == 'shortlist':
         rows = payload.get('shortlist') or []
+    elif which == 'c2c':
+        rows = payload.get('competition_top') or payload.get('c2c_top') or (
+            payload.get('shortlist') if primary == 'c2c' else [])
     else:
-        rows = payload.get('c2c_top') or payload.get('shortlist') or []
+        raise ValueError(f'unknown candidate list {which!r}')
     return [r for r in rows if r.get('formula') and r.get('name')]
 
 
@@ -1350,7 +1506,17 @@ def cmd_upload(args) -> None:
     import os
     import subprocess
     payload = json.loads(Path(args.input).read_text(encoding='utf-8'))
+    primary = _payload_primary(payload, args.list)
     rows = _upload_rows(payload, args.list)
+    if not rows:
+        raise SystemExit(f'no {args.list} candidates in this run; run the matching label/profile first')
+    target_label = args.list if args.list in ('c2c', 'vwap') else primary
+    rows, rejected = prepare_competition_rows(rows, target_label, primary)
+    if rejected:
+        print(f'upload 适配器：{len(rejected)} 个候选不符合 C2C 字段/算子/方向合同；'
+              '仅从本次竞赛批次排除，本地候选仍保留')
+        for r in rejected[:8]:
+            print(f"  {r['name']}: {r['reason']}")
     if args.min_sia > 0:
         rows = [r for r in rows if float(r.get('sia') or 0) >= args.min_sia]
     if args.min_net is not None:
@@ -1359,15 +1525,10 @@ def cmd_upload(args) -> None:
     if args.max_turnover is not None:
         rows = [r for r in rows if (r.get('turnover') is not None
                                     and float(r['turnover']) <= args.max_turnover)]
-    rows.sort(key=lambda r: -(r.get('score') if r.get('score') is not None
-                              else r.get('sia') or 0))
+    # 远程平台结果是 C2C；候选排序仍依据明确选择的来源标签，不让 profile score
+    # 或 C2C 平台能力影响本地 VWAP 排名。
+    rows.sort(key=lambda r: -(r.get('sia') or 0.0))
     rows = rows[:args.top]
-    # 层2 硬闸门：含本地上下文字段的公式禁止上平台
-    n_local = sum(1 for r in rows if formula_uses_local(r.get('formula', '')))
-    if n_local:
-        rows = [r for r in rows if not formula_uses_local(r.get('formula', ''))]
-        print(f'upload 闸门：剔除 {n_local} 个含本地上下文字段（MKT_RET/IND_RET/BETA60）'
-              '的候选——禁上平台')
     if not rows:
         raise SystemExit('no candidates left after filters')
     for r in rows:
@@ -1378,6 +1539,7 @@ def cmd_upload(args) -> None:
     out_path = Path(args.out) if args.out else (OUT_DIR / f'candidates_{tag}.txt')
     info = write_candidates(rows, out_path, tag=tag,
                             notes=(f'upload --list {args.list}; '
+                                   f'selection_label={target_label}; '
                                    f'{"create-only (free)" if not args.run else "RUN (paid)"}',
                                    f'window {args.start}-{args.end} cycle{args.cycle}'))
     ok, msg = validate_file(out_path)
@@ -1418,7 +1580,8 @@ def cmd_intake(args) -> None:
     from intake import intake_file, smoke_frame
     smoke = None if args.no_smoke else smoke_frame()
     report = intake_file(args.file, _ledger_with_cut(args), smoke=smoke,
-                         limit=args.limit or None)
+                         limit=args.limit or None,
+                         profile=getattr(args, 'profile', 'local-vwap'))
     print(f"intake {report['path']}: {report['counts']}")
     for item in report['results']:
         mark = {'ok': 'OK  ', 'warn': 'WARN', 'reject': 'FAIL',
@@ -1436,14 +1599,15 @@ def cmd_intake(args) -> None:
 
 def cmd_propose(args) -> None:
     from llm_client import available, propose, write_inbox_template
+    profile = getattr(args, 'profile', 'local-vwap')
     if not available():
         path = args.inbox or str(OUT_DIR / 'proposals_inbox.jsonl')
         OUT_DIR.mkdir(parents=True, exist_ok=True)
-        write_inbox_template(path, args.hypothesis, args.k)
+        write_inbox_template(path, args.hypothesis, args.k, profile=profile)
         print('未检测到 OPENAI_API_KEY/OPENAI_BASE_URL：已生成 inbox 模板 ' + path)
         print(f'填写后运行：python pandaai_online/merge/intake.py "{path}"')
         return
-    items = propose(args.hypothesis, args.k)
+    items = propose(args.hypothesis, args.k, profile=profile)
     if not items:
         raise SystemExit('LLM 未返回可解析的候选')
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1454,7 +1618,7 @@ def cmd_propose(args) -> None:
                                ensure_ascii=False) + '\n')
     print(f'LLM 返回 {len(items)} 个候选 -> {path}')
     from intake import intake_file, smoke_frame
-    report = intake_file(path, _ledger_with_cut(args), smoke=smoke_frame())
+    report = intake_file(path, _ledger_with_cut(args), smoke=smoke_frame(), profile=profile)
     print(f"intake: {report['counts']}")
     for item in report['results']:
         mark = {'ok': 'OK  ', 'warn': 'WARN', 'reject': 'FAIL',
@@ -1552,6 +1716,8 @@ def _rescore_rows(rows: dict, turnover_ref: float | None) -> list[dict]:
             'hash': h, 'name': (node_name(b['family'], node) if node is not None
                                 else f"MG-{b['family'].split('_')[0]}-{h[:8]}"),
             'family': b['family'], 'direction': b['direction'],
+            'label_directions': {lab: int(m['direction']) for lab, m in b['labels'].items()
+                                 if m.get('direction') in (0, 1)},
             'formula': b['formula'], 'parsed': parsed,
             'window': b.get('window', 'fast'),
             'sia': rec['sia'], 'turnover': t, 'turnover_month': tm,
@@ -1982,30 +2148,33 @@ def main() -> None:
 
     sp = sub.add_parser('search')
     sp.add_argument('--strategy', choices=('mechanism', 'random'), default='mechanism')
+    sp.add_argument('--profile', choices=('local-vwap', 'competition-c2c'), default=None,
+                    help='主搜索目标。省略时默认 local-vwap；competition-c2c 为可选大赛扩展。')
     sp.add_argument('--allow-documented', action='store_true',
-                    help='允许 DOCUMENTED 算子族（M12 order stats：TS_RANK/TS_ARGMAX/TS_MEDIAN/'
-                         'TS_KURT/保号幂；首次上平台需单独冒烟）')
+                    help='额外允许本地已实现的 DOCUMENTED 算子族；平台可用性另由 export/upload 校验')
     sp.add_argument('--label', action='append', default=None,
-                    help='标签，可重复：--label c2c --label vwap（第一个为主标签记分，'
-                         '第二个仅诊断/输出，不再必过）')
+                    help='附加测量标签，可重复。无 --profile 时首个标签兼容旧行为作为主标签；'
+                         '显式 --profile 时 profile 标签为主，其余只作诊断')
     sp.add_argument('--dual-gate', action='store_true', default=False,
-                    help='恢复旧版 vwap 必过过滤（默认关；2026-09-16 起 vwap 仅诊断）')
+                    help='显式启用 primary 与第一个附加标签的双标签必过门（默认关闭）')
     sp.add_argument('--no-dual-gate', dest='dual_gate', action='store_false')
     sp.add_argument('--dual-min-sia', type=float, default=0.0012,
-                    help='（仅 --dual-gate 时）次标签(vwap) SiA 最低值')
+                    help='（仅 --dual-gate 时）附加标签 search metric 最低值')
     sp.add_argument('--dual-min-ratio', type=float, default=0.25,
-                    help='（仅 --dual-gate 时）次标签/主标签 SiA 比值最低值')
+                    help='（仅 --dual-gate 时）附加标签/主标签 search metric 比值最低值')
     sp.add_argument('--vwap-top', type=int, default=20,
-                    help='vwap 诊断名单长度（按 vwap SiA 排序，无门槛）')
-    sp.add_argument('--turnover-ref', type=float, default=0.3,
-                    help='换手软惩罚参考 T_ref（官方 C 口径 T_month；默认 0.3=官方 floor）')
+                    help='本地 VWAP 榜长度（按 vwap RankIC×RankICIR×胜率排序）')
+    sp.add_argument('--c2c-top', type=int, default=20,
+                    help='C2C 竞赛扩展榜长度（按 C2C SiA 排序；上传能力另行筛选）')
+    sp.add_argument('--turnover-ref', type=float, default=None,
+                    help='换手软惩罚参考 T_ref；profile 默认 local-vwap 不施加，competition-c2c=0.3。'
+                         '显式数值可覆盖 profile 默认')
     sp.add_argument('--no-turnover-penalty', action='store_true',
                     help='关闭换手软惩罚（对照用，同时仍记录 score_nopen）')
     sp.add_argument('--ucb-c', type=float, default=0.3,
                     help='机制轴 UCB 探索系数（0=退化为纯均值贪心）')
-    sp.add_argument('--reward-label', choices=('c2c', 'vwap', 'blend'), default='blend',
-                    help='轴配额 reward 的标签（默认 blend=c2c/vwap 各半；blend 修复 '
-                         'context 轴被 c2c 证据低估的偏差）')
+    sp.add_argument('--reward-label', choices=('auto', 'c2c', 'vwap', 'blend'), default='auto',
+                    help='机制轴 UCB reward 标签（auto=profile 主标签；blend 为显式混合诊断）')
     sp.add_argument('--axis-recent-days', type=int, default=90,
                     help='轴 reward 滑动窗口天数（0=全期）')
     sp.add_argument('--no-elite-seed', dest='no_elite_seed', action='store_true',
@@ -2034,14 +2203,17 @@ def main() -> None:
     sp.add_argument('--fast-stratify', choices=('', 'size'), default='',
                     help='快评抽样方式（T4）：size=按市值五分位分层（修小票稀释），'
                          '默认空=纯随机（保持历史校准可比）')
-    sp.add_argument('--fast-keep-sia', type=float, default=0.0012)
+    sp.add_argument('--fast-keep-sia', type=float, default=None,
+                    help='快评 SiA 保留门；profile 默认 local-vwap=0（不以 C2C SiA 阈值淘汰），'
+                         'competition-c2c=0.0012；全评仍受 --full-cap 预算限制')
     sp.add_argument('--fast-top-frac', type=float, default=0.5)
     sp.add_argument('--full-cap', type=int, default=60)
     sp.add_argument('--refine-elites', type=int, default=2)
     sp.add_argument('--refine-children', type=int, default=2)
     sp.add_argument('--mutation-rate', type=float, default=0.35)
-    sp.add_argument('--oos-sia', type=float, default=0.004,
-                    help='train SiA 达此阈值才计算 holdout（0=全部跳过holdout）')
+    sp.add_argument('--oos-sia', type=float, default=None,
+                    help='train SiA 达此阈值才计算 holdout（0=关闭；profile 默认 local-vwap=0，'
+                         'competition-c2c=0.004）')
     sp.add_argument('--stall', type=int, default=0, help='连续无改进多少个后早停（0=关）')
     sp.add_argument('--no-pool-corr', dest='pool_corr', action='store_false',
                     help='跳过池相关计算（更快）')
@@ -2053,10 +2225,10 @@ def main() -> None:
     sp.add_argument('--no-sparse-tie-gate', dest='no_sparse_tie_gate',
                     action='store_true', default=False,
                     help='关闭生成期稀疏并列拦截（默认开：截面独立值中位数<100 的候选不进全量）')
-    sp.add_argument('--local-context', action='store_true', default=False,
-                    help='启用本地上下文搜索（层2，vwap 自用）：注入 MKT_RET/IND_RET/BETA60'
-                         ' 本地字段与 M14_context 模板族（隐含 --allow-documented）；'
-                         '含本地字段的公式禁止上传，仅进 vwap 榜')
+    sp.add_argument('--local-context', dest='local_context', action='store_true', default=None,
+                    help='启用 MKT_RET/IND_RET/BETA60/DISP 本地字段与上下文模板（默认开启）')
+    sp.add_argument('--no-local-context', dest='local_context', action='store_false',
+                    help='关闭本地上下文字段/模板（仅做对照；不代表 C2C 是搜索能力边界）')
     sp.add_argument('--greedy-top', type=int, default=0,
                     help='对前N名做贪婪ΔComb选择（0=关；每个trial约数十秒）')
     sp.add_argument('--greedy-add', type=int, default=2)
@@ -2080,7 +2252,7 @@ def main() -> None:
                     help='可选硬门槛：主标签 |RankIC| ≥ 该值才入短名单（默认 0=关；'
                          '运气紧缩参考值约 0.003-0.005）')
     sp.add_argument('--family-cap', type=int, default=3,
-                    help='c2c 短名单每 family 最多 N 席（族内多样性约束，防单族垄断；'
+                    help='主 profile 短名单每 family 最多 N 席（族内多样性约束，防单族垄断；'
                          '默认 3；不足时由其他族递补）')
     sp.add_argument('--report', action='store_true', default=True)
     sp.add_argument('--no-report', dest='report', action='store_false')
@@ -2090,6 +2262,8 @@ def main() -> None:
 
     ep = sub.add_parser('export')
     ep.add_argument('shortlist')
+    ep.add_argument('--list', choices=('c2c', 'vwap', 'shortlist'), default='c2c',
+                    help='本地榜单来源；导出前再按 C2C 平台能力过滤（默认竞赛榜）')
     ep.add_argument('--top', type=int, default=8)
     ep.add_argument('--tag', default='mg1')
     ep.add_argument('--out', default='')
@@ -2132,12 +2306,16 @@ def main() -> None:
     ip.add_argument('file')
     ip.add_argument('--limit', type=int, default=0)
     ip.add_argument('--no-smoke', action='store_true')
+    ip.add_argument('--profile', choices=('local-vwap', 'competition-c2c'),
+                    default='local-vwap')
     ip.add_argument('--out', default='')
     ip.set_defaults(func=cmd_intake)
 
     pp = sub.add_parser('propose')
     pp.add_argument('hypothesis')
     pp.add_argument('--k', type=int, default=8)
+    pp.add_argument('--profile', choices=('local-vwap', 'competition-c2c'),
+                    default='local-vwap')
     pp.add_argument('--inbox', default='')
     pp.add_argument('--out', default='')
     pp.set_defaults(func=cmd_propose)

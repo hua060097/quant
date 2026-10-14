@@ -22,7 +22,8 @@ import numpy as np
 import pandas as pd
 
 import _paths  # noqa: F401
-from evaluator import Evaluator, load_panel
+from evaluator import Evaluator, ensure_local_fields, load_panel
+from executor import competition_status
 from grammar import expand, expression_hash, render, validate, walk
 from ledger import Ledger
 from lint import has_errors, lint
@@ -73,8 +74,11 @@ def hypothesis_field_check(hypothesis: str, node) -> list[dict]:
 
 
 def smoke_frame(n_stocks: int = SAMPLE_STOCKS, days: int = SAMPLE_DAYS,
-                seed: int = 0) -> pd.DataFrame:
+                seed: int = 0, local_context: bool = True) -> pd.DataFrame:
     frame = load_panel()
+    if local_context:
+        # Compute context before stock sampling so MKT_RET/IND_RET/DISP reflect the full universe.
+        ensure_local_fields(frame)
     codes = sorted(frame['stock_code'].unique().tolist())
     rng = random.Random(seed)
     pick = set(rng.sample(codes, min(n_stocks, len(codes))))
@@ -162,21 +166,35 @@ def check_candidate(formula: str, direction: int | None = None,
 
 
 def intake_file(path: Path | str, ledger: Ledger | None = None,
-                smoke: pd.DataFrame | None = None, limit: int | None = None) -> dict:
+                smoke: pd.DataFrame | None = None, limit: int | None = None,
+                profile: str = 'local-vwap') -> dict:
     ledger = ledger or Ledger()
-    known = ledger.hashes()
+    if profile not in ('local-vwap', 'competition-c2c'):
+        raise ValueError(f'unknown intake profile {profile!r}')
     lines = [x for x in Path(path).read_text(encoding='utf-8').splitlines() if x.strip()]
     rows = [json.loads(x) for x in lines]
     if limit:
         rows = rows[:limit]
     counts = {'ok': 0, 'warn': 0, 'reject': 0, 'duplicate': 0}
     results = []
+    known_by_label: dict[str, set[str]] = {}
     for row in rows:
         formula = str(row.get('formula', '')).strip()
         hypothesis = str(row.get('hypothesis', ''))
         direction = row.get('direction')
+        candidate_profile = str(row.get('profile') or profile)
+        if candidate_profile not in ('local-vwap', 'competition-c2c'):
+            raise ValueError(f'unknown proposal profile {candidate_profile!r}')
+        label = 'vwap' if candidate_profile == 'local-vwap' else 'c2c'
+        known = known_by_label.setdefault(
+            label, ledger.hashes_for([label], data_cut=ledger.data_cut))
         check = check_candidate(formula, direction=direction, smoke=smoke,
                                 hypothesis=hypothesis)
+        if check.get('node') is not None:
+            comp_ok, comp_reason = competition_status(formula)
+            check['competition_uploadable'] = comp_ok
+            if not comp_ok:
+                check['competition_reject_reason'] = comp_reason
         expr_hash = check.get('expression_hash')
         if expr_hash and expr_hash in known:
             check['status'] = 'duplicate'
@@ -186,12 +204,18 @@ def intake_file(path: Path | str, ledger: Ledger | None = None,
             known.add(expr_hash)
         counts[check['status']] = counts.get(check['status'], 0) + 1
         check['hypothesis'] = hypothesis
+        check['profile'] = candidate_profile
+        check['label'] = label
         if check['status'] in ('ok', 'warn') and check.get('node') is not None:
             parsed_direction = int(direction) if direction in (0, 1) else 1
             ledger.log('proposed', check['node'], parsed_direction,
                        family=str(row.get('family', 'intake')), hypothesis=hypothesis,
+                       label=label,
                        data={'source': row.get('source', ''),
-                             'tags': row.get('tags', []),
+                              'profile': candidate_profile,
+                              'competition_uploadable': check.get('competition_uploadable'),
+                              'competition_reject_reason': check.get('competition_reject_reason'),
+                              'tags': row.get('tags', []),
                              'issues': check['issues'],
                              'canonical': check['canonical'],
                              'direction_pending': direction not in (0, 1)})
@@ -200,7 +224,9 @@ def intake_file(path: Path | str, ledger: Ledger | None = None,
                            formula,
                            direction=direction if direction in (0, 1) else None,
                            family=str(row.get('family', 'intake')), hypothesis=hypothesis,
-                           data={'issues': check['issues'], 'source': row.get('source', '')})
+                           label=label,
+                           data={'issues': check['issues'], 'source': row.get('source', ''),
+                                 'profile': candidate_profile})
         results.append(check)
     return {'path': str(path), 'counts': counts, 'results': results}
 
@@ -213,11 +239,13 @@ def main() -> None:
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--ledger', default=str(Ledger().path))
     ap.add_argument('--no-smoke', action='store_true')
+    ap.add_argument('--profile', choices=('local-vwap', 'competition-c2c'),
+                    default='local-vwap')
     ap.add_argument('--out', default='')
     args = ap.parse_args()
     smoke = None if args.no_smoke else smoke_frame()
     report = intake_file(args.file, Ledger(args.ledger), smoke=smoke,
-                         limit=args.limit or None)
+                         limit=args.limit or None, profile=args.profile)
     print(f"intake {report['path']}: {report['counts']}")
     for item in report['results']:
         mark = {'ok': 'OK  ', 'warn': 'WARN', 'reject': 'FAIL', 'duplicate': 'DUP '}[item['status']]

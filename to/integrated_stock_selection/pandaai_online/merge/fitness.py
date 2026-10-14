@@ -1,17 +1,16 @@
-"""本地筛选上下文：复用 factor_screen_cycle5.screen_one，产出平台同口径指标。
+"""本地筛选上下文：复用 factor_screen_cycle5.screen_one，支持本地 VWAP 与 C2C 竞赛两个目标。
 
-- 口径 aligned_v1（2026-09-20 经 qs_platform_align3 用 qs2-R741 官方读数校准）：
+- c2c 口径 aligned_v1（2026-09-20 经 qs_platform_align3 用 qs2-R741 官方读数校准）：
   窗口 2021-09-01~2026-08-21（≈平台"入池日前五年"，硬编码常量，平台滚动时需手动更新）、
   全样本宇宙（不剔 ST/一字板/停牌，与平台分析一致）、每 cycle 交易日调仓、
   因子值逐截面 zscore 后 clip ±2σ（screen_one winsor='z2'）。
   校准结果：本地 IC/ICIR 与平台差 ≤8%（RankIC 恒 ≈+14% 系统偏差，来自样本差异）。
-- 标签：c2c_Nd（平台口径）；vwap（本地生产口径，自用 LightGBM，非官方）。
+- 标签：c2c_Nd（平台竞赛口径）；vwap（本地公式型口径，merge search 默认 profile）。
 - 方向冻结：训练窗确定方向后，holdout 用同一窗口评估（翻转后按 direction=1 报告）。
 - 单因子阶段：不做换手硬门槛（官方 A/B 不含换手/净）；排序含换手软惩罚
   turnover_ref/max(Turnover_month, ref)（官方 C 口径的 T_month，默认 ref=0.3=官方 floor）。
-- 官方 A（sia_of）= |RankIC|×|ICIR(Pearson)|×IC胜率；净收益/夏普/回撤为 C 代理诊断，
-  不参与 A 计分（competition_rules.md 0811 口径）。
-- vwap 非必过：仅作诊断/自用 LightGBM 输出。
+- `sia_of` 的官方 A 含义仅适用于 C2C profile；VWAP 排序是本地任务分数，不受 C2C 上传规则或平台先验支配。
+- VWAP 当前是 `daily_atr_label` 的公式部分，不含其 ST/交易性/成交额/复权掩码；由 profile manifest 标记。
 """
 from __future__ import annotations
 
@@ -300,8 +299,10 @@ def rank_score(tier: dict, node: Node, pool_rho: float | None = None,
                resid_weight: float = 0.0,
                turnover_ref: float | None = DEFAULT_TURNOVER_REF,
                platform_prior: float | None = None) -> float:
-    """综合排序分 = SiA(A代理) × 复杂度因子 × 换手软惩罚 × 池相关惩罚 × 残差掉幅惩罚 × 平台先验。
+    """综合排序分 = 调用方传入的目标值 × 复杂度因子 × profile 启用的惩罚项。
 
+    - `tier['sia']` 是调用方选择的搜索量：C2C profile 传官方 SiA；本地 VWAP profile
+      传 rank_sia。原始 tier1 指标仍另存，不会被此排序包装覆盖。
     - oos_sia 由训练窗方向冻结后在保留窗计算；未提供则不惩罚。
     - pool_rho 为与池内成员的最大|Spearman|，>0.4 后线性降权，1.0 时降到 0.5 倍。
     - resid_drop 为风险轴正交化后 SiA 的相对掉幅（0~1）；resid_weight 默认 0（仅诊断）。

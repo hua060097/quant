@@ -37,6 +37,65 @@ def validate_file(path: Path) -> tuple[bool, str]:
     return True, f'{len(candidates)} candidates parsed and linted'
 
 
+def competition_status(formula: str) -> tuple[bool, str]:
+    """Return C2C export capability without changing local search eligibility.
+
+    Only operators/fields verified for the competition backend pass this adapter.
+    A local-only or merely documented expression remains a valid local candidate;
+    the caller records the reason and excludes it only from a competition batch.
+    """
+    from field_catalog import formula_uses_local
+    from grammar import validate
+    from parser import ParseError, parse_formula
+
+    if formula_uses_local(formula):
+        return False, 'local-only field/operator'
+    try:
+        node = parse_formula(formula)
+    except (ParseError, ValueError) as exc:
+        return False, f'parse: {exc}'
+    ok, reason = validate(node, allow_documented=False)
+    if not ok:
+        return False, reason
+    return True, ''
+
+
+def prepare_competition_rows(rows: list[dict], target_label: str,
+                             primary_label: str) -> tuple[list[dict], list[dict]]:
+    """Select uploadable rows and bind direction/metrics to their source label.
+
+    This adapter is intentionally downstream of local ranking: rejected rows remain
+    in local VWAP/C2C results, with a per-row reason, and are excluded only from the
+    generated competition batch.
+    """
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    for row in rows:
+        formula = str(row.get('formula') or '')
+        name = str(row.get('name') or '<unnamed>')
+        ok, reason = competition_status(formula)
+        if not ok:
+            rejected.append({'name': name, 'reason': reason})
+            continue
+        directions = row.get('label_directions') or {}
+        target_metrics = (row.get('labels') or {}).get(target_label) or {}
+        direction = directions.get(target_label, target_metrics.get('direction'))
+        if direction is None and target_label == primary_label:
+            direction = row.get('direction')
+        if direction not in (0, 1, False, True):
+            rejected.append({'name': name, 'reason': f'missing direction for {target_label}'})
+            continue
+        prepared = dict(row)
+        prepared['direction'] = int(direction)
+        # Batch metadata must describe the label whose direction is exported.
+        for key in ('sia', 'rank_ic', 'ic_ir', 'win', 'turnover', 'net'):
+            if key in target_metrics:
+                prepared[key] = target_metrics[key]
+        prepared['export_label'] = target_label
+        accepted.append(prepared)
+    return accepted, rejected
+
+
 def write_candidates(rows: list[dict], out_path: Path, tag: str = '',
                      notes: tuple = (), meta_path: Path | None = None) -> dict:
     """rows: [{name, formula, direction, expression_hash?, family?, sia?, turnover?, ...}]"""

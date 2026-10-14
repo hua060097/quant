@@ -10,14 +10,14 @@ Sidecar 摘要（2026-09-24 新增）：ledger.jsonl 17MB 后每次 search 全�
 与"历史越大越有用"方向相反。改为 ledger_summary.json（与台账同目录）：
   - 增量消费：记录 byte_offset，新事件只解析尾部；offset 不一致/损坏/缺失时全量重建
   - 内容：hash→labels 排除集、struct_fp→hashes、tested_pairs、事件计数、
-    events_min（fast/local 的 created_at/family/label/event/sia，供 UCB 配额）、
-    evidence_pool（c2c 证据公式池，供腿库/精英回流，首见去重保持旧语义）
+    events_min（fast/local 的 created_at/family/label/event/profile search reward，供 UCB 配额）、
+    evidence_pool（按标签隔离的证据公式池，供各目标 profile 腿库/精英回流）
   - log()/log_raw() 不触碰摘要（append-only）；下次 summary() 自动吃进尾部增量
 
-**数据截止日 scoping（2026-10-11 用户指令，SUMMARY_SCHEMA 2）**：
+**数据截止日与 profile scoping（SUMMARY_SCHEMA 4）**：
 候选身份 = 公式 × 数据截止日。每条事件带 `data_cut`；摘要按 cut 分别登记
 （`hashes[h]['cuts']`、`tested_pairs` 三元组）。`hashes_for(labels, data_cut=...)`
-默认只返回**该截止日**下的已测公式，因此历史遗留截止日（`windows.LEGACY_DATA_CUT`，
+默认只返回**该截止日**下的已测公式；带标签的提案/拒绝事件只排除对应 label profile，因此历史遗留截止日（`windows.LEGACY_DATA_CUT`，
 即个股线用过 2026 数据的期间）的记录**不参与新搜索的排除集**——它们被标记而非混用。
 缺 `data_cut` 字段的旧记录按遗留截止日处理（`_record_cut`），无需改写历史台账；
 `migrate_data_cut.py` 可把该标记**显式落盘**。
@@ -35,7 +35,7 @@ from grammar import Node, candidate_id as make_candidate_id, expression_hash, re
 
 DEFAULT_PATH = Path(__file__).resolve().parent / 'ledger.jsonl'
 SCHEMA_VERSION = 3
-SUMMARY_SCHEMA = 3
+SUMMARY_SCHEMA = 4
 LEG_MAX_TURNOVER = 0.20
 #: 记录/查询使用的默认截止日（选择窗上界）。可用环境或参数覆盖。
 DEFAULT_DATA_CUT = windows.DEFAULT_DATA_CUT
@@ -193,9 +193,11 @@ class Ledger:
             h = rec.get('expression_hash')
             if h:
                 entry = hashes.setdefault(
-                    h, {'labels': [], 'explicit': False, 'cuts': [], 'versions': [],
+                    h, {'labels': [], 'explicit': False, 'explicit_labels': [],
+                        'cuts': [], 'versions': [],
                         'last_at': ''})
                 entry.setdefault('versions', [])
+                entry.setdefault('explicit_labels', [])
                 entry.setdefault('last_at', '')
                 _ts = rec.get('created_at') or ''
                 if _ts > entry['last_at']:
@@ -209,7 +211,12 @@ class Ledger:
                     if lab and lab not in entry['labels']:
                         entry['labels'].append(lab)
                 elif ev in ('proposed', 'rejected', 'duplicate'):
-                    entry['explicit'] = True
+                    explicit_label = rec.get('label')
+                    if explicit_label is None:
+                        # Historical unlabeled proposals retain their global exclusion semantics.
+                        entry['explicit'] = True
+                    elif explicit_label not in entry['explicit_labels']:
+                        entry['explicit_labels'].append(explicit_label)
                     cuts[cut]['explicit'] += 1
             fp = rec.get('struct_fp')
             if fp and h:
@@ -232,20 +239,24 @@ class Ledger:
                     tagged = f'{cut}|{ver}|{vfp}'
                     if tagged not in s['vfps']:
                         s['vfps'].append(tagged)
-                sia = (d.get('tier1') or {}).get('sia')
+                reward = d.get('search_value')
+                if reward is None:
+                    reward = (d.get('tier1') or {}).get('sia')
                 s['events_min'].append([rec.get('created_at') or '',
                                         rec.get('family') or '', lab, ev,
-                                        float(sia) if sia is not None else None, cut, ver])
-                # evidence_pool：保留全部 c2c 证据行（不去重），换手过滤/首见去重在
-                # 消费端做——与旧 _leg_library 语义逐条一致（过滤先于去重）
-                if (lab in (None, 'c2c') and sia is not None and h
+                                        float(reward) if reward is not None else None, cut, ver])
+                # evidence_pool：保留 c2c/vwap 各标签的全部证据行（不去重）；
+                # profile 消费端按标签取池，再做换手过滤/首见去重。
+                evidence_label = lab or 'c2c'  # 旧的 unlabeled search 记录按 C2C 兼容
+                if (evidence_label in ('c2c', 'vwap') and reward is not None and h
                         and rec.get('formula')):
                     t = d.get('tier1') or {}
                     s['evidence_pool'].append({
                         'hash': h, 'formula': rec['formula'],
                         'family': rec.get('family') or '',
                         'direction': int(rec.get('direction', 1)),
-                        'sia': float(sia), 'turnover': t.get('turnover'),
+                        'label': evidence_label,
+                        'sia': float(reward), 'turnover': t.get('turnover'),
                         'cut': cut, 'version': ver,
                     })
         s['tested_pairs'] = sorted(pairs)
@@ -385,26 +396,41 @@ class Ledger:
             tb = str(retest_before)
             hashes = {k: v for k, v in hashes.items()
                       if (v.get('last_at') or '') >= tb}
-        explicit = {k for k, v in hashes.items() if v['explicit']}
         if labels is None:
             return set(hashes)
+        label_set = set(labels)
+        explicit = {
+            k for k, v in hashes.items()
+            if v.get('explicit')
+            or label_set.intersection(v.get('explicit_labels') or [])
+        }
         per_label = []
-        for lab in labels:
+        for lab in label_set:
             per_label.append({k for k, v in hashes.items() if lab in v['labels']})
         tested_all = set.intersection(*per_label) if per_label else set()
         return tested_all | explicit
 
-    def count_tested(self, data_cut: str | None = None) -> int:
+    def count_tested(self, data_cut: str | None = None,
+                     label: str | None = None) -> int:
         """多重检验分母：唯一 (数据截止日, candidate_id, label) 测试对（fast/local 事件）。
 
         截止日不同的测试属于不同检验族（窗口变了，统计量不可比），故默认计入全部；
-        传 `data_cut` 则只统计该截止日。
+        传 `data_cut` 则只统计该截止日；传 `label` 可单独统计一个目标 profile，避免
+        VWAP 的探索阈值/报告被 C2C 竞赛扩展的检验数污染。
         """
         pairs = self.summary()['tested_pairs']
-        if data_cut is None:
-            return len(pairs)
-        cut = windows.normalize_data_cut(data_cut)
-        return sum(1 for p in pairs if p.split('\x00', 1)[0] == cut)
+        cut = windows.normalize_data_cut(data_cut) if data_cut is not None else None
+        total = 0
+        for pair in pairs:
+            parts = pair.split('\x00')
+            if len(parts) < 3:
+                continue
+            if cut is not None and parts[0] != cut:
+                continue
+            if label is not None and parts[2] != label:
+                continue
+            total += 1
+        return total
 
     def tested_by_label(self) -> dict:
         return dict(self.summary()['tested_by_label'])
@@ -418,8 +444,12 @@ class Ledger:
         return {k: dict(v) for k, v in sorted(self.summary()['versions'].items())}
 
     def evidence_pool_for(self, data_cut: str | None = DEFAULT_DATA_CUT,
-                          data_version: str | None = None) -> list[dict]:
-        """该口径下的 c2c 证据池（腿库 / 精英回流的原料）。
+                          data_version: str | None = None,
+                          label: str | None = 'c2c') -> list[dict]:
+        """该口径、目标标签下的证据池（腿库 / 精英回流的原料）。
+
+        默认 `label='c2c'` 保持现有 pool/竞赛调用语义；本地 VWAP 搜索显式传 `label='vwap'`。
+        `label=None` 才返回所有已索引标签的证据，供迁移/审计使用。
 
         2026-10-11：历史 winner 是用**遗留截止日**（含 2026 数据）选出来的，直接复用
         会把旧的选择偏差带进新搜索——故默认只返回当前截止日的证据。截止日变更后
@@ -430,7 +460,7 @@ class Ledger:
         `data_version` 非空时再要求版本匹配（数据重生成后旧证据不再算数）。
         """
         pool = self.summary().get('evidence_pool') or []
-        if data_cut is None and data_version is None:
+        if data_cut is None and data_version is None and label is None:
             return list(pool)
         cut = windows.normalize_data_cut(data_cut) if data_cut is not None else None
         out = []
@@ -439,6 +469,8 @@ class Ledger:
             if cut is not None and c != cut:
                 continue
             if data_version is not None and (e.get('version') or '') != data_version:
+                continue
+            if label is not None and (e.get('label') or 'c2c') != label:
                 continue
             out.append(e)
         return out

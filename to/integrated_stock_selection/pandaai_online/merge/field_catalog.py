@@ -15,12 +15,12 @@ from pathlib import Path
 PLATFORM_FIELDS = ('OPEN', 'CLOSE', 'HIGH', 'LOW', 'VOLUME', 'AMOUNT', 'TURNOVER', 'MARKET_CAP')
 
 # 本地专用字段（2026-09-24 层2）：市场/行业上下文列，本地可算、平台无对应字段。
-# 含这些字段的公式**禁止导出/上传**（export/upload 链路硬闸门），仅用于 vwap 自用线；
-# grammar.validate 仅在 allow_documented=True 时放行（与 DOCUMENTED 算子同一通道）。
+# 它们可进入本地搜索/评估；含这些字段的公式仅在 competition export/upload adapter 硬拦，
+# 不因 C2C 不能表达而从本地 candidate universe 排除。grammar.validate 通过 local context 能力放行。
 LOCAL_ONLY_FIELDS = ('MKT_RET', 'IND_RET', 'BETA60', 'DISP')
 
-# 本地专用算子（T9，2026-09-25）：滚动 y~x 回归——平台无对应算子，含这些算子的公式
-# 禁止上传（formula_uses_local 同步拦截算子名）；随 allow_documented 通道放行 validate。
+# 本地专用算子（T9，2026-09-25）：滚动 y~x 回归——平台无对应算子，可用于本地搜索；
+# 含这些算子的公式只在 competition export/upload adapter 禁止上传；grammar 按 local capability 放行。
 LOCAL_ONLY_OPS = ('TS_REGRESS_RESID', 'TS_REGRESS_BETA')
 
 LOCAL_COLUMN = {

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import _paths  # noqa: F401
+import windows
 
 KB_PATH = Path(__file__).resolve().parent / 'knowledge' / 'mechanisms.jsonl'
 
@@ -128,6 +129,7 @@ _SEED = [
     {
         'id': 'fail-sparse-tie',
         'status': 'failed',
+        'profile': 'competition-c2c',
         'mechanism': '离散事件计数因子（连涨/触碰）稀疏并列：平台tie-breaking放大换手至88%，本地只看到1-2%',
         'formula': None,
         'direction': None,
@@ -169,6 +171,7 @@ _SEED = [
     {
         'id': 'rule-probe-window',
         'status': 'rule',
+        'profile': 'competition-c2c',
         'mechanism': '远程probe窗口必须装得下回看：250日因子probe窗口≥2年，否则平台fail',
         'formula': None,
         'direction': None,
@@ -190,6 +193,7 @@ _SEED = [
         'formula': None,
         'direction': None,
         'family': 'process',
+        'profile': 'competition-c2c',
         'tags': ['process', 'turnover', 'rule', 'official'],
         'fields': [],
         'ops': [],
@@ -208,6 +212,7 @@ _SEED = [
         'formula': None,
         'direction': None,
         'family': 'process',
+        'profile': 'competition-c2c',
         'tags': ['process', 'scoring', 'official', 'rule', 'anchors'],
         'fields': [],
         'ops': [],
@@ -217,6 +222,7 @@ _SEED = [
     {
         'id': 'rule-c2c-caliber',
         'status': 'rule',
+        'profile': 'competition-c2c',
         'mechanism': '口径三件套：收盘→收盘前向收益、池统一周期采样、单边0.3%成本；开盘口径会得出相反结论',
         'formula': None,
         'direction': None,
@@ -315,6 +321,7 @@ _SEED = [
     {
         'id': 'info-overnight-dual-20260916',
         'status': 'rule',
+        'profile': 'competition-c2c',
         'mechanism': '口径发现（2026-09-16 双标签实测）：c2c 候选在 vwap 口径（T+1开盘买入、'
                      '0.7·TP(T+2)+0.3·TP(T+3) 卖出）下 SiA 比值仅 0.01~0.19 —— alpha 集中在 '
                      'T→T+1 隔夜段，T+1 开盘执行不可收割。政策修订（同日）：vwap 不再是必过门槛——'
@@ -335,6 +342,7 @@ _SEED = [
     {
         'id': 'info-platform-rsc-20260916',
         'status': 'validated',
+        'profile': 'competition-c2c',
         'mechanism': '平台校准（2026-09-16，12 个 M2 流动性候选上平台，窗口 20230301-20260710、'
                      'cycle3、10 组）：本地全窗指标与平台高度一致（净超额差 ≤0.7pt）。'
                      'MG-M2-e69118f1=EMA(VOLUME/TS_MEAN(VOLUME,250)-1,20) dir=0：平台 RankIC -0.0584、'
@@ -354,6 +362,7 @@ _SEED = [
     {
         'id': 'info-amount-caliber-20260916',
         'status': 'rule',
+        'profile': 'competition-c2c',
         'mechanism': 'AMOUNT 数据校准（2026-09-16）：平台与本地 amount/volume 逐位一致（样本 000001.SZ 十日），'
                      '唯一差异是复权口径（本地前复权、平台不复权，比值 1.0876 恒定）。amihud 平台换手异常'
                      '（30.68% vs 本地 2.6%）不是数据错误：本地平滑天数扫描显示平台行为更像"未平滑的日度'
@@ -374,6 +383,7 @@ _SEED = [
     {
         'id': 'info-amount-probe-result-20260916',
         'status': 'validated',
+        'profile': 'competition-c2c',
         'mechanism': 'AMOUNT 尺度探针结论（2026-09-16，实测扣 4 credit）：“平台对 ~1e-11 数值处理异常”'
                      '假说成立。同窗口同周期对比：原版（/AMOUNT，值~1e-11）换手 30.68%/成本 15.46%/'
                      '净 −0.50%；×1e9 版（值~1e-2）换手 4.93%/成本 2.48%/净 +13.86%。'
@@ -391,6 +401,7 @@ _SEED = [
     {
         'id': 'warn-amihud-platform-cost',
         'status': 'rule',
+        'profile': 'competition-c2c',
         'mechanism': 'amihud120 平台实测换手 30.68%/调仓 → 年化成本 15.46% → 净超额 −0.50%/年（方向1）；'
                      '近期窗口（2025-01~03）换手 77%、更差。池决策以平台读数为准：考虑移除 amihud120'
                      '（comp6 内部该腿权重 1/6、被稀释后平台换手 12.25%/净 +13.03%，可保留）。',
@@ -565,15 +576,19 @@ def append(entry: dict, path: Path | None = None) -> dict:
 
 
 def auto_reflow(ledger=None, path: Path | None = None,
-                min_events: int = 8, sia_cutoff: float = 0.0005) -> list[dict]:
-    """台账 → 知识库自动回流（2026-09-24）：低产出 family 聚合为 failed 条目。
+                min_events: int = 8, sia_cutoff: float = 0.0005,
+                label: str = 'c2c', data_cut: str | None = None,
+                profile: str | None = None) -> list[dict]:
+    """按目标标签/数据截止日回流低产出 family，避免 C2C 负证据污染本地 VWAP。
 
     此前失败教训只进台账（低分 fast/local 事件），知识库 failed 条目全靠人工
     （--add-json 唯一调用点是其自身 main）。改为每次 search 结束自动聚合：
     family 事件数 ≥ min_events 且平均 SiA < sia_cutoff（或全部无 SiA）→ append
-    id='auto-fail-<family>' 条目（幂等：已存在则跳过）。非对称记忆的负证据侧。
+    profile/label/family scoped failed 条目（幂等：已存在则跳过）。
     返回本次新增条目列表。
     """
+    profile = profile or ('local-vwap' if label == 'vwap' else 'competition-c2c')
+    cut = windows.normalize_data_cut(data_cut) if data_cut is not None else None
     rows = None
     if ledger is not None:
         rows = ledger.summary()['events_min']
@@ -583,7 +598,12 @@ def auto_reflow(ledger=None, path: Path | None = None,
     agg: dict[str, list] = {}
     for row in rows:
         # 行格式：5 元组（旧）或 6 元组（含数据截止日，2026-10-11 起）
-        _created, family, _lab, _ev, sia = row[:5]
+        _created, family, event_label, _ev, sia = row[:5]
+        event_cut = row[5] if len(row) > 5 else None
+        if event_label != label and not (label == 'c2c' and event_label is None):
+            continue
+        if cut is not None and event_cut != cut:
+            continue
         if not family or family in ('proposal', 'intake'):
             continue
         agg.setdefault(family, []).append(sia)
@@ -602,14 +622,17 @@ def auto_reflow(ledger=None, path: Path | None = None,
             continue
         mean_txt = f'{mean:.5f}'
         entry = {
-            'id': f'auto-fail-{family}',
+            'id': f'auto-fail-{profile}-{family}',
+            'profile': profile,
+            'label': label,
+            'data_cut': cut,
             'status': 'failed',
             'family': family,
             'mechanism': f'自动回流：{family} 台账 {len(sias)} 次评估平均 SiA={mean_txt}'
                          f'（<{sia_cutoff} 或无有效读数），历史无有效产出，新搜索降权',
             'evidence': f'source=ledger events_min; n_events={len(sias)}; '
                         f'mean_sia={mean_txt}; cutoff={sia_cutoff}',
-            'tags': ['auto', 'failed', 'low-yield'],
+            'tags': ['auto', 'failed', 'low-yield', f'profile:{profile}', f'label:{label}'],
             'source': f'knowledge.auto_reflow {datetime.now().strftime("%Y-%m-%d")}',
         }
         if entry['id'] in existing_ids:
@@ -626,13 +649,23 @@ def _tokens(text: str) -> list[str]:
 
 
 def retrieve(query: str = '', tags=None, fields=None, ops=None, k: int = 5,
-             path: Path | None = None) -> list[dict]:
+             path: Path | None = None, profile: str | None = None) -> list[dict]:
     tags = {t.lower() for t in (tags or [])}
     fields = {f.upper() for f in (fields or [])}
     ops = {o.upper() for o in (ops or [])}
     query_tokens = _tokens(query)
     scored = []
     for entry in load(path):
+        if profile:
+            entry_profile = entry.get('profile')
+            if entry_profile is not None and entry_profile not in ('shared', profile):
+                continue
+            # Legacy automatic failures were generated by the historical C2C-primary
+            # search and have no profile field; do not treat them as VWAP evidence.
+            is_legacy_auto_failure = (str(entry.get('id', '')).startswith('auto-fail-')
+                                      and entry_profile is None)
+            if is_legacy_auto_failure and profile != 'competition-c2c':
+                continue
         text = ' '.join(str(entry.get(x, '')) for x in
                         ('mechanism', 'formula', 'evidence', 'family', 'source')).lower()
         entry_tags = {str(t).lower() for t in entry.get('tags', [])}
