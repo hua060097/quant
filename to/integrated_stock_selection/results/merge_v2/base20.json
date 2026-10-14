@@ -1,0 +1,129 @@
+{
+ "label_max": "2024-12-26",
+ "n_perm": 50,
+ "n_stock": 124,
+ "n_keepers": 123,
+ "base20": [
+  {
+   "factor": "t2_compress_atr_ratio_7",
+   "direction": -1,
+   "rankic_mean": -0.05741,
+   "t_nw": -6.22
+  },
+  {
+   "factor": "sector_relative_volatility",
+   "direction": -1,
+   "rankic_mean": -0.05567,
+   "t_nw": -8.9
+  },
+  {
+   "factor": "t2_mined_92ec5ef6d160",
+   "direction": 1,
+   "rankic_mean": 0.05242,
+   "t_nw": 8.27
+  },
+  {
+   "factor": "corr_mkt60_amountvol_turnovergate_rank",
+   "direction": 1,
+   "rankic_mean": 0.0524,
+   "t_nw": 8.46
+  },
+  {
+   "factor": "mi_post_high_drawdown",
+   "direction": -1,
+   "rankic_mean": -0.0514,
+   "t_nw": -5.71
+  },
+  {
+   "factor": "t2_mined_bcdb635e05e8",
+   "direction": 1,
+   "rankic_mean": 0.05136,
+   "t_nw": 8.23
+  },
+  {
+   "factor": "qs_range_ratio_cv10",
+   "direction": -1,
+   "rankic_mean": -0.05004,
+   "t_nw": -8.14
+  },
+  {
+   "factor": "qs_atr_ratio_cv10",
+   "direction": -1,
+   "rankic_mean": -0.05004,
+   "t_nw": -7.89
+  },
+  {
+   "factor": "stk_realized_vol_20d",
+   "direction": -1,
+   "rankic_mean": -0.04928,
+   "t_nw": -5.43
+  },
+  {
+   "factor": "qs_atr_ratio_cv7",
+   "direction": -1,
+   "rankic_mean": -0.04891,
+   "t_nw": -8.01
+  },
+  {
+   "factor": "qs_range_ratio_cv7",
+   "direction": -1,
+   "rankic_mean": -0.04886,
+   "t_nw": -8.16
+  },
+  {
+   "factor": "downside_beta",
+   "direction": -1,
+   "rankic_mean": -0.0486,
+   "t_nw": -5.22
+  },
+  {
+   "factor": "qs_atr_ratio_cv5",
+   "direction": -1,
+   "rankic_mean": -0.04806,
+   "t_nw": -8.11
+  },
+  {
+   "factor": "qs_range_ratio_cv5",
+   "direction": -1,
+   "rankic_mean": -0.04792,
+   "t_nw": -8.17
+  },
+  {
+   "factor": "qs_realized_vol_cv10",
+   "direction": -1,
+   "rankic_mean": -0.04706,
+   "t_nw": -7.89
+  },
+  {
+   "factor": "idiosyncratic_vol_60d",
+   "direction": -1,
+   "rankic_mean": -0.04637,
+   "t_nw": -5.47
+  },
+  {
+   "factor": "upper_shadow_pressure_5d",
+   "direction": -1,
+   "rankic_mean": -0.04615,
+   "t_nw": -8.37
+  },
+  {
+   "factor": "t2_vol_scaled_lower_wick_10",
+   "direction": 1,
+   "rankic_mean": 0.04529,
+   "t_nw": 5.56
+  },
+  {
+   "factor": "t2_mined_a71e1027f89e_pct",
+   "direction": -1,
+   "rankic_mean": -0.04525,
+   "t_nw": -5.62
+  },
+  {
+   "factor": "t2_mined_9e4de7eae7df",
+   "direction": -1,
+   "rankic_mean": -0.04415,
+   "t_nw": -9.92
+  }
+ ],
+ "evidence": "E1"
+}

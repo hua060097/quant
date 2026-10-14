@@ -1,0 +1,51 @@
+{
+ "feature_definition_hash": "fd8090de9144",
+ "label_definition_hash": "f83330f65a8b",
+ "dataset_hash": "2b752f583083",
+ "experiment_hash": "502bfa01c4aa",
+ "time_fields": {
+  "signal_max": "2026-09-11",
+  "feature_available_max": "2026-09-11",
+  "label_coverage": "r3=T+2..T+3（权重 0.7/0.3）；r5=T+4..T+5；dd3=min(T+2,T+3)，T+1 排除",
+  "label_available_max": "2026-09-18",
+  "forward_first_signal": "2026-09-21"
+ },
+ "dataset_payload": {
+  "factors_file": "factor_lab_data/factors.parquet",
+  "factors_md5": "abe94a59e3d603a694337c3d04b5306b",
+  "factors_rows": 6272523,
+  "factors_cols": 262,
+  "factors_dates": "2021-06-01~2026-09-18",
+  "cache": "stock_features_20200101_20260918.parquet (mtime 2026-10-04)",
+  "labels_file": "results/merge_v2/labels_prod.parquet",
+  "missing_policy": "缺失值规则随特征定义文本冻结（§8.1 逐条声明）；本契约只记录口径级别：NaN 不填充，分位数用非 NaN 日",
+  "adjusted_price": "daily fq（cache 原口径，见 evaluator.load_panel）",
+  "declared_data_version": "factors_abe94a59"
+ },
+ "experiment_payload": {
+  "feature_definition_hash": "fd8090de9144",
+  "dataset_hash": "2b752f583083",
+  "label_definition_hash": "f83330f65a8b",
+  "pool_version": "baseline_pool_not_frozen（pending S8_Stock_Pool 冻结）",
+  "label_version": "multihorizon_35",
+  "folds": {
+   "train_months": 18,
+   "test_months": 3,
+   "step_months": 3,
+   "embargo_days": 5,
+   "inner_per_version": 6,
+   "outer_windows": 8
+  },
+  "engine": {
+   "script": "main_alpha_stage15_hp_search.py（仓库根；merge 不内嵌模型级增量诊断，用户裁定 2026-10-13）",
+   "ab_protocol": "正式对照 = 两次生产运行（--features_file：基线特征集 / 基线+候选）+ compare_stage15.py 对拍；折/种子/预算/交易核算由生产脚本保证"
+  },
+  "eval_note": "验收关注 Top1 类指标与真实可实现性（生产引擎含槽位净值/成本折算）；merge 侧五项预规定指标描述废止（随 s8_test_b.py 删除，§16.29.1）",
+  "dates": {
+   "signal_max_production": "2026-09-11",
+   "label_available_max_production": "2026-09-18",
+   "forward_first_signal_date": "2026-09-21",
+   "holidays_verified": "mid-autumn 2026-09-25~27, national 2026-10-01~07 closed"
+  }
+ }
+}

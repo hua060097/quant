@@ -1,0 +1,57 @@
+{
+ "data_version": {
+  "factors_md5": "abe94a59e3d603a694337c3d04b5306b",
+  "factors_rows": 6272523,
+  "factors_cols": 262,
+  "factors_dates": "2021-06-01~2026-09-18",
+  "factors_n_days": 1289,
+  "cache": "stock_features_20200101_20260918.parquet 2020-01-02~2026-09-18",
+  "labels_file": "results/merge_v2/labels_prod.parquet",
+  "labels_generated": "2026-10-09",
+  "moneyflow": "local_data/moneyflow 2020-01-03~2026-10-08, 1623 daily files, backfilled 2026-09-08~16 on 2026-10-09"
+ },
+ "label_family": "multihorizon_35",
+ "label_def": {
+  "tp": "(O+H+L+C)/4",
+  "buy": "open(T+1)",
+  "r3": "0.7*TP(T+2)+0.3*TP(T+3)",
+  "r5": "0.7*TP(T+4)+0.3*TP(T+5)",
+  "dd3": "min(low T+2,T+3), T+1 excluded",
+  "y_prod": "R3>=0.07 & R5>=R3 & DD3>-0.05"
+ },
+ "folds": {
+  "train_months": 18,
+  "test_months": 3,
+  "step_months": 3,
+  "embargo_days": 5,
+  "inner_per_version": 6,
+  "outer_windows": 8
+ },
+ "hp_grid": {
+  "active_pids": [
+   "H8",
+   "H12",
+   "H15",
+   "H15S",
+   "H14"
+  ],
+  "hash": "af0139703981",
+  "checkpoints": [
+   200,
+   300,
+   350,
+   400,
+   450,
+   500,
+   600
+  ]
+ },
+ "dates": {
+  "signal_max_production": "2026-09-11",
+  "label_available_max_production": "2026-09-18",
+  "forward_first_signal_date": "2026-09-21",
+  "holidays_verified": "mid-autumn 2026-09-25~27, national 2026-10-01~07 closed"
+ },
+ "cost_estimate": "see cost_estimate_p0.md; ~50h server + 1h local full dual-boundary",
+ "evidence": "E1"
+}
