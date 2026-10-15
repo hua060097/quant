@@ -90,7 +90,10 @@ def load_panel(names: list[str]):
 
 
 def _centered_u(xv: np.ndarray, day: np.ndarray, nd: int, d: float) -> np.ndarray:
-    """有向居中百分位秩 u = d*(RankPct-0.5)（与 f1_batch/f1_sector 同定义）。
+    """有向居中百分位秩 u = d*(RankPct-0.5)（与 f1_batch._centered_u 逐字同义）。
+
+    输入必须为**原始值**（函数内排名后再乘 d）；传入 d*xv 会在 d=-1 时
+    负负得正。调用方注意。
 
     在日内秩层面消除截面均值/量纲，杜绝原始值 z 与行业权重相乘的
     Level-Leak；调用方每因子只算一次（循环内不再重复 to_numeric）。
@@ -240,7 +243,9 @@ def main() -> int:
             d = 1.0 if float(np.nanmean(_ic_raw)) >= 0 else -1.0
             dirmap_all[c] = d
             xv = pd.to_numeric(m[c], errors="coerce").to_numpy(dtype=float)
-            u = _centered_u(d * xv, day, nd, d)
+            # 对原始值排名再乘 d（与 f1_batch._centered_u 逐字同义；勿传 d*xv，
+            # 否则 d=-1 时负负得正方向全反——f1_sector 同 bug 已并修）。
+            u = _centered_u(xv, day, nd, d)
             xr = d * pr.values(c)
             br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day)
             bb = E._daily_corr(br, pr.y, day, nd)
@@ -350,7 +355,7 @@ def main() -> int:
     for c in g3f:
         d = dirmap_all[c]
         xv = pd.to_numeric(m3[c], errors="coerce").to_numpy(dtype=float)
-        u3[c] = _centered_u(d * xv, day3, nd3, d)
+        u3[c] = _centered_u(xv, day3, nd3, d)
         xr = d * pr3.values(c)
         br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day3)
         b3[c] = E._daily_corr(br, pr3.y, day3, nd3)

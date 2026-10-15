@@ -134,6 +134,10 @@ def main():
         m = m[m["date"] <= label_max].copy()
         del fac
     m["_sec"] = m["stock_code"].astype(str).map(secmap)
+    # V4.3a：m 必须按 date 稳定排序（fac 是 stock-major 行序；_prepared 只排
+    # 内部副本，day/yrk 是 date-major；否则 _sec/xv 与 day/yrk 全错位——
+    # 与 gate_g2g3_sector 第④点同源 bug）。
+    m = m.sort_values("date", kind="stable").reset_index(drop=True)
     # 抽样截面（两级评估的粗筛级；**仅用于粗筛，不得用于正式判定**——
     # 见 gate_search_report §4.1 与 Codex 对抽样精度的要求）
     if getattr(a, "sample_stocks", 0):
@@ -146,6 +150,7 @@ def main():
     # 日码与 sector 码
     day, dates_u, _, _, nd = E._prepared(m, base_cols[0], "r3")
     uniq = np.unique(m["date"].to_numpy())
+    assert (pd.to_datetime(m["date"]).to_numpy() == uniq[day]).all(), "m行序与日码错位"
     n_dates = len(uniq)
     sec_ids, sec_uniq = pd.factorize(m["_sec"].astype(str))
     n_sec = len(sec_uniq)
@@ -202,13 +207,11 @@ def main():
             if _is_switch and (not c.get("base_off") or not c.get("base_def")):
                 raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
             if _is_gain or _is_flip:
-                # F1v3_gain/flip：有向居中秩u（与f1_batch市场分支同定义）
-                _rk = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
-                _dcnt = np.bincount(day, minlength=nd).astype(float)
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    _pct = _rk / np.maximum(_dcnt[day], 1)
-                u_row = c["d"] * (_pct - 0.5)
-                u_row[~np.isfinite(z)] = np.nan
+                # F1v3_gain/flip：有向居中秩u（与f1_batch._centered_u逐字同定义：
+                # 对**原始值**排名再乘一次d。旧代码对已乘d的z排名后再乘d，
+                # d=-1时负负得正方向全反——base20有16/20个d=-1）。
+                from f1_batch import _centered_u as _cu
+                u_row = _cu(xv, day, nd, int(c["d"]))
             elif _is_switch:
                 # switch legs方向：cands自带d_off/d_def（缺省1）；u已做有向对齐
                 u_off_row, u_def_row = None, None

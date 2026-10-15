@@ -52,6 +52,20 @@ OFFENSE_AXES = ("trend_position",)
 DEFENSE_AXES = ("volatility", "distribution", "liquidity_size")
 
 
+def _dsign(v) -> int:
+    """flat direction 0/1 → F1/落盘 ±1（0=反向；refs_cond_t1.py:98 同口径）。
+
+    V4.3a：flat 沿用 fitness/executor 的 0/1 编码（1=正向，0=反向）；
+    直接透传 0 会使 _centered_u(..., d=0) 全零。vwap_top20.json 侧
+    build_top.py:821 已做同映射，此处补齐 cands/pool 侧。
+    """
+    try:
+        iv = int(v)
+    except Exception:
+        return 1
+    return -1 if iv in (0, -1) else 1
+
+
 def _latest_flat() -> str:
     cands = sorted(Path(OUT_DIR).glob("ALIGNED_TOP2_*_flat.csv"),
                    key=lambda p: p.stat().st_mtime)
@@ -196,7 +210,7 @@ def main() -> int:
                                and best["hi_ic"] * best["lo_ic"] < 0) else "gain"
         rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
                "formula": str(r.get("formula_cn", "")),
-               "direction": int(r["direction"]) if pd.notna(r.get("direction")) else 1,
+                "direction": _dsign(r.get("direction")),
                "rank": int(r["_rank"]), "LGB": float(r.get("LGB", 0) or 0),
                "uncond_rank_ic": uncond, "gate": best["gate"], "s": best["s"],
                "t_slope": best["t"], "slope_b": best["b"],
@@ -279,10 +293,7 @@ def main() -> int:
     # pool清单与分form cands
     dirmap = {}
     for _, r in vdf.iterrows():
-        try:
-            dirmap[str(r["factor_id"])] = int(r["direction"]) if pd.notna(r.get("direction")) else 1
-        except Exception:
-            dirmap[str(r["factor_id"])] = 1
+        dirmap[str(r["factor_id"])] = _dsign(r.get("direction"))
     out_pool = {"generated_at": datetime.now().isoformat(timespec="seconds"),
                 "bank": a.bank, "flat": flat, "label": a.label,
                 "rank_window": [a.rank_lo, a.rank_hi], "t_min": a.t_min,

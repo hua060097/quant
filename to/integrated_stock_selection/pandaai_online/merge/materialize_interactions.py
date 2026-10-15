@@ -172,6 +172,9 @@ def main() -> int:
             sub = sgates[sgates["gate_id"] == gate]
             prow = sub.pivot_table(index="date", columns="sector", values="p",
                                    aggfunc="mean")
+            # V4.3a：日期对齐——sgates 从 2020-01 起而 udays 从面板起始日起，
+            # 不 reindex 会使 Gv[di] 取错 1.5 年（与 f1_sector:176 同口径）。
+            prow = prow.reindex(pd.to_datetime(udays))
             if form == "gain":
                 G = 2.0 * prow - 1.0
             elif form in ("flip", "switch"):
