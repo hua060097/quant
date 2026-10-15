@@ -69,10 +69,13 @@ Owner拍板V4.2（2026-10-15晚）：1）门控筛选离线化——`build_gate_
                                                             ▼
 ===================================================================================================
               [Layer 3: 门控资格筛选与连续调制交互合成引擎 (Gate & Interaction Engine)]
-  • Stage 3.1 门控预筛与聚类去冗余 (run_gate_pipeline.py + gate_g4_clusters.py):
-    - 卫生门 G0 + 市场方向中性度 (|corr(g, mkt_cum20/60)| < 0.6)
-    - G4 独立性聚类 (|ρ| >= 0.8 聚为一簇，每簇仅保留 G2 得分最高的 1 个代表门控，消除近克隆)
-    - G2/G3 组级检验: 针对 vwap_base_panel (25个正交基准)，保留组级显著门控，自动锁定符号 s = sign(G2)
+  • Stage 3.1 门控资格离线筛选（低频，每data_cut一次，与日常因子搜索彻底解耦）:
+    - 离线泳道 build_gate_bank.py: 短名单 → G0卫生门+方向中性 → G4聚类去冗余(|ρ|>=0.8取簇代表)
+      → G2/G3组级检验(锁符号s) → certified_gate_bank.json (bank-v1，旧版归档禁静默覆盖)
+      + direct_sector_states.parquet (正交纯行业状态，D8豁免，只随data_cut刷新)
+    - 日常泳道只读消费 bank (--gate-bank certified_gate_bank.json): 过滤到认证门控集+s锁定覆盖，
+      不再逐日重跑G2/G3筛选——门控资格是一次性权威结论，日常因子搜索循环不含任何门控筛选
+    - run_gate_pipeline.py 保留原筛选能力但仅用于bank刷新/诊断（--gate-bank时转为bank门控+cands生成）
   • Stage 3.2 显式交互特征构造与 H3/FDR 检验 (f1_batch.py/f1_sector.py --form gain|flip|switch):
     - gain【中心化增益调制】: F = u*clip(1+0.5*s*g, 0.2, 1.8)；flip【方向翻转】: F = u*(s*g)，|g|<0.10 死区弃权；
       switch【双因子软切换】: F = p*u_off+(1-p)*u_def
@@ -769,6 +772,11 @@ if __name__ == '__main__':
 ## 五、 重构后的日常标准工作流（SOP 4 条命令跑通全局）
 
 当大模型按上述 6 个 Stage 完成重构后，你平时的研究与生产只需要极其清爽的 **4 条命令**：
+
+> **频率契约（门控筛选与日常因子搜索彻底解耦）**：
+> - **低频离线泳道**（每`data_cut`一次，通常月级）：`build_gate_bank.py` → `certified_gate_bank.json`（bank-v1：G0/中性度/G4簇代表/G2G3已做完、s锁定）+ `direct_sector_states.parquet`（D8豁免行业状态）。旧版按`bank_v1_<data_cut>.json`归档，禁静默覆盖。
+> - **日常高频泳道**（每次研究迭代）：步骤一~二→四~六全部**不包含任何门控筛选**——只经`--gate-bank`只读消费 bank 的门控集合与 s，BN 均值快评/进化搜索/正交排榜/偏科选择/三算子 F1 检验/落盘/组装均不触碰 G2/G3 重算。
+> - 唯一例外：`run_gate_pipeline.py` 本体仍保留完整筛选能力，但只在 bank 刷新/诊断时使用；不传`--gate-bank`时维持历史行为（兼容旧复现）。
 
 1. **当你有新灵感、新论文或 Alpha101 因子时**：
 直接在 `custom_factors/` 下写 Python 函数 `@register_py_factor` 或公式 `register_formula_factor`。
