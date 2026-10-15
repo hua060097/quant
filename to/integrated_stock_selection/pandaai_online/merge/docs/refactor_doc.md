@@ -870,3 +870,42 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - V4.2收敛（Gemini终审+Owner指令）：flip市场单因子死区`|g|<0.10`；switch市场/行业统一单因子静态共识主判定（tilt转辅助）；F1v3参数冻结为预注册默认；`audit_pit`闭环——实跑教训：`paper_idio_mom_20d`因求值只走`ensure_local_fields`报`BETA20`告警，已修为`ensure_extended_fields`超集（合成验证132/200有限值，NaN为warm-up正常）；sector预筛走2门控无置换ΔRankIC（下一步）；Stage15零拷贝桥接已定方向未实施；§六9项中#3#4#5#9冻结，#2#6#8代码闭环，#1#7下一步。
 - 首次实跑记录（2026-10-15，`build_top --top 200 --keep-pool 80 --include-custom --export-panel`）：refs 1,672行/台账候选4,403/合选345；评估实算206个（242个台账复用）33分钟，非卡死系正常重负载，被Owner叫停（后台PID 22260已杀）；副作用按只追不删保留——`ledger.jsonl`新增约412条`local`事件（重跑自动复用跳过）+`out/value_cache/a2d87b758d02824e/`缓存+boundary_log 2条v4check。正交扫描及后续Export未到达。
 - 提交：V4.2代码+文档已commit `6684a3e`（21文件 +2972/-61），产物（certified_gate_bank.json等）按gitignore不入库。
+
+---
+
+## 八、 V4.3分期计划（Owner已拍板：V4.3a→V4.3b→V4.3c依次执行；本节只定计划，代码未动）
+
+### 已裁决事项（Gemini两处认同 + Muse两处修正，均有磁盘证据）
+
+1. **市场G2主刀是`4折全同+CI不含0`，不是`same_frac≥0.60`**（证据：`pipeline_all.csv` 40门控全跑完，`same_frac`多数量过0.6如`newhigh_ratio_accel` 0.91/3折仍挂，`turn_med_level` 0.78/4折挂于CI；另4门含最强的`newhigh_ratio_chg`死于G0中性门）。风格对冲是同一机制的另一面：`median_b`被拉到0附近（如`xs_iqr_ratio` 0.000079）→折摇摆+CI跨0。结论：放行逻辑不变，改**判定分母**（见下3）。
+2. **行业bank当前是2门控×5因子冒烟残余**（证据：`g2g3_sector.csv`仅2行，mtime与panel差2分钟；`screen.csv`14行业门控全eligible，12个从未跑G2；且`gate_g2g3_sector.py:116` `max(s·vv,0)`截断致`delta≈-0.02045`、s锁死-1）。结论：V4.3a废弃此CSV重算。
+3. **市场G2改良走先验机制分簇，拒绝`|t|≥2.0`响应子集**（后者=同一统计量先选后测，选择偏差）。簇源直接用`roles.csv`现成`group`列（8组：volatility_and_liquidity 30/directional_alpha 28/momentum_and_position 28/risk_and_exhaustion 15/t2_promoted 12/tail_protect 6/sector_context 3/capital_flow_risk 2；`t2_promoted`为晋批次标签，检验时单独成簇并注明）：**任一簇内4折同号+簇内`same_frac≥0.65`+CI不含0即认证**，记录受益簇。阈值0.65与孪生阈值同属预注册冻结。
+4. **W4（可交易掩码）修正**：掩码代码已存在（`fitness.py:87-90`，`universe=True`时`is_can_buy==1 & is_st==0 & ~一字板`），但全链路零启用（grep `universe=True`零调用）。故V5动作是"**开掩码+台账基线切换**"，不是新标签；开启即改变全部历史指纹可比性，须配基线版本号。
+
+### V4.3a：行业G2无塌缩重算 → bank-v2（纠偏，不动市场）
+
+- `gate_g2g3_sector.py`：F1改`gain`式无塌缩口径（`u·(1+0.5g)`，与F1v3_gain同式；G3置换同步重跑，旧G3同样建在截断上）；14 eligible门控全跑（约50分钟离线）；`--ledger`指向独立台账防污染（已有参数，沿用）。
+- `build_gate_bank.py`：输入换新CSV，bank升`v2`，v1按`bank_v1_<data_cut>.json`归档；`direct_sector_states`重选（目标真2~3正交，`|rho|<0.7`不变）。
+- 验收：`g2g3_sector.csv` 14行；`delta_median`脱离-0.020塌缩带；bank-v2 sector≥2且s有正有负（或如实记录全同号）；回归7/7不动。
+
+### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动）
+
+- `gate_search_space.py`：`SECTOR_BASES`加`sec_mom_xrank`（行业5/20日超额跨行业分位）、`sec_vol`（行业20日收益波动）、`sec_breadth`（行业内上涨占比）；涨停集中度需先验证涨停标记字段可用性，不可用则本期放弃。`sec_ret_xrank`（单日）保留，新mom为多日梯度，不重复。
+- `sector_base_from_raw`补三实现 → sector面板重算 → V4.3a同口径G2 → bank-v3（规格54→约63，bank内注明版本与data_cut）。
+- 验收：新基础量覆盖率≥80%（G0口径）；bank-v3 `direct`稳定2~3个。
+
+### V4.3c：store第四源 + 双向去重闭环 + 机制分簇G2（闭环，市场G2开新族版本）
+
+- `store_vfps_<data_cut>.json`离线预热（STOCK 124+STOCK_REL 5+CROSS_SEC 7=136列，fast_frame上`value_fingerprint`，分钟级），`run_search`启动并入`seen_vfp`（钩子`ledger.vfps_for`已存在，`vfp_dup`零改动）。
+- `build_top.py`加`eval_store`分支（同`DataContext(label='vwap')`，走现value_cache/ledger；一次性成本≈一次build_top）；`vwap_orthogonal_indices`加孪生优先（`mined/custom`与`store`截面`|ρ|≥0.95`留store列名；0.70~0.95贪心择优已有规则覆盖）；`select_specialists.py`零改动（读flat自动获存量偏科因子）；`export_lgb_dataset.py`中store入选直接引用原列名。
+- `--promote-to-store`为**显式离线脚本**（备份+sha+`roles.csv`同步），严禁自动回写7.3GB生产表。
+- `gate_g2g3.py`加按`group`分簇G2选项（默认关闭；开启=新检验族版本，旧全池结论归档保留，不改写）。
+- 验收：store 136列全进flat；合成孪生对（store列的仿射变体）被判留store；`--promote-to-store --dry-run`路径畅通。
+
+### V5 backlog（parking，等V4.3首批Stage15实盘对拍后再启动；本期不展开设计）
+
+- W1目标错位（全市场RankIC vs 极值二分类Top5）：需Stage15侧代码对拍（`multihorizon_35`定义、槽位规则我方未见源码，暂不背书具体数字），方向为尾部鉴别评分。
+- W2残差/错题靶向搜索（`--label residual`、Top50头部分鉴别）：待W1对齐后立项。
+- W3多元共线（VIF/残差比≥0.35）：便宜，可提前到V4.3c附带（终选环节加一道检查，不动搜索）。
+- W4开`universe`掩码+台账基线切换；`sw2_mapping`静态漂移（PLAN D5已知）。
+- W5单表7.3GB瓶颈：`--extra_factors_path`侧挂增量表（方向已定，V4.2收敛在案）。
