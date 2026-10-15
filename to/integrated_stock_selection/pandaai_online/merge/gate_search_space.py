@@ -71,6 +71,10 @@ SECTOR_BASES = (
     ("sec_amp_med", "行业振幅中位数", "行业内振幅中位数"),
     ("sec_ret_xrank", "行业收益跨行业排名", "行业收益在全部行业中的当日排名（截面归一化）"),
     ("sec_amt_share_chg", "行业成交额份额变化", "行业成交额占全市场比重的变化"),
+    # V4.3b 新增（A 股板块效应核心维度；涨停集中度需涨停标记字段，先验证再定）
+    ("sec_mom_xrank", "行业动量跨行业排名", "行业过去 20 日累计收益的跨行业分位（中期动量梯度）"),
+    ("sec_vol", "行业波动率", "行业日收益 20 日滚动标准差（主升/震荡/防御）"),
+    ("sec_breadth", "行业上涨宽度", "行业内上涨个股占比（普涨 vs 龙头独涨）"),
 )
 
 #: 操作化（对基础量的日序列施加）
@@ -99,6 +103,9 @@ def sector_base_from_raw(c: pd.DataFrame) -> pd.DataFrame:
                  - pd.to_numeric(c["low"], errors="coerce")) \
         / pd.to_numeric(c["close"], errors="coerce").replace(0, np.nan)
     g = c.groupby(["date", "_sec"], sort=True)
+    _up = (c["pct_chg"] > 0).astype(float)
+    _bm = _up.groupby([c["date"].to_numpy(), c["_sec"].to_numpy()],
+                       sort=True).mean()
     sb = pd.DataFrame({
         "_ret": g["pct_chg"].mean(),
         "sec_xs_disp": g["pct_chg"].std(),
@@ -106,8 +113,17 @@ def sector_base_from_raw(c: pd.DataFrame) -> pd.DataFrame:
         "_turn": g["amount"].sum() / g["circ_mv"].sum().replace(0, np.nan),
         "_amt": g["amount"].sum(),
     }).reset_index().rename(columns={"_sec": "sector"})
+    sb["sec_breadth"] = sb.set_index(["date", "sector"]).index.map(_bm).to_numpy()
     sb["sec_amt_share"] = sb["_amt"] / sb.groupby("date")["_amt"].transform("sum")
     sb["sec_ret_xrank"] = sb.groupby("date")["_ret"].rank(pct=True)
+    # V4.3b：中期动量（20 日累计）跨行业分位；行业波动率（20 日 std）。
+    # 全程索引对齐（不 reset、不 to_numpy 错位赋值）：_srt 保留 sb 原索引标签。
+    _srt = sb.sort_values(["sector", "date"])
+    _mom20 = _srt.groupby("sector", sort=False)["_ret"] \
+        .transform(lambda s: s.rolling(20, min_periods=20).sum())
+    sb["sec_mom_xrank"] = _mom20.groupby(sb["date"]).rank(pct=True)
+    sb["sec_vol"] = _srt.groupby("sector", sort=False)["_ret"] \
+        .transform(lambda s: s.rolling(20, min_periods=20).std())
     sb = sb.sort_values(["sector", "date"]).reset_index(drop=True)
     sb["sec_turn_chg"] = (sb.groupby("sector", sort=False)["_turn"]
                           .transform(lambda s: s.rolling(20, min_periods=20).mean())
@@ -129,8 +145,9 @@ def generate_space() -> list[dict]:
                           "note": note})
     for key, zh, note in SECTOR_BASES:
         for op, opzh, fn in OPS:
-            if key in ("sec_ret_xrank", "sec_amt_share_chg") and op != "level":
-                continue      # 这两个本身就是变化/排名口径，只取 level
+            if key in ("sec_ret_xrank", "sec_amt_share_chg", "sec_mom_xrank") \
+                    and op != "level":
+                continue      # 这三个本身就是变化/排名口径，只取 level
             specs.append({"gate_id": f"GS_{key}_{op}", "level": "sector",
                           "base": key, "base_zh": zh, "op": op, "op_zh": opzh,
                           "note": note})
