@@ -23,7 +23,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from evaluator import Evaluator, ensure_local_fields
+from evaluator import Evaluator, ensure_extended_fields, ensure_local_fields
 from parser import parse_formula
 
 
@@ -79,7 +79,7 @@ def register_py_factor(factor_id: str, axis: str = 'custom', description: str = 
 def _evaluate_core(spec: CustomFactorSpec, frame: pd.DataFrame,
                    ev: Evaluator | None = None) -> np.ndarray:
     """求值内核（audit_pit内部复用，不触发审计，避免递归）。"""
-    ensure_local_fields(frame)
+    ensure_extended_fields(frame)
     ev = ev or Evaluator(frame)
     if spec.kind == 'formula':
         node = parse_formula(spec.formula_str)

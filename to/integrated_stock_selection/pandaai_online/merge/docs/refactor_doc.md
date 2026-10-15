@@ -74,10 +74,13 @@ Owner拍板V4.2（2026-10-15晚）：1）门控筛选离线化——`build_gate_
     - G4 独立性聚类 (|ρ| >= 0.8 聚为一簇，每簇仅保留 G2 得分最高的 1 个代表门控，消除近克隆)
     - G2/G3 组级检验: 针对 vwap_base_panel (25个正交基准)，保留组级显著门控，自动锁定符号 s = sign(G2)
   • Stage 3.2 显式交互特征构造与 H3/FDR 检验 (f1_batch.py/f1_sector.py --form gain|flip|switch):
-    - 摒弃旧 max(s*g, 0) 清零截断，改用【中心化增益调制】: F_{i,t} = u_{i,t} * clip(1 + 0.5*s*g, 0.2, 1.8)
-    - 市场门控 (1×T): 测多因子底仓倾斜增量 (Baseline-Tilt ΔRankIC) + 200次块置换 Placebo + BH-FDR
-    - 行业门控 (S×T): 测单因子截面 ΔRankIC + 日期整块行业置换 Placebo + BH-FDR
-    - 通过检验的配对直接输出为数值矩阵: approved_interactions.parquet (N×T)
+    - gain【中心化增益调制】: F = u*clip(1+0.5*s*g, 0.2, 1.8)；flip【方向翻转】: F = u*(s*g)，|g|<0.10 死区弃权；
+      switch【双因子软切换】: F = p*u_off+(1-p)*u_def
+    - 市场门控 (1×T): gain 测底仓倾斜增量；flip/switch 测单因子截面 ΔRankIC（switch 对照静态共识，tilt 仅辅助列）
+      + 200次块置换 Placebo + BH-FDR；三式分开跑 FDR，严禁合并
+    - 行业门控 (S×T): 三式统一测单因子截面 ΔRankIC + 日期整块行业置换 Placebo + BH-FDR
+    - 通过检验的配对经 materialize_interactions.py 实例化为数值矩阵: approved_interactions.parquet (N×T)
+     （flip 死区仅 u 有限处填 0.0，u 缺失处保持 NaN；gain/switch 不填）
 ===================================================================================================
                                                             │
                                                             ▼
@@ -161,7 +164,7 @@ Owner拍板V4.2（2026-10-15晚）：1）门控筛选离线化——`build_gate_
 
 <br>($N \times T$) | 由 **偏科/机制代表因子 ($u_{i,t}$) $\otimes$ bank认证门控 ($g_t / g_{s,t}$)** 经`gain/flip/switch`三算子显式合成的特征。 | `f1_batch.py`/`f1_sector.py`内部分支（`--form`），族清单`f1_family --from-cands`
 
- | 市场门控测 **底仓倾斜 $\Delta\text{RankIC}$**；行业门控测 **单因子截面 $\Delta\text{RankIC}$**；均须通过块置换 Placebo $p < 0.05$ 与 BH-FDR $q \le 0.10$。
+ | 市场门控：gain 测**底仓倾斜 $\Delta\text{RankIC}$**，flip/switch 测**单因子截面 $\Delta\text{RankIC}$**（switch 对照静态共识，tilt 仅辅助列）；行业门控三式统一测**单因子截面 $\Delta\text{RankIC}$**；均须通过块置换 Placebo $p < 0.05$ 与 BH-FDR $q \le 0.10$（三式分族，严禁合并）。
 
  | **原值直接入模！**（严禁在入模前对其再做单日横截面 Z-score/Rank，否则会约掉同日市场门控乘数）。 |
 
@@ -213,7 +216,8 @@ Owner裁决：取消原V4删除6文件的操作（PLAN §16.26有误删教训）
 
 ### 4. 新增模块（NEW — 共 2 个核心文件）
 
-1. **`custom_registry.py`（自定义/论文/Alpha101 因子插件中心）**：支持用装饰器 `@register_py_factor` 编写任意复杂的 Pandas/NumPy 因子或注册 Alpha101 公式字典，自动接入缓存、快评、全评、正交榜单与门控交互。须过`audit_cut_paths A2`（禁`shift(-n)/center`）+长度对齐检查。
+1. **`custom_registry.py`（自定义/论文/Alpha101 因子插件中心）**：支持用装饰器 `@register_py_factor` 编写任意复杂的 Pandas/NumPy 因子或注册 Alpha101 公式字典，自动接入缓存、快评、全评、正交榜单与门控交互。须过`audit_cut_paths A2`（禁`shift(-n)/center`）+长度对齐检查。求值统一走`ensure_extended_fields`（超集，含 BETA20/IND_EXCESS/IVOL20；教训：曾只调`ensure_local_fields`导致示例因子 `BETA20` KeyError，由 `audit_pit` warn 捕获）。
+   附带 **`audit_pit` 时间穿越扰动审计**：`custom_registry.audit_pit(spec, frame)` 取 3 个随机 T，把 T+1 后行情列改随机数重算，断言≤T 值 `allclose` 不变；每 spec_hash 每进程一次，大面板采样 200 只防爆内存，warn-only 不阻断。合成验证：正常滚动因子通过，前视 `shift(-1)` 作弊 3 探针全抓。教训：`price_cols` 必须大小写兼容（真实面板大写列），无列时拒测，杜绝静默通过。
 2. **`export_lgb_dataset.py`（LightGBM 训练特征矩阵一键导出器，Stage15衔接暂缓）**：按四分类铁律组装特征矩阵与`skip_daily_cs_norm_cols`白名单。Stage15桥接（`factors_with_merge_cand.parquet`/`bridge_stage15.py`）后续再定，本期只保证merge内部产物完整，疑问记入文末待定问题。
 
 ---
@@ -580,8 +584,7 @@ $$F_{k,g,i,t} = u_{k,i,t} \cdot w_{i,t}$$
 
 *(其中对市场门控 $g_{i,t} \equiv g_t$；对行业门控 $g_{i,t} \equiv g_{\text{sec}(i), t}$。)*
 * **方向翻转（`--form flip`）**：$F_{k,g,i,t} = u_{k,i,t} \cdot (s \cdot g_{i,t})$，允许负权重实现跨状态方向倒转。更正V4.2初版表述：市场`flip`在单因子日度RankIC下退化为纯符号翻转（同日同乘常数，幅度$|g_t|$被约掉），故$|g_t|<0.10$中性日置NaN弃权（不强行押注方向；特征落盘时填0.0）；市场/行业统一走单因子ΔIC，placebo对含死区的权重函数整体置换。
-* **双因子软切换（`--form switch`）**：$F_{i,t} = p_{i,t} \cdot u^{\text{off}}_{i,t} + (1-p_{i,t}) \cdot u^{\text{def}}_{i,t}$，$p=(g+1)/2$；市场/行业统一对照为单因子静态等权共识`0.5*u_off+0.5*u_def`的截面ΔIC（市场底仓倾斜保留为辅助列，不作主判定）。
-* **双因子软切换（`--form switch`）**：$F_{i,t} = p_{i,t} \cdot u^{\text{off}}_{i,t} + (1-p_{i,t}) \cdot u^{\text{def}}_{i,t}$，$p=(g+1)/2$；市场对照为底仓倾斜（静态共识`0.5/0.5`混合），行业对照为静态共识单因子ΔIC；cands须带`base_off/base_def/d_off/d_def`，输出`base`记复合键`off__def`以保族校验逐一对应。
+* **双因子软切换（`--form switch`）**：$F_{i,t} = p_{i,t} \cdot u^{\text{off}}_{i,t} + (1-p_{i,t}) \cdot u^{\text{def}}_{i,t}$，$p=(g+1)/2$；市场/行业统一对照为单因子静态等权共识`0.5*u_off+0.5*u_def`的截面ΔIC（市场底仓倾斜保留为`tilt_delta`辅助列，不作主判定；switch 独立`--out`文件保证 CSV schema 自洽）；cands须带`base_off/base_def/d_off/d_def`，输出`base`记复合键`off__def`以保族校验逐一对应；`--base-panel`取列时复合键排除，只取真实列（否则面板取列 KeyError）。
 * 三式权重函数收敛于`h3_eval.build_gain_weight/build_flip_weight/build_switch_blend`（`selftest_interaction_forms.py` 6/6合成自测）；新族清单经`f1_family --from-cands --family F1v3 --form <gain|flip|switch>`生成，`judge_f1`验证逻辑零改动；三式与`g/t`分开跑FDR，严禁合并。
 * **分粒度评估准则（H3 + Placebo + BH-FDR）**：
 1. **当门控为行业门控 (`level == 'sector'`) 时**：
@@ -593,7 +596,7 @@ $$\Delta\text{IC}_t = \text{IC}_t(F_{k,g}) - \text{IC}_t(u_k)$$
 
 
 
-2. **当门控为市场门控 (`level == 'market'`) 时**：
+2. **当门控为市场门控 (`level == 'market'`) 时（仅 `--form gain`）**：
 * 为解决单日全市场同乘常数 $w_t$ 不改变单因子内部排序的盲区，采用**多因子底仓倾斜测试（Baseline-Tilt Test）**：
 令底仓得分为 $\bar{U}_{i,t} = \frac{1}{K}\sum_{m=1}^{K} u_{m,i,t}$。对比加入动态门控调节前后的多因子截面排序增量：
 
@@ -601,6 +604,8 @@ $$S^{\text{static}}_{i,t} = \bar{U}_{i,t} + 0.25 \cdot u_{k,i,t}, \quad S^{\text
 
 
 $$\Delta\text{IC}_t = \text{Spearman}_t(S^{\text{gated}}_{i,t}, y^{\text{vwap}}_{i,t}) - \text{Spearman}_t(S^{\text{static}}_{i,t}, y^{\text{vwap}}_{i,t})$$
+
+* `--form flip/switch` 的市场分支改走单因子截面ΔIC（`switch`对照静态共识，tilt只记`tilt_delta`辅助列），见上文三算子定义。
 
 
 
@@ -624,7 +629,7 @@ $$\Delta\text{IC}_t = \text{Spearman}_t(S^{\text{gated}}_{i,t}, y^{\text{vwap}}_
 
 
 
-* **自动特征落盘**：所有满足 `h3_pass & fdr_sig` 的配对，直接把 $F_{k,g,i,t} = u_{k,i,t} \cdot w_{i,t}$ 写入 `results/merge_v2/approved_interactions.parquet`！
+* **自动特征落盘**（`materialize_interactions.py`，已实现并合成验证）：所有满足 `h3_pass & fdr_sig` 的配对，按本节三式定义重算实例化为 $N \times T$ 列写入 `results/merge_v2/approved_interactions.parquet`；flip 死区仅 `isfinite(u)&isfinite(g)&~isfinite(F)` 处填 `0.0`（停牌/未上市保持 NaN，缺门控日保持 NaN）；方向以 cands 的 `d/d_off/d_def` 为准。`fdr_sig` 为 0 时落空表（分支畅通已由合成 2 特征验证：5.38M 行，死区填 0 共 439,892 格）。
 
 ---
 
@@ -803,8 +808,16 @@ python judge_f1.py --family results/merge_v2/gates_search/family_manifest_F1v3_g
 ```
 
 
-*(top20直入Class1；偏科池走gain/flip/switch三式，sector线同理用`f1_sector.py`；三式分开跑FDR，严禁合并；输出 `approved_interactions.parquet`。)*
-5. **步骤四：一键组装 LightGBM 训练特征集（Stage15桥接待定）**
+*(top20直入Class1；偏科池走gain/flip/switch三式，sector线同理用`f1_sector.py`；三式分开跑FDR，严禁合并。)*
+6. **步骤五：合格交互落盘（`materialize_interactions.py`）**
+```bash
+python materialize_interactions.py --judged results/merge_v2/gates_search/f1_specialist_gain_judged.csv --cands results/merge_v2/specialist_cands_gain.json --base-panel specialist --label-max 2025-12-31
+
+```
+
+
+*(只实例化 `h3_pass & fdr_sig` 行；flip 死区仅 u 有限处填 0.0；无通过行时落空表。性能注意：面板须先按 date 稳定排序再算日内秩，否则 `blockwise_rank` 碎块数≈行数直接卡死——本脚本已内置排序。)*
+7. **步骤六：一键组装 LightGBM 训练特征集（Stage15桥接待定）**
 ```bash
 python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 
@@ -836,13 +849,16 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - Phase2：`build_top --keep-pool/--keep-base/--include-custom/--export-panel`+`vwap_top20.json`（family限4均衡）+可选`vwap_top20_factors.parquet`；门控/F1 `—base-panel base20|vwap_top20`（默认base20）；`run_search --include-custom`（公式型走全量、Python型走custom通道记分母）。
 - Phase3：`f1_batch/f1_sector --form gain`为F1v3_gain新分支（sector单因子ΔIC、market底仓倾斜，200次块置换，精确重算）；`g/t`冻结逻辑零改动；输出不得与g/t合并FDR，待敏感性分析后冻结参数。
 - `export_lgb_dataset.py`为merge内部版（Class1+4+栖息地，Class3默认0，1xT恒空）；Stage15桥（`factors_with_merge_cand`/`bridge_stage15`）未做。
-- 待定校准仍在§六：F1v3参数、通道C、VWAP auto-fail、门控扩容、Stage15桥。
+- 待定校准仍在§六：通道C、VWAP auto-fail、门控扩容、Stage15桥（F1v3参数已冻结为预注册默认）。
 
 ## 七点二、 V4.2增量（2026-10-15晚，Owner四项裁决落地）
 
 - 离线bank：`build_gate_bank.py`（短名单+G4簇文件复用+s锁定+G2符号，`certified_gate_bank.json bank-v1`）；`direct_sector_states.parquet`（sector greedy `|rho|<0.7`，默认2上限3，Owner豁免D8）；日常F1/`run_gate_pipeline`经`--gate-bank`只读消费（过滤+s覆盖，不传保持历史）。
 - 偏科靶标：`select_specialists.py`（vwap rank#21~150 × bank市场门控，`slope_test`精确t，`|t|>=2.5`且无条件`<0.05`；高低异号建议flip；switch对为趋势轴×波动/分布/流动轴×bank前2门控，上限12）；输出`specialist_pool.json`+值面板+三分form cands+`F1v3_<form>`族清单直连。
-- 三算子：`gain`（已落地不动）+`flip`（`u*s*g`，market单因子ΔIC/sector单因子ΔIC）+`switch`（`p*u_off+(1-p)*u_def`，market底仓倾斜对照共识替换，sector对照静态共识）；权重函数收敛`h3_eval`三helper，`selftest_interaction_forms.py` 6/6；`f1_family --from-cands`建清单，`judge_f1`零改动；`--base-panel`加`specialist`。
-- `export_lgb_dataset.py`优先读`direct_sector_states.parquet`（兼容旧名）；回归：AST/导入/`--help`/profiles 10/10/audit 9/0/1NOTE/forms 6/6全绿。
+- 三算子：`gain`（已落地不动）+`flip`（`u*s*g`，`|g|<0.10`死区NaN弃权（落盘仅u有限处填0），market单因子ΔIC/sector单因子ΔIC）+`switch`（`p*u_off+(1-p)*u_def`，market/行业统一单因子静态共识主判定，`tilt_delta`仅辅助列）；权重函数收敛`h3_eval`三helper，`selftest_interaction_forms.py` 7/7（含F2死区用例）；`f1_family --from-cands`建清单，`judge_f1`零改动；`--base-panel`加`specialist`（复合键排除）。
+- 落盘：`materialize_interactions.py`已实现并合成验证（2特征、5,384,420行、flip死区填0共439,892格、约1分钟；面板内置date稳定排序——教训：`blockwise_rank`要求日块连续，否则碎块数≈行数直接卡死）；`fdr_sig=0`落空表（分支畅通已预验证）。
+- `export_lgb_dataset.py`优先读`direct_sector_states.parquet`（兼容旧名）；回归：AST/导入/`--help`/profiles 10/10/audit 9/0/1NOTE/forms 7/7全绿。
 - bank已实跑：`certified_gate_bank.json bank-v1`（market 3：turn_med_accel/amt_hhi_chg s=-1、limit_ratio_ratio s=+1；sector 2：sec_amp_med/sec_xs_disp s=-1，delta≈-0.02045与塌缩数值吻合）；G4复用37簇文件去重；direct states贪心`|rho|<0.7`选中1个（第2个与之共线被排除，符合预期）。新族清单`--from-cands`→`--validate`闭环ok:true。specialist全量待`build_top` flat产物（out/下暂无）后再跑，t_slope数学已合成验证。
-- V4.2收敛（Gemini终审+Owner指令）：flip市场单因子死区`|g|<0.10`；switch市场/行业统一单因子静态共识主判定（tilt转辅助）；F1v3参数冻结为预注册默认；`audit_pit`闭环；sector预筛走2门控无置换ΔRankIC（下一步）；Stage15零拷贝桥接已定方向未实施；§六9项中#3#4#5#9冻结，#2#6#8代码闭环，#1#7下一步。
+- V4.2收敛（Gemini终审+Owner指令）：flip市场单因子死区`|g|<0.10`；switch市场/行业统一单因子静态共识主判定（tilt转辅助）；F1v3参数冻结为预注册默认；`audit_pit`闭环——实跑教训：`paper_idio_mom_20d`因求值只走`ensure_local_fields`报`BETA20`告警，已修为`ensure_extended_fields`超集（合成验证132/200有限值，NaN为warm-up正常）；sector预筛走2门控无置换ΔRankIC（下一步）；Stage15零拷贝桥接已定方向未实施；§六9项中#3#4#5#9冻结，#2#6#8代码闭环，#1#7下一步。
+- 首次实跑记录（2026-10-15，`build_top --top 200 --keep-pool 80 --include-custom --export-panel`）：refs 1,672行/台账候选4,403/合选345；评估实算206个（242个台账复用）33分钟，非卡死系正常重负载，被Owner叫停（后台PID 22260已杀）；副作用按只追不删保留——`ledger.jsonl`新增约412条`local`事件（重跑自动复用跳过）+`out/value_cache/a2d87b758d02824e/`缓存+boundary_log 2条v4check。正交扫描及后续Export未到达。
+- 提交：V4.2代码+文档已commit `6684a3e`（21文件 +2972/-61），产物（certified_gate_bank.json等）按gitignore不入库。

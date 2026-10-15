@@ -2694,7 +2694,8 @@ python run_search.py search --retest-before <变化日> ...
 - **D8澄清与豁免记录**：D7（禁纯市场`1xT`入模）严格维持；D8本意为行业轮动策略独立研究，不禁选股模型拥有少量行业背景特征（`roles.csv`本有19个`SECTOR_STATE`）。Owner显式豁免：G4贪心`|rho|<0.7`选出的**至多3个（默认2个）**正交纯行业状态（`direct_sector_states.parquet`）可入模；2→3需二次确认并记录。`export_lgb_dataset.py --max-sector`默认0，显式>0即视为调用豁免。
 - **偏科靶标**：`select_specialists.py`（vwap rank#21~150 × bank市场门控，`slope_test`精确`|t_slope|>=2.5`且无条件`<0.05`），输出`specialist_pool.json`+值面板+分form cands；top20直入Class1。sector精确t_slope待立项，sector线维持既有路径。
 - **三算子**：`gain/flip/switch`同属F1v3新族（`f1_family --from-cands`建清单，`judge_f1`不动），分开跑FDR严禁合并；`flip`救符号翻转，`switch`需`base_off/base_def`对（V1启发式配对，上限12对）。
-- **V4.2收敛冻结**：F1v3参数（`gain 0.5/clip(0.2,1.8)`、倾斜`0.25`、BOOT/placebo）为预注册默认，禁同样本调优；`flip`中性死区`|g|<0.10`（NaN弃权，落盘填0）；switch主判定统一为单因子静态共识（tilt仅辅助）；bank随`data_cut`刷新归档；快评禁通道C豁免；direct按`|rho|<0.7`实选（不凑数）；`audit_pit` warn-only已闭环；Stage15走零拷贝`--extra_factors_path`方向（未实施）。
+- **V4.2收敛冻结**：F1v3参数（`gain 0.5/clip(0.2,1.8)`、倾斜`0.25`、BOOT/placebo）为预注册默认，禁同样本调优；`flip`中性死区`|g|<0.10`（NaN弃权，落盘仅u有限处填0）；switch主判定统一为单因子静态共识（`tilt_delta`仅辅助列，switch独立`--out`保schema）；bank随`data_cut`刷新归档；快评禁通道C豁免；direct按`|rho|<0.7`实选（不凑数）；`audit_pit` warn-only已闭环（BETA20列教训：求值走`ensure_extended_fields`超集）；Stage15走零拷贝`--extra_factors_path`方向（未实施）。
+- **合格落盘**：`materialize_interactions.py`只实例化`h3_pass & fdr_sig`行（方向以cands为准），原值落盘`approved_interactions.parquet`；面板须按date稳定排序（`blockwise_rank`块连续要求，否则碎块卡死）；`fdr_sig=0`落空表。
 
 ## 附录 A：执行者工作要求
 
