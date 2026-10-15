@@ -15,7 +15,8 @@ import pandas as pd
 
 import _paths  # noqa: F401
 from cache_utils import find_stock_features
-from field_catalog import LOCAL_COLUMN, LOCAL_ONLY_FIELDS, PLATFORM_FIELDS, sw2_mapping
+from field_catalog import (EXTENDED_ONLY_FIELDS, LOCAL_COLUMN, LOCAL_ONLY_FIELDS,
+                             PLATFORM_FIELDS, sw2_mapping)
 from grammar import Node, virtual_node
 
 _RAW_COLUMNS = ('stock_code', 'date', 'open', 'high', 'low', 'close', 'volume',
@@ -308,6 +309,12 @@ class Evaluator:
                 # 本地上下文字段（层2）：首次访问时惰性计算并缓存到 frame
                 if node.name not in self.frame.columns:
                     ensure_local_fields(self.frame)
+                return self.frame[node.name]
+            if node.name in EXTENDED_ONLY_FIELDS:
+                # V4.3 Class2 扩展字段：惰性走 ensure_extended_fields
+                #（超集，内调 ensure_local；原 4 字段值不受影响）
+                if node.name not in self.frame.columns:
+                    ensure_extended_fields(self.frame)
                 return self.frame[node.name]
             return self.evaluate(virtual_node(node.name))
         if op == 'CONST':

@@ -101,7 +101,9 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
                             val_store: dict | None = None,
                             stats: dict | None = None,
                             label: str = '',
-                            y_me: np.ndarray | None = None) -> tuple[list[int], dict, dict]:
+                            y_me: np.ndarray | None = None,
+                            store_vals: dict | None = None,
+                            twin_thr: float = 0.95) -> tuple[list[int], dict, dict]:
     """榜2 排序层轻量正交（2026-09-24）：按 LGB 降序扫描前 max_scan 个候选，
     逐日截面 |Spearman|>threshold 的只留 LGB 最优者（与 decorrelate_top 同判据，
     但在榜单生成时即生效，decorrelate_top 仍可独立复核）。
@@ -149,6 +151,18 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
                         stats['hit'] = stats.get('hit', 0) + 1
                 except Exception:
                     continue
+            elif r['lib'] == 'store':
+                # V4.3c store 源：值来自预对齐的存量面板（不走 specs/builder）。
+                try:
+                    if store_vals is None or str(r['factor_id']) not in store_vals:
+                        continue
+                    key = 'store_' + str(r['factor_id'])
+                    v = np.asarray(store_vals[str(r['factor_id'])],
+                                   dtype=float).astype(np.float32)
+                    if len(v) != len(pos_me):
+                        continue
+                except Exception:
+                    continue
             else:
                 spec = specs_by_id.get(str(r['factor_id']))
                 if spec is None:
@@ -187,8 +201,17 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
     corr = month_end_spearman_matrix(np.column_stack(cols), day_group)
     if corr is None:
         return idxs[:keep], {}, nl_map
-    kept, rho_map = [], {}
-    for j in range(len(idxs)):
+    # V4.3c 孪生双遍：先扫 store（LGB 序）占位，再扫其余；非 store 候选若与
+    # 已选 store 孪生（|ρ|>=twin_thr，即已入库因子的数学孪生体）直接丢弃，
+    # 优先保留 lib=='store' 已有列（防重复入库）；0.70~0.95 同机制变体按 LGB 择优。
+    _is_store = []
+    for _j in range(len(idxs)):
+        try:
+            _is_store.append(str(df_vwap.iloc[idxs[_j]]['lib']) == 'store')
+        except Exception:
+            _is_store.append(False)
+    kept, rho_map, twin_of = [], {}, {}
+    for j in [x for x in range(len(idxs)) if _is_store[x]]:
         if not kept:
             kept.append(j)
             continue
@@ -196,6 +219,26 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
         finite = pair[np.isfinite(pair)]
         mx = float(finite.max()) if finite.size else float('nan')
         rho_map[idxs[j]] = mx
+        if finite.size and mx <= threshold:
+            kept.append(j)
+        if len(kept) >= keep:
+            break
+    _kept_store = list(kept)
+    for j in [x for x in range(len(idxs)) if not _is_store[x]]:
+        if not kept:
+            kept.append(j)
+            continue
+        pair = np.abs(corr[j, kept])
+        finite = pair[np.isfinite(pair)]
+        mx = float(finite.max()) if finite.size else float('nan')
+        rho_map[idxs[j]] = mx
+        if _kept_store:
+            _ps = np.abs(corr[j, _kept_store])
+            _fs = _ps[np.isfinite(_ps)]
+            _mx_s = float(_fs.max()) if _fs.size else float('nan')
+            if np.isfinite(_mx_s) and _mx_s >= twin_thr:
+                twin_of[idxs[j]] = _mx_s
+                continue
         if finite.size and mx <= threshold:
             kept.append(j)
         if len(kept) >= keep:
@@ -322,9 +365,102 @@ def eval_custom(frame: pd.DataFrame | None = None,
     return pd.DataFrame(flat)
 
 
+def _store_aligned(frame: pd.DataFrame):
+    """存量列对齐到 frame 行：返回 (m, pos)，m 含 store 列，pos[i] 为 frame 第 i 行
+    在 m 中的行号（-1=缺失）。与 mkt_sector_test 同映射模式。"""
+    import boundary as B
+    from store_sync import store_columns
+    cols = store_columns()
+    if not cols:
+        return None, None
+    _dmax = str(pd.to_datetime(frame["date"]).max().date())
+    fac = B.read_factors(cols, data_max=_dmax, label="store-eval")
+    fac["date"] = pd.to_datetime(fac["date"])
+    m = fac.merge(frame[["stock_code", "date"]].drop_duplicates(),
+                  on=["stock_code", "date"], how="inner")
+    del fac
+    key = m[["stock_code", "date"]].copy()
+    key["_k"] = key["stock_code"].astype(str) + "|" + key["date"].astype(str)
+    fmap = {k: i for i, k in enumerate(key["_k"].to_numpy())}
+    fkk = (frame["stock_code"].astype(str) + "|"
+           + pd.to_datetime(frame["date"]).astype(str)).to_numpy()
+    pos = np.array([fmap.get(k, -1) for k in fkk], dtype=np.int64)
+    return m, pos
+
+
+def eval_store(frame: pd.DataFrame | None = None,
+                ev: Evaluator | None = None) -> pd.DataFrame:
+    """V4.3c 第四源 store：评估 factors.parquet 存量个股列。
+
+    口径与 eval_mined/eval_custom 完全一致（双标签 DataContext 全窗重估，
+    LGB 按 refs.lgb_score T_ref=0.3），lib='store'。存量列即 ground truth，
+    不写台账（防生产列污染搜索台账）；防重复挖矿由 store_vfps 快评同步承担，
+    防重复入选由正交扫描孪生优先（store 优先）承担。
+    范围：roles.csv role in (STOCK, STOCK_REL, CROSS_SEC) ∩ 文件实际列。
+    """
+    if frame is None:
+        frame = load_panel()
+    if ev is None:
+        ev = Evaluator(frame)
+    m, pos = _store_aligned(frame)
+    if m is None:
+        return pd.DataFrame()
+    cols = [c for c in m.columns if c not in ("stock_code", "date")]
+    print(f'store columns={len(cols)}', flush=True)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+            for lab in ('c2c', 'vwap')}
+    rows = []
+    for fid in cols:
+        if fid not in m.columns:
+            continue
+        f_full = m[fid].to_numpy(dtype=float)
+        rec = {'lib': 'store', 'factor_id': fid, 'name_cn': fid,
+               'base': None, 'transform': None, 'window': None,
+               'formula_cn': f'store:{fid}', 'uploaded': '', 'family': 'store',
+               'labels': {}}
+        ok_any = False
+        for lab, ctx in ctxs.items():
+            v = np.full(len(frame), np.nan)
+            v[pos >= 0] = f_full[pos[pos >= 0]]
+            v = v[ctx._pos]
+            cov = float(np.isfinite(v).mean()) if len(v) else 0.0
+            if cov <= 0.1:
+                rec['labels'][lab] = {'valid': False, 'coverage': cov}
+                continue
+            sc = ctx.screen(v, name=fid)
+            t = tier1(sc)
+            t['coverage'] = cov
+            a_off = float(sia_of(sc))
+            lgb = lgb_score(sc)
+            t['direction'] = int(sc.get('direction', 1))
+            rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
+                                  'LGB': lgb, **t}
+            ok_any = True
+        if ok_any:
+            rows.append(rec)
+    flat = []
+    for rec in rows:
+        for lab in ('c2c', 'vwap'):
+            r = rec['labels'].get(lab) or {}
+            if not r.get('valid'):
+                continue
+            flat.append({'lib': rec['lib'], 'factor_id': rec['factor_id'],
+                         'name_cn': rec['name_cn'], 'base': rec['base'],
+                         'transform': rec['transform'], 'window': rec['window'],
+                         'formula_cn': rec['formula_cn'], 'uploaded': rec['uploaded'],
+                         'family': rec.get('family', ''),
+                         'label': lab, **{k: r.get(k) for k in
+                                          ('coverage', 'A_official', 'LGB', 'direction')},
+                         **{k: r.get(k) for k in
+                            ('sia', 'rank_ic', 'ic', 'ic_ir', 'win', 'rank_ic_ir',
+                             'rank_ic_win', 'turnover', 'turnover_month', 'net', 'long',
+                             'sharpe', 'mdd', 'mono', 'n_valid_periods')}})
+    return pd.DataFrame(flat)
+
+
 def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
-               ev: Evaluator | None = None,
-               builder: FactorBuilder | None = None) -> pd.DataFrame:
+                ev: Evaluator | None = None,
+                builder: FactorBuilder | None = None) -> pd.DataFrame:
     ledger = Ledger()
     if frame is None:
         frame = load_panel()
@@ -420,6 +556,165 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
     return pd.DataFrame(flat)
 
 
+def _window_shim_ctx(day_group: np.ndarray, y_me: np.ndarray):
+    """选择窗 shim ctx：供 cond_ic_metrics 在 pos_me 切片上计算窗内条件 IC。
+
+    与全窗 cond 口径同函数、窗内数据（与 LGB 排序同窗，对齐选择语义）。
+    """
+    from types import SimpleNamespace
+    di, _ = pd.factorize(day_group, sort=True)
+    return SimpleNamespace(di=np.asarray(di), _pos=np.arange(len(di)),
+                           labels=np.asarray(y_me, dtype=float))
+
+
+def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
+                  val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
+                  y_vwap_me: np.ndarray, prep_me: dict,
+                  n_seats: int = 10, t_min: float = 2.5,
+                  threshold: float = 0.7) -> tuple[list[int], list[dict]]:
+    """Class1 栖息地尖兵席位（V4.3c）：扫描已估值但未入选者中 hot5_q80 |t|>=2.5 者，
+    按 t 降序、与池内+席位间逐一 |ρ|<=threshold 正交保留，上限 n_seats。
+
+    新选择族版本（预注册阈值 2.5/0.7/配额 10）；快评通道 C 豁免禁令不动
+    （仅终选席位，不碰快评）。返回 (df 行号, 明细)。
+    """
+    from cond_ic import cond_ic_metrics
+    from decorrelate_top import month_end_spearman_matrix
+    # vwap_order 为 head 枚举 positional 行号（与 iloc 对齐，非 index 标签）。
+    kept = set(vwap_order or [])
+    cands = []
+    for _pos in range(len(vwap_df)):
+        if _pos in kept:
+            continue
+        r = vwap_df.iloc[_pos]
+        _key = (r['lib'], str(r['factor_id']))
+        if _key not in val_store:
+            continue
+        cands.append((_pos, r))
+    cands = sorted(cands, key=lambda x: -float(x[1].get('LGB', 0) or 0))[:60]
+    shim = _window_shim_ctx(day_group, y_vwap_me)
+    scored = []
+    for _pos, r in cands:
+        try:
+            per = cond_ic_metrics(shim, val_store[(r['lib'], str(r['factor_id']))],
+                                  prep_me, name=str(r['factor_id']))
+            t = per.get('cond_hot5_q80_rank_ic_tstat')
+            nd = per.get('cond_hot5_q80_ndays', 0)
+            t = float(t) if t is not None and np.isfinite(t) else float('nan')
+            if np.isfinite(t) and abs(t) >= t_min and nd >= 10:
+                scored.append((_pos, r, t))
+        except Exception:
+            continue
+    scored.sort(key=lambda x: -abs(x[2]))
+    pool_vals = []
+    for _kp in (vwap_order or []):
+        try:
+            _r = vwap_df.iloc[_kp]
+            _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
+            if _vv is not None:
+                pool_vals.append(np.asarray(_vv, dtype=float))
+        except Exception:
+            continue
+    seats, detail = [], []
+    for _pos, r, t in scored:
+        if len(seats) >= n_seats:
+            break
+        _v = np.asarray(val_store[(r['lib'], str(r['factor_id']))], dtype=float)
+        _mx = 0.0
+        _ok = True
+        for _pv in pool_vals:
+            _m = np.isfinite(_v) & np.isfinite(_pv)
+            if _m.sum() < 30:
+                continue
+            _c = np.corrcoef(_v[_m], _pv[_m])[0, 1]
+            if np.isfinite(_c) and abs(float(_c)) > threshold:
+                _ok = False
+                _mx = max(_mx, abs(float(_c)))
+                break
+        if not _ok:
+            continue
+        seats.append(_pos)
+        pool_vals.append(_v)
+        detail.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
+                       'hot5_q80_t': round(float(t), 3)})
+    return seats, detail
+
+
+def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
+                 val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
+                 y_vwap_me: np.ndarray, prep_me: dict, vwap_nl: dict,
+                 top_n: int = 10, threshold: float = 0.7) -> list[dict]:
+    """Class2 股性榜单（V4.3c）：已估值扫描候选按 habitat_score 排名，
+    与 Class1 池内 + 榜内逐一 |ρ|<=threshold 正交取 TopN。
+
+    habitat_score = jsd_tails + 0.5*|mkt_up_ic - mkt_dn_ic|（精确 cond 版；
+    快评用 pooled 代理版）。返回 [{factor_id, lib, score, jsd, contrast}]。
+    """
+    from cond_ic import cond_ic_metrics
+    from nonlinear import jsd_tails
+    shim = _window_shim_ctx(day_group, y_vwap_me)
+    pool_vals = []
+    for _kp in (vwap_order or []):
+        try:
+            _r = vwap_df.iloc[_kp]
+            _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
+            if _vv is not None:
+                pool_vals.append(np.asarray(_vv, dtype=float))
+        except Exception:
+            continue
+    scored = []
+    _seen = set()
+    for _pos in range(len(vwap_df)):
+        r = vwap_df.iloc[_pos]
+        _key = (r['lib'], str(r['factor_id']))
+        if _key in _seen or _key not in val_store:
+            continue
+        _seen.add(_key)
+        try:
+            _v = np.asarray(val_store[_key], dtype=float)
+            _nl = vwap_nl.get(vwap_df.index[_pos]) or {}
+            _jsd = _nl.get('jsd')
+            if _jsd is None or not np.isfinite(_jsd):
+                _jsd = float(jsd_tails(_v, np.asarray(y_vwap_me, dtype=float)))
+            per = cond_ic_metrics(shim, _v, prep_me, name=str(r['factor_id']))
+            _mu = per.get('cond_mkt_up_rank_ic_mean')
+            _md = per.get('cond_mkt_dn_rank_ic_mean')
+            _con = (abs(float(_mu) - float(_md))
+                    if _mu is not None and _md is not None
+                    and np.isfinite(_mu) and np.isfinite(_md) else float('nan'))
+            _j = float(_jsd) if np.isfinite(_jsd) else 0.0
+            _sc = float(_j + 0.5 * _con) if np.isfinite(_con) else float('nan')
+            if np.isfinite(_sc):
+                scored.append((_key, r, _sc, float(_j), float(_con)))
+        except Exception:
+            continue
+    scored.sort(key=lambda x: -x[2])
+    out = []
+    for _key, r, _sc, _j, _con in scored:
+        if len(out) >= top_n:
+            break
+        _v = np.asarray(val_store[_key], dtype=float)
+        _ok = True
+        for _pv in pool_vals:
+            _m = np.isfinite(_v) & np.isfinite(_pv)
+            if _m.sum() < 30:
+                continue
+            _c = np.corrcoef(_v[_m], _pv[_m])[0, 1]
+            if np.isfinite(_c) and abs(float(_c)) > threshold:
+                _ok = False
+                break
+        if not _ok:
+            continue
+        pool_vals.append(_v)
+        out.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
+                    'family': str(r.get('family', '')),
+                    'formula_cn': str(r.get('formula_cn', '')),
+                    'habitat_score': round(float(_sc), 4),
+                    'habitat_jsd': round(float(_j), 4),
+                    'habitat_contrast': round(float(_con), 4)})
+    return out
+
+
 def norm_refs(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df['uploaded'] = df['uploaded'].fillna('')
@@ -465,11 +760,12 @@ def pct(x) -> str:
 
 def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                   builder: FactorBuilder, specs_by_id: dict,
-                  vwap_order: list[int] | None, vwap_df: pd.DataFrame) -> list[dict]:
+                  vwap_order: list[int] | None, vwap_df: pd.DataFrame,
+                  prep: dict | None = None) -> list[dict]:
     """双榜入选者的条件 RankIC（2026-09-25）：栖息地（hot5/hot2）+ 市场状态族，
     与主管线 COND-IC 同口径。c2c 榜 top20 + 榜2 正交入选者并集，逐候选×逐标签。"""
     from cond_ic import build_cond_prep, cond_ic_metrics
-    cond_prep = build_cond_prep(frame)
+    cond_prep = prep if prep is not None else build_cond_prep(frame)
     _ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
              for lab in ('c2c', 'vwap')}
     c2c_sel = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False).head(20)
@@ -604,6 +900,14 @@ def main() -> int:
                     help='V4.1门控靶标面板机制均衡抽取数（默认20；每family最多4个）')
     ap.add_argument('--include-custom', action='store_true', default=False,
                     help='纳入custom_registry自定义因子与正交去重（默认关闭以保持历史可比）')
+    ap.add_argument('--include-store', action='store_true', default=True,
+                    help='纳入factors.parquet存量个股列为第四源store（V4.3c默认开）')
+    ap.add_argument('--no-store', dest='include_store', action='store_false',
+                    help='关闭store第四源（历史可比对照）')
+    ap.add_argument('--habitat-seats', type=int, default=10,
+                    help='Class1栖息地尖兵席位（hot5_q80 |t|>=2.5正交保留数，默认10）')
+    ap.add_argument('--habitat-pool', type=int, default=10,
+                    help='Class2股性榜单TopN（按habitat_score正交，默认10）')
     ap.add_argument('--export-panel', action='store_true', default=False,
                     help='导出vwap_top20.json与因子值面板（默认关闭；只需JSON时可只看榜单）')
     args = ap.parse_args()
@@ -639,24 +943,27 @@ def main() -> int:
     refs_df = norm_refs(load_refs_rows())
     mined_df = eval_mined(mined_prefilter(args.top), frame=frame, ev=ev, builder=builder)
     custom_df = eval_custom(frame=frame, ev=ev) if args.include_custom else pd.DataFrame()
+    store_df = eval_store(frame=frame, ev=ev) if args.include_store else pd.DataFrame()
     cols = ['lib', 'factor_id', 'name_cn', 'base', 'transform', 'window', 'formula_cn',
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
             'ic_ir', 'win', 'rank_ic_ir', 'rank_ic_win', 'turnover', 'turnover_month',
             'net', 'long', 'sharpe', 'mdd', 'mono', 'direction', 'n_valid_periods', 'family',
             'mi', 'mi_std', 'nmi', 'jsd']
     # 非线性诊断列（2026-09-26）：正交扫描后回填 vwap 行，其余 NaN
-    for _f in (refs_df, mined_df, custom_df):
+    for _f in (refs_df, mined_df, custom_df, store_df):
         for _k in ('mi', 'mi_std', 'nmi', 'jsd'):
             _f[_k] = np.nan
     cols_present = [c for c in cols if c in refs_df.columns]
     refs_df = refs_df.reindex(columns=cols_present)
     _mined = mined_df.reindex(columns=cols_present)
     _custom = custom_df.reindex(columns=cols_present) if len(custom_df) else custom_df
+    _store = store_df.reindex(columns=cols_present) if len(store_df) else store_df
     # FutureWarning 抑制（pandas concat dtype 变更提示，不影响结果）
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=FutureWarning)
-        df = pd.concat([refs_df, _mined] + ([_custom] if len(_custom) else []),
+        df = pd.concat([refs_df, _mined] + ([_custom] if len(_custom) else [])
+                       + ([_store] if len(_store) else []),
                        ignore_index=True)
     for c in ('A_official', 'LGB', 'rank_ic', 'rank_ic_ir', 'ic_ir', 'win',
               'rank_ic_win', 'turnover', 'net', 'sharpe', 'mdd', 'mono', 'coverage',
@@ -666,9 +973,11 @@ def main() -> int:
     n_mined = int(df.loc[df['lib'] == 'mined', 'factor_id'].nunique()) if len(df) else 0
     n_refs = int(df.loc[df['lib'] == 'refs', 'factor_id'].nunique()) if len(df) else 0
     n_custom = int(df.loc[df['lib'] == 'custom', 'factor_id'].nunique()) if len(df) else 0
+    n_store = int(df.loc[df['lib'] == 'store', 'factor_id'].nunique()) if len(df) else 0
     payload = {'generated_at': datetime.now().isoformat(timespec='seconds'),
                'top': args.top, 'n_mined_eval': n_mined, 'n_refs': n_refs,
-               'n_custom': n_custom, 'keep_pool': args.keep_pool, 'keep_base': args.keep_base,
+               'n_custom': n_custom, 'n_store': n_store,
+               'keep_pool': args.keep_pool, 'keep_base': args.keep_base,
                'n_total': len(df), 'vwap_orthogonal': False}
 
     # 榜1/榜2 排序层正交（2026-09-24/25）：共用逐日截面基础设施
@@ -694,6 +1003,21 @@ def main() -> int:
     val_store: dict = {}
     cache_stats: dict = {}
     print(f'value cache dir: {cache_dir}', flush=True)
+    # V4.3c store 值（pos_me 切片，供正交扫描孪生判定；存量即真值，不进 value_cache）。
+    store_vals: dict = {}
+    if args.include_store:
+        try:
+            _sm, _spos = _store_aligned(frame)
+            if _sm is not None:
+                for _c in [c for c in _sm.columns if c not in ("stock_code", "date")]:
+                    _vv = np.full(len(frame), np.nan)
+                    _vv[_spos >= 0] = _sm[_c].to_numpy(dtype=float)[_spos[_spos >= 0]]
+                    store_vals[_c] = _vv[pos_me].astype(np.float32)
+                print(f'store values: {len(store_vals)} cols on pos_me', flush=True)
+                del _sm
+        except Exception as exc:
+            print(f'warning: store 值映射失败（{str(exc)[:120]}），孪生判定退化', flush=True)
+            store_vals = {}
 
     vwap_nl: dict = {}
     if len(vwap_df) > 20:
@@ -701,7 +1025,8 @@ def main() -> int:
             vwap_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
             max_scan=args.scan, keep=max(args.keep_pool, args.keep_base),
             cache_dir=cache_dir, val_store=val_store,
-            stats=cache_stats, label='vwap', y_me=y_vwap_me)
+            stats=cache_stats, label='vwap', y_me=y_vwap_me,
+            store_vals=store_vals or None)
         payload['vwap_orthogonal'] = bool(vwap_order)
         payload['vwap_orth_scan'] = int(min(args.scan, len(vwap_df)))
         print(f'榜2 正交：候选 {len(vwap_df)} → 保留 {len(vwap_order)}  '
@@ -714,7 +1039,7 @@ def main() -> int:
         c2c_order, c2c_rho, _ = vwap_orthogonal_indices(
             c2c_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
             max_scan=args.scan, cache_dir=cache_dir, val_store=val_store,
-            stats=cache_stats, label='c2c')
+            stats=cache_stats, label='c2c', store_vals=store_vals or None)
         payload['c2c_orthogonal'] = bool(c2c_order)
         payload['c2c_orth_scan'] = int(min(args.scan, len(c2c_df)))
         print(f'榜1 正交：候选 {len(c2c_df)} → 保留 {len(c2c_order)}  '
@@ -740,6 +1065,31 @@ def main() -> int:
     except Exception as exc:
         cond_table = None
         print(f'warning: 条件 RankIC 汇总失败 {exc}', flush=True)
+
+    # V4.3c 栖息地席位 + Class2 股性榜单（窗内 cond 口径，与 LGB 选择同窗）。
+    seat_order: list[int] = []
+    seat_detail: list[dict] = []
+    hab_pool: list[dict] = []
+    try:
+        from cond_ic import build_cond_prep
+        _prep_me_full = build_cond_prep(frame)
+        _prep_me = {'tags': {k: np.asarray(v)[pos_me]
+                             for k, v in _prep_me_full['tags'].items()}}
+        if args.habitat_seats > 0 and len(val_store):
+            seat_order, seat_detail = habitat_seats(
+                vwap_df, vwap_order, val_store, pos_me, day_group,
+                y_vwap_me, _prep_me, n_seats=args.habitat_seats)
+            print(f'栖息地席位：{len(seat_order)} 个 '
+                  f'{[d["factor_id"] for d in seat_detail]}', flush=True)
+        if args.habitat_pool > 0 and len(val_store):
+            hab_pool = habitat_pool(
+                vwap_df, vwap_order, val_store, pos_me, day_group,
+                y_vwap_me, _prep_me, vwap_nl, top_n=args.habitat_pool)
+            print(f'Class2股性榜单：{len(hab_pool)} 个', flush=True)
+    except Exception as exc:
+        print(f'warning: 栖息地席位/股性榜单失败 {str(exc)[:150]}', flush=True)
+    payload['habitat_seats'] = seat_detail
+    payload['habitat_pool_n'] = len(hab_pool)
 
     # dom 诊断（2026-09-25）：双榜入选者的单字段支配度（快速 Spearman @ pos_me）
     from scipy.stats import spearmanr as _sp
@@ -822,16 +1172,42 @@ def main() -> int:
                            'family': str(_r.get('family', '')),
                            'formula': str(_r.get('formula_cn', '')),
                            'lib': str(_r.get('lib', ''))})
+        # V4.3c 席位进 json（ direction 供 F1，habitat_seat 标记专属配额）。
+        _seat_ids = set()
+        for _sp in seat_order:
+            try:
+                _r = vwap_df.iloc[_sp]
+                _d = _r.get('direction')
+                try:
+                    _d = int(_d)
+                except Exception:
+                    _d = 1
+                _fid = str(_r.get('factor_id'))
+                if _fid in {x['factor'] for x in _top20}:
+                    continue
+                _seat_ids.add(_fid)
+                _top20.append({'factor': _fid,
+                               'direction': 1 if _d == 1 else -1,
+                               'family': str(_r.get('family', '')),
+                               'formula': str(_r.get('formula_cn', '')),
+                               'lib': str(_r.get('lib', '')),
+                               'habitat_seat': True})
+            except Exception:
+                continue
         _base_dir = HERE.parent.parent / 'results' / 'merge_v2'
         _base_dir.mkdir(parents=True, exist_ok=True)
         (_base_dir / 'vwap_top20.json').write_text(
             json.dumps({'generated_at': payload.get('generated_at'), 'n': len(_top20),
                         'base20': _top20}, ensure_ascii=False, indent=1), encoding='utf-8')
         print(f'vwap_top20.json: {len(_top20)} factors', flush=True)
+        (_base_dir / 'habitat_seats.json').write_text(
+            json.dumps({'generated_at': payload.get('generated_at'),
+                        'seats': sorted(_seat_ids)}, ensure_ascii=False, indent=1),
+            encoding='utf-8')
         if args.export_panel and _top20:
             _panel_cols = {'stock_code': frame['stock_code'].to_numpy(),
                            'date': pd.to_datetime(frame['date']).to_numpy()}
-            for _r in _picked:
+            for _r in _picked + [vwap_df.iloc[_sp] for _sp in seat_order]:
                 _fid = str(_r.get('factor_id'))
                 try:
                     if _r.get('lib') == 'mined':
@@ -843,6 +1219,17 @@ def main() -> int:
                         _spec = _lcs().get(_fid)
                         _vals = np.asarray(_ecf(_spec, frame, ev), dtype=float) \
                             if _spec is not None else np.full(len(frame), np.nan)
+                    elif _r.get('lib') == 'store':
+                        import boundary as _B
+                        _sf = _B.read_factors([_fid], data_max=str(
+                            pd.to_datetime(frame['date']).max().date()),
+                            label='top20-panel-store')
+                        _m = _sf.merge(frame[['stock_code', 'date']],
+                                       on=['stock_code', 'date'], how='right')
+                        _vv = _m[_fid].to_numpy(dtype=float) \
+                            if _fid in _m.columns else np.full(len(frame), np.nan)
+                        _vals = _vv if len(_vv) == len(frame) \
+                            else np.full(len(frame), np.nan)
                     else:
                         _spec = _specs.get(_fid)
                         _vals = builder.get_factor(_spec).to_numpy(dtype=float) \
@@ -855,6 +1242,54 @@ def main() -> int:
             print(f'vwap_top20_factors.parquet: {_pdf.shape}', flush=True)
     except Exception as _e:
         print(f'warning: vwap_top20 export failed {str(_e)[:200]}', flush=True)
+    # V4.3c Class2 股性榜单落盘（全窗值，供 export Class2）。
+    try:
+        if hab_pool:
+            _hp_cols = {'stock_code': frame['stock_code'].to_numpy(),
+                        'date': pd.to_datetime(frame['date']).to_numpy()}
+            _store_need = [h['factor_id'] for h in hab_pool if h['lib'] == 'store']
+            _store_map = {}
+            if _store_need:
+                import boundary as _B2
+                _sf2 = _B2.read_factors(_store_need, data_max=str(
+                    pd.to_datetime(frame['date']).max().date()),
+                    label='habitat-pool-store')
+                _m2 = _sf2.merge(frame[['stock_code', 'date']],
+                                 on=['stock_code', 'date'], how='right')
+                for _c in _store_need:
+                    _vv2 = _m2[_c].to_numpy(dtype=float) if _c in _m2.columns else None
+                    if _vv2 is not None and len(_vv2) == len(frame):
+                        _store_map[_c] = _vv2
+            for h in hab_pool:
+                _fid = h['factor_id']
+                try:
+                    if h['lib'] == 'mined':
+                        _hv = np.asarray(ev.values(parse_formula(h['formula_cn'])),
+                                         dtype=float)
+                    elif h['lib'] == 'custom':
+                        from custom_registry import evaluate_custom_factor as _ecf2
+                        from custom_registry import load_all_custom_specs as _lcs2
+                        _sp2 = _lcs2().get(_fid)
+                        _hv = np.asarray(_ecf2(_sp2, frame, ev), dtype=float) \
+                            if _sp2 is not None else np.full(len(frame), np.nan)
+                    elif h['lib'] == 'store' and _fid in _store_map:
+                        _hv = _store_map[_fid]
+                    else:
+                        _sp3 = _specs.get(_fid)
+                        _hv = builder.get_factor(_sp3).to_numpy(dtype=float) \
+                            if _sp3 is not None else np.full(len(frame), np.nan)
+                except Exception:
+                    _hv = np.full(len(frame), np.nan)
+                _hp_cols[_fid] = np.asarray(_hv, dtype=float)
+            pd.DataFrame(_hp_cols).to_parquet(
+                _base_dir / 'vwap_habitat_pool.parquet', index=False)
+            (_base_dir / 'vwap_habitat_pool.json').write_text(
+                json.dumps({'generated_at': payload.get('generated_at'),
+                            'members': hab_pool}, ensure_ascii=False, indent=1),
+                encoding='utf-8')
+            print(f'vwap_habitat_pool.parquet: {len(hab_pool)} factors', flush=True)
+    except Exception as _e:
+        print(f'warning: habitat pool export failed {str(_e)[:200]}', flush=True)
     (OUT_DIR / f'ALIGNED_TOP2_{ts}.json').write_text(
         json.dumps(payload, ensure_ascii=False) + '\n' + df.to_json(orient='records', force_ascii=False),
         encoding='utf-8')

@@ -19,6 +19,11 @@ PLATFORM_FIELDS = ('OPEN', 'CLOSE', 'HIGH', 'LOW', 'VOLUME', 'AMOUNT', 'TURNOVER
 # 不因 C2C 不能表达而从本地 candidate universe 排除。grammar.validate 通过 local context 能力放行。
 LOCAL_ONLY_FIELDS = ('MKT_RET', 'IND_RET', 'BETA60', 'DISP')
 
+# 扩展本地字段（V4.3 Class2）：ensure_extended_fields() 产物；求值/解析/上传闸门
+# 与 LOCAL_ONLY_FIELDS 同规则（本地可算、禁上平台）。ensure_local_fields 原 4 字段
+# 不动（历史指纹/台账可比性）；扩展列走独立惰性分支。
+EXTENDED_ONLY_FIELDS = ('VWAP', 'IND_EXCESS', 'BETA20', 'IVOL20', 'AMIHUD20')
+
 # 本地专用算子（T9，2026-09-25）：滚动 y~x 回归——平台无对应算子，可用于本地搜索；
 # 含这些算子的公式只在 competition export/upload adapter 禁止上传；grammar 按 local capability 放行。
 LOCAL_ONLY_OPS = ('TS_REGRESS_RESID', 'TS_REGRESS_BETA')
@@ -160,5 +165,7 @@ def formula_uses_local(text: str) -> bool:
     import re
     t = str(text)
     if any(re.search(rf'\b{f}\b', t) for f in LOCAL_ONLY_FIELDS):
+        return True
+    if any(re.search(rf'\b{f}\b', t) for f in EXTENDED_ONLY_FIELDS):
         return True
     return any(re.search(rf'\b{op}\s*\(', t) for op in LOCAL_ONLY_OPS)

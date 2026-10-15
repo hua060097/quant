@@ -882,28 +882,39 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 3. **市场G2改良走先验机制分簇，拒绝`|t|≥2.0`响应子集**（后者=同一统计量先选后测，选择偏差）。簇源直接用`roles.csv`现成`group`列（8组：volatility_and_liquidity 30/directional_alpha 28/momentum_and_position 28/risk_and_exhaustion 15/t2_promoted 12/tail_protect 6/sector_context 3/capital_flow_risk 2；`t2_promoted`为晋批次标签，检验时单独成簇并注明）：**任一簇内4折同号+簇内`same_frac≥0.65`+CI不含0即认证**，记录受益簇。阈值0.65与孪生阈值同属预注册冻结。
 4. **W4（可交易掩码）修正**：掩码代码已存在（`fitness.py:87-90`，`universe=True`时`is_can_buy==1 & is_st==0 & ~一字板`），但全链路零启用（grep `universe=True`零调用）。故V5动作是"**开掩码+台账基线切换**"，不是新标签；开启即改变全部历史指纹可比性，须配基线版本号。
 
-### V4.3a：行业G2无塌缩重算 → bank-v2（纠偏，不动市场；已落实7修复，待全量跑）
+### V4.3a：行业G2无塌缩重算 → bank-v2（纠偏，不动市场；代码已落实，待服务器全量跑）
 
 - `gate_g2g3_sector.py`（已改，未跑全量）：F1改`gain`式`u·clip(1+0.5·s·g)`（与F1v3_gain同式），含4修复——①门控中心化`g=2p-1`（面板`p∈(0,1]`，旧式权重恒≥1只有放大；市场`_g`列/f1_sector早已中心化，仅sector G2漏网）；②`u=d*(pct-0.5)`外层预计算（消Level-Leak+去循环内重复`to_numeric`，与f1_batch/f1_sector同定义）；③`load_panel`按date稳定排序+对齐断言（`factors.parquet`为stock-major行序，`PanelRanker.day`为date-major码，旧代码`m`行与`day`码错位——bank-v1行业脏数据的第三病因，比截断更致命；两门控delta撞到1e-5即旁证）；④G3双侧主判据（新族预注册`g3_rule=two-sided`，方向由bank s锁定；旧`form="t"`单侧冻结规格保留为诊断列，旧CSV/台账行不动，市场`gate_g2g3.py`+D4自测不动）。`--ledger`默认生产台账（新`form="gain"` caliber区分；`--no-g3`不写台账）。
 - 合成验证（已过）：权重对称1.45/0.55无清零；常数因子与旧式同秩（无退化）；均匀信息因子delta≤0（不乱奖）；偏科因子d=+1/-1双向均为delta=+0.0795（定向修复后对称检出）。
 - 三联动修复（Gemini抓出+Muse验尸确认，同源bug类）：①`f1_sector.py`——`m`按date稳定排序+对齐断言（stock-major错位同源）；gain/flip分支`u`改调`f1_batch._centered_u(xv)`（旧代码对已乘d的z排名后再乘d，d=-1负负得正方向全反；base20有16/20个d=-1）；旧g/t分支冻结公式不动，只吃排序修复。②`select_specialists.py`——flat `direction` 0/1映射`_dsign`（0→-1；`refs_cond_t1.py:98`同口径），否则反向因子`"d":0`使落盘全零列；pool/cands/dirmap三处统一。③`materialize_interactions.py`——sector分支`prow.reindex(udays)`（sgates从2020-01起，不补则门控错位1.5年；合成验证：未修取-0.8，已修取0.8）。④自修：`gate_g2g3_sector`两处`_centered_u`调用改传原始值（helper本身无错，错在传入了`d*xv`）。`H.block_placebo`本来就是双侧，F1消费侧无盲区。
-- 待跑：14 eligible门控全量G2（约60分钟离线）→ 按通过者`--g3-gates`跑G3；`build_gate_bank.py`输入换新CSV，bank升`v2`（v1归档），`direct`重选（目标真2~3正交，`|rho|<0.7`不变）。
+- 待跑（服务器）：14 eligible门控全量G2（约60分钟离线）→ 按通过者`--g3-gates`跑G3；`build_gate_bank.py`输入换新CSV，bank升`v2`（v1归档），`direct`重选（目标真2~3正交，`|rho|<0.7`不变）。
 - 验收：`g2g3_sector.csv` 14行；`delta_median`脱离-0.020塌缩带；bank-v2 sector≥2；回归7/7不动。
+- 追加三修复（已落实`5a6f1ed`）：`f1_batch`漏排序（旧g/t经`_prepared`/日期键免疫，只有新三式中招）+对齐断言；`select_specialists`个体`s_pair`（有向斜率符号锁定，specialist面板时bank只过滤不覆盖）；`materialize`三批合并落盘（空通过不清空）+`build_gate_bank` sector base/op解析。
+- 全仓审计结论（已落实）：生产链其余`d`写入方全源自`base20.json`（±1安全）；中心化其余路径全为`2p-1`；日期其余全为日期键映射或自带排序。诊断工具（corr_compare/stability/cond）自洽，无新增修复。
+- 数据警示（2026-10-15 22:51）：`factors.parquet`现为155列版（疑似上游重生成），roles 136个股名仅49列在库！store第四源=49列；sector G2全量将以约40因子运行（`factor_set`如实记录），待262列恢复后重跑以对齐market线124因子口径。
 
-### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动）
+### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 
-- `gate_search_space.py`：`SECTOR_BASES`加`sec_mom_xrank`（行业5/20日超额跨行业分位）、`sec_vol`（行业20日收益波动）、`sec_breadth`（行业内上涨占比）；涨停集中度需先验证涨停标记字段可用性，不可用则本期放弃。`sec_ret_xrank`（单日）保留，新mom为多日梯度，不重复。
-- `sector_base_from_raw`补三实现 → sector面板重算 → V4.3a同口径G2 → bank-v3（规格54→约63，bank内注明版本与data_cut）。
+- `gate_search_space.py`：`SECTOR_BASES`加`sec_mom_xrank`（行业20日累计跨行业分位，仅level）、`sec_vol`（行业20日收益波动）、`sec_breadth`（行业内上涨占比）；涨停集中度需先验证涨停标记字段可用性，不可用则本期放弃。`sec_ret_xrank`（单日）保留，新mom为多日梯度，不重复。全程索引对齐（不reset错位），合成验证因果性通过。
+- 待跑（服务器）：sector面板重算（规格54→63）→ V4.3a同口径G2 → bank-v3。
 - 验收：新基础量覆盖率≥80%（G0口径）；bank-v3 `direct`稳定2~3个。
 
-### V4.3c：store第四源 + 双向去重闭环 + 机制分簇G2（闭环，市场G2开新族版本）
+### V4.3c：store第四源 + 双向去重闭环 + 机制分簇G2（代码已落实，待服务器跑）
 
-- `store_vfps_<data_cut>.json`离线预热（STOCK 124+STOCK_REL 5+CROSS_SEC 7=136列，fast_frame上`value_fingerprint`，分钟级），`run_search`启动并入`seen_vfp`（钩子`ledger.vfps_for`已存在，`vfp_dup`零改动）。
-- `build_top.py`加`eval_store`分支（同`DataContext(label='vwap')`，走现value_cache/ledger；一次性成本≈一次build_top）；`vwap_orthogonal_indices`加孪生优先（`mined/custom`与`store`截面`|ρ|≥0.95`留store列名；0.70~0.95贪心择优已有规则覆盖）；`select_specialists.py`零改动（读flat自动获存量偏科因子）；`export_lgb_dataset.py`中store入选直接引用原列名。
-- `--promote-to-store`为**显式离线脚本**（备份+sha+`roles.csv`同步），严禁自动回写7.3GB生产表。
-- 栖息地尖兵席位（新增，Gemini提议+Muse认可）：`cond_supplement`已产出逐tag tstat（`hot5_q80`口径现成，flag=`cond_t_max≥2.0`配额15）；Class1终选在主正交扫描后，为`hot5_q80 |t|≥2.5`（取冻结文档阈值2.5，与补捞flag 2.0区分）且未入池者预留**10个**专属正交席位（对池内+席位间逐一`|ρ|≤0.7`，新选择族版本）；快评通道C豁免禁令不动（仅终选席位，不碰快评）。
-- `gate_g2g3.py`加按`group`分簇G2选项（默认关闭；开启=新检验族版本，旧全池结论归档保留，不改写）。
-- 验收：store 136列全进flat；合成孪生对（store列的仿射变体）被判留store；`--promote-to-store --dry-run`路径畅通。
+- `store_sync.py`新建：与快评**同构**fast面板上算存量列vfp（同函数同参同seed，行序无关可比），`store_vfps_<data_cut>.json`缓存（factors sha换代自失效）；`run_search`启动自动并入`seen_vfp`（`--no-store-sync`可关；失败只告警不阻断）。注意：现155列版下store可用仅49列（roles 136名中87名不在库），262列恢复后自动扩到全量。
+- `build_top.py`加`eval_store`分支（同`DataContext`双标签口径，lib='store'，不写台账）+`--include-store`（默认开）+正交扫描孪生双遍（先扫store占位，非store与已选store孪生`|ρ|≥0.95`丢弃留store列名；0.70~0.95贪心择优已有规则覆盖）；`select_specialists.py`零改动（读flat自动获存量偏科因子）。
+- `promote_to_store.py`新建：显式离线回写（列冲突拒绝、备份+`roles.csv`同步+作废vfps缓存，dry-run默认）。合成dry-run通过。
+- 栖息地尖兵席位：`habitat_seats`（窗内cond口径与LGB同窗，`hot5_q80 |t|≥2.5`+ndays≥10，正交`|ρ|≤0.7`，配额10）进面板/json/`habitat_seats.json`；`export_lgb_dataset`席位强制收录（专属配额不占max_alpha）。快评通道C豁免禁令不动。
+- Class2股性榜单：`habitat_pool`（精确`habitat_score=jsd+0.5|mkt_up-mkt_dn|`，正交Top10）→`vwap_habitat_pool.parquet`；`export_lgb_dataset` Class2=6固定底座（原值冻结）+股性池（居中秩）+manifest `class2_habitat_pool`。
+- `gate_g2g3.py`加`--by-group`（默认关；任一簇4折+CI+簇内`same_frac≥0.65`即认证并记录受益簇；t2_promoted单列）。合成验证分簇释放被抵消斜率（0.0003→0.0199）。
+- 验收（服务器跑后）：store列全进flat；孪生对判留store；席位/股性池产物存在；`--by-group`输出group列。
+
+### Class2独立搜索与评价（代码已落实，与V4.3c同批；三断路全部打通）
+
+- 接线：`field_catalog.EXTENDED_ONLY_FIELDS`（VWAP/IND_EXCESS/BETA20/IVOL20/AMIHUD20；`ensure_local_fields`原4字段不动）→ `evaluator`惰性`ensure_extended_fields`分支 → `parser`/`grammar.validate`/`formula_uses_local`（上传硬拦）/`lint`尺度表全放行；`run_search` local_context改调超集。合成：m14 120个零无效、新腿35/120，m16 beta腿57/120。
+- 生成：`m14` form6~9（市场/行业任意窗口Beta、市场残差平滑、残量信息比）+`m16_ctx` Beta/IVOL/BETA20腿；`_mutate`换字段池+`allow_documented`透传（默认关行为不变，C2C由adapter拦截）。
+- 评价：`habitat_fast_score`（jsd+0.5|牛熊pooled反差；合成均匀0.0016 vs 偏科1.0128）+快评`--habitat-track`（默认开，名额full_cap×0.15）+`--habitat-frac/--no-store-sync`。
+- 导出：见V4.3c股性榜单+export Class2。
 
 ### V5 backlog（parking，等V4.3首批Stage15实盘对拍后再启动；本期不展开设计）
 

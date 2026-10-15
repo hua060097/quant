@@ -169,7 +169,9 @@ def _scale_infer(node: Node) -> str | None:
         return {'CLOSE': 'price', 'OPEN': 'price', 'HIGH': 'price', 'LOW': 'price',
                 'AMOUNT': 'large', 'VOLUME': 'large', 'MARKET_CAP': 'large',
                 'TURNOVER': 'bounded', 'MKT_RET': 'bounded', 'IND_RET': 'bounded',
-                'BETA60': 'bounded'}.get(node.name)
+                'BETA60': 'bounded', 'BETA20': 'bounded', 'IND_EXCESS': 'bounded',
+                'IVOL20': 'bounded', 'VWAP': 'bounded', 'AMIHUD20': 'bounded',
+                'DISP': 'bounded'}.get(node.name)
     cs = [_scale_infer(a) for a in node.args]
     if op in ('NEG', 'ABS'):
         return cs[0] if cs else None

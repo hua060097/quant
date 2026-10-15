@@ -39,7 +39,8 @@ import windows as W
 import pool_legacy as pool_mod
 from dedup import max_abs_corr, monthly_spearman
 from cache_utils import find_stock_features
-from evaluator import Evaluator, ensure_local_fields, load_panel, value_fingerprint
+from evaluator import (Evaluator, ensure_extended_fields, ensure_local_fields,
+                         load_panel, value_fingerprint)
 from executor import competition_status, estimate_credits, validate_file, write_candidates
 from field_catalog import formula_uses_local
 from explain import explain
@@ -300,6 +301,40 @@ def _sample_weighted_one(rng: random.Random, pool: list, weight_idx: int = 0) ->
     return len(pool) - 1
 
 
+def habitat_fast_score(vals: np.ndarray, labels: np.ndarray,
+                        mkt: np.ndarray) -> dict:
+    """Class2 栖息地快评代理分（V4.3c）：jsd_tails + 0.5*|牛熊市况 IC 反差|。
+
+    用 pooled Spearman 近似市况反差（快评代理；全量/排榜期用 cond_ic 精确版）。
+    返回 {'habitat_score','habitat_jsd','habitat_contrast'}（全 NaN 表弃权）。
+    """
+    from nonlinear import jsd_tails as _jsd
+    v = np.asarray(vals, dtype=float)
+    y = np.asarray(labels, dtype=float)
+    m = np.asarray(mkt, dtype=float)
+    out = {'habitat_score': float('nan'), 'habitat_jsd': float('nan'),
+           'habitat_contrast': float('nan')}
+    try:
+        fin = np.isfinite(v) & np.isfinite(y)
+        if fin.sum() < 500:
+            return out
+        out['habitat_jsd'] = float(_jsd(v[fin], y[fin]))
+        up = fin & np.isfinite(m) & (m > 0)
+        dn = fin & np.isfinite(m) & (m < 0)
+        if up.sum() < 200 or dn.sum() < 200:
+            return out
+        su = pd.Series(v[up]).corr(pd.Series(y[up]), method='spearman')
+        sd = pd.Series(v[dn]).corr(pd.Series(y[dn]), method='spearman')
+        if np.isfinite(su) and np.isfinite(sd):
+            out['habitat_contrast'] = float(abs(su - sd))
+            j = out['habitat_jsd']
+            out['habitat_score'] = float((0.0 if not np.isfinite(j) else j)
+                                         + 0.5 * out['habitat_contrast'])
+    except Exception:
+        pass
+    return out
+
+
 class SearchRun:
     def __init__(self, args):
         self.args = args
@@ -352,11 +387,12 @@ class SearchRun:
         args.local_context = self.local_context
         args.allow_documented = bool(getattr(args, 'allow_documented', False))
         frame = load_panel()
-        # 层2（2026-09-24）：--local-context 时在全量面板上预计算 MKT_RET/IND_RET/BETA60，
+        # 层2（2026-09-24）+ 扩展（V4.3 Class2）：--local-context 时在全量面板上预计算
+        # MKT_RET/IND_RET/BETA60/DISP + VWAP/IND_EXCESS/BETA20/IVOL20/AMIHUD20，
         # fast 抽样面板由同一 frame 切片继承（市场/行业收益不因抽样而失真）。
         # 默认本地搜索开放上下文字段；--no-local-context 仅用于兼容/对照，不是 C2C 门禁。
         if self.local_context:
-            ensure_local_fields(frame)
+            ensure_extended_fields(frame)
             if not args.allow_documented:
                 args.allow_documented = True
                 print('note: local context enabled: 本地 evaluator 可计算的上下文/文档模板进入搜索；'
@@ -408,6 +444,20 @@ class SearchRun:
         # 跨 run 装载（fast 面板确定性 → vfp 稳定）；2026-10-11 起按数据截止日隔离
         self.seen_vfp = set() if args.no_exclude \
             else self.ledger.vfps_for(self.data_cut)
+        # V4.3c store 预去重：factors.parquet 存量列在**同构 fast 面板**上的 vfp
+        # 并入排除集（防重复挖矿；与台账 vfp 同为分布指纹，行序无关可比）。
+        if args.fast and not args.no_exclude and not getattr(args, 'no_store_sync', False):
+            try:
+                from store_sync import sync_store_vfps as _ssv
+                _sv = _ssv(frame, n_stocks=args.fast_stocks,
+                            months=args.fast_months,
+                            stratify=(getattr(args, 'fast_stratify', '') or None),
+                            end=self.data_cut, data_cut=self.data_cut)
+                self.seen_vfp |= _sv
+                print(f'store_vfps: 并入 {len(_sv)} 个存量指纹', flush=True)
+            except Exception as exc:
+                print(f'warning: store_vfps 同步失败（{str(exc)[:120]}），继续不同步跑',
+                      flush=True)
         self.full_hashes = set()
         self.best = -1.0
         self.stall = 0
@@ -586,6 +636,18 @@ class SearchRun:
         score = rank_score(score_tier, node,
                            turnover_ref=self.turnover_ref)
         score_nopen = rank_score(score_tier, node, turnover_ref=None)
+        # V4.3c Class2 栖息地快评通道：线性 SiA 外的第二晋级依据（尾部发散+市况反差）。
+        hab = {'habitat_score': float('nan'), 'habitat_jsd': float('nan'),
+               'habitat_contrast': float('nan')}
+        if getattr(args, 'habitat_track', False):
+            try:
+                _hv = np.asarray(_pri.values(node), dtype=float)
+                _pos = _pri._pos
+                _mk = np.asarray(_pri.evaluator.frame['MKT_RET'].to_numpy(dtype=float)[_pos],
+                                 dtype=float)
+                hab = habitat_fast_score(_hv[_pos], _pri.labels, _mk)
+            except Exception:
+                pass
         for lab in self.labels:
             search_value = label_search_value(tiers[lab], lab)
             self.ledger.log('fast', node, int(screens[lab].get('direction', 1)),
@@ -608,7 +670,7 @@ class SearchRun:
                 'fast_search_value': primary_search_value,
                 'fast_score': score, 'fast_score_nopen': score_nopen,
                 'stability': stability, 'sparse_tie_median': sparse_median,
-                'sparse_hit': sparse_hit, **dual}
+                'sparse_hit': sparse_hit, **dual, **hab}
 
     def evaluate_full(self, rec: dict) -> dict:
         args = self.args
@@ -858,7 +920,8 @@ class SearchRun:
                         except Exception:
                             wnode = None
                         if wnode is not None:
-                            cand = mutate(wnode, self.rng, args.mutation_rate)
+                            cand = mutate(wnode, self.rng, args.mutation_rate,
+                                            allow_documented=args.allow_documented)
                             if (validate(cand, allow_documented=args.allow_documented)[0]
                                     and expression_hash(cand) not in self.seen_hash):
                                 node, fam = cand, row['family']
@@ -1021,9 +1084,10 @@ class SearchRun:
                             child = mutate_window_neighbor(elite['node'], self.rng)
                             branch = 'win_neighbor'
                         else:
-                            child, branch = mutate_with_type(elite['node'], self.rng,
-                                                             args.mutation_rate,
-                                                             prefer=mut_prefer)
+                            child, branch = mutate_with_type(
+                                elite['node'], self.rng, args.mutation_rate,
+                                prefer=mut_prefer,
+                                allow_documented=args.allow_documented)
                         ok, _ = validate(child, allow_documented=args.allow_documented)
                         if not ok:
                             continue
@@ -1069,12 +1133,28 @@ class SearchRun:
                 seen.add(rec['expression_hash'])
                 survivors.append(rec)
             survivors = survivors[:args.full_cap]
+            # V4.3c 栖息地通道：habitat_score 前列额外晋级（防线性 IC 误杀）；
+            # 名额 = full_cap*habitat_frac（默认 15%），与线性幸存者去重后追加。
+            n_hab = 0
+            if getattr(args, 'habitat_track', False):
+                _hq = max(1, int(round(args.full_cap
+                                       * float(getattr(args, 'habitat_frac', 0.15)))))
+                _cand = [r for r in fast_rows
+                         if dual_ok(r) and r['expression_hash'] not in seen
+                         and r.get('habitat_score') is not None
+                         and np.isfinite(r['habitat_score'])]
+                for rec in sorted(_cand, key=lambda r: -r['habitat_score'])[:_hq]:
+                    seen.add(rec['expression_hash'])
+                    survivors.append(rec)
+                    n_hab += 1
+            self.stats['habitat_extra'] = self.stats.get('habitat_extra', 0) + n_hab
         else:
             survivors = [r for r in fast_rows if dual_ok(r)][:args.full_cap]
         self._progress(f'fast tested={self.stats["fast"]} fp_skip={self.stats["fp_skip"]} '
                        f'dup={self.stats["dup"]} vfp_dup={self.stats["vfp_dup"]} '
                        f'lint={self.stats["lint_reject"]} dust={self.stats["dust_reject"]} '
                        f'red_legs={self.stats["redundant_legs"]} sparse={self.stats["sparse_gate"]} '
+                       f'habitat_extra={self.stats.get("habitat_extra", 0)} '
                        f'-> full {len(survivors)}+{len(proposal_nodes)} '
                        f'elapsed={time.time() - t0:.0f}s')
 
@@ -2327,6 +2407,17 @@ def main() -> None:
                     default=False,
                     help='关闭终选成员的条件 RankIC 诊断（热点子集 hot5/hot2 + 市场状态族，'
                          '与主管线 COND-IC 同口径）')
+    sp.add_argument('--habitat-track', dest='habitat_track', action='store_true',
+                    default=True,
+                    help='Class2 栖息地快评通道（默认开）：habitat_score 前列预留晋级名额，'
+                         '防线性 IC 误杀股性/风险切分因子')
+    sp.add_argument('--no-habitat-track', dest='habitat_track', action='store_false',
+                    help='关闭 Class2 栖息地快评通道')
+    sp.add_argument('--habitat-frac', type=float, default=0.15,
+                    help='栖息地通道晋级名额占 full-cap 比例（默认 0.15）')
+    sp.add_argument('--no-store-sync', dest='no_store_sync', action='store_true',
+                    default=False,
+                    help='跳过 factors.parquet 存量指纹同步（默认同步防重复挖矿）')
     sp.add_argument('--max-decay', type=float, default=None,
                     help='可选硬门槛：后半段/前半段 RankIC 比值 ≥ 该值才入短名单'
                          '（如 0.6；默认关=仅诊断输出 decay 列）')

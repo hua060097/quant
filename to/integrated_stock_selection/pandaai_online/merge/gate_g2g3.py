@@ -302,6 +302,10 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(SPACE, "g2g3.csv"))
     ap.add_argument("--n-boot", type=int, default=G2_BOOT_N)
     ap.add_argument("--n-perm", type=int, default=G3_PERM)
+    ap.add_argument("--by-group", action="store_true", default=False,
+                    help="V4.3c 机制分簇G2（默认关）：按 roles.csv group 先验簇分别跑斜率"
+                         "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
+                         "旧全池结论保留，新检验族版本")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -329,6 +333,20 @@ def main() -> int:
     print(f"  已按 sign(全样本 RankIC 均值) 定向；正号 {int((orient > 0).sum())} / "
           f"负号 {int((orient < 0).sum())}")
     ic = icdf.to_numpy(dtype=float)
+    # V4.3c 机制分簇：roles.csv group 先验映射（t2_promoted 单列一簇并注明）。
+    groups: dict[str, list[int]] = {}
+    if a.by_group:
+        try:
+            _roles = pd.read_csv(os.path.join(RESULTS, "roles.csv"))
+            _gmap = dict(zip(_roles["name"].astype(str), _roles["group"].astype(str)))
+            for _j, _c in enumerate(icdf.columns):
+                _g = _gmap.get(str(_c), "ungrouped")
+                groups.setdefault(_g, []).append(_j)
+            print(f"  分簇G2：{len(groups)} 簇 "
+                  f"{sorted((g, len(v)) for g, v in groups.items())}", flush=True)
+        except Exception as exc:
+            print(f"  warning: 分簇映射失败（{str(exc)[:100]}），退化为全池", flush=True)
+            groups = {}
 
     # 门控集合（搜索空间；2026-10-12 起旧手工门控 market_gates.parquet 已删除）
     sp = pd.read_parquet(os.path.join(SPACE, "gate_search_market.parquet"))
@@ -355,6 +373,28 @@ def main() -> int:
         g3 = g3_placebo(ic, g, n_perm=a.n_perm)
         ok_slope = (st["folds_same"] == G2_FOLDS) and ci_excludes_zero(lo, hi) \
             and st["same_frac"] >= G2_SAME_SIGN_MIN
+        # --- 变体 1b：机制分簇斜率（V4.3c，新检验族版本，默认关） ---
+        _grp, _grp_ok = "", False
+        _grp_med, _grp_same, _grp_folds = float("nan"), float("nan"), 0
+        if groups:
+            _best = None
+            for _gn, _cols in groups.items():
+                if len(_cols) < 5:
+                    continue
+                _sic = ic[:, _cols]
+                _sst = g2_stat(_sic, g)
+                _lo, _hi = g2_ci_bootstrap(_sic, g, n_boot=a.n_boot)
+                _ok = (_sst["folds_same"] == G2_FOLDS) \
+                    and ci_excludes_zero(_lo, _hi) \
+                    and _sst["same_frac"] >= 0.65
+                if _ok and (_best is None or abs(_sst["median_b"]) > abs(_best[1])):
+                    _best = (_gn, _sst["median_b"], _sst["same_frac"],
+                             _sst["folds_same"], _lo, _hi)
+            if _best is not None:
+                _grp, _grp_med, _grp_same, _grp_folds = _best[0], _best[1], \
+                    _best[2], _best[3]
+                _grp_ok = True
+                ok_slope = True
         # --- 变体 2：与 F1 组合形式对齐的阈值口径 ---
         g_on = np.isfinite(g) & (g >= 2 * G.THRESH_HI - 1)     # p >= 0.7
         sd_ = g2_delta_stat(ic, g_on)
@@ -366,6 +406,9 @@ def main() -> int:
             "slope_median": st["median_b"], "slope_same_frac": st["same_frac"],
             "slope_folds": st["folds_same"], "slope_ci_lo": lo, "slope_ci_hi": hi,
             "g2_slope_pass": bool(ok_slope),
+            "slope_group": _grp, "slope_group_median": _grp_med,
+            "slope_group_same": _grp_same, "slope_group_folds": _grp_folds,
+            "slope_group_pass": bool(_grp_ok),
             "thr_delta_median": sd_["median_d"], "thr_same_frac": sd_["same_frac"],
             "thr_folds": sd_["folds_same"], "thr_ci_lo": dlo, "thr_ci_hi": dhi,
             "g2_thr_pass": bool(ok_thr),

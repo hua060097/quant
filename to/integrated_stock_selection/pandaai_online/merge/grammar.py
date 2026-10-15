@@ -14,9 +14,9 @@ from typing import Iterator
 
 import _paths  # noqa: F401
 from field_catalog import (
-    ARITY, CS_OPS, CONST_WHITELIST, EXPONENTS, LOCAL_ONLY_FIELDS, MAX_DEPTH,
-    MP_NONE, PARAM_OPS, PLATFORM_FIELDS, SHIFT_WINDOWS, TS_OPS, VERIFIED_OPS,
-    WINDOWS, default_mp,
+    ARITY, CS_OPS, CONST_WHITELIST, EXPONENTS, EXTENDED_ONLY_FIELDS,
+    LOCAL_ONLY_FIELDS, MAX_DEPTH, MP_NONE, PARAM_OPS, PLATFORM_FIELDS,
+    SHIFT_WINDOWS, TS_OPS, VERIFIED_OPS, WINDOWS, default_mp,
 )
 
 
@@ -220,6 +220,8 @@ def validate(node: Node, allow_documented: bool = False,
             # 本地专用字段：本地能力 profile 可搜索/求值；含本地字段的公式只在 C2C
             # export/upload adapter 按 formula_uses_local 硬拦截，不影响 local shortlist。
             if n.name in LOCAL_ONLY_FIELDS and allow_documented:
+                continue
+            if n.name in EXTENDED_ONLY_FIELDS and allow_documented:
                 continue
             return False, f'unknown field {n.name}'
         if n.op == 'CONST':
@@ -600,6 +602,8 @@ def m14_context(rng: random.Random) -> Node:
 
     全部 VERIFIED 算子 + 三个本地字段；含本地字段的公式禁止 C2C 上传，但保留本地搜索/评估。
     随 local-context 能力启用生成。
+    V4.3 Class2：form 6~9 新增滚动回归 Beta/残差与扩展字段腿（任意窗口 Beta、
+    行业 Beta、市场残差、相对行业残量信息比），搜索引擎可名正言顺搜出 Beta20 类特征。
     """
     ret = virtual_node('RET1')
     mkt = field('MKT_RET')
@@ -607,7 +611,8 @@ def m14_context(rng: random.Random) -> Node:
     beta = field('BETA60')
     w = _win(rng, (20, 40, 60, 120))
     w2 = _win(rng, (5, 10, 20, 40))
-    form = rng.randrange(6)
+    wb = _win(rng, (10, 20, 40, 60))
+    form = rng.randrange(10)
     if form == 0:
         # 市况门：市场均量下行期做反转、上行期做动量（市况状态切换）
         cond = Node('LT', (ts('TS_MEAN', mkt, w), const(0)))
@@ -629,7 +634,23 @@ def m14_context(rng: random.Random) -> Node:
         # 行业门：行业均量下行期做反转
         cond = Node('LT', (ts('TS_MEAN', ind, w), const(0)))
         node = ts('TS_MEAN', Node('IF', (cond, Node('NEG', (ret,)), ret)), w2)
+    elif form == 6:
+        # 市场 Beta（任意窗口）：个股对市场的弹性，股性切分核心
+        node = Node('TS_REGRESS_BETA', (ret, mkt), window=wb,
+                    mp=default_mp('TS_REGRESS_BETA', wb))
+    elif form == 7:
+        # 行业 Beta：个股对行业的弹性（跟风股 vs 独立妖股）
+        node = Node('TS_REGRESS_BETA', (ret, ind), window=wb,
+                    mp=default_mp('TS_REGRESS_BETA', wb))
+    elif form == 8:
+        # 市场残差平滑：剥离市场成分后的特质收益
+        node = ts('TS_MEAN', Node('TS_REGRESS_RESID', (ret, mkt), window=wb,
+                                 mp=default_mp('TS_REGRESS_RESID', wb)), w2)
     else:
+        # 相对行业残量信息比：IND_EXCESS 的均值/波动（V4.3 扩展字段腿）
+        iex = field('IND_EXCESS')
+        node = Node('DIV', (ts('TS_MEAN', iex, w), ts('STDDEV', iex, w)))
+    if form == 5:
         # alpha 分解：RET − BETA60×MKT_RET（剥离市场成分后的残差收益平滑）
         node = ts('TS_MEAN', Node('SUB', (ret, Node('MUL', (beta, mkt)))), w)
     return Node('NEG', (node,)) if rng.random() < 0.35 else node
@@ -729,6 +750,13 @@ def m16_interaction(rng: random.Random) -> Node:
     return Node('NEG', (node,)) if rng.random() < 0.4 else node
 
 
+def _beta_leg(rng: random.Random, ret: Node, against: str) -> Node:
+    """滚动回归 Beta 腿（V4.3 Class2）：窗口与 mp 一致（回归全窗语义）。"""
+    w = _win(rng, (10, 20, 40, 60))
+    return Node('TS_REGRESS_BETA', (ret, field(against)), window=w,
+                mp=default_mp('TS_REGRESS_BETA', w))
+
+
 def m16_ctx_interaction(rng: random.Random) -> Node:
     """跨机制交互·上下文版（T10，2026-09-25，本地专用）：行业状态/上下文腿
     与 M1/M2/M15 逐股腿的交互。
@@ -742,6 +770,11 @@ def m16_ctx_interaction(rng: random.Random) -> Node:
     ctx_legs = [
         lambda rng: Node('SUB', (ret, field('IND_RET'))),
         lambda rng: Node('SUB', (ret, Node('MUL', (field('BETA60'), field('MKT_RET'))))),
+        # V4.3 Class2：任意窗口市场/行业 Beta 腿 + 特质波动腿（股性切分）
+        lambda rng: _beta_leg(rng, ret, 'MKT_RET'),
+        lambda rng: _beta_leg(rng, ret, 'IND_RET'),
+        lambda rng: field('IVOL20'),
+        lambda rng: field('BETA20'),
     ]
     state_legs = [
         lambda rng: field('IND_RET'),
@@ -934,7 +967,8 @@ _MUT_ROLL = {'window': 0.10, 'op': 0.30, 'subtree': 0.50, 'exp': 0.70,
 
 
 def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
-                 prefer: dict | None = None) -> tuple[Node, str]:
+                 prefer: dict | None = None,
+                 allow_documented: bool = False) -> tuple[Node, str]:
     """mutate 的带编辑类型版本（T6，2026-09-25；mini-AlphaMemo）。
 
     prefer: {branch: weight}——按权重指派要尝试的编辑分支（分支内守卫不满足时自然
@@ -967,7 +1001,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
         p, target = rng.choice(ts_spots)
         new_w = _win(rng)
         cand = replace_at(node, p, replace(target, window=new_w, mp=default_mp(target.op, new_w)))
-        ok, _ = validate(cand)
+        ok, _ = validate(cand, allow_documented=allow_documented)
         return (cand if ok else node), branch
     if roll < 0.44 and ts_spots:
         p, target = rng.choice(ts_spots)
@@ -977,7 +1011,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
             new_op = rng.choice(options)
             cand = replace_at(node, p, replace(target, op=new_op,
                                                mp=default_mp(new_op, target.window or 20)))
-            ok, _ = validate(cand)
+            ok, _ = validate(cand, allow_documented=allow_documented)
             return (cand if ok else node), branch
     if roll < 0.66:
         # 子树替换：局部重掷（≤5 次）直到类型干净——ADD/SUB 兄弟位的尺度约束
@@ -988,7 +1022,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
             for _try in range(5):
                 p, _, cat = rng.choice(spots)
                 cand = replace_at(node, p, _gen_subtree(rng, cat))
-                ok, _ = validate(cand)
+                ok, _ = validate(cand, allow_documented=allow_documented)
                 if ok and not _te(cand):
                     return cand, branch
             return node, branch
@@ -998,7 +1032,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
             p = rng.choice(consts)
             cand = replace_at(node, p, replace(get_at(node, p),
                                                value=rng.choice(EXPONENTS)))
-            ok, _ = validate(cand)
+            ok, _ = validate(cand, allow_documented=allow_documented)
             return (cand if ok else node), branch
     if roll < 0.84:
         # NEG 翻转（2026-09-24 新增）：拆已有 NEG，或在数值位包一层（方向探索不再依赖重生成）
@@ -1013,7 +1047,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
                 cand = replace_at(node, p, Node('NEG', (get_at(node, p),)))
             else:
                 cand = Node('NEG', (node,))
-        ok, _ = validate(cand)
+        ok, _ = validate(cand, allow_documented=allow_documented)
         return (cand if ok else node), branch
     if roll < 0.90:
         # 门限微调（2026-09-24 新增）：0.3/0.5/0.8 分位阈值互换（配 0.3/0.8 进常数白名单）
@@ -1024,7 +1058,7 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
             new_v = rng.choice([t for t in _THRESHOLD_VALUES
                                 if t != float(target.value)])
             cand = replace_at(node, p, replace(target, value=new_v))
-            ok, _ = validate(cand)
+            ok, _ = validate(cand, allow_documented=allow_documented)
             return (cand if ok else node), branch
     if roll < 0.95:
         # 腿数±1（2026-09-24 新增）：M9 复合加/减一条腿（加腿来自腿银行）
@@ -1035,31 +1069,41 @@ def _mutate_once(node: Node, rng: random.Random, rate: float = 0.35,
             elif len(legs) > 2:
                 legs.pop(rng.randrange(len(legs)))
             cand = _rebuild_adds(legs)
-            ok, _ = validate(cand)
+            ok, _ = validate(cand, allow_documented=allow_documented)
             return (cand if ok else node), branch
     fields = [p for p, n in walk(node) if n.op == 'FIELD']
     if not fields:
         return node, branch
     p = rng.choice(fields)
-    options = [f for f in PLATFORM_FIELDS if f != get_at(node, p).name]
+    # V4.3 Class2：本地 profile 下换字段池含本地/扩展字段（validate 按同旗放行；
+    # 默认关闭，行为不变；C2C 上传仍由 formula_uses_local 硬拦）。
+    _pool = list(PLATFORM_FIELDS)
+    if allow_documented:
+        _pool += [f for f in list(LOCAL_ONLY_FIELDS) + list(EXTENDED_ONLY_FIELDS)]
+    options = [f for f in _pool if f != get_at(node, p).name]
     cand = replace_at(node, p, field(rng.choice(options)))
-    ok, _ = validate(cand)
+    ok, _ = validate(cand, allow_documented=allow_documented)
     return (cand if ok else node), branch
 
 
 def mutate_with_type(node: Node, rng: random.Random, rate: float = 0.35,
-                     prefer: dict | None = None, _depth: int = 0) -> tuple[Node, str]:
+                 prefer: dict | None = None, _depth: int = 0,
+                 allow_documented: bool = False) -> tuple[Node, str]:
     """带重掷的包装：结果含 unit-mismatch/scale-mix 时原地重摇（≤2 次），
     退化表达式出生前拦截（强类型 GP / grammar masking 思想）。"""
     from lint import type_errors  # 惰性导入避免循环（lint 依赖 grammar）
-    res, branch = _mutate_once(node, rng, rate, prefer)
+    res, branch = _mutate_once(node, rng, rate, prefer,
+                               allow_documented=allow_documented)
     if _depth < 3 and res is not node and type_errors(res):
-        return mutate_with_type(node, rng, rate, prefer=prefer, _depth=_depth + 1)
+        return mutate_with_type(node, rng, rate, prefer=prefer, _depth=_depth + 1,
+                                allow_documented=allow_documented)
     return res, branch
 
 
-def mutate(node: Node, rng: random.Random, rate: float = 0.35) -> Node:
-    return mutate_with_type(node, rng, rate)[0]
+def mutate(node: Node, rng: random.Random, rate: float = 0.35,
+           allow_documented: bool = False) -> Node:
+    return mutate_with_type(node, rng, rate,
+                            allow_documented=allow_documented)[0]
 
 
 def mutate_window_neighbor(node: Node, rng: random.Random) -> Node:
@@ -1096,7 +1140,7 @@ def crossover(a: Node, b: Node, rng: random.Random) -> Node:
     rng.shuffle(matches)
     for p, q in matches[:3]:  # 组合期类型约束：前 3 个兼容位点中取第一个类型干净者
         cand = replace_at(a, p, get_at(b, q))
-        ok, _ = validate(cand)
+        ok, _ = validate(cand, allow_documented=allow_documented)
         if ok and not type_errors(cand):
             return cand
     return a

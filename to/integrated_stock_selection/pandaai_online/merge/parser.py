@@ -18,8 +18,8 @@ import re
 
 import _paths  # noqa: F401
 from field_catalog import (
-    ARITY, CS_OPS, LOCAL_ONLY_FIELDS, MP_NONE, PARAM_OPS, PLATFORM_FIELDS,
-    SHIFT_WINDOWS, TS_OPS, VIRTUAL_NAMES, WINDOWS, default_mp,
+    ARITY, CS_OPS, EXTENDED_ONLY_FIELDS, LOCAL_ONLY_FIELDS, MP_NONE, PARAM_OPS,
+    PLATFORM_FIELDS, SHIFT_WINDOWS, TS_OPS, VIRTUAL_NAMES, WINDOWS, default_mp,
 )
 from grammar import Node
 
@@ -142,8 +142,9 @@ class _Parser:
         if kind == 'ident':
             if self._peek()[1] == '(':
                 return self._parse_call(tok, pos)
-            if tok in PLATFORM_FIELDS or tok in VIRTUAL_NAMES or tok in LOCAL_ONLY_FIELDS:
-                # LOCAL_ONLY_FIELDS（层2）：本地 parser 可解析（render→parse 往返/榜单重评用）；
+            if tok in PLATFORM_FIELDS or tok in VIRTUAL_NAMES \
+                    or tok in LOCAL_ONLY_FIELDS or tok in EXTENDED_ONLY_FIELDS:
+                # LOCAL/EXTENDED（层2/扩展）：本地 parser 可解析（render→parse 往返/榜单重评用）；
                 # 上传闸门由 formula_uses_local 在 export/upload 链路独立拦截
                 return Node('FIELD', name=tok)
             raise ParseError(f'unknown field {tok!r}', pos, self.text)

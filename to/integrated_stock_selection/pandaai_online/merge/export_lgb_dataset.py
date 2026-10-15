@@ -73,16 +73,30 @@ def main() -> int:
         habitat_features = list(avail_hab)
 
     # 2. 合并 Class 1 正交个股 Alpha（缺失则空跑警告，不伪造）
+    # V4.3c 席位配额：habitat_seats.json 席位列优先强制收录（专属配额，不占 max_alpha）。
     alpha_features = []
+    seat_cols = []
+    _seat_path = RESULTS / 'habitat_seats.json'
+    if _seat_path.exists():
+        try:
+            seat_cols = [str(x) for x in
+                         json.load(open(_seat_path, encoding='utf-8')).get('seats', [])]
+        except Exception:
+            seat_cols = []
     alpha_path = Path(args.alpha_panel)
     if alpha_path.exists():
         adf = pd.read_parquet(alpha_path)
         adf['date'] = pd.to_datetime(adf['date'])
         adf = adf[adf['date'] <= pd.Timestamp(args.data_cut)]
-        acols = [c for c in adf.columns if c not in ('stock_code', 'date')][:args.max_alpha]
+        _all = [c for c in adf.columns if c not in ('stock_code', 'date')]
+        _seats = [c for c in seat_cols if c in _all]
+        _rest = [c for c in _all if c not in set(_seats)][:args.max_alpha]
+        acols = _seats + _rest
         adf_norm = cs_rank_centered(adf, acols)
         base_df = base_df.merge(adf_norm, on=['stock_code', 'date'], how='left')
         alpha_features = acols
+        if _seats:
+            print(f'Class1 席位强制收录 {len(_seats)} 列', flush=True)
     else:
         print(f'warning: alpha panel missing {alpha_path}（Class1为空跑，不伪造列）')
 
@@ -126,7 +140,25 @@ def main() -> int:
     else:
         print(f'note: {inter_path} 不存在（Class4为空跑；先跑 --form gain 并过FDR）')
 
-    all_features = alpha_features + interact_features + habitat_features + sector_features
+    # 2b. Class2 股性榜单（V4.3c）：vwap_habitat_pool 并入并做截面居中秩。
+    # 6 个固定底座保持原值（历史可比冻结）；新增池列统一居中秩（树分裂不变）。
+    habitat_pool_features = []
+    _hp_path = RESULTS / 'vwap_habitat_pool.parquet'
+    if _hp_path.exists():
+        try:
+            hdf = pd.read_parquet(_hp_path)
+            hdf['date'] = pd.to_datetime(hdf['date'])
+            hdf = hdf[hdf['date'] <= pd.Timestamp(args.data_cut)]
+            hcols = [c for c in hdf.columns if c not in ('stock_code', 'date')]
+            hdf_norm = cs_rank_centered(hdf, hcols)
+            base_df = base_df.merge(hdf_norm, on=['stock_code', 'date'], how='left')
+            habitat_pool_features = hcols
+            print(f'Class2 股性池并入 {len(hcols)} 列', flush=True)
+        except Exception as e:
+            print(f'warning: habitat pool 合并失败 {str(e)[:120]}', flush=True)
+
+    all_features = alpha_features + interact_features + habitat_features \
+        + habitat_pool_features + sector_features
     feat_file = out_dir / 'lgb_features.parquet'
     base_df.to_parquet(feat_file, index=False)
 
@@ -137,12 +169,14 @@ def main() -> int:
         'by_class': {
             'class1_stock_alpha': alpha_features,
             'class2_stock_habitat': habitat_features,
+            'class2_habitat_pool': habitat_pool_features,
             'class3_sector_state': sector_features,
             'class4_gated_interact': interact_features,
             'market_broadcast_1xT': [],  # 铁律：永远为空！
         },
         # 供下游训练脚本读取：以下列严禁在训练前做逐日横截面标准化
-        'skip_daily_cs_norm_cols': interact_features + sector_features,
+        'skip_daily_cs_norm_cols': interact_features + sector_features
+        + habitat_pool_features + alpha_features,
     }
     man_file = out_dir / 'features_manifest.json'
     man_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
