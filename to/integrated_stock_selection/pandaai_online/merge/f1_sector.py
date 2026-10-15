@@ -81,12 +81,17 @@ def main():
         n0 = len(cands)
         cands = [c for c in cands if c.get("gate") in bmap]
         n_over = 0
+        # V4.3a：specialist 面板时只做白名单过滤，不覆盖个体锁定的 s_pair。
+        _keep_s = (a.base_panel == "specialist")
         for c in cands:
+            if _keep_s:
+                continue
             if int(c.get("s", 1)) != int(bmap[c["gate"]]["s"]):
                 n_over += 1
             c["s"] = int(bmap[c["gate"]]["s"])
         print(f"[{a.tag}] gate-bank {a.gate_bank}: {n0}->{len(cands)} cands, "
-              f"s overridden {n_over} (bank {bank.get('version')})", flush=True)
+              f"s overridden {n_over} (bank {bank.get('version')}"
+              f"{', keep-s-pair' if _keep_s else ''})", flush=True)
     print(f"[{a.tag}] candidates={len(cands)}", flush=True)
     # labels
     lab = B.read_labels(["r3", "y_prod", "tradable"], label_max=label_max, label=f"f1s-{a.tag}")

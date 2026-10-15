@@ -86,6 +86,10 @@ def main() -> int:
     passed = dj[ok].copy()
     print(f"judged {len(dj)} 行 → 通过 {len(passed)} 行", flush=True)
     if not len(passed):
+        # V4.3a：空通过时若目标已存在（前序算子产物），不得清空覆盖。
+        if os.path.exists(a.out):
+            print(f"无通过配对且 {a.out} 已存在：保留原文件不覆盖", flush=True)
+            return 0
         print("无通过配对，落盘为空表（分支畅通证明见合成自测）", flush=True)
         if not a.dry_run:
             pd.DataFrame(columns=["stock_code", "date"]).to_parquet(a.out, index=False)
@@ -217,6 +221,25 @@ def main() -> int:
     if a.dry_run:
         print(f"dry-run：{list(out.columns)}", flush=True)
         return 0
+    # V4.3a：三式分批落盘合并——目标已存在且非空时按键合并新列，不覆盖前序算子产物。
+    if os.path.exists(a.out):
+        try:
+            _old = pd.read_parquet(a.out)
+            if len(_old) and set(("stock_code", "date")).issubset(_old.columns):
+                _old["date"] = _old["date"].astype(str)
+                _new = out.copy()
+                _new["date"] = _new["date"].astype(str)
+                _merged = _old.merge(_new, on=["stock_code", "date"], how="outer",
+                                     suffixes=("", "_new"))
+                _dup = [c for c in _merged.columns if c.endswith("_new")]
+                for c in _dup:
+                    _base = c[:-4]
+                    _merged[_base] = _merged[_base].combine_first(_merged[c])
+                    _merged = _merged.drop(columns=[c])
+                out = _merged
+                print(f"合并既有 {a.out}：{_old.shape} + 新 {len(_new)} 行", flush=True)
+        except Exception as e:
+            print(f"  既有文件合并失败（{str(e)[:100]}），直接覆盖", flush=True)
     out.to_parquet(a.out, index=False)
     print(f"落盘 → {a.out}", flush=True)
     return 0

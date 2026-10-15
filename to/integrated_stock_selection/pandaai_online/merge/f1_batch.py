@@ -272,12 +272,18 @@ def main():
         n0 = len(cands)
         cands = [c for c in cands if c.get("gate") in bmap]
         n_over = 0
+        # V4.3a：specialist 面板时只做白名单过滤，不覆盖偏科因子个体锁定的 s_pair
+        #（其 s 由自身有向斜率符号锁定；组级 bank s 会配反一半）。
+        _keep_s = (a.base_panel == "specialist")
         for c in cands:
+            if _keep_s:
+                continue
             if int(c.get("s", 1)) != int(bmap[c["gate"]]["s"]):
                 n_over += 1
             c["s"] = int(bmap[c["gate"]]["s"])
         print(f"[{a.tag}] gate-bank {a.gate_bank}: {n0}->{len(cands)} cands, "
-              f"s overridden {n_over} (bank {bank.get('version')})", flush=True)
+              f"s overridden {n_over} (bank {bank.get('version')}"
+              f"{', keep-s-pair' if _keep_s else ''})", flush=True)
     print(f"[{a.tag}] candidates={len(cands)}", flush=True)
     # 本批只跑 market 门控（掩码捷径，已证明等价）。
     # sector 门控需全重算（逐置换重排），独立第二批实现。
@@ -323,9 +329,15 @@ def main():
         del fac
         b20 = {b["factor"]: b["direction"] for b in
                json.load(open(os.path.join(RESULTS, "base20.json"), encoding="utf-8"))["base20"]}
+    # V4.3a：m 必须按 date 稳定排序（fac stock-major；_prepared 只排内部副本；
+    # gain/flip/switch 用 m 行序的 xv/row_dates 配 date-major 的 day/yrk——同源错位）。
+    # 旧 g/t 经 _prepared/ic_cache 与日期键映射天然免疫。
+    m = m.sort_values("date", kind="stable").reset_index(drop=True)
     print(f"[{a.tag}] panel rows={len(m)} base_panel={a.base_panel}", flush=True)
     # 预计算每 base 的 IC_z（d·x）日序列
     day, dates_u, _, _, nd = E._prepared(m, base_cols[0], "r3")
+    _ud = np.unique(pd.to_datetime(m["date"]).to_numpy())
+    assert (pd.to_datetime(m["date"]).to_numpy() == _ud[day]).all(), "m行序与日码错位"
     uniq = np.unique(m["date"].to_numpy())
     ic_cache = {}
     for bcol in base_cols:

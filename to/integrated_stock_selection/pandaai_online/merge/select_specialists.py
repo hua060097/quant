@@ -208,11 +208,19 @@ def main() -> int:
             uncond = 0.0
         suggested = "flip" if (np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"])
                                and best["hi_ic"] * best["lo_ic"] < 0) else "gain"
+        # V4.3a：个体 s_pair——按自身有向斜率符号锁定，而非照抄 bank 组级 s。
+        # best["b"] 为原始 IC 对中心化门控的斜率；有向斜率 = d_sign*b；
+        # ≥0 → 高门控放大有效 → s=+1，否则 s=-1（配反则 F1 ΔIC 必负被拒）。
+        _ds = _dsign(r.get("direction"))
+        _b = best["b"]
+        _s_pair = int(best["s"]) if not np.isfinite(_b) \
+            else (1 if (_ds * _b) >= 0 else -1)
         rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
                "formula": str(r.get("formula_cn", "")),
-                "direction": _dsign(r.get("direction")),
+               "direction": _ds,
                "rank": int(r["_rank"]), "LGB": float(r.get("LGB", 0) or 0),
-               "uncond_rank_ic": uncond, "gate": best["gate"], "s": best["s"],
+               "uncond_rank_ic": uncond, "gate": best["gate"], "s": _s_pair,
+               "s_bank": int(best["s"]),
                "t_slope": best["t"], "slope_b": best["b"],
                "hi_ic": best["hi_ic"], "lo_ic": best["lo_ic"],
                "suggested_form": suggested,

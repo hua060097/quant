@@ -140,10 +140,14 @@ def main() -> int:
                         "g3_pass": bool(r.get("g3_pass", False))})
     for _, r in sdf.iterrows():
         dm = float(r.get("delta_median", 0) or 0)
+        # V4.3a：GS_sec_amp_med_accel → base=sec_amp_med, op=accel
+        #（旧 split("_")[1] 恒得 "sec" 且 op 硬编码 level）。
+        _tail = str(r["gate_id"])[3:] if str(r["gate_id"]).startswith("GS_") else str(r["gate_id"])
+        _base, _, _op = _tail.rpartition("_")
+        if not _base:
+            _base, _op = _tail, "level"
         entries.append({"gate_id": str(r["gate_id"]), "level": "sector",
-                        "base": str(r["gate_id"]).split("_")[1]
-                        if str(r["gate_id"]).startswith("GS_") else "",
-                        "op": "level",
+                        "base": _base, "op": _op,
                         "s": _sign(dm), "s_source": "sector delta_median sign",
                         "delta_median": dm, "same_frac": float(r.get("same_frac", 0) or 0),
                         "score": None,
