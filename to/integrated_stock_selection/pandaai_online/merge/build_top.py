@@ -130,6 +130,25 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
                         stats['miss'] = stats.get('miss', 0) + 1
                 elif stats is not None:
                     stats['hit'] = stats.get('hit', 0) + 1
+            elif r['lib'] == 'custom':
+                try:
+                    from custom_registry import evaluate_custom_factor as _ecf
+                    from custom_registry import load_all_custom_specs as _lcs
+                    _spec = _lcs().get(str(r['factor_id']))
+                    if _spec is None:
+                        continue
+                    key = 'custom_' + _spec.spec_hash
+                    v = _cache_load(cache_dir, key, len(pos_me))
+                    if v is None:
+                        v = np.asarray(_ecf(_spec, frame, ev), dtype=float)[pos_me] \
+                            .astype(np.float32)
+                        _cache_save(cache_dir, key, v)
+                        if stats is not None:
+                            stats['miss'] = stats.get('miss', 0) + 1
+                    elif stats is not None:
+                        stats['hit'] = stats.get('hit', 0) + 1
+                except Exception:
+                    continue
             else:
                 spec = specs_by_id.get(str(r['factor_id']))
                 if spec is None:
@@ -227,6 +246,80 @@ def mined_prefilter(top: int) -> list[dict]:
         r['bucket'] = rows[r['hash']]
     print(f'mined pick union={len(out)}', flush=True)
     return out
+
+
+def eval_custom(frame: pd.DataFrame | None = None,
+                ev: Evaluator | None = None) -> pd.DataFrame:
+    """V4.1三源合一之custom源：评估`custom_registry`全部已注册自定义因子。
+
+    与`eval_mined`同口径（双标签DataContext全窗重估，LGB按`refs.lgb_score T_ref=0.3`），
+    结果记台账`local`事件`source='custom'`，供正交中枢统一去重。失败/覆盖不足记valid=False。
+    """
+    from custom_registry import evaluate_custom_factor, load_all_custom_specs
+    ledger = Ledger()
+    if frame is None:
+        frame = load_panel()
+    if ev is None:
+        ev = Evaluator(frame)
+    specs = load_all_custom_specs()
+    print(f'custom specs={len(specs)}', flush=True)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+            for lab in ('c2c', 'vwap')}
+    rows = []
+    for fid, spec in sorted(specs.items()):
+        try:
+            f_full = np.asarray(evaluate_custom_factor(spec, frame, ev), dtype=float)
+        except Exception:
+            continue
+        rec = {'lib': 'custom', 'factor_id': fid, 'name_cn': spec.description or fid,
+               'base': None, 'transform': None, 'window': None,
+               'formula_cn': spec.formula_str, 'uploaded': '', 'family': spec.family,
+               'labels': {}}
+        ok_any = False
+        for lab, ctx in ctxs.items():
+            v = f_full[ctx._pos]
+            cov = float(np.isfinite(v).mean()) if len(v) else 0.0
+            if cov <= 0.1:
+                rec['labels'][lab] = {'valid': False, 'coverage': cov}
+                continue
+            m = ctx.screen(v, name=fid)
+            t = tier1(m)
+            t['coverage'] = cov
+            a_off = float(sia_of(m))
+            lgb = lgb_score(m)
+            t['direction'] = int(m.get('direction', 1))
+            rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
+                                  'LGB': lgb, **t}
+            try:
+                from parser import parse_formula as _pf
+                node = _pf(spec.formula_str) if spec.kind == 'formula' else None
+            except Exception:
+                node = None
+            if node is not None:
+                ledger.log('local', node, int(m.get('direction', 1)), family=spec.family,
+                           label=lab, data={'metrics': m, 'tier1': t, 'source': 'custom',
+                                            'custom_id': fid, 'spec_hash': spec.spec_hash})
+            ok_any = True
+        if ok_any:
+            rows.append(rec)
+    flat = []
+    for rec in rows:
+        for lab in ('c2c', 'vwap'):
+            r = rec['labels'].get(lab) or {}
+            if not r.get('valid'):
+                continue
+            flat.append({'lib': rec['lib'], 'factor_id': rec['factor_id'],
+                         'name_cn': rec['name_cn'], 'base': rec['base'],
+                         'transform': rec['transform'], 'window': rec['window'],
+                         'formula_cn': rec['formula_cn'], 'uploaded': rec['uploaded'],
+                         'family': rec.get('family', ''),
+                         'label': lab, **{k: r.get(k) for k in
+                                          ('coverage', 'A_official', 'LGB', 'direction')},
+                         **{k: r.get(k) for k in
+                            ('sia', 'rank_ic', 'ic', 'ic_ir', 'win', 'rank_ic_ir',
+                             'rank_ic_win', 'turnover', 'turnover_month', 'net', 'long',
+                             'sharpe', 'mdd', 'mono', 'n_valid_periods')}})
+    return pd.DataFrame(flat)
 
 
 def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
@@ -505,6 +598,14 @@ def main() -> int:
                     help='跳过重估，从已有 ALIGNED_TOP2_*_flat.csv 重建 MD')
     ap.add_argument('--scan', type=int, default=150,
                     help='榜1/榜2 正交扫描深度（按指标降序扫描前 N 个候选）')
+    ap.add_argument('--keep-pool', type=int, default=20,
+                    help='V4.1榜2正交通道保留数（默认20保持历史行为；SOP示例80）')
+    ap.add_argument('--keep-base', type=int, default=20,
+                    help='V4.1门控靶标面板机制均衡抽取数（默认20；每family最多4个）')
+    ap.add_argument('--include-custom', action='store_true', default=False,
+                    help='纳入custom_registry自定义因子与正交去重（默认关闭以保持历史可比）')
+    ap.add_argument('--export-panel', action='store_true', default=False,
+                    help='导出vwap_top20.json与因子值面板（默认关闭；只需JSON时可只看榜单）')
     args = ap.parse_args()
 
     t0 = time.time()
@@ -537,23 +638,25 @@ def main() -> int:
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
     mined_df = eval_mined(mined_prefilter(args.top), frame=frame, ev=ev, builder=builder)
+    custom_df = eval_custom(frame=frame, ev=ev) if args.include_custom else pd.DataFrame()
     cols = ['lib', 'factor_id', 'name_cn', 'base', 'transform', 'window', 'formula_cn',
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
             'ic_ir', 'win', 'rank_ic_ir', 'rank_ic_win', 'turnover', 'turnover_month',
             'net', 'long', 'sharpe', 'mdd', 'mono', 'direction', 'n_valid_periods', 'family',
             'mi', 'mi_std', 'nmi', 'jsd']
     # 非线性诊断列（2026-09-26）：正交扫描后回填 vwap 行，其余 NaN
-    for _f in (refs_df, mined_df):
+    for _f in (refs_df, mined_df, custom_df):
         for _k in ('mi', 'mi_std', 'nmi', 'jsd'):
             _f[_k] = np.nan
     cols_present = [c for c in cols if c in refs_df.columns]
     refs_df = refs_df.reindex(columns=cols_present)
     _mined = mined_df.reindex(columns=cols_present)
+    _custom = custom_df.reindex(columns=cols_present) if len(custom_df) else custom_df
     # FutureWarning 抑制（pandas concat dtype 变更提示，不影响结果）
     import warnings
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=FutureWarning)
-        df = pd.concat([refs_df, _mined],
+        df = pd.concat([refs_df, _mined] + ([_custom] if len(_custom) else []),
                        ignore_index=True)
     for c in ('A_official', 'LGB', 'rank_ic', 'rank_ic_ir', 'ic_ir', 'win',
               'rank_ic_win', 'turnover', 'net', 'sharpe', 'mdd', 'mono', 'coverage',
@@ -561,9 +664,11 @@ def main() -> int:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
     n_mined = int(df.loc[df['lib'] == 'mined', 'factor_id'].nunique()) if len(df) else 0
-    n_refs = int(df.loc[df['lib'] != 'mined', 'factor_id'].nunique()) if len(df) else 0
+    n_refs = int(df.loc[df['lib'] == 'refs', 'factor_id'].nunique()) if len(df) else 0
+    n_custom = int(df.loc[df['lib'] == 'custom', 'factor_id'].nunique()) if len(df) else 0
     payload = {'generated_at': datetime.now().isoformat(timespec='seconds'),
                'top': args.top, 'n_mined_eval': n_mined, 'n_refs': n_refs,
+               'n_custom': n_custom, 'keep_pool': args.keep_pool, 'keep_base': args.keep_base,
                'n_total': len(df), 'vwap_orthogonal': False}
 
     # 榜1/榜2 排序层正交（2026-09-24/25）：共用逐日截面基础设施
@@ -594,7 +699,8 @@ def main() -> int:
     if len(vwap_df) > 20:
         vwap_order, vwap_rho, vwap_nl = vwap_orthogonal_indices(
             vwap_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
-            max_scan=args.scan, cache_dir=cache_dir, val_store=val_store,
+            max_scan=args.scan, keep=max(args.keep_pool, args.keep_base),
+            cache_dir=cache_dir, val_store=val_store,
             stats=cache_stats, label='vwap', y_me=y_vwap_me)
         payload['vwap_orthogonal'] = bool(vwap_order)
         payload['vwap_orth_scan'] = int(min(args.scan, len(vwap_df)))
@@ -692,6 +798,63 @@ def main() -> int:
     md_path = OUT_DIR / f'ALIGNED_TOP2_{ts}.md'
     md_path.write_text(md, encoding='utf-8')
     df.to_csv(OUT_DIR / f'ALIGNED_TOP2_{ts}_flat.csv', index=False, encoding='utf-8-sig')
+    # V4.1动态靶标面板：vwap正交顺序按LGB降序、每family最多4个均衡抽取keep_base个
+    try:
+        _vsel = vwap_df.iloc[vwap_order] if vwap_order else vwap_df.head(args.keep_base)
+        _picked, _fam_cnt = [], {}
+        for _, _r in _vsel.iterrows():
+            _f = str(_r.get('family', 'x'))
+            if _fam_cnt.get(_f, 0) >= 4:
+                continue
+            _picked.append(_r)
+            _fam_cnt[_f] = _fam_cnt.get(_f, 0) + 1
+            if len(_picked) >= args.keep_base:
+                break
+        _top20 = []
+        for _r in _picked:
+            _d = _r.get('direction')
+            try:
+                _d = int(_d)
+            except Exception:
+                _d = 1
+            _top20.append({'factor': str(_r.get('factor_id')),
+                           'direction': 1 if _d == 1 else -1,
+                           'family': str(_r.get('family', '')),
+                           'formula': str(_r.get('formula_cn', '')),
+                           'lib': str(_r.get('lib', ''))})
+        _base_dir = HERE.parent.parent / 'results' / 'merge_v2'
+        _base_dir.mkdir(parents=True, exist_ok=True)
+        (_base_dir / 'vwap_top20.json').write_text(
+            json.dumps({'generated_at': payload.get('generated_at'), 'n': len(_top20),
+                        'base20': _top20}, ensure_ascii=False, indent=1), encoding='utf-8')
+        print(f'vwap_top20.json: {len(_top20)} factors', flush=True)
+        if args.export_panel and _top20:
+            _panel_cols = {'stock_code': frame['stock_code'].to_numpy(),
+                           'date': pd.to_datetime(frame['date']).to_numpy()}
+            for _r in _picked:
+                _fid = str(_r.get('factor_id'))
+                try:
+                    if _r.get('lib') == 'mined':
+                        _vals = np.asarray(ev.values(parse_formula(str(_r['formula_cn']))),
+                                           dtype=float)
+                    elif _r.get('lib') == 'custom':
+                        from custom_registry import evaluate_custom_factor as _ecf
+                        from custom_registry import load_all_custom_specs as _lcs
+                        _spec = _lcs().get(_fid)
+                        _vals = np.asarray(_ecf(_spec, frame, ev), dtype=float) \
+                            if _spec is not None else np.full(len(frame), np.nan)
+                    else:
+                        _spec = _specs.get(_fid)
+                        _vals = builder.get_factor(_spec).to_numpy(dtype=float) \
+                            if _spec is not None else np.full(len(frame), np.nan)
+                except Exception:
+                    _vals = np.full(len(frame), np.nan)
+                _panel_cols[_fid] = np.asarray(_vals, dtype=float)
+            _pdf = pd.DataFrame(_panel_cols)
+            _pdf.to_parquet(_base_dir / 'vwap_top20_factors.parquet', index=False)
+            print(f'vwap_top20_factors.parquet: {_pdf.shape}', flush=True)
+    except Exception as _e:
+        print(f'warning: vwap_top20 export failed {str(_e)[:200]}', flush=True)
     (OUT_DIR / f'ALIGNED_TOP2_{ts}.json').write_text(
         json.dumps(payload, ensure_ascii=False) + '\n' + df.to_json(orient='records', force_ascii=False),
         encoding='utf-8')

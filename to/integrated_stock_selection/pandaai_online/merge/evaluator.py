@@ -48,13 +48,27 @@ def value_fingerprint(values, n_q: int = 9) -> str:
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
 
-def load_panel() -> pd.DataFrame:
+def load_panel(data_cut: str | None = None) -> pd.DataFrame:
     """读取缓存并映射为平台字段名；含原始交易状态列供宇宙过滤。
 
     AMOUNT 保持原始元（不做隐藏缩放）：本地公式=平台公式逐字一致。
     AMOUNT 做分母时必须显式 ×1000000000（平台对 ~1e-11 数值处理异常，2026-09-16 探针实证）。
+
+    V4.1：`data_cut=None`保持历史行为（全量读取，不破坏现有调用方）；
+    显式传入时用PyArrow filters在I/O层裁剪`date <= data_cut`，并做内存二次裁剪保底。
     """
-    raw = pd.read_parquet(find_stock_features(), columns=list(_RAW_COLUMNS))
+    fp = str(find_stock_features())
+    if data_cut is None:
+        raw = pd.read_parquet(fp, columns=list(_RAW_COLUMNS))
+    else:
+        bound = pd.Timestamp(data_cut)
+        try:
+            raw = pd.read_parquet(fp, columns=list(_RAW_COLUMNS),
+                                  filters=[("date", "<=", bound)])
+        except Exception:
+            raw = pd.read_parquet(fp, columns=list(_RAW_COLUMNS))
+        raw["date"] = pd.to_datetime(raw["date"])
+        raw = raw[raw["date"] <= bound].copy()
     raw['date'] = pd.to_datetime(raw['date'])
     raw['stock_code'] = raw['stock_code'].astype(str)
     for name, col in LOCAL_COLUMN.items():
@@ -150,6 +164,54 @@ def ensure_local_fields(frame: pd.DataFrame) -> pd.DataFrame:
     cov = erm - er * em
     var = em2 - em * em
     frame['BETA60'] = cov / var.where(var > 0)
+    return frame
+
+
+def ensure_extended_fields(frame: pd.DataFrame) -> pd.DataFrame:
+    """V4.1可选扩展列（不碰`ensure_local_fields`原4字段，避免历史指纹变动）。
+
+    新增（全部缺失才补，逐列幂等；滚动一律`groupby(stock_code).rolling`前向窗口，
+    禁`shift(-n)`/`center=True`，满足`audit_cut_paths A2`）：
+    - VWAP: (O+H+L+C)/4 日内均价代理
+    - IND_EXCESS: RET1 - IND_RET（个股相对行业残量）
+    - BETA20: 20日 Cov(RET1,MKT_RET)/Var(MKT_RET)，min_periods=20
+    - IVOL20: 20日特质波动 sqrt(max(Var_r - beta^2*Var_m, 0))
+    - AMIHUD20: log1p(20日 mean(|RET1|/AMOUNT*1e9))，min_periods=15
+    """
+    ensure_local_fields(frame)
+    codes = frame['stock_code']
+    if 'VWAP' not in frame.columns:
+        frame['VWAP'] = (frame['OPEN'] + frame['HIGH'] + frame['LOW'] + frame['CLOSE']) / 4.0
+    ret = frame.groupby(codes, sort=False)['CLOSE'].pct_change(fill_method=None)
+    if 'IND_EXCESS' not in frame.columns:
+        if 'IND_RET' not in frame.columns:
+            ensure_local_fields(frame)
+        frame['IND_EXCESS'] = ret - frame['IND_RET']
+
+    def _rmean_w(s: pd.Series, win: int) -> pd.Series:
+        return s.groupby(codes, sort=False).rolling(win, min_periods=win) \
+            .mean().reset_index(level=0, drop=True)
+
+    if 'BETA20' not in frame.columns:
+        m = frame['MKT_RET']
+        er, em = _rmean_w(ret, 20), _rmean_w(m, 20)
+        cov = _rmean_w(ret * m, 20) - er * em
+        var_m = _rmean_w(m * m, 20) - em * em
+        frame['BETA20'] = cov / var_m.where(var_m > 1e-12)
+    if 'IVOL20' not in frame.columns:
+        m = frame['MKT_RET']
+        beta = frame['BETA20']
+        er = _rmean_w(ret, 20)
+        em = _rmean_w(m, 20)
+        var_r = _rmean_w(ret * ret, 20) - er * er
+        var_m = _rmean_w(m * m, 20) - em * em
+        resid_var = (var_r - beta * beta * var_m).clip(lower=0.0)
+        frame['IVOL20'] = np.sqrt(resid_var)
+    if 'AMIHUD20' not in frame.columns:
+        ill = (ret.abs() / frame['AMOUNT'].where(frame['AMOUNT'] > 0)) * 1e9
+        ill_mean20 = ill.groupby(codes, sort=False).rolling(20, min_periods=15) \
+            .mean().reset_index(level=0, drop=True)
+        frame['AMIHUD20'] = np.log1p(ill_mean20.clip(lower=0.0))
     return frame
 
 

@@ -2680,6 +2680,22 @@ python run_search.py search --retest-before <变化日> ...
 
 - **`selftest_gate_direction.py`**：方向语义合成验收（POS/NEG/NULL × pos/neg，**8/8**）；
 - **`gate_g4_clusters.py`**：G4 聚类诊断（相关矩阵 / 高相关对 / 单链聚类 / 代表门控 / 阈值敏感性 0.70~0.95），市场与行业两个层级各自跑。
+## 21. Merge V4.1 重构总方案（以 `pandaai_online/merge/docs/refactor_doc.md` 为准，2026-10-15）
+
+> 本节为增量新增，不修改§0-§20任何冻结条款、停止点与签字清单。`FACTOR_SEARCH_ARCHITECTURE_V3_PROPOSAL.md`与`pandaai_online/merge/docs/TECHNICAL.md`自本节起废弃（保留备查，不再更新）。merge skill总体实施以`refactor_doc.md V4.1`为准。
+
+- **Owner拍板**：零文件删除；VWAP维持`vwap_formula_only`，搜索期`rank_sia`、重排期`lgb_score T_ref=0.3`；门控保持54规格，纯广播禁直入（D7/D8）；F1保留`g/t`，中心化增益另建`F1v3_gain`新族；先做merge重构，Stage15衔接后续再定。
+- **执行顺序**：Phase0只读核验（factors schema/M17消耗/F1数学诊断三表）→Phase1物理隔离+`custom_registry`→Phase2 `vwap_top20`桥→Phase3 `F1v3_gain`+Stage15桥（桥接本期暂缓，疑问记入`refactor_doc.md §六`）。
+- **冻结保护**：`h3_eval.build_f1`、`F1v2族720`、`base20.json`、`Gate Grid V1 54`、`15,329条(公式,cut_date)`指纹语义一律不动；`load_panel`默认`None`兼容；`ensure_local_fields`4字段不动，扩展走`ensure_extended_fields`。
+
+### 21.1 V4.2增量（Owner四项裁决，2026-10-15晚）
+
+- **门控bank版本化**：`build_gate_bank.py`（离线，低频）产`gates_search/certified_gate_bank.json`（`bank-v1`：data_cut/面板sha/G2符号锁定s/来源路径/G4簇复用记录）；日常F1与`run_gate_pipeline`经`--gate-bank`只读消费（过滤+s覆盖），不传保持历史行为。bank随data_cut更新重建，旧版本保留备查，禁止静默覆盖。
+- **D8澄清与豁免记录**：D7（禁纯市场`1xT`入模）严格维持；D8本意为行业轮动策略独立研究，不禁选股模型拥有少量行业背景特征（`roles.csv`本有19个`SECTOR_STATE`）。Owner显式豁免：G4贪心`|rho|<0.7`选出的**至多3个（默认2个）**正交纯行业状态（`direct_sector_states.parquet`）可入模；2→3需二次确认并记录。`export_lgb_dataset.py --max-sector`默认0，显式>0即视为调用豁免。
+- **偏科靶标**：`select_specialists.py`（vwap rank#21~150 × bank市场门控，`slope_test`精确`|t_slope|>=2.5`且无条件`<0.05`），输出`specialist_pool.json`+值面板+分form cands；top20直入Class1。sector精确t_slope待立项，sector线维持既有路径。
+- **三算子**：`gain/flip/switch`同属F1v3新族（`f1_family --from-cands`建清单，`judge_f1`不动），分开跑FDR严禁合并；`flip`救符号翻转，`switch`需`base_off/base_def`对（V1启发式配对，上限12对）。
+- **V4.2收敛冻结**：F1v3参数（`gain 0.5/clip(0.2,1.8)`、倾斜`0.25`、BOOT/placebo）为预注册默认，禁同样本调优；`flip`中性死区`|g|<0.10`（NaN弃权，落盘填0）；switch主判定统一为单因子静态共识（tilt仅辅助）；bank随`data_cut`刷新归档；快评禁通道C豁免；direct按`|rho|<0.7`实选（不凑数）；`audit_pit` warn-only已闭环；Stage15走零拷贝`--extra_factors_path`方向（未实施）。
+
 ## 附录 A：执行者工作要求
 
 - 按 §12.1 顺序推进。每个停止点在签字前不得跨越。

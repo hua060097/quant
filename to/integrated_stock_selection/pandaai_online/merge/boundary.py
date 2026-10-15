@@ -51,6 +51,32 @@ def _log(event: dict) -> None:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+def _read_parquet_bounded(fp: str, cols: list[str], max_date: str) -> tuple[pd.DataFrame, object]:
+    """PyArrow row-group物理截断读取：`date <= max_date`在I/O层过滤（V4.1 Stage1）。
+
+    先用`read_schema`确认含`date`列，再用`pd.read_parquet(filters=...)`下推；
+    若引擎不支持filters则回退内存过滤（行为与旧路径逐行一致）。
+    返回 (df, file_max_date_or_None)。
+    """
+    import pyarrow.parquet as _pq
+    bound = pd.Timestamp(max_date)
+    schema_names = set(map(str, _pq.read_schema(fp).names))
+    use_cols = [c for c in cols if c in schema_names or c in ("stock_code", "date")]
+    # date列必须读回以便统一后处理
+    if "date" not in use_cols:
+        use_cols = ["date"] + use_cols
+    df = None
+    try:
+        df = pd.read_parquet(fp, columns=use_cols, filters=[("date", "<=", bound)])
+    except Exception:
+        df = pd.read_parquet(fp, columns=use_cols)
+    df["date"] = pd.to_datetime(df["date"])
+    # filters在部分引擎/类型下可能未生效，统一再做一次内存裁剪保证语义
+    file_mx = df["date"].max() if len(df) else None
+    df = df[df["date"] <= bound].copy()
+    return df, file_mx
+
+
 def read_factors(columns, data_max: str, label: str = "") -> pd.DataFrame:
     """读取 factors.parquet 指定列，只返回信号日 ≤ data_max 的行。
 
@@ -80,10 +106,7 @@ def read_factors(columns, data_max: str, label: str = "") -> pd.DataFrame:
             f"② 若换代成立，先跑 data_version.py --refresh 并换登记窗口，"
             f"**再**重跑本批；不得静默换用其他列。")
     cols = ["stock_code", "date"] + want
-    df = pd.read_parquet(fp, columns=cols)
-    df["date"] = pd.to_datetime(df["date"])
-    file_mx = df["date"].max()
-    df = df[df["date"] <= pd.Timestamp(data_max)].copy()
+    df, file_mx = _read_parquet_bounded(fp, cols, data_max)
     assert len(df), f"factors 在 DATA_MAX={data_max} 之前无数据"
     mx = df["date"].max()
     _log({"op": "read_factors", "label": label, "cols": len(cols),
@@ -103,10 +126,7 @@ def read_labels(columns, label_max: str, label: str = "") -> pd.DataFrame:
     """读取 labels_prod.parquet 指定列，只返回信号日 ≤ label_max 的行。语义同 read_factors。"""
     fp = os.path.join(ROOT, "results", "merge_v2", "labels_prod.parquet")
     cols = ["stock_code", "date"] + [c for c in columns if c not in ("stock_code", "date")]
-    df = pd.read_parquet(fp, columns=cols)
-    df["date"] = pd.to_datetime(df["date"])
-    file_mx = df["date"].max()
-    df = df[df["date"] <= pd.Timestamp(label_max)].copy()
+    df, file_mx = _read_parquet_bounded(fp, cols, label_max)
     assert len(df), f"labels 在 LABEL_MAX={label_max} 之前无数据"
     mx = df["date"].max()
     _log({"op": "read_labels", "label": label, "cols": len(cols),
@@ -125,13 +145,31 @@ def read_cache(columns, data_max: str, label: str = "") -> pd.DataFrame:
     """
     fp = find_stock_features()
     cols = ["stock_code", "date"] + [c for c in columns if c not in ("stock_code", "date")]
-    df = pd.read_parquet(fp, columns=cols)
-    df["date"] = pd.to_datetime(df["date"])
-    file_mx = df["date"].max()
-    df = df[df["date"] <= pd.Timestamp(data_max)].copy()
+    df, file_mx = _read_parquet_bounded(str(fp), cols, data_max)
     assert len(df), f"cache 在 DATA_MAX={data_max} 之前无数据"
     mx = df["date"].max()
     _log({"op": "read_cache", "label": label, "cols": len(cols),
+          "rows": len(df), "signal_max_date": str(mx.date()), "data_max": data_max,
+          "file_max_date": str(pd.Timestamp(file_mx).date())})
+    return df
+
+
+def read_base_panel(data_max: str, label: str = "") -> pd.DataFrame:
+    """读取动态正交面板（可选，V4.1 Stage4桥接，不替代factors/base20）。
+
+    优先 `results/merge_v2/vwap_top20_factors.parquet`；文件不存在时抛FileNotFoundError
+    由调用方回退到`read_factors`+`base20.json`历史链路。
+    """
+    fp = os.path.join(ROOT, "results", "merge_v2", "vwap_top20_factors.parquet")
+    if not os.path.exists(fp):
+        raise FileNotFoundError(f"动态面板不存在: {fp}（请先跑 build_top.py，或改用 --base-panel base20）")
+    import pyarrow.parquet as _pqp
+    have = set(map(str, _pqp.read_schema(fp).names))
+    cols = sorted(c for c in have if c not in ("stock_code", "date"))
+    df, file_mx = _read_parquet_bounded(fp, ["stock_code", "date"] + cols, data_max)
+    assert len(df), f"vwap_top20 在 DATA_MAX={data_max} 之前无数据"
+    mx = df["date"].max()
+    _log({"op": "read_base_panel", "label": label, "cols": len(cols),
           "rows": len(df), "signal_max_date": str(mx.date()), "data_max": data_max,
           "file_max_date": str(pd.Timestamp(file_mx).date())})
     return df

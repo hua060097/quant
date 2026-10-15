@@ -208,6 +208,12 @@ def main() -> int:
                     help="S7 短名单只保留 S4 排名的前 N（0=全部 G2∧中性存活者；"
                          "**注意**：topn 只影响短名单，逐个检验全族 720 仍按 F1v2 清单整体运行，"
                          "族逐一对应校验不受 topn 影响）")
+    ap.add_argument("--base-panel", choices=("base20", "vwap_top20"), default="base20",
+                    help="F1下一步候选的因子面板（默认base20保证历史可复现；"
+                         "vwap_top20读build_top导出的动态正交面板，不改变G2/G3组级统计）")
+    ap.add_argument("--gate-bank", default=None,
+                    help="已认证门控字典certified_gate_bank.json：cands的门控与s改从bank读取"
+                         "（离线G2符号锁定）；不传则用本轮短名单×s=+1历史行为")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -550,14 +556,29 @@ def main() -> int:
 
     if not (a.quiet_next or a.no_f1) and len(short):
         cp = os.path.join(a.space_dir, "cands_pipeline_shortlist.json")
-        b20 = json.loads(open(os.path.join(RESULTS, "base20.json"),
-                              encoding="utf-8").read())["base20"]
+        if a.base_panel == "vwap_top20":
+            _vt = json.loads(open(os.path.join(RESULTS, "vwap_top20.json"),
+                                  encoding="utf-8").read())
+            b20 = [{"factor": x["factor"], "direction": int(x["direction"])}
+                   for x in _vt.get("base20", [])]
+            print(f"  F1候选面板=vwap_top20（{len(b20)}因子；G2/G3组级统计仍用ic缓存，不受影响）",
+                  flush=True)
+        else:
+            b20 = json.loads(open(os.path.join(RESULTS, "base20.json"),
+                                  encoding="utf-8").read())["base20"]
+        if a.gate_bank:
+            bank = json.loads(open(a.gate_bank, encoding="utf-8").read())
+            blist = [e for e in bank.get("entries", []) if e.get("level") == "market"]
+            print(f"  cands门控来源=bank {a.gate_bank}（{len(blist)}市场门控，s按G2锁定）",
+                  flush=True)
+        else:
+            blist = [{"gate_id": r["gate_id"], "s": 1} for _, r in short.iterrows()]
         cands = []
-        for _, r in short.iterrows():
+        for b in blist:
             for x in b20:
-                cands.append({"name": f"{x['factor']}__{r['gate_id']}__pos",
-                              "base": x["factor"], "gate": r["gate_id"],
-                              "gate_type": "market", "s": 1,
+                cands.append({"name": f"{x['factor']}__{b['gate_id']}__pos",
+                              "base": x["factor"], "gate": b["gate_id"],
+                              "gate_type": "market", "s": int(b["s"]),
                               "d": int(x["direction"])})
         with open(cp, "w", encoding="utf-8") as f:
             json.dump(cands, f, ensure_ascii=False)
@@ -566,7 +587,7 @@ def main() -> int:
               f"§16.30 裁决，form t 已降为诊断）：")
         print(f"  python f1_batch.py --cands {cp} "
               f"--out {os.path.join(a.space_dir, 'f1_pipeline.csv')} "
-              f"--tag pipe --form g --gates-parquet {gp}")
+              f"--tag pipe --form g --base-panel {a.base_panel} --gates-parquet {gp}")
         print(f"  python judge_f1.py --family "
               f"{os.path.join(a.space_dir, 'family_manifest_F1.json')} "
               f"{os.path.join(a.space_dir, 'f1_pipeline.csv')}")

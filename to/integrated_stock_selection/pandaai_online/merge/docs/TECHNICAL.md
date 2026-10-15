@@ -1,4 +1,6 @@
-# Merge 引擎技术总文档
+# Merge 引擎技术总文档（已废弃，仅保留备查）
+
+> **废弃声明（2026-10-15 Owner裁决）**：本文件不再更新，仅保留备查。后续实现以`pandaai_online/merge/docs/refactor_doc.md V4.1`为准，冻结红线仍以`docs/MERGE_V2_PLAN.md`为准。
 
 > 本文档是 `pandaai_online/merge/` 的唯一总技术文档。
 > 维护规则：**按流水线阶段 + 模块**组织，不按版本流水。每处功能点标注引入版本（如 `[v2.8]`）。

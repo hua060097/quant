@@ -30,6 +30,39 @@ N_PERM = 200
 SEED = 0
 
 
+def build_gain_weight(g: np.ndarray, s: int) -> np.ndarray:
+    """F1v3_gain 权重 w = clip(1+0.5*s*g, 0.2, 1.8)；g 非有限 → NaN。"""
+    g = np.asarray(g, dtype=float)
+    w = np.clip(1.0 + 0.5 * float(s) * g, 0.2, 1.8)
+    w[~np.isfinite(g)] = np.nan
+    return w
+
+
+def build_flip_weight(g: np.ndarray, s: int, deadzone: float = 0.10) -> np.ndarray:
+    """F1v3_flip 权重 w = s*g；g 非有限 → NaN（允许负权重实现方向翻转）。
+
+    中性死区（V4.2冻结默认0.10）：|g|<deadzone 置NaN（中性日不强行押注方向，
+    单因子评估时弃权；特征落盘时填0.0）。placebo置换必须对含死区的权重函数
+    整体重算（f1两侧已如此实现）。
+    """
+    g = np.asarray(g, dtype=float)
+    w = float(s) * g
+    dead = np.isfinite(g) & (np.abs(g) < float(deadzone))
+    w[dead] = np.nan
+    w[~np.isfinite(g)] = np.nan
+    return w
+
+
+def build_switch_blend(p: np.ndarray, u_off: np.ndarray, u_def: np.ndarray) -> np.ndarray:
+    """F1v3_switch 混合 F = p*u_off + (1-p)*u_def；任一输入非有限 → NaN。"""
+    p = np.asarray(p, dtype=float)
+    u_off = np.asarray(u_off, dtype=float)
+    u_def = np.asarray(u_def, dtype=float)
+    out = p * u_off + (1.0 - p) * u_def
+    out[~(np.isfinite(p) & np.isfinite(u_off) & np.isfinite(u_def))] = np.nan
+    return out
+
+
 def build_f1(x: np.ndarray, g: np.ndarray, d: int, s: int) -> np.ndarray:
     """F1 = d·x·max(s·g,0)。非有限输入 → NaN。"""
     x = np.asarray(x, dtype=float)

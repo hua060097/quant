@@ -116,6 +116,43 @@ def build_from_registry(registry: str, family: str = "F1", gen: int = 2,
     }
 
 
+def build_from_cands(cands_path: str, family: str = "F1v3",
+                     form: str = "gain") -> dict:
+    """从cands JSON直接构建新族清单（F1v3_gain/flip/switch，不碰登记册与旧族）。
+
+    成员键仍为 (gate, base, s)（switch的base取"off__def"复合键），故
+    `validate`/`judge_f1`逐一对应逻辑零改动；form记入manifest元信息，
+    不同form不得合并FDR（由调用方分开跑judge）。
+    """
+    cands = json.load(open(cands_path, encoding="utf-8"))
+    members = []
+    for c in cands:
+        base = c.get("base") or (
+            f"{c.get('base_off')}__{c.get('base_def')}" if c.get("base_off") else None)
+        if not c.get("gate") or not base:
+            raise SystemExit(f"cands条目缺gate/base: {c.get('name')}")
+        members.append((str(c["gate"]), str(base), int(c.get("s", 1))))
+    dup = len(members) - len(set(members))
+    mh = members_hash(members)
+    return {
+        "family_id": f"{family}_{form}",
+        "family_version": MANIFEST_VERSION,
+        "spec_ref": ("PLAN §21（F1v3新族：bank门控 × 偏科/机制代表因子；"
+                      "form=%s，与F1v2平行对照，不得合并FDR）" % form),
+        "registry": os.path.basename(cands_path),
+        "n_expected": len(members),
+        "n_duplicates": dup,
+        "gates": sorted({m[0] for m in members}),
+        "n_bases": len({m[1] for m in members}),
+        "s_values": sorted({m[2] for m in members}),
+        "spec_cap": len(members),
+        "form": form,
+        "members_hash": mh,
+        "members": [{"gate": g, "base": b, "s": int(s)} for g, b, s in members],
+        "note": "成员来自cands JSON原文；switch复合base键保持逐一对应可校验。",
+    }
+
+
 def load_input_members(path: str) -> list[tuple]:
     """读 F1 结果/候选 CSV，抽出成员 `(gate, base, s)`。"""
     import pandas as pd
@@ -166,6 +203,10 @@ def main() -> int:
     ap.add_argument("--spec-cap", type=int, default=None,
                     help="族上限覆盖（默认 v1=100 / v2=720）")
     ap.add_argument("--out", default=DEFAULT_MANIFEST)
+    ap.add_argument("--from-cands", default=None,
+                    help="从cands JSON构建F1v3新族清单（配合--family/--form）")
+    ap.add_argument("--form", default="gain",
+                    help="新族组合形式注记（gain/flip/switch，不改变成员键）")
     ap.add_argument("--validate", nargs=2, metavar=("MANIFEST", "INPUT_CSV"))
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
@@ -186,6 +227,18 @@ def main() -> int:
         if m["n_expected"] > m["spec_cap"]:
             print("  ⚠ 超出该世代规格上限 %d（须换新世代/新清单，不得沿用旧哈希）"
                   % m["spec_cap"])
+        return 0
+
+    if a.from_cands:
+        m = build_from_cands(a.from_cands, family=a.family, form=a.form)
+        os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+        with open(a.out, "w", encoding="utf-8") as f:
+            json.dump(m, f, ensure_ascii=False, indent=1)
+        print("新族清单 → %s" % a.out)
+        print("  family_id=%s  n_expected=%d  hash=%s form=%s"
+              % (m["family_id"], m["n_expected"], m["members_hash"], m["form"]))
+        if m["n_duplicates"]:
+            print("  ⚠ cands内有 %d 条重复成员" % m["n_duplicates"])
         return 0
 
     if a.validate:

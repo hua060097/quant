@@ -710,6 +710,53 @@ class SearchRun:
                 'resid': rm, 'fast_score': rec.get('fast_score'),
                 'explain': explain(node, direction)}
 
+    def evaluate_full_custom(self, rec: dict) -> dict | None:
+        """Python型自定义因子全量评估（无AST，不进grammar指纹；用log_raw留痕）。
+
+        rec含custom_values（与frame对齐）。按各label DataContext.screen求值，
+        主label记search_value/score（turnover惩罚按profile），计入FDR分母
+        （tested_pairs经log_raw的local事件进入）。
+        """
+        args = self.args
+        values = np.asarray(rec.get('custom_values'), dtype=float)
+        if len(values) != len(self.evaluator.frame):
+            return None
+        name = rec.get('name', 'custom:unnamed')
+        tiers = {}
+        screens = {}
+        for lab in self.labels:
+            ctx = self.ctxs[lab]
+            m = ctx.screen(values, name=name)
+            screens[lab] = m
+            tiers[lab] = tier1(m)
+        primary = tiers[self.primary]
+        if not primary.get('valid'):
+            return None
+        primary_search_value = label_search_value(primary, self.primary)
+        score = rank_score({'sia': primary_search_value,
+                            'turnover_month': primary.get('turnover_month'),
+                            'turnover': primary.get('turnover')},
+                           __import__('grammar').field('CLOSE'),
+                           turnover_ref=self.turnover_ref)
+        for lab in self.labels:
+            self.ledger.log_raw('local', rec.get('formula', f"py:{rec.get('custom_id', '?')}"),
+                                direction=int(screens[lab].get('direction', 1)),
+                                family=rec.get('family', 'custom'),
+                                label=lab, data_cut=self.data_cut,
+                                data={'metrics': screens[lab], 'tier1': tiers[lab],
+                                      'search_value': label_search_value(tiers[lab], lab),
+                                      'search_metric': label_search_metric(lab),
+                                      'source': 'custom',
+                                      'custom_id': rec.get('custom_id'),
+                                      'score': score if lab == self.primary else None})
+        self.stats['full'] += 1
+        return {'name': name, 'family': rec.get('family', 'custom'),
+                'formula': rec.get('formula', ''), 'direction': int(screens[self.primary].get('direction', 1)),
+                'node': None, 'source': 'custom', 'valid': True,
+                'sia': primary['sia'], 'labels': tiers,
+                'search_value': primary_search_value, 'score': score,
+                'turnover': primary['turnover'], 'net': primary['net']}
+
     def _leg_library(self, max_legs: int = 40, max_turn: float = 0.20) -> list:
         """腿库：台账中当前 primary label 已评估、单次换手≤20% 的慢腿，按对应 SiA 排序。
 
@@ -887,6 +934,39 @@ class SearchRun:
                     proposal_nodes.append(('proposal', node, str(row.get('hypothesis', ''))))
         if args.from_ledger:
             proposal_nodes += _pending_from_ledger(self.ledger, self.primary)
+        if getattr(args, 'include_custom', False):
+            try:
+                from custom_registry import evaluate_custom_factor as _ecf
+                from custom_registry import load_all_custom_specs as _lcs
+                _specs = _lcs()
+                _tested = self.ledger.hashes_for(self.labels, data_cut=self.data_cut)
+                _n_custom = 0
+                for _fid, _spec in sorted(_specs.items()):
+                    try:
+                        if _spec.kind == 'formula':
+                            from parser import parse_formula as _pf
+                            from grammar import expression_hash as _eh
+                            _node = _pf(_spec.formula_str)
+                            if _eh(_node) in _tested:
+                                continue
+                            proposal_nodes.append((_spec.family, _node,
+                                                   _spec.description or _fid))
+                        else:
+                            _vals = _ecf(_spec, self.evaluator.frame, self.evaluator)
+                            _rec = {'name': f"custom:{_fid}", 'family': _spec.family,
+                                    'formula': _spec.formula_str, 'node': None,
+                                    'source': 'custom', 'custom_id': _fid,
+                                    'custom_values': np.asarray(_vals, dtype=float)}
+                            # Python型无AST，直接走全量评估通道（evaluate_full_custom）
+                            _rec = self.evaluate_full_custom(_rec)
+                            if _rec:
+                                _n_custom += 1
+                    except Exception:
+                        continue
+                self._progress(f'custom: loaded {len(_specs)} specs, '
+                               f'formula-type queued, python-type evaluated {_n_custom}')
+            except Exception as _e:
+                self._progress(f'warning: custom registry failed {str(_e)[:120]}')
         self._progress(f'start seed={args.seed} strategy={args.strategy} '
                        f'labels={self.labels} allow_documented={args.allow_documented} '
                        f'n={args.n} full_cap={args.full_cap} proposals={len(proposal_nodes)} '
@@ -2196,6 +2276,8 @@ def main() -> None:
                     help='提案 JSONL（intake 格式），直接走全量评估，可重复')
     sp.add_argument('--from-ledger', action='store_true',
                     help='把台账中 proposed 但未评估的候选纳入全量评估')
+    sp.add_argument('--include-custom', action='store_true', default=False,
+                    help='纳入custom_registry自定义因子（公式型走全量，Python型走custom通道并计入检验分母）')
     sp.add_argument('--fast', action='store_true', default=True)
     sp.add_argument('--no-fast', dest='fast', action='store_false')
     sp.add_argument('--fast-stocks', type=int, default=2500)

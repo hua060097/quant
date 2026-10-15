@@ -1,4 +1,6 @@
-# 因子搜索总体架构 V3 提案
+# 因子搜索总体架构 V3 提案（已废弃）
+
+> **废弃声明（2026-10-15 Owner裁决）**：本文件不再更新，仅保留备查。merge skill总体方案以`pandaai_online/merge/docs/refactor_doc.md V4.1`为准，规范增量记入`docs/MERGE_V2_PLAN.md §21`。其中VWAP主线/C2C适配器等已落地结论以代码`de99122`与V4.1为准。
 
 > **日期**：2026-10-14<br>
 > **状态**：研究方案提案，尚未授权代码实现；不替代或修改 `TECHNICAL.md`、`MERGE_V2_PLAN.md` 中已冻结的规则。<br>

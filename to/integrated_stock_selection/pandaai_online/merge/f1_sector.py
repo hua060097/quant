@@ -45,13 +45,24 @@ def main():
     ap.add_argument("--label-max", default=LABEL_MAX,
                     help=f"信号日上界（默认选择窗 {W.FACTOR_SCREEN_MAX}；"
                          f"复现 P0/P1 旧结果用 {W.LEGACY_SEARCH_END}）")
-    ap.add_argument("--form", default="g", choices=("g", "t"),
-                    help="门控组合形式：g=连续(2p-1)；t=THRESH(p>=0.7 为 on)。"
-                         "见 PLAN §16.23")
+    ap.add_argument("--form", default="g", choices=("g", "t", "gain", "flip", "switch"),
+                    help="门控组合形式：g=连续(2p-1)；t=THRESH(p>=0.7 为 on)；"
+                         "gain=中心化增益F1v3；flip=方向翻转F1v3；"
+                         "switch=双因子软切换F1v3（需cands带base_off/base_def）。"
+                         "新三式与g/t平行对照，不得合并FDR。见 PLAN §21")
     ap.add_argument("--gates-parquet", default=os.path.join(
         RESULTS, "gates_search", "gate_search_sector.parquet"),
         help="行业门控面板（搜索长表：date/sector/gate_id/raw/p）；"
              "旧手工门控宽表已于 2026-10-12 删除")
+    ap.add_argument("--base-panel", choices=("base20", "vwap_top20", "specialist"),
+                    default="base20",
+                    help="基因子面板（默认base20保证历史可复现；"
+                         "vwap_top20读build_top动态正交面板；"
+                         "specialist读select_specialists偏科池面板）")
+    ap.add_argument("--gate-bank", default=None,
+                    help="已认证门控字典certified_gate_bank.json（只读消费）："
+                         "cands门控过滤到bank清单且s用bank锁定值覆盖；"
+                         "不传则保持历史行为")
     ap.add_argument("--sample-stocks", type=int, default=0,
                     help=">0 时按固定种子抽样 N 只股票（**仅粗筛用**，"
                          "不得用于正式判定；见 gate_search_report §4.1）")
@@ -63,6 +74,19 @@ def main():
     print(f"[{a.tag}] window {win['search_start']}~{win['search_end']} "
           f"(labels≤{win['label_available_max']})", flush=True)
     cands = json.load(open(a.cands, encoding="utf-8"))
+    if a.gate_bank:
+        bank = json.load(open(a.gate_bank, encoding="utf-8"))
+        bmap = {e["gate_id"]: e for e in bank.get("entries", [])
+                if e.get("level") == "sector"}
+        n0 = len(cands)
+        cands = [c for c in cands if c.get("gate") in bmap]
+        n_over = 0
+        for c in cands:
+            if int(c.get("s", 1)) != int(bmap[c["gate"]]["s"]):
+                n_over += 1
+            c["s"] = int(bmap[c["gate"]]["s"])
+        print(f"[{a.tag}] gate-bank {a.gate_bank}: {n0}->{len(cands)} cands, "
+              f"s overridden {n_over} (bank {bank.get('version')})", flush=True)
     print(f"[{a.tag}] candidates={len(cands)}", flush=True)
     # labels
     lab = B.read_labels(["r3", "y_prod", "tradable"], label_max=label_max, label=f"f1s-{a.tag}")
@@ -85,13 +109,30 @@ def main():
     # sector map
     import ix_build as IX
     secmap = IX.load_sector_map()
-    # base 面板
-    base_cols = sorted({c["base"] for c in cands})
-    fac = B.read_factors(base_cols, data_max=W.LABEL_MAX_DATE, label=f"f1s-{a.tag}")
-    fac["date"] = pd.to_datetime(fac["date"])
-    m = fac.merge(lab[["stock_code", "date", "r3"]], on=["stock_code", "date"], how="inner")
-    m = m[m["date"] <= label_max].copy()
-    del fac
+    # base 面板：默认base20历史链路；vwap_top20/specialist读动态面板
+    # switch复合键（off__def）不是面板列，只取真实列
+    base_cols = sorted({c["base"] for c in cands if not (c.get("base_off") and c.get("base_def"))}
+                       | {c["base_off"] for c in cands if c.get("base_off")}
+                       | {c["base_def"] for c in cands if c.get("base_def")})
+    if a.base_panel in ("vwap_top20", "specialist"):
+        _vp = os.path.join(RESULTS, "vwap_top20_factors.parquet"
+                           if a.base_panel == "vwap_top20" else "specialist_factors.parquet")
+        if not os.path.exists(_vp):
+            raise SystemExit(f"--base-panel {a.base_panel} 需要 {_vp}")
+        fac = pd.read_parquet(_vp)
+        fac["date"] = pd.to_datetime(fac["date"])
+        missing = [c for c in base_cols if c not in fac.columns]
+        if missing:
+            raise SystemExit(f"{a.base_panel}面板缺列 {len(missing)} 个: {missing[:5]}")
+        m = fac.merge(lab[["stock_code", "date", "r3"]], on=["stock_code", "date"], how="inner")
+        m = m[m["date"] <= label_max].copy()
+        del fac
+    else:
+        fac = B.read_factors(base_cols, data_max=W.LABEL_MAX_DATE, label=f"f1s-{a.tag}")
+        fac["date"] = pd.to_datetime(fac["date"])
+        m = fac.merge(lab[["stock_code", "date", "r3"]], on=["stock_code", "date"], how="inner")
+        m = m[m["date"] <= label_max].copy()
+        del fac
     m["_sec"] = m["stock_code"].astype(str).map(secmap)
     # 抽样截面（两级评估的粗筛级；**仅用于粗筛，不得用于正式判定**——
     # 见 gate_search_report §4.1 与 Codex 对抽样精度的要求）
@@ -134,16 +175,61 @@ def main():
                 gp = 2.0 * gp - 1.0
             gp = gp.reindex(pd.to_datetime(uniq))
             G = gp.to_numpy(dtype=float)  # [n_dates, n_sectors_all]
+            # switch用原始分位矩阵P（与G同行列对齐，不随form映射改变）
+            Praw = sg[sg["gate_id"] == c["gate"]].pivot_table(
+                index="date", columns="sector", values="p", aggfunc="mean")
+            Praw = Praw.reindex(pd.to_datetime(uniq))
+            Pmat = Praw.reindex(columns=gp.columns).to_numpy(dtype=float)
             # sector 列对齐到 sec_uniq
             gp_cols = list(gp.columns)
             gp_set = set(gp_cols)
             col_idx = np.array([gp_cols.index(s) if s in gp_set else -1 for s in sec_uniq])
             sec_row = sec_ids  # 每行的 sector 位置
-            xv = pd.to_numeric(m[c["base"]], errors="coerce").to_numpy(dtype=float)
-            z = c["d"] * xv
+            _is_switch = (a.form == "switch")
+            if _is_switch:
+                # switch复合base不是面板列；掩码改用off/def有效性（u在下文对齐）
+                z = np.full(len(m), np.nan)
+                for _cc in (c.get("base_off"), c.get("base_def")):
+                    _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
+                    z = np.where(np.isfinite(_xv), 1.0, z)
+            else:
+                xv = pd.to_numeric(m[c["base"]], errors="coerce").to_numpy(dtype=float)
+                z = c["d"] * xv
             rv = pd.to_numeric(m["r3"], errors="coerce").to_numpy(dtype=float)
+            _is_gain = (a.form == "gain")
+            _is_flip = (a.form == "flip")
+            _is_switch = (a.form == "switch")
+            if _is_switch and (not c.get("base_off") or not c.get("base_def")):
+                raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
+            if _is_gain or _is_flip:
+                # F1v3_gain/flip：有向居中秩u（与f1_batch市场分支同定义）
+                _rk = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
+                _dcnt = np.bincount(day, minlength=nd).astype(float)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    _pct = _rk / np.maximum(_dcnt[day], 1)
+                u_row = c["d"] * (_pct - 0.5)
+                u_row[~np.isfinite(z)] = np.nan
+            elif _is_switch:
+                # switch legs方向：cands自带d_off/d_def（缺省1）；u已做有向对齐
+                u_off_row, u_def_row = None, None
+                for _cc, _dd, _slot in ((c["base_off"], int(c.get("d_off", 1)), 0),
+                                        (c["base_def"], int(c.get("d_def", 1)), 1)):
+                    _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
+                    _rk = FR.blockwise_rank(np.where(np.isfinite(_xv), _xv, np.nan), day)
+                    _dcnt = np.bincount(day, minlength=nd).astype(float)
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        _pct = _rk / np.maximum(_dcnt[day], 1)
+                    _u = _dd * (_pct - 0.5)
+                    _u[~np.isfinite(_xv)] = np.nan
+                    if _slot == 0:
+                        u_off_row = _u
+                    else:
+                        u_def_row = _u
+                u_row = None
+            else:
+                u_row = None
 
-            def f1_scores(Gm):
+            def f1_scores(Gm, Pm=None):
                 gv = np.full(len(m), np.nan)
                 okrow = (sec_row >= 0) & np.isfinite(z)
                 ci = col_idx[sec_row[okrow]]
@@ -151,18 +237,40 @@ def main():
                 vv = np.full(okrow.sum(), np.nan)
                 rr, cc = date_idx[okrow][valid_col], ci[valid_col]
                 vv[valid_col] = Gm[rr, cc]
-                ww = np.maximum(c["s"] * vv, 0.0)
                 f1 = np.full(len(m), np.nan)
-                f1[okrow] = z[okrow] * ww
+                if _is_gain:
+                    ww = H.build_gain_weight(vv, c["s"])
+                    f1[okrow] = u_row[okrow] * ww
+                elif _is_flip:
+                    ww = H.build_flip_weight(vv, c["s"])
+                    f1[okrow] = u_row[okrow] * ww
+                elif _is_switch:
+                    Puse = Pm if Pm is not None else Pmat
+                    pv = np.full(okrow.sum(), np.nan)
+                    pv[valid_col] = Puse[rr, cc]
+                    pv = np.clip(pv, 0.0, 1.0)
+                    f1[okrow] = H.build_switch_blend(
+                        pv, u_off_row[okrow], u_def_row[okrow])
+                else:
+                    ww = np.maximum(c["s"] * vv, 0.0)
+                    f1[okrow] = z[okrow] * ww
                 return f1
 
-            def f1_ic_of(Gm):
-                fr = FR.blockwise_rank(f1_scores(Gm), day)   # 2.4× vs _within_rank
+            def f1_ic_of(Gm, Pm=None):
+                fr = FR.blockwise_rank(f1_scores(Gm, Pm), day)   # 2.4× vs _within_rank
                 return E._daily_corr(fr, yrk, day, nd)
 
             f1_ic = f1_ic_of(G)
-            br = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
+            if _is_gain or _is_flip:
+                br = FR.blockwise_rank(np.where(np.isfinite(u_row), u_row, np.nan), day)
+            elif _is_switch:
+                _static = 0.5 * u_off_row + 0.5 * u_def_row
+                br = FR.blockwise_rank(np.where(np.isfinite(_static), _static, np.nan), day)
+            else:
+                br = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
             base_ic = E._daily_corr(br, yrk, day, nd)
+            if _is_switch:
+                rec["base"] = f"{c['base_off']}__{c['base_def']}"
             dl = H.delta_ic(np.asarray(uniq), f1_ic, base_ic)
             # slope 用日均门控（诊断）
             gmean = np.nanmean(G, axis=1)
@@ -185,7 +293,10 @@ def main():
             for pi in range(N_PERM):
                 order = rng.permutation(nb)
                 pidx = np.concatenate([pieces[j] for j in order])[:n_dates]
-                nulls[pi] = _d2(f1_ic_of(G[pidx]))
+                if _is_switch:
+                    nulls[pi] = _d2(f1_ic_of(G[pidx], Pmat[pidx]))
+                else:
+                    nulls[pi] = _d2(f1_ic_of(G[pidx]))
             nulls = nulls[np.isfinite(nulls)]
             if len(nulls) == 0 or not np.isfinite(obs):
                 p = float("nan")
