@@ -11,7 +11,9 @@
 | 成本 | 秒级 | ~1.5 s/(门控×因子)（须重建 F1） |
 
 市场版的门控是标量 → 掩码不改变日内秩 → 可用捷径；
-行业版的门控**因股而异** → 必须按 `f1 = d·x·max(s·g,0)` 重建后排名（与 `f1_sector` 同构）。
+行业版的门控**因股而异** → 必须按 gain 式 `F1 = u·clip(1+0.5·s·g)`
+（`u` 有向居中秩，`g = 2p-1` 中心化门控；与 `f1_sector --form gain` 同构，
+V4.3a 起废除旧 `d·x·max(s·g,0)` 截断式）重建后排名。
 
 ## 本实现的统计量（与市场版对应的两种口径）
 
@@ -22,7 +24,8 @@
 
 G2 判定：4 折同号 + 块自助（块长 5，时间块）95% 区间不含 0 + 同号因子占比 ≥60%。
 G3：**块置换门控矩阵**（全行业同置换，与 `f1_sector` 的 placebo 一致）→ 零分布 →
-真实值超 95 分位。
+V4.3a gain 口径新族预注册**双侧**（`|Δ| > q95(|null|)`，方向由 bank s 锁定；
+旧 `form="t"` 族的单侧冻结规格保留为诊断列，不改旧行）。
 
 **G3 的成本控制（如实声明）**：置换需为每个因子重建 F1，成本 = n_perm × n_factors。
 全量 200×123 不可行（≈10 小时），故 G3 用**受限因子集 + 较少置换**（默认 20×40），
@@ -66,7 +69,12 @@ PLACEBO_BLOCK = 20
 
 
 def load_panel(names: list[str]):
-    """面板 = 因子列 + r3 + 行业映射（供逐股掩码用）。"""
+    """面板 = 因子列 + r3 + 行业映射（供逐股掩码用）。
+
+    V4.3a：返回前按 date 稳定排序。`factors.parquet` 是 stock-major 行序，
+    而 `PanelRanker.day` 是 date-major 码——不对齐会导致门控归属与日内分组
+    全错位（bank-v1 行业脏数据的第二病因，仅次于截断）。
+    """
     lab = B.read_labels(["r3", "tradable"], label_max=CUT, label="g2sec")
     lab["date"] = pd.to_datetime(lab["date"])
     lab = lab[(lab["tradable"] == 1) & (lab["date"] <= CUT)]
@@ -77,7 +85,23 @@ def load_panel(names: list[str]):
     m = m[m["date"] <= CUT].copy()
     sm = G.load_sector_map()
     m["_sec"] = m["stock_code"].astype(str).map(sm)
+    m = m.sort_values("date", kind="stable").reset_index(drop=True)
     return m
+
+
+def _centered_u(xv: np.ndarray, day: np.ndarray, nd: int, d: float) -> np.ndarray:
+    """有向居中百分位秩 u = d*(RankPct-0.5)（与 f1_batch/f1_sector 同定义）。
+
+    在日内秩层面消除截面均值/量纲，杜绝原始值 z 与行业权重相乘的
+    Level-Leak；调用方每因子只算一次（循环内不再重复 to_numeric）。
+    """
+    rk = FR.blockwise_rank(np.where(np.isfinite(xv), xv, np.nan), day)
+    dcnt = np.bincount(day, minlength=nd).astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pct = rk / np.maximum(dcnt[day], 1)
+    u = float(d) * (pct - 0.5)
+    u[~np.isfinite(xv)] = np.nan
+    return u
 
 
 def build_sector_gate_matrix(sg: pd.DataFrame, gid: str, uniq: np.ndarray):
@@ -105,24 +129,35 @@ def prep_row_index(day: np.ndarray, sec_ids: np.ndarray,
     return date_idx, ci
 
 
-def f1_ic_series_from_idx(m, day, nd, yrk, date_idx, ci, G, base, d, s=1):
-    """按逐股掩码重建 F1 → 日内排名 → 逐日 IC（索引已预计算）。"""
-    z = d * pd.to_numeric(m[base], errors="coerce").to_numpy(dtype=float)
-    ok = (ci >= 0) & np.isfinite(z)
+def f1_ic_series_from_idx(u, day, nd, yrk, date_idx, ci, G, s=1):
+    """按逐股掩码重建 F1 → 日内排名 → 逐日 IC（索引已预计算）。
+
+    V4.3a（gain 口径新族）：``F1 = u * clip(1 + 0.5*s*g)``，其中
+    ``u`` 为调用方预计算的有向居中秩（``_centered_u``），``g = 2*vv - 1``
+    为中心化门控状态。相对旧实现的三处修正：
+    1. 门控中心化：面板 ``p ∈ (0,1]``，旧式直接 ``1+0.5*vv`` 使权重恒 ≥1
+       （只有放大没有衰减）；现 ``g ∈ (-1,1]`` 对称调制；
+    2. 无塌缩：旧 ``max(s*vv, 0)`` 清零致 ΔIC 坍缩 -0.020，已废除；
+    3. 无 Level-Leak：输入为日内居中秩而非原始值，截面均值已消除。
+    """
+    u = np.asarray(u, dtype=float)
+    ok = (ci >= 0) & np.isfinite(u)
     inb = ci < G.shape[1]
     sel = ok & inb
-    vv = np.full(len(m), np.nan)
+    vv = np.full(len(u), np.nan)
     vv[sel] = G[date_idx[sel], ci[sel]]
-    ww = np.maximum(s * vv, 0.0)
-    f1 = np.where(np.isfinite(z) & np.isfinite(ww), z * ww, np.nan)
+    g = 2.0 * vv - 1.0
+    ww = np.clip(1.0 + 0.5 * float(s) * g, 0.2, 1.8)
+    ww[~np.isfinite(g)] = np.nan
+    f1 = np.where(np.isfinite(u) & np.isfinite(ww), u * ww, np.nan)
     fr = FR.blockwise_rank(f1, day)
     return E._daily_corr(fr, yrk, day, nd)
 
 
-def f1_ic_series(m, day, nd, yrk, sec_ids, G, colmap, base, d, s=1):
+def f1_ic_series(u, day, nd, yrk, sec_ids, G, colmap, s=1):
     """兼容旧签名（内部预计算索引；单次调用场景用）。"""
     date_idx, ci = prep_row_index(day, sec_ids, colmap)
-    return f1_ic_series_from_idx(m, day, nd, yrk, date_idx, ci, G, base, d, s)
+    return f1_ic_series_from_idx(u, day, nd, yrk, date_idx, ci, G, s)
 
 
 def main() -> int:
@@ -189,6 +224,10 @@ def main() -> int:
             day, nd = pr.day, pr.n_days
             uniq = np.unique(m["date"].to_numpy())
             sec_ids = m["_sec"].astype(str).to_numpy()
+            # 对齐断言：m 已按 date 排序，PanelRanker 内排序应为恒等，
+            # 否则门控归属/日内分组全错位（bank-v1 行业脏数据主因之一）。
+            _chk = pd.to_datetime(m["date"]).to_numpy()
+            assert (_chk == pr.uniq[pr.day]).all(), "m行序与PanelRanker日码错位"
             # 预计算每个门控的 (date_idx, sector_col_idx)，避免逐 (因子×门控) 重算
             gmats = {}
             for g in el:
@@ -200,13 +239,15 @@ def main() -> int:
             _ic_raw = pr.daily_ic(pr.x_rank(c))         # 方向 = sign(全样本 IC 均值)
             d = 1.0 if float(np.nanmean(_ic_raw)) >= 0 else -1.0
             dirmap_all[c] = d
+            xv = pd.to_numeric(m[c], errors="coerce").to_numpy(dtype=float)
+            u = _centered_u(d * xv, day, nd, d)
             xr = d * pr.values(c)
             br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day)
             bb = E._daily_corr(br, pr.y, day, nd)
             base_ics.append(bb)
             for g in el:
                 Gmat, di, ci = gmats[g]
-                ic = f1_ic_series_from_idx(m, day, nd, pr.y, di, ci, Gmat, c, d)
+                ic = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, 1)
                 per_gate_ics[g].append(ic)
                 m1, m2 = np.isfinite(ic), np.isfinite(bb)
                 per_gate_ds[g].append(float(ic[m1].mean() - bb[m2].mean())
@@ -302,9 +343,14 @@ def main() -> int:
     day3, nd3 = pr3.day, pr3.n_days
     uniq3 = np.unique(m3["date"].to_numpy())
     sec3 = m3["_sec"].astype(str).to_numpy()
+    _chk3 = pd.to_datetime(m3["date"]).to_numpy()
+    assert (_chk3 == pr3.uniq[pr3.day]).all(), "m3行序与PanelRanker日码错位"
     b3 = {}
+    u3 = {}
     for c in g3f:
         d = dirmap_all[c]
+        xv = pd.to_numeric(m3[c], errors="coerce").to_numpy(dtype=float)
+        u3[c] = _centered_u(d * xv, day3, nd3, d)
         xr = d * pr3.values(c)
         br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day3)
         b3[c] = E._daily_corr(br, pr3.y, day3, nd3)
@@ -321,29 +367,30 @@ def main() -> int:
             pidx = np.concatenate([pieces[j] for j in order])[:ndates]
             per = []
             for c in g3f:
-                ic = f1_ic_series_from_idx(m3, day3, nd3, pr3.y, di3, ci3,
-                                           Gmat[pidx], c, dirmap_all[c])
+                ic = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
+                                           Gmat[pidx], 1)
                 m1, m2 = np.isfinite(ic), np.isfinite(b3[c])
                 if m1.any() and m2.any():
                     per.append(ic[m1].mean() - b3[c][m2].mean())
             nulls[pi] = np.nanmedian(np.asarray(per))
         nulls = nulls[np.isfinite(nulls)]
         if len(nulls):
-            # **单侧**（§8.2 冻结规格：「真实值超过零分布 95% 分位」）。
-            # 2026-10-12 回退：sector 版此前已擅自双侧（`> q95 or < q05`，注释理由是
-            # "单侧会把 M1 式负效应误判为未超零分布"），但原规格明确为**单侧**，
-            # 按 §8.2.4「规则冻结」回退。双侧量保留为**诊断**（不参与 g3_pass）。
+            # **双侧主判据**（V4.3a gain 口径新族预注册）：G2 已是双侧 CI，
+            # 旧 `form="t"` 族的单侧冻结规格（§8.2，`obs > q95`）会把 s=-1 有效
+            # 门控恒判 False（G3 盲区）。新族测无符号关联强度，方向由 bank s 锁定。
+            # 旧族行不受影响（CSV/台账旧 caliber 原样保留）。
             q05 = float(np.quantile(nulls, 0.05))
             q95 = float(np.quantile(nulls, 0.95))
-            r["g3_pass"] = bool(r["delta_median"] > q95)          # 单侧 = 原规格
+            q95abs = float(np.quantile(np.abs(nulls), 0.95))
             k1 = int((nulls >= r["delta_median"]).sum())
             k2 = int((np.abs(nulls) >= abs(r["delta_median"])).sum())
-            r["g3_p"] = float((1 + k1) / (len(nulls) + 1))        # 与 pass 一致的单侧 p
+            r["g3_pass"] = bool(abs(r["delta_median"]) > q95abs)
+            r["g3_p"] = float((1 + k2) / (len(nulls) + 1))
             r["g3_lo95"] = q05
             r["g3_hi95"] = q95
-            r["g3_p_two_sided_diag"] = float((1 + k2) / (len(nulls) + 1))
-            r["g3_pass_two_sided_diag"] = bool(r["delta_median"] > q95
-                                               or r["delta_median"] < q05)
+            r["g3_q95abs"] = q95abs
+            r["g3_p_single_diag"] = float((1 + k1) / (len(nulls) + 1))
+            r["g3_pass_single_diag"] = bool(r["delta_median"] > q95)
             r["dir"] = "positive" if r["delta_median"] > 0 else "negative"
         print(f"  {r['gate_id']:<26s} G3={'True' if r['g3_pass'] else 'False'} "
               f"p={r['g3_p']:.4f}  [{time.time() - t0:.0f}s]", flush=True)
@@ -370,7 +417,10 @@ def main() -> int:
 
     # 台账回写（**共享协议**：与市场线同一 gate_ledger，但记 level=sector）
     lg = GL.GateLedger(a.ledger)
-    cal = {"window_end": CUT, "form": "t", "factor_set": f"stock{len(names)}",
+    # V4.3a：form 记 "gain"（无塌缩 gain 式 F1），与旧 "t"（max 截断） runs 区分；
+    # g3_rule 记 "two-sided"（新族预注册；旧族单侧冻结规格不受影响）。
+    cal = {"window_end": CUT, "form": "gain", "g3_rule": "two-sided",
+           "factor_set": f"stock{len(names)}",
            "label": "r3", "data_version": B.factor_data_version(),
            "n_perm": a.n_perm, "n_boot": a.n_boot}
     g3n = min(a.g3_factors, len(names))

@@ -882,11 +882,12 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 3. **市场G2改良走先验机制分簇，拒绝`|t|≥2.0`响应子集**（后者=同一统计量先选后测，选择偏差）。簇源直接用`roles.csv`现成`group`列（8组：volatility_and_liquidity 30/directional_alpha 28/momentum_and_position 28/risk_and_exhaustion 15/t2_promoted 12/tail_protect 6/sector_context 3/capital_flow_risk 2；`t2_promoted`为晋批次标签，检验时单独成簇并注明）：**任一簇内4折同号+簇内`same_frac≥0.65`+CI不含0即认证**，记录受益簇。阈值0.65与孪生阈值同属预注册冻结。
 4. **W4（可交易掩码）修正**：掩码代码已存在（`fitness.py:87-90`，`universe=True`时`is_can_buy==1 & is_st==0 & ~一字板`），但全链路零启用（grep `universe=True`零调用）。故V5动作是"**开掩码+台账基线切换**"，不是新标签；开启即改变全部历史指纹可比性，须配基线版本号。
 
-### V4.3a：行业G2无塌缩重算 → bank-v2（纠偏，不动市场）
+### V4.3a：行业G2无塌缩重算 → bank-v2（纠偏，不动市场；已落实4修复，待全量跑）
 
-- `gate_g2g3_sector.py`：F1改`gain`式无塌缩口径（`u·(1+0.5g)`，与F1v3_gain同式；G3置换同步重跑，旧G3同样建在截断上）；14 eligible门控全跑（约50分钟离线）；`--ledger`指向独立台账防污染（已有参数，沿用）。
-- `build_gate_bank.py`：输入换新CSV，bank升`v2`，v1按`bank_v1_<data_cut>.json`归档；`direct_sector_states`重选（目标真2~3正交，`|rho|<0.7`不变）。
-- 验收：`g2g3_sector.csv` 14行；`delta_median`脱离-0.020塌缩带；bank-v2 sector≥2且s有正有负（或如实记录全同号）；回归7/7不动。
+- `gate_g2g3_sector.py`（已改，未跑全量）：F1改`gain`式`u·clip(1+0.5·s·g)`（与F1v3_gain同式），含4修复——①门控中心化`g=2p-1`（面板`p∈(0,1]`，旧式权重恒≥1只有放大；市场`_g`列/f1_sector早已中心化，仅sector G2漏网）；②`u=d*(pct-0.5)`外层预计算（消Level-Leak+去循环内重复`to_numeric`，与f1_batch/f1_sector同定义）；③`load_panel`按date稳定排序+对齐断言（`factors.parquet`为stock-major行序，`PanelRanker.day`为date-major码，旧代码`m`行与`day`码错位——bank-v1行业脏数据的第三病因，比截断更致命；两门控delta撞到1e-5即旁证）；④G3双侧主判据（新族预注册`g3_rule=two-sided`，方向由bank s锁定；旧`form="t"`单侧冻结规格保留为诊断列，旧CSV/台账行不动，市场`gate_g2g3.py`+D4自测不动）。`--ledger`默认生产台账（新`form="gain"` caliber区分；`--no-g3`不写台账）。
+- 合成验证（已过）：权重对称1.45/0.55无清零；常数因子与旧式同秩（无退化）；均匀信息因子delta≤0（不乱奖）；偏科因子delta=+0.0795（正确检出）。
+- 待跑：14 eligible门控全量G2（约60分钟离线）→ 按通过者`--g3-gates`跑G3；`build_gate_bank.py`输入换新CSV，bank升`v2`（v1归档），`direct`重选（目标真2~3正交，`|rho|<0.7`不变）。
+- 验收：`g2g3_sector.csv` 14行；`delta_median`脱离-0.020塌缩带；bank-v2 sector≥2；回归7/7不动。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动）
 
@@ -899,6 +900,7 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - `store_vfps_<data_cut>.json`离线预热（STOCK 124+STOCK_REL 5+CROSS_SEC 7=136列，fast_frame上`value_fingerprint`，分钟级），`run_search`启动并入`seen_vfp`（钩子`ledger.vfps_for`已存在，`vfp_dup`零改动）。
 - `build_top.py`加`eval_store`分支（同`DataContext(label='vwap')`，走现value_cache/ledger；一次性成本≈一次build_top）；`vwap_orthogonal_indices`加孪生优先（`mined/custom`与`store`截面`|ρ|≥0.95`留store列名；0.70~0.95贪心择优已有规则覆盖）；`select_specialists.py`零改动（读flat自动获存量偏科因子）；`export_lgb_dataset.py`中store入选直接引用原列名。
 - `--promote-to-store`为**显式离线脚本**（备份+sha+`roles.csv`同步），严禁自动回写7.3GB生产表。
+- 栖息地尖兵席位（新增，Gemini提议+Muse认可）：`cond_supplement`已产出逐tag tstat（`hot5_q80`口径现成，flag=`cond_t_max≥2.0`配额15）；Class1终选在主正交扫描后，为`hot5_q80 |t|≥2.5`（取冻结文档阈值2.5，与补捞flag 2.0区分）且未入池者预留**10个**专属正交席位（对池内+席位间逐一`|ρ|≤0.7`，新选择族版本）；快评通道C豁免禁令不动（仅终选席位，不碰快评）。
 - `gate_g2g3.py`加按`group`分簇G2选项（默认关闭；开启=新检验族版本，旧全池结论归档保留，不改写）。
 - 验收：store 136列全进flat；合成孪生对（store列的仿射变体）被判留store；`--promote-to-store --dry-run`路径畅通。
 
