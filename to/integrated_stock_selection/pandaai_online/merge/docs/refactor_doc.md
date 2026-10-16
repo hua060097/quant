@@ -907,6 +907,7 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - V4.3d性能与双模（已落实）：f1_batch逐批bundle预计算+日码整数广播（字典10亿次查找消除）+flip数学捷径（sign(w)*ic，合成逐位恒等）+switch同式广播；specialists逐日IC向量化（与旧spearmanr逐值一致，含30下限与pairwise排名语义）；evaluator ZSCORE/SCALE向量化（逐值一致）。门控规则：中性门0.60→0.75（screen+pipeline双入口；>0.80克隆仍拦）、`--by-group`默认开（双文件）、sector G3默认关（`--run-g3`显式开）。新门控nh60_prem/sec_top5_persist（63→71规格，因果合成验证通过）。
 - t2_promoted剔除+全池优先（已落实）：`t2_promoted`/`ungrouped`不成簇（循环论证）；全池已过用全池median_b（slope_group记full_pool），仅全池未过才分簇拯救（pipeline+gate_g2g3双文件）。
 - V2门控重构（已落实，63→72规格）：nh60_prem改突破池秩溢价EMA5（空样本回填/滞后/扭曲三盲区消除）；sec_top5_persist改效率比+霸榜率复合EMA5；新增行业sec_nh60_ratio（level-only）。合成验证：72/48/24规格清单、三门控p有限（300天小窗53%/69%/92%，5年面板更高）。
+- V2首跑实证（服务器，market管线）：短名单7→10——nh60_prem_chg（簇0.0104）与sec_top5_persist_level（全池0.0142/0.95同向）、sec_top5_persist_ratio（全池0.0118/0.94）三个新门控一次通过；t2标签清零（全部分簇通过转为full_pool或真机制簇）；newhigh_ratio_level（0.826）仍被拦。sector 24门控对称差全量跑数中。
 - V4.3d双模靶标（已落实）：specialists rank-lo→1；A类（rank≤60 & |uncond|≥0.030 & 差≥0.025或icir<0.50→gain降回撤）+B类（|t|≥2.5 & 半场max≥0.035 & 胜率≥0.58）；半_winrate内联计算。模式A门控注入：GATE_FIELDS四字段（bank Top2×2，缺bank填NaN自然死亡）+evaluator惰性映射+m14/m16原生flip/switch模板（240样本零无效零lint误杀，门控腿占比42/240）+上传硬拦；bank版本错配仅告警（文档备注）。
 - 性能预期（服务器实测为准）：flip单候选30s→0.005s；specialists逐日IC 10分钟→5秒；sector全量G2约60分钟（G3默认关省4小时）。
 
