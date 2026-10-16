@@ -82,6 +82,9 @@ SECTOR_BASES = (
     ("sec_breadth", "行业上涨宽度", "行业内上涨个股占比（普涨 vs 龙头独涨）"),
     # V4.3d V2：行业真突破 vs 超跌反弹一日游（成建制新高占比；已是排名口径，仅 level）
     ("sec_nh60_ratio", "行业新高股占比", "行业内创60日新高股占比5日均值的跨行业分位"),
+    # V4.3e：稳健主升度量 + 拥挤派发度量（均已是排名口径，仅 level）
+    ("sec_mom_snr", "行业动量信噪比", "10日超额/10日波动，过热降权，跨行业分位"),
+    ("sec_crowd_div", "行业拥挤背离", "换手分位-涨幅分位的5日均值（放量滞涨派发）"),
 )
 
 #: 操作化（对基础量的日序列施加）
@@ -143,6 +146,32 @@ def sector_base_from_raw(c: pd.DataFrame) -> pd.DataFrame:
     sb["sec_mom_xrank"] = _mom20.groupby(sb["date"]).rank(pct=True)
     sb["sec_vol"] = _srt.groupby("sector", sort=False)["_ret"] \
         .transform(lambda s: s.rolling(20, min_periods=20).std())
+    # V4.3e sec_mom_snr：10日超额/10日波动；过热（换手自身60日>90%分位且
+    # 当日收阴）×0.5 降权。全程 transform 索引对齐；跨行业分位由面板步统一做。
+    _sb2 = sb.sort_values(["sector", "date"])
+    _exc = _sb2["_ret"] - _sb2.groupby("date")["_ret"].transform("mean")
+    _gsec = _sb2.groupby("sector", sort=False)
+    _cum_exc10 = _exc.groupby(_sb2["sector"], sort=False).transform(
+        lambda s: s.rolling(10, min_periods=10).sum())
+    _vol10 = _gsec["_ret"].transform(
+        lambda s: s.rolling(10, min_periods=10).std())
+    _snr = _cum_exc10 / (_vol10 + 1e-4)
+    _turn_rk60 = _gsec["_turn"].transform(
+        lambda s: s.rolling(60, min_periods=60).rank(pct=True))
+    _hot = (_turn_rk60 > 0.9) & (_sb2["_ret"] < 0)
+    _snr = _snr.where(~_hot.fillna(False), _snr * 0.5)
+    sb["sec_mom_snr"] = _snr
+    # V4.3e sec_crowd_div：换手5日均值分位 − 涨幅5日累计分位，再5日均值。
+    # 放量滞涨 = 拥挤派发（负向排雷含义由 G2 符号自然表达）。
+    _turn5 = _gsec["_turn"].transform(
+        lambda s: s.rolling(5, min_periods=5).mean())
+    _ret5 = _gsec["_ret"].transform(
+        lambda s: s.rolling(5, min_periods=5).sum())
+    _r_turn = _turn5.groupby(_sb2["date"]).rank(pct=True)
+    _r_ret = _ret5.groupby(_sb2["date"]).rank(pct=True)
+    _raw = (_r_turn - _r_ret).groupby(_sb2["sector"], sort=False).transform(
+        lambda s: s.rolling(5, min_periods=5).mean())
+    sb["sec_crowd_div"] = _raw
     sb = sb.sort_values(["sector", "date"]).reset_index(drop=True)
     sb["sec_turn_chg"] = (sb.groupby("sector", sort=False)["_turn"]
                           .transform(lambda s: s.rolling(20, min_periods=20).mean())
@@ -165,8 +194,9 @@ def generate_space() -> list[dict]:
     for key, zh, note in SECTOR_BASES:
         for op, opzh, fn in OPS:
             if key in ("sec_ret_xrank", "sec_amt_share_chg", "sec_mom_xrank",
-                       "sec_nh60_ratio") and op != "level":
-                continue      # 这四个本身就是变化/排名口径，只取 level
+                       "sec_nh60_ratio", "sec_mom_snr", "sec_crowd_div") \
+                    and op != "level":
+                continue      # 这六个本身就是变化/排名口径，只取 level
             specs.append({"gate_id": f"GS_{key}_{op}", "level": "sector",
                           "base": key, "base_zh": zh, "op": op, "op_zh": opzh,
                           "note": note})

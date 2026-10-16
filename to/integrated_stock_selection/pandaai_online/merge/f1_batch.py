@@ -189,7 +189,7 @@ def run_one_market_switch(m, base_cols_all: list[str], d_map: dict,
     p[~np.isfinite(g)] = np.nan
     pt = p[day] if len(p) == int(nd) else np.full(len(day), np.nan)
     blend = H.build_switch_blend(pt, u_off, u_def)
-    static_blend = 0.5 * u_off + 0.5 * u_def
+    static_blend = H.static_consensus(u_off, u_def)
 
     def _ic_of(scores: np.ndarray) -> np.ndarray:
         fr = FR.blockwise_rank(np.where(np.isfinite(scores), scores, np.nan), day)
