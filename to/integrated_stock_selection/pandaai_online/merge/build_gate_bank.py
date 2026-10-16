@@ -209,8 +209,13 @@ def main() -> int:
                         break
                 if ok:
                     direct.append(gid)
-            # 落盘直入 states（长表过滤）
-            dsg = sg[sg["gate_id"].isin(direct)].copy()
+            # 落盘直入 states（宽表：index (date, sector)，列即 gate_id；
+            # 长表直接 merge 会导致一对多笛卡尔膨胀，且 gate_id 字符串列会混入特征。
+            # p 中心化为 2p-1（与消费侧口径一致）。
+            _w = sg[sg["gate_id"].isin(direct)].pivot_table(
+                index=["date", "sector"], columns="gate_id", values="p",
+                aggfunc="mean")
+            dsg = (2.0 * _w - 1.0).reset_index()
             dsg.to_parquet(os.path.join(space, "direct_sector_states.parquet"), index=False)
             with open(os.path.join(space, "direct_sector_states.json"), "w",
                        encoding="utf-8") as f:

@@ -393,20 +393,22 @@ def _store_aligned(frame: pd.DataFrame, cut: str | None = None):
 
 def eval_store(frame: pd.DataFrame | None = None,
                 ev: Evaluator | None = None,
-                end: str | None = None) -> pd.DataFrame:
-    """V4.3c 第四源 store：评估 factors.parquet 存量个股列。
+                end: str | None = None,
+                _aligned=None) -> pd.DataFrame:
+    """V4.3c 第四源 store：评估 factors.parquet 存量个股列.
 
     口径与 eval_mined/eval_custom 完全一致（双标签 DataContext 全窗重估，
     LGB 按 refs.lgb_score T_ref=0.3），lib='store'。存量列即 ground truth，
     不写台账（防生产列污染搜索台账）；防重复挖矿由 store_vfps 快评同步承担，
     防重复入选由正交扫描孪生优先（store 优先）承担。
     范围：roles.csv role in (STOCK, STOCK_REL, CROSS_SEC) ∩ 文件实际列。
+    _aligned：main 已调过 _store_aligned 时传入 (m, pos)，避免重复读表。
     """
     if frame is None:
         frame = load_panel()
     if ev is None:
         ev = Evaluator(frame)
-    m, pos = _store_aligned(frame)
+    m, pos = _aligned if _aligned is not None else _store_aligned(frame)
     if m is None:
         return pd.DataFrame()
     cols = [c for c in m.columns if c not in ("stock_code", "date")]
@@ -784,11 +786,31 @@ def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
     """双榜入选者的条件 RankIC（2026-09-25）：栖息地（hot5/hot2）+ 市场状态族，
     与主管线 COND-IC 同口径。c2c 榜 top20 + 榜2 正交入选者并集，逐候选×逐标签。"""
     from cond_ic import build_cond_prep, cond_ic_metrics
+    from decorrelate_top import factor_full_values
     cond_prep = prep if prep is not None else build_cond_prep(frame)
     _ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
              for lab in ('c2c', 'vwap')}
     c2c_sel = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False).head(20)
     vwap_sel = (vwap_df.iloc[vwap_order] if vwap_order else vwap_df.head(20))
+    # store 存量列一次性批量映射（四源 helper 统一消费）。
+    _store_full: dict = {}
+    try:
+        _need = sorted({str(r['factor_id']) for _, r in
+                        list(c2c_sel.iterrows()) + list(vwap_sel.iterrows())
+                        if str(r['lib']) == 'store'})
+        if _need:
+            import boundary as _B
+            _sf = _B.read_factors(_need, data_max=(end or W.DEFAULT_DATA_CUT),
+                                  label='cond-store')
+            _m = _sf.merge(frame[['stock_code', 'date']],
+                           on=['stock_code', 'date'], how='right')
+            for _c in _need:
+                _vv = _m[_c].to_numpy(dtype=float) if _c in _m.columns else None
+                if _vv is not None and len(_vv) == len(frame):
+                    _store_full[_c] = _vv
+            del _sf, _m
+    except Exception:
+        pass
     seen = set()
     out = []
     for _sel in (c2c_sel, vwap_sel):
@@ -798,14 +820,11 @@ def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                 continue
             seen.add(key)
             try:
-                if r['lib'] == 'mined':
-                    node = parse_formula(str(r['formula_cn']))
-                    f_full = np.asarray(ev.values(node), dtype=float)
-                else:
-                    spec = specs_by_id.get(str(r['factor_id']))
-                    if spec is None:
-                        continue
-                    f_full = builder.get_factor(spec).to_numpy(dtype=float)
+                f_full = factor_full_values(
+                    str(r['lib']), str(r['factor_id']), str(r.get('formula_cn', '')),
+                    frame, ev, builder, specs_by_id, _store_full)
+                if f_full is None:
+                    continue
                 per = {}
                 for lab, ctx in _ctxs.items():
                     per[lab] = cond_ic_metrics(ctx, f_full[ctx._pos], cond_prep,
@@ -968,8 +987,20 @@ def main() -> int:
                           builder=builder, end=args.data_cut)
     custom_df = eval_custom(frame=frame, ev=ev, end=args.data_cut) \
         if args.include_custom else pd.DataFrame()
-    store_df = eval_store(frame=frame, ev=ev, end=args.data_cut) \
-        if args.include_store else pd.DataFrame()
+    # V4.3c：_store_aligned 全局只调一次（eval_store 与 store_vals 复用，
+    # 禁重复读 7GB 表 + 重复造 627 万键字典）。
+    _store_aligned_once = None
+    if args.include_store:
+        try:
+            _store_aligned_once = _store_aligned(frame, cut=args.data_cut)
+            if _store_aligned_once[0] is None:
+                _store_aligned_once = None
+        except Exception as exc:
+            print(f'warning: store 对齐失败（{str(exc)[:120]}），跳过store源',
+                  flush=True)
+    store_df = eval_store(frame=frame, ev=ev, end=args.data_cut,
+                          _aligned=_store_aligned_once) \
+        if _store_aligned_once is not None else pd.DataFrame()
     cols = ['lib', 'factor_id', 'name_cn', 'base', 'transform', 'window', 'formula_cn',
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
             'ic_ir', 'win', 'rank_ic_ir', 'rank_ic_win', 'turnover', 'turnover_month',
@@ -1031,17 +1062,17 @@ def main() -> int:
     cache_stats: dict = {}
     print(f'value cache dir: {cache_dir}', flush=True)
     # V4.3c store 值（pos_me 切片，供正交扫描孪生判定；存量即真值，不进 value_cache）。
+    # 复用上游已对齐的 (_sm, _spos)，不再二次读表。
     store_vals: dict = {}
-    if args.include_store:
+    if _store_aligned_once is not None:
         try:
-            _sm, _spos = _store_aligned(frame, cut=args.data_cut)
-            if _sm is not None:
-                for _c in [c for c in _sm.columns if c not in ("stock_code", "date")]:
-                    _vv = np.full(len(frame), np.nan)
-                    _vv[_spos >= 0] = _sm[_c].to_numpy(dtype=float)[_spos[_spos >= 0]]
-                    store_vals[_c] = _vv[pos_me].astype(np.float32)
-                print(f'store values: {len(store_vals)} cols on pos_me', flush=True)
-                del _sm
+            _sm, _spos = _store_aligned_once
+            for _c in [c for c in _sm.columns if c not in ("stock_code", "date")]:
+                _vv = np.full(len(frame), np.nan)
+                _vv[_spos >= 0] = _sm[_c].to_numpy(dtype=float)[_spos[_spos >= 0]]
+                store_vals[_c] = _vv[pos_me].astype(np.float32)
+            print(f'store values: {len(store_vals)} cols on pos_me', flush=True)
+            del _store_aligned_once
         except Exception as exc:
             print(f'warning: store 值映射失败（{str(exc)[:120]}），孪生判定退化', flush=True)
             store_vals = {}
@@ -1200,14 +1231,18 @@ def main() -> int:
             try:
                 _v = val_store.get(_key)
                 if _v is None:
-                    if _r['lib'] == 'mined':
-                        _node = parse_formula(str(_r['formula_cn']))
-                        _v = np.asarray(ev.values(_node), dtype=float)[pos_me]
+                    if str(_r['lib']) == 'store' and store_vals \
+                            and str(_r['factor_id']) in store_vals:
+                        # store_vals 本就是 pos_me 切片，直接取。
+                        _v = store_vals[str(_r['factor_id'])]
                     else:
-                        _spec = _specs.get(str(_r['factor_id']))
-                        if _spec is None:
+                        from decorrelate_top import factor_full_values as _ffv
+                        _full = _ffv(str(_r['lib']), str(_r['factor_id']),
+                                     str(_r.get('formula_cn', '')), frame, ev,
+                                     builder, _specs, None)
+                        if _full is None:
                             continue
-                        _v = builder.get_factor(_spec).to_numpy(dtype=float)[pos_me]
+                        _v = np.asarray(_full, dtype=float)[pos_me]
                 _dd = _quick_dom(_v, frame)
                 if _dd is None:
                     continue

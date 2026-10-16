@@ -43,15 +43,10 @@ def load_gates():
 
 
 def _centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndarray:
-    """有向居中百分位秩 u = d*(RankPct-0.5) ∈ [-0.5,0.5]（F1v3_gain输入，不动旧族）。"""
+    """有向居中百分位秩（F1v3 全族统一定义，见 fastranks.centered_u 本体；
+    此别名保留供 materialize 等外部导入，防口径分叉）。"""
     import fastranks as FR
-    rk = FR.blockwise_rank(np.where(np.isfinite(values), values, np.nan), day)
-    dcnt = np.bincount(day, minlength=nd).astype(float)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        pct = rk / np.maximum(dcnt[day], 1)
-    u = d * (pct - 0.5)
-    u[~np.isfinite(values)] = np.nan
-    return u
+    return FR.centered_u(values, day, nd, d)
 
 
 def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,

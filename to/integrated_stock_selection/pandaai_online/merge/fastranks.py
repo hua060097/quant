@@ -36,6 +36,22 @@ MIN_N = E.MIN_N
 NW_LAG = E.NW_LAG
 
 
+def centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndarray:
+    """有向居中百分位秩 u = d*(RankPct-0.5) ∈ [-0.5, 0.5]（F1v3 全族统一定义）。
+
+    全仓唯一定义点（收敛 f1_batch._centered_u、gate_g2g3_sector._centered_u
+    及 f1_sector switch 分支手抄版；三者曾因分抄出现双重乘 d 分叉）。
+    约定：对**原始值**排名再乘一次 d；缺失保持 NaN。
+    """
+    rk = blockwise_rank(np.where(np.isfinite(values), values, np.nan), day)
+    dcnt = np.bincount(day, minlength=nd).astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pct = rk / np.maximum(dcnt[day], 1)
+    u = int(d) * (pct - 0.5)
+    u[~np.isfinite(np.asarray(values, dtype=float))] = np.nan
+    return u
+
+
 def blockwise_rank(v: np.ndarray, day: np.ndarray) -> np.ndarray:
     """日内平均秩（NaN 保持 NaN）。要求 `day` 已排序（块连续）。
 

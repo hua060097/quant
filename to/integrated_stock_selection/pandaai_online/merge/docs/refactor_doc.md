@@ -894,6 +894,8 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - 数据状态更新：`factors.parquet`已恢复262列完整版（Owner确认，mtime 10-05），store第四源=136列全量，sector G2按124 STOCK全跑。155列警示解除。
 - 漏网三修复之上再补四修复（已落实，待服务器跑）：①habitat估值断路——`val_store`只含LGB前150名，Class2低LGB因子永不进入；修为机制家族过滤（context/vol/shape/M7/M14/store）+上限150按需补算，与扫描值合并为`hab_vals`。②去重口径——席位/股性池改窗内逐日截面Spearman均值（与扫描矩阵同口径），禁500万行混合corrcoef。③data-cut铁律——`build_top`加`--data-cut`（默认2025-12-31），`load_panel`/`DataContext`/`pos_me`/`B.read_factors`全链路钳制（旧默认END='20260821'曾放行2026）；panel store列批量单读。④分簇接线——`run_gate_pipeline --by-group`写`median_b_eff/slope_group_*`列（`gate_g2g3.py`独跑是断链的）；`build_gate_bank`读eff锁定s并升`bank-v2`（覆写前旧版自动归档）。合成验证：孪生体被store优先丢弃、bank-v2归档+s取簇符号（全池-0.0002→簇+0.009锁+1）。
 - Owner三拍板（已生效）：G3双侧（新gain族）、habitat通道默认开（`--no-habitat-track`对照）、262列按全量跑；`export_lgb_dataset`最后一步显式`--max-sector 2`。
+- 全仓8点收口（已落实）：①direct长宽表——bank侧pivot宽表（中心化2p-1，列即gate_id），export侧长/宽兼容（旧长表现场转宽；2门控以上旧路径会1254万行爆炸）；②四源helper收敛——`decorrelate_top.factor_full_values`统一6处手抄（select specialist双循环+build_top cond/dom/面板；cond_supplement诊断脚本暂列已知缺口）；③habitat断路/④截面去重/⑤data-cut/⑥分簇接线（上一条）；⑦`audit_pit`衍生列缓存盲区——扰动后强制drop 9列重算，合成验证`VWAP.shift(-1)`作弊3探针全抓（旧实现100%逃逸）；⑧`_store_aligned`全局单次调用+`_centered_u`收敛至`fastranks.centered_u`（f1_batch别名保留，sector/switch分支改调）。脚本级冗余（decorrelate_top/cond_supplement/cond_regime_ic等）按零删除静置，decorrelate_top/cond_supplement仅保留被import的函数。
+- 合成验证：centered_u三处同值；audit好通过/作弊抓；长宽pivot正确；helper四分支；孪生优先；bank-v2归档。supplements全绿、forms 7/7。长跑零启动（用户服务器跑）。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 

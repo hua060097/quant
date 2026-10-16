@@ -144,10 +144,8 @@ def main() -> int:
     ev = Evaluator(frame)
     from refs import FactorBuilder
     builder = FactorBuilder(frame)
-    from decorrelate_top import load_all_specs
+    from decorrelate_top import factor_full_values, load_all_specs
     specs_by_id = load_all_specs()
-    from custom_registry import evaluate_custom_factor as _ecf
-    from custom_registry import load_all_custom_specs as _lcs
     ctx = DataContext(cycle=3, start=W.FACTORS_FIRST_SIGNAL_DATE, end=a.data_cut,
                       frame=frame, label=a.label, evaluator=ev)
     pos = ctx._pos
@@ -155,26 +153,32 @@ def main() -> int:
     labels = ctx.labels.astype(float)
     print(f"ctx rows={ctx.n_rows:,} days={len(np.unique(ctx.row_dates))}", flush=True)
 
-    from parser import parse_formula
     pool, panel_vals = [], {}
     todo = [r for _, r in window.iterrows() if str(r["factor_id"]) not in done_ids]
     todo = todo[:max(0, a.max_factors)]
+    # store 存量列一次性批量映射（单次读表；四源 helper 统一消费）。
+    store_map: dict = {}
+    try:
+        _need_store = sorted({str(r["factor_id"]) for r in todo if str(r["lib"]) == "store"})
+        if _need_store:
+            import boundary as _B
+            _sf = _B.read_factors(_need_store, data_max=a.data_cut, label="specialist-store")
+            _m = _sf.merge(frame[["stock_code", "date"]],
+                           on=["stock_code", "date"], how="right")
+            for _c in _need_store:
+                _vv = _m[_c].to_numpy(dtype=float) if _c in _m.columns else None
+                if _vv is not None and len(_vv) == len(frame):
+                    store_map[_c] = _vv
+            print(f"store 批量映射 {len(store_map)}/{len(_need_store)} 列", flush=True)
+    except Exception as _e:
+        print(f"warning: store 批量映射失败 {str(_e)[:100]}", flush=True)
     for i, r in enumerate(todo, 1):
         fid, lib = str(r["factor_id"]), str(r["lib"])
         try:
-            if lib == "mined":
-                node = parse_formula(str(r["formula_cn"]))
-                full = np.asarray(ev.values(node), dtype=float)
-            elif lib == "custom":
-                spec = _lcs().get(fid)
-                if spec is None:
-                    continue
-                full = np.asarray(_ecf(spec, frame, ev), dtype=float)
-            else:
-                spec = specs_by_id.get(fid)
-                if spec is None:
-                    continue
-                full = builder.get_factor(spec).to_numpy(dtype=float)
+            full = factor_full_values(lib, fid, str(r.get("formula_cn", "")), frame,
+                                      ev, builder, specs_by_id, store_map)
+            if full is None:
+                continue
         except Exception:
             continue
         vals = np.asarray(full, dtype=float)[pos]
@@ -281,15 +285,8 @@ def main() -> int:
             if r is None:
                 continue
             try:
-                lib = str(r["lib"])
-                if lib == "mined":
-                    full = np.asarray(ev.values(parse_formula(str(r["formula_cn"]))), dtype=float)
-                elif lib == "custom":
-                    spec = _lcs().get(fid)
-                    full = np.asarray(_ecf(spec, frame, ev), dtype=float) if spec else None
-                else:
-                    spec = specs_by_id.get(fid)
-                    full = builder.get_factor(spec).to_numpy(dtype=float) if spec else None
+                full = factor_full_values(str(r["lib"]), fid, str(r.get("formula_cn", "")),
+                                          frame, ev, builder, specs_by_id, store_map)
                 if full is not None:
                     cols[fid] = np.asarray(full, dtype=float)
             except Exception:

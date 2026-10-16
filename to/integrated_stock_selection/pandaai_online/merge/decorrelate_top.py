@@ -51,6 +51,40 @@ def load_all_specs() -> dict:
     return by_id
 
 
+def factor_full_values(lib: str, fid: str, formula_cn: str,
+                       frame: pd.DataFrame, ev: Evaluator, builder,
+                       specs_by_id: dict,
+                       store_map: dict | None = None) -> np.ndarray | None:
+    """四源统一求值分发（V4.3c 收敛点）：mined/custom/store/refs 各一分支。
+
+    全仓 6 处手抄的收敛替代（build_top 扫描/cond/dom/面板、select_specialists
+    斜率/面板导出）。返回与 frame 同长的 float64 数组，失败返回 None
+    （调用方跳过；store 缺列同样跳过，不伪造）。
+    store_map：{fid: 与 frame 对齐的全窗数组}（调用方批量预读，如
+    build_top._store_aligned 或 select_specialists 的单次批量映射）。
+    """
+    try:
+        if lib == 'mined':
+            return np.asarray(ev.values(parse_formula(str(formula_cn))), dtype=float)
+        if lib == 'custom':
+            from custom_registry import evaluate_custom_factor as _ecf
+            from custom_registry import load_all_custom_specs as _lcs
+            _spec = _lcs().get(str(fid))
+            if _spec is None:
+                return None
+            return np.asarray(_ecf(_spec, frame, ev), dtype=float)
+        if lib == 'store':
+            if not store_map or str(fid) not in store_map:
+                return None
+            return np.asarray(store_map[str(fid)], dtype=float)
+        _spec = (specs_by_id or {}).get(str(fid))
+        if _spec is None:
+            return None
+        return builder.get_factor(_spec).to_numpy(dtype=float)
+    except Exception:
+        return None
+
+
 def month_end_spearman_matrix(vals: np.ndarray, month_group: np.ndarray) -> np.ndarray | None:
     """vals: (n_rows, n_cand) float32；month_group: 每行月标签。逐日 rank→相关→跨日均值。
 

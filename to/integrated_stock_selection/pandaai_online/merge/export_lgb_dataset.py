@@ -112,6 +112,12 @@ def main() -> int:
             sdf = pd.read_parquet(sec_path)
             sdf['date'] = pd.to_datetime(sdf['date'])
             sdf = sdf[sdf['date'] <= pd.Timestamp(args.data_cut)]
+            # 长/宽表兼容：旧版长表（date/sector/gate_id/p）就地转为宽表；
+            # 宽表列即 gate_id（bank-v2 起已中心化 2p-1；旧长表 p 在此中心化）。
+            if 'gate_id' in sdf.columns:
+                _w = sdf.pivot_table(index=['date', 'sector'], columns='gate_id',
+                                     values='p', aggfunc='mean')
+                sdf = (2.0 * _w - 1.0).reset_index()
             scols = [c for c in sdf.columns
                      if c not in ('stock_code', 'date', 'sector')][:args.max_sector]
             if 'sector' in sdf.columns and 'stock_code' not in sdf.columns:

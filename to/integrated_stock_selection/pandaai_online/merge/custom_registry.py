@@ -147,6 +147,7 @@ def audit_pit(spec: CustomFactorSpec, frame: pd.DataFrame,
     if not price_cols:
         return {"passed": False, "failed_dates": [{"date": "no-price-cols"}],
                 "note": "no price columns found, audit refused"}
+    from field_catalog import EXTENDED_ONLY_FIELDS, LOCAL_ONLY_FIELDS
     failed = []
     for di in sorted(int(x) for x in cands):
         t = dates[di]
@@ -155,6 +156,11 @@ def audit_pit(spec: CustomFactorSpec, frame: pd.DataFrame,
         for c in price_cols:
             noise = rng.normal(loc=0.0, scale=1.0, size=int(after.sum()))
             mut.loc[after, c] = noise
+        # 衍生列缓存盲区修复：base 已把 9 个本地/扩展列算进 frame 并被 copy 继承；
+        # ensure_* 幂等判断会跳过重算，使依赖 VWAP/IND_RET/BETA20 等的前视作弊逃逸。
+        # 扰动后强制删除，令 _evaluate_core 从扰动价格重算。
+        mut.drop(columns=list(LOCAL_ONLY_FIELDS) + list(EXTENDED_ONLY_FIELDS),
+                 errors="ignore", inplace=True)
         try:
             got = _evaluate_core(spec, mut, None)
         except Exception as e:

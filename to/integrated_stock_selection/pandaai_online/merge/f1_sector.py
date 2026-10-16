@@ -218,17 +218,12 @@ def main():
                 from f1_batch import _centered_u as _cu
                 u_row = _cu(xv, day, nd, int(c["d"]))
             elif _is_switch:
-                # switch legs方向：cands自带d_off/d_def（缺省1）；u已做有向对齐
+                # switch legs方向：cands自带d_off/d_def（缺省1）；统一调公共定义。
                 u_off_row, u_def_row = None, None
                 for _cc, _dd, _slot in ((c["base_off"], int(c.get("d_off", 1)), 0),
                                         (c["base_def"], int(c.get("d_def", 1)), 1)):
                     _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
-                    _rk = FR.blockwise_rank(np.where(np.isfinite(_xv), _xv, np.nan), day)
-                    _dcnt = np.bincount(day, minlength=nd).astype(float)
-                    with np.errstate(invalid="ignore", divide="ignore"):
-                        _pct = _rk / np.maximum(_dcnt[day], 1)
-                    _u = _dd * (_pct - 0.5)
-                    _u[~np.isfinite(_xv)] = np.nan
+                    _u = FR.centered_u(_xv, day, nd, _dd)
                     if _slot == 0:
                         u_off_row = _u
                     else:

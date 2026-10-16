@@ -90,21 +90,10 @@ def load_panel(names: list[str]):
 
 
 def _centered_u(xv: np.ndarray, day: np.ndarray, nd: int, d: float) -> np.ndarray:
-    """有向居中百分位秩 u = d*(RankPct-0.5)（与 f1_batch._centered_u 逐字同义）。
-
-    输入必须为**原始值**（函数内排名后再乘 d）；传入 d*xv 会在 d=-1 时
-    负负得正。调用方注意。
-
-    在日内秩层面消除截面均值/量纲，杜绝原始值 z 与行业权重相乘的
-    Level-Leak；调用方每因子只算一次（循环内不再重复 to_numeric）。
+    """有向居中百分位秩（统一定义见 fastranks.centered_u；此别名保留供内部调用）。
+    输入必须为**原始值**（函数内排名后再乘 d）；传入 d*xv 会在 d=-1 时负负得正。
     """
-    rk = FR.blockwise_rank(np.where(np.isfinite(xv), xv, np.nan), day)
-    dcnt = np.bincount(day, minlength=nd).astype(float)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        pct = rk / np.maximum(dcnt[day], 1)
-    u = float(d) * (pct - 0.5)
-    u[~np.isfinite(xv)] = np.nan
-    return u
+    return FR.centered_u(xv, day, nd, int(d))
 
 
 def build_sector_gate_matrix(sg: pd.DataFrame, gid: str, uniq: np.ndarray):
