@@ -101,10 +101,12 @@ def main() -> int:
     ap.add_argument("--bank", default=os.path.join(SPACE, "certified_gate_bank.json"))
     ap.add_argument("--label", default="vwap")
     ap.add_argument("--rank-lo", type=int, default=21)
-    ap.add_argument("--rank-hi", type=int, default=150)
+    ap.add_argument("--rank-hi", type=int, default=400,
+                    help="断路3修复：flip 型正负抵消因子 LGB≈0 排在 #200 之后，"
+                         "150 会系统漏杀；默认扫到 #400（flat 全覆盖）")
     ap.add_argument("--t-min", type=float, default=2.5)
     ap.add_argument("--uncond-max", type=float, default=0.05)
-    ap.add_argument("--max-factors", type=int, default=60)
+    ap.add_argument("--max-factors", type=int, default=150)
     ap.add_argument("--max-switch", type=int, default=12)
     ap.add_argument("--data-cut", default=W.DEFAULT_DATA_CUT)
     ap.add_argument("--resume", default="",
@@ -305,8 +307,8 @@ def main() -> int:
                 "uncond_max": a.uncond_max, "data_cut": a.data_cut,
                 "n_scanned": len(pool), "n_selected": len(sel),
                 "factors": pool, "switch_pairs": switch_pairs,
-                "sector_note": "market-gate specialists only in V1; "
-                               "sector path unchanged (vwap_top20/base20)"}
+                "sector_note": "market + sector cands both generated "
+                               "(specialist_sector_cands_*.json for f1_sector)"}
     with open(os.path.join(RESULTS, "specialist_pool.json"), "w", encoding="utf-8") as f:
         json.dump(out_pool, f, ensure_ascii=False, indent=1)
 
@@ -346,6 +348,48 @@ def main() -> int:
             json.dump(man, f, ensure_ascii=False, indent=1)
         print(f"family F1v3_{form}: n={man['n_expected']} hash={man['members_hash']} -> {mp}",
               flush=True)
+    # 断路3修复：行业门控偏科候选（bank sector门控 × 偏科因子/switch对）。
+    # s 取 bank 行业锁定符号（组级预注册）；d 取因子自身方向。供 f1_sector 开箱消费。
+    sec_gates = [e for e in bank.get("entries", []) if e.get("level") == "sector"]
+    if sec_gates:
+        def _scand(p, form, sg):
+            return {"name": f"{p['factor_id']}__{sg['gate_id']}__{form}",
+                    "base": p["factor_id"], "gate": sg["gate_id"],
+                    "gate_type": "sector", "s": int(sg["s"]),
+                    "d": int(dirmap.get(p["factor_id"], 1)), "form": form}
+        for form in ("gain", "flip"):
+            sub = [p for p in sel if p["suggested_form"] == form]
+            sec_cands = [_scand(p, form, sg) for p in sub for sg in sec_gates]
+            with open(os.path.join(RESULTS, f"specialist_sector_cands_{form}.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump(sec_cands, f, ensure_ascii=False, indent=1)
+            print(f"specialist_sector_cands_{form}.json: {len(sec_cands)}", flush=True)
+        ssw = []
+        for sg in sec_gates:
+            for sp in switch_pairs:
+                ssw.append({"name": f"{sp['off']}__{sp['def']}__{sg['gate_id']}__switch",
+                            "base": f"{sp['off']}__{sp['def']}",
+                            "base_off": sp["off"], "base_def": sp["def"],
+                            "gate": sg["gate_id"], "gate_type": "sector",
+                            "s": int(sg["s"]), "d": 1,
+                            "d_off": int(dirmap.get(sp["off"], 1)),
+                            "d_def": int(dirmap.get(sp["def"], 1)), "form": "switch"})
+        with open(os.path.join(RESULTS, "specialist_sector_cands_switch.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump(ssw, f, ensure_ascii=False, indent=1)
+        print(f"specialist_sector_cands_switch.json: {len(ssw)}", flush=True)
+        for form, path in (("gain", "specialist_sector_cands_gain.json"),
+                           ("flip", "specialist_sector_cands_flip.json"),
+                           ("switch", "specialist_sector_cands_switch.json")):
+            cp = os.path.join(RESULTS, path)
+            man = FF.build_from_cands(cp, family="F1v3_sector", form=form)
+            mp = os.path.join(SPACE, f"family_manifest_F1v3_sector_{form}.json")
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump(man, f, ensure_ascii=False, indent=1)
+            print(f"family F1v3_sector_{form}: n={man['n_expected']} "
+                  f"hash={man['members_hash']} -> {mp}", flush=True)
+    else:
+        print("bank 无sector门控：跳过 sector cands 生成", flush=True)
     print(f"done {time.time()-t0:.0f}s", flush=True)
     return 0
 

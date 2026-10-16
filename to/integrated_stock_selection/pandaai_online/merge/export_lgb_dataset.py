@@ -45,8 +45,9 @@ def main() -> int:
     ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT)
     ap.add_argument('--max-alpha', type=int, default=80, help='Class 1 正交个股Alpha上限')
     ap.add_argument('--max-interact', type=int, default=25, help='Class 4 门控交互因子上限')
-    ap.add_argument('--max-sector', type=int, default=0,
-                    help='Class 3 行业广播状态上限（默认0=不入模；>0仅诊断，需单独审批）')
+    ap.add_argument('--max-sector', type=int, default=2,
+                    help='Class 3 行业广播状态上限（默认2：Owner D8 豁免已批，最多3；'
+                         '传 0 显式关闭）')
     ap.add_argument('--alpha-panel', default=str(RESULTS / 'vwap_top20_factors.parquet'),
                     help='Class 1 候选面板（默认读build_top动态面板；缺失则空跑并警告）')
     ap.add_argument('--out-dir', default=str(RESULTS / 'lgb_ready'))
@@ -103,8 +104,9 @@ def main() -> int:
     # 3. Class 3 行业状态（默认关闭；显式开启仅诊断）
     sector_features = []
     if args.max_sector and args.max_sector > 0:
-        print('warning: --max-sector>0 需Owner豁免（PLAN §21 D8 clarification）；'
-              '纯市场广播恒为0')
+        if args.max_sector > 3:
+            print('warning: --max-sector>3 超出Owner豁免上限（D8: max 2-3）；'
+                  '纯市场广播恒为0')
         sec_path = RESULTS / 'gates_search' / 'direct_sector_states.parquet'
         if not sec_path.exists():
             sec_path = RESULTS / 'gates_search' / 'approved_sector_states.parquet'

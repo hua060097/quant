@@ -896,6 +896,8 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - Owner三拍板（已生效）：G3双侧（新gain族）、habitat通道默认开（`--no-habitat-track`对照）、262列按全量跑；`export_lgb_dataset`最后一步显式`--max-sector 2`。
 - 全仓8点收口（已落实）：①direct长宽表——bank侧pivot宽表（中心化2p-1，列即gate_id），export侧长/宽兼容（旧长表现场转宽；2门控以上旧路径会1254万行爆炸）；②四源helper收敛——`decorrelate_top.factor_full_values`统一6处手抄（select specialist双循环+build_top cond/dom/面板；cond_supplement诊断脚本暂列已知缺口）；③habitat断路/④截面去重/⑤data-cut/⑥分簇接线（上一条）；⑦`audit_pit`衍生列缓存盲区——扰动后强制drop 9列重算，合成验证`VWAP.shift(-1)`作弊3探针全抓（旧实现100%逃逸）；⑧`_store_aligned`全局单次调用+`_centered_u`收敛至`fastranks.centered_u`（f1_batch别名保留，sector/switch分支改调）。脚本级冗余（decorrelate_top/cond_supplement/cond_regime_ic等）按零删除静置，decorrelate_top/cond_supplement仅保留被import的函数。
 - 合成验证：centered_u三处同值；audit好通过/作弊抓；长宽pivot正确；helper四分支；孪生优先；bank-v2归档。supplements全绿、forms 7/7。长跑零启动（用户服务器跑）。
+- 全链路4断路收口（已落实）：①`mined_prefilter`并集——台账`local`事件记`habitat_score`，prefilter取sia-top200 ∪ habitat-top50（合成验证h08/h09低sia高habitat被捞入）；②面板全量落盘——`vwap_top20_factors.parquet`=`order[:keep_pool]`+席位（json同步扩全集供F1方向表，门控基准仍取前keep_base）；③specialist窗口`--rank-hi 400`/`--max-factors 150`+sector三式cands及`F1v3_sector_*`清单（bank sector s组级预注册）；④direct全序贪心（g2_pass优先+|delta|，14/14全测故无需screen未测量回填，诚实排除未测）+`--max-sector`默认2（>3告警）。
+- 还差的长跑（服务器）：面板重算63规格→pipeline `--by-group`→sector G2/G3全量→bank-v2→build_top全量→specialists→三式F1（market+sector双线）→judge→materialize→export（`--max-sector 2`）。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 

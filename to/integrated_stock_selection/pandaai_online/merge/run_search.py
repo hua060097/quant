@@ -738,6 +738,9 @@ class SearchRun:
                       'search_value': search_value,
                       'search_metric': label_search_metric(lab),
                       'resid': rm, 'dual': dual,
+                      'habitat_score': rec.get('habitat_score'),
+                      'habitat_jsd': rec.get('habitat_jsd'),
+                      'habitat_contrast': rec.get('habitat_contrast'),
                       'source': rec.get('source', 'template')}
                       if lab == self.primary else
                       {'search_value': search_value,
@@ -1819,6 +1822,7 @@ def _ledger_candidates(ledger: Ledger) -> dict:
             'direction': int(rec.get('direction', 1)),
             'mi': t.get('mi'), 'mi_std': t.get('mi_std'),
             'nmi': t.get('nmi'), 'jsd': t.get('jsd'),
+            'habitat_score': d.get('habitat_score'),
             'turnover_month': t.get('turnover_month'), 'net': t.get('net'),
             'sharpe': t.get('sharpe'), 'mdd': t.get('mdd'),
             'rank_ic': t.get('rank_ic'), 'ic': t.get('ic'),

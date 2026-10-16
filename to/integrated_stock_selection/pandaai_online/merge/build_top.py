@@ -258,7 +258,7 @@ def load_refs_rows() -> pd.DataFrame:
     return df
 
 
-def mined_prefilter(top: int) -> list[dict]:
+def mined_prefilter(top: int, habitat_top: int = 50) -> list[dict]:
     ledger = Ledger()
     rows = _ledger_candidates(ledger)
     print(f'ledger candidates: {len(rows)}', flush=True)
@@ -272,6 +272,21 @@ def mined_prefilter(top: int) -> list[dict]:
             cand.append((float(m['sia']), h))
         cand.sort(key=lambda x: -x[0])
         picks.extend(h for _, h in cand[:top])
+    # 断路1修复：habitat 豁免因子（线性 sia≈0 但 habitat_score 高）并集捞入，
+    # 否则 Class2 在 build_top 入口即被 sia 排序杀光。配额 habitat_top（默认50）。
+    try:
+        hcand = []
+        for h, b in rows.items():
+            _hs = [(b['labels'].get(lab) or {}).get('habitat_score') for lab in ('c2c', 'vwap')]
+            _hs = [float(x) for x in _hs if x is not None and np.isfinite(x)]
+            if _hs:
+                hcand.append((max(_hs), h))
+        hcand.sort(key=lambda x: -x[0])
+        picks.extend(h for _, h in hcand[:max(0, habitat_top)])
+        print(f'habitat union: +{min(max(0, habitat_top), len(hcand))} (pool {len(hcand)})',
+              flush=True)
+    except Exception as exc:
+        print(f'warning: habitat union 跳过 {str(exc)[:100]}', flush=True)
     uniq = list(dict.fromkeys(picks))
     out = []
     for h in uniq:
@@ -1260,6 +1275,9 @@ def main() -> int:
     md_path.write_text(md, encoding='utf-8')
     df.to_csv(OUT_DIR / f'ALIGNED_TOP2_{ts}_flat.csv', index=False, encoding='utf-8-sig')
     # V4.1动态靶标面板：vwap正交顺序按LGB降序、每family最多4个均衡抽取keep_base个
+    # 断路2修复：因子值面板必须落 vwap_order[:keep_pool] 全部正交主力 + 席位
+    #（旧代码只落 family 均衡的 keep_base=20 列，60 个主力凭空蒸发）。
+    # json 同步扩为面板全集（F1 方向表；门控基准仍取前 keep_base）。
     try:
         _vsel = vwap_df.iloc[vwap_order] if vwap_order else vwap_df.head(args.keep_base)
         _picked, _fam_cnt = [], {}
@@ -1271,8 +1289,18 @@ def main() -> int:
             _fam_cnt[_f] = _fam_cnt.get(_f, 0) + 1
             if len(_picked) >= args.keep_base:
                 break
+        _pool_rows = list(vwap_df.iloc[(vwap_order or [])[:max(0, args.keep_pool)]].iterrows())
+        _pool_rows = [r for _, r in _pool_rows]
+        _seen_panel = set()
+        _panel_rows = []
+        for _r in _picked + _pool_rows + [vwap_df.iloc[_sp] for _sp in seat_order]:
+            _fid = str(_r.get('factor_id'))
+            if _fid in _seen_panel:
+                continue
+            _seen_panel.add(_fid)
+            _panel_rows.append(_r)
         _top20 = []
-        for _r in _picked:
+        for _r in _panel_rows:
             _d = _r.get('direction')
             try:
                 _d = int(_d)
@@ -1283,28 +1311,16 @@ def main() -> int:
                            'family': str(_r.get('family', '')),
                            'formula': str(_r.get('formula_cn', '')),
                            'lib': str(_r.get('lib', ''))})
-        # V4.3c 席位进 json（ direction 供 F1，habitat_seat 标记专属配额）。
+        # V4.3c 席位标记（_panel_rows 已含席位；此处只打标记供 export 强制收录）。
         _seat_ids = set()
-        for _sp in seat_order:
-            try:
-                _r = vwap_df.iloc[_sp]
-                _d = _r.get('direction')
-                try:
-                    _d = int(_d)
-                except Exception:
-                    _d = 1
-                _fid = str(_r.get('factor_id'))
-                if _fid in {x['factor'] for x in _top20}:
-                    continue
-                _seat_ids.add(_fid)
-                _top20.append({'factor': _fid,
-                               'direction': 1 if _d == 1 else -1,
-                               'family': str(_r.get('family', '')),
-                               'formula': str(_r.get('formula_cn', '')),
-                               'lib': str(_r.get('lib', '')),
-                               'habitat_seat': True})
-            except Exception:
-                continue
+        try:
+            for _sp in seat_order:
+                _seat_ids.add(str(vwap_df.iloc[_sp].get('factor_id')))
+        except Exception:
+            pass
+        for _e in _top20:
+            if _e['factor'] in _seat_ids:
+                _e['habitat_seat'] = True
         _base_dir = HERE.parent.parent / 'results' / 'merge_v2'
         _base_dir.mkdir(parents=True, exist_ok=True)
         (_base_dir / 'vwap_top20.json').write_text(
@@ -1319,8 +1335,8 @@ def main() -> int:
             _panel_cols = {'stock_code': frame['stock_code'].to_numpy(),
                            'date': pd.to_datetime(frame['date']).to_numpy()}
             # V4.3c：store 列一次性批量读取（禁循环内单列重复读 7GB 表）。
-            _panel_rows = _picked + [vwap_df.iloc[_sp] for _sp in seat_order]
-            _panel_store = sorted({_r.get('factor_id') for _r in _panel_rows
+            # _panel_rows = picked20 + order[:keep_pool] + seats（断路2：全量落盘）。
+            _panel_store = sorted({str(_r.get('factor_id')) for _r in _panel_rows
                                    if _r.get('lib') == 'store'})
             _panel_smap: dict = {}
             if _panel_store:

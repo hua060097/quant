@@ -115,12 +115,15 @@ def main() -> int:
             g4_note = f"cluster-reuse-failed: {str(e)[:100]}"
     mdf = mdf.head(max(0, a.max_market))
 
-    sdf = pd.read_csv(secg)
-    sdf = sdf[sdf.get("g2_pass") == True].copy()
-    if len(sdf):
-        sdf["_absd"] = sdf["delta_median"].abs()
-        sdf = sdf.sort_values(["g3_pass", "_absd"], ascending=[False, False])
-    sdf = sdf.head(max(0, a.max_sector))
+    # 断路4修复：direct 不再强制 g2_pass（Class3 背景坐标 ≠ Class4 调节器）。
+    # 候选 = 全部已测 sector 门控，按 (g2_pass 优先, |delta| 降序) 排；
+    # bank 条目取前 max_sector，direct 在全序上贪心 |rho|<0.7 取满 max_direct。
+    # （V4.3a 起 14/14 全测，无需 screen.csv 未测量回填；未测门控诚实排除。）
+    sdf_all = pd.read_csv(secg)
+    sdf_all["_absd"] = sdf_all["delta_median"].abs()
+    sdf_all = sdf_all.sort_values(["g2_pass", "g3_pass", "_absd"],
+                                  ascending=[False, False, False])
+    sdf = sdf_all.head(max(0, a.max_sector)).copy()
 
     reg = {}
     if os.path.exists(regp):
@@ -163,11 +166,13 @@ def main() -> int:
                         "score": None,
                         "g3_pass": bool(r.get("g3_pass", False))})
 
-    # 纯行业直入 states：sector bank内按|delta_median|贪心取两两|rho|<0.7者
+    # 纯行业直入 states：在**全序**（g2_pass优先，|delta|降序）上贪心取
+    # 两两|rho|<0.7者，不限于 bank 条目（Class3 背景坐标不设 G2 硬门）。
     direct = []
     direct_note = "skipped"
     try:
-        sec_ids = [e["gate_id"] for e in entries if e["level"] == "sector"]
+        _ordf = sdf_all.copy()
+        sec_ids = list(_ordf["gate_id"].astype(str))
         if sec_ids and a.max_sector_direct > 0:
             secdir = os.path.join(space, "gate_search_sector.parquet")
             sg = pd.read_parquet(secdir, columns=["date", "sector", "gate_id", "p"])
@@ -182,10 +187,7 @@ def main() -> int:
                 _union = w.index if _union is None else _union.union(w.index)
             for gid, s in _wide.items():
                 pivots[gid] = s.reindex(_union).to_numpy(dtype=float)
-            order = sorted(sec_ids,
-                           key=lambda g: abs(float(sdf.set_index("gate_id").loc[g, "delta_median"]))
-                                           if g in set(sdf["gate_id"]) else 0.0,
-                           reverse=True)
+            order = sec_ids
 
             def _rho(a_, b_):
                 m = np.isfinite(a_) & np.isfinite(b_)
@@ -224,7 +226,10 @@ def main() -> int:
                            "owner_exemption": "D8 clarification: max 2-3 sector SxT states "
                                               "allowed (Owner 2026-10-15); market 1xT stays 0"},
                           f, ensure_ascii=False, indent=1)
-            direct_note = f"selected {direct} (|rho|<0.7 greedy)"
+            _npass = int((_ordf["g2_pass"] == True).sum()) \
+                if "g2_pass" in _ordf.columns else 0
+            direct_note = (f"selected {direct} (|rho|<0.7 greedy, "
+                           f"order=g2pass-first+|delta|, {_npass}/{len(_ordf)} pass)")
     except Exception as e:
         direct_note = f"failed: {str(e)[:150]}"
 
