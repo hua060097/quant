@@ -172,6 +172,25 @@ def main():
     n_sec = len(sec_uniq)
     # R3 日内排名（全候选共享）
     _, _, _, yrk, _ = E._prepared(m, base_cols[0], "r3")
+    # gain 底仓倾斜底座（与市场 gain 同构）：Ubar 为全部 base 有向居中秩均值，
+    # 方向取 cands 中同 base 首次出现的 d（与逐候选 u_row 口径一致）。
+    _dmap: dict[str, int] = {}
+    for _cc in cands:
+        for _bb in ([_cc.get("base")] if not _cc.get("base_off")
+                    else [_cc.get("base_off"), _cc.get("base_def")]):
+            if _bb and _bb not in _dmap:
+                _k = "d_off" if _bb == _cc.get("base_off") else (
+                    "d_def" if _bb == _cc.get("base_def") else "d")
+                try:
+                    _dmap[_bb] = int(_cc.get(_k, 1))
+                except Exception:
+                    _dmap[_bb] = 1
+    _u_all: dict[str, np.ndarray] = {}
+    for _bc in base_cols:
+        _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
+        _u_all[_bc] = FR.centered_u(_xv, day, nd, int(_dmap.get(_bc, 1)))
+    _Ubar = np.nanmean(np.column_stack(list(_u_all.values())), axis=1) \
+        if _u_all else np.full(len(m), np.nan)
     # gate 面板矩阵 G[date_idx, sec_idx]，按 uniq 日期顺序
     date_idx = day  # _prepared 按 date 排序，day 即日期码（0..nd-1），与 uniq 顺序一致
     assert nd == n_dates
@@ -293,15 +312,30 @@ def main():
                     f1[okrow] = z[okrow] * ww
                 return f1
 
+            def _tilt_ic(F1k: np.ndarray) -> np.ndarray:
+                # 底仓倾斜（与市场 gain 同构）：S=Ubar+0.25·F vs Ubar+0.25·u。
+                # 单因子恒正权重数学上无法提升单因子 IC（方差稀释偏置），
+                # 倾斜把权重缩 0.25（偏置×1/16 可忽略）并度量多因子组合增量。
+                _fr = FR.blockwise_rank(
+                    np.where(np.isfinite(Ubar + 0.25 * F1k),
+                             Ubar + 0.25 * F1k, np.nan), day)
+                return E._daily_corr(_fr, yrk, day, nd)
+
             def f1_ic_of(Gm, Pm=None):
+                if _is_gain:
+                    return _tilt_ic(f1_scores(Gm, Pm))
                 fr = FR.blockwise_rank(f1_scores(Gm, Pm), day)   # 2.4× vs _within_rank
                 return E._daily_corr(fr, yrk, day, nd)
 
             f1_ic = f1_ic_of(G)
-            if _is_gain or _is_flip:
+            if _is_gain:
+                _s_static = Ubar + 0.25 * u_row
+                br = FR.blockwise_rank(
+                    np.where(np.isfinite(_s_static), _s_static, np.nan), day)
+            elif _is_flip:
                 br = FR.blockwise_rank(np.where(np.isfinite(u_row), u_row, np.nan), day)
             elif _is_switch:
-                _static = 0.5 * u_off_row + 0.5 * u_def_row
+                _static = H.static_consensus(u_off_row, u_def_row)
                 br = FR.blockwise_rank(np.where(np.isfinite(_static), _static, np.nan), day)
             else:
                 br = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
@@ -335,6 +369,8 @@ def main():
                 else:
                     nulls[pi] = _d2(f1_ic_of(G[pidx]))
             nulls = nulls[np.isfinite(nulls)]
+            # 净增益诊断：相对随机置换门控的增量（扣除零分布基线；判定仍用 H3 原口径）。
+            mu_null = float(np.mean(nulls)) if len(nulls) else float("nan")
             if len(nulls) == 0 or not np.isfinite(obs):
                 p = float("nan")
             else:
@@ -363,6 +399,9 @@ def main():
                 "slope_b": sl.get("b"), "slope_t": sl.get("t"),
                 "placebo_p": p, "placebo_obs": obs,
                 "placebo_q95": float(np.quantile(np.abs(nulls), 0.95)) if len(nulls) else float("nan"),
+                "delta_net": (float(dl.get("mean") - mu_null)
+                              if np.isfinite(dl.get("mean", float("nan")))
+                              and np.isfinite(mu_null) else float("nan")),
                 "spread_abs_g_corr": scorr,
                 "leak_risk": bool(abs(scorr) > 0.8) if np.isfinite(scorr) else False,
                 "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),

@@ -48,10 +48,14 @@ def main() -> int:
     b = H.build_switch_blend(np.array([1.0, 0.0, 0.5, np.nan]),
                              np.array([2.0, 2.0, 2.0, 2.0]),
                              np.array([0.0, 0.0, 0.0, 0.0]))
-    check("S1", "switch端点/中点混合",
+    check("S1", "switch端点/中点混合（等方差归一）",
           np.isclose(b[0], 2.0) and np.isclose(b[1], 0.0)
-          and np.isclose(b[2], 1.0) and np.isnan(b[3]),
+          and np.isclose(b[2], 1.0 / np.sqrt(0.5)) and np.isnan(b[3]),
           "F=%s" % np.array2string(b, precision=2))
+    _st = H.static_consensus(np.array([2.0, 2.0]), np.array([0.0, 0.0]))
+    check("S2", "静态共识同归一（/√0.5）",
+          np.isclose(_st[0], 1.0 / np.sqrt(0.5)) and np.isclose(_st[1], 1.0 / np.sqrt(0.5)),
+          "S=%s" % np.array2string(_st, precision=3))
 
     f1 = H.build_f1(np.array([0.3, -0.2]), np.array([0.5, -0.5]), 1, 1)
     check("B1", "旧build_f1冻结语义不变",

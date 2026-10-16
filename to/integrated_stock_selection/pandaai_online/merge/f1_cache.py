@@ -27,7 +27,7 @@ CACHE_PATH = os.path.join(SPACE, "f1_pair_cache.jsonl")
 #: 复用时直接透传进 rec 的统计量键（fail_reason 单独处理）。
 STAT_KEYS = ("delta_mean", "delta_ci_lo", "delta_ci_hi", "nblocks_pos", "blocks",
              "slope_b", "slope_t", "placebo_p", "placebo_obs", "placebo_q95",
-             "placebo_pct", "n_days_f1", "n_days_base", "tilt_delta")
+             "placebo_pct", "n_days_f1", "n_days_base", "tilt_delta", "delta_net")
 
 
 def pair_fp(base: str, gate: str, s, d, form: str, label_max: str,

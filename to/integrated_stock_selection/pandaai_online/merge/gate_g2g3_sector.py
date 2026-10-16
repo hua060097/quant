@@ -15,12 +15,13 @@
 （`u` 有向居中秩，`g = 2p-1` 中心化门控；与 `f1_sector --form gain` 同构，
 V4.3a 起废除旧 `d·x·max(s·g,0)` 截断式）重建后排名。
 
-## 本实现的统计量（与市场版对应的两种口径）
+## 本实现的统计量（无偏对称差口径）
 
-- **主口径 `delta`**：`ΔIC = mean(IC_F1) − mean(IC_base)`——**忠实于逐股掩码**，
-  即市场版"阈值对齐口径"的行业对应物。
-- **次口径 `slope`**：`base_ic ~ 日均门控值` 的 OLS 斜率（与市场版"线性斜率口径"对应，
-  但受"日均"聚合损失，仅作对照）。
+- **主口径 `delta_sym`**：`Δ = mean(IC(u·w(+g)) − IC(u·w(−g)))`——正反对称，
+  乘性方差稀释偏置在零假设下严格相消（期望为 0）；符号直接锁定 bank s。
+  旧 `IC(F1)−IC(base)` 口径因恒正偏置（实测 23 门控全挤在 −0.001）已废除。
+- **分簇**：与市场 `--by-group` 对齐（7 真机制簇；t2/ungrouped 不成簇）；
+  全池优先，仅全池未过时分簇拯救。
 
 G2 判定：4 折同号 + 块自助（块长 5，时间块）95% 区间不含 0 + 同号因子占比 ≥60%。
 G3：**块置换门控矩阵**（全行业同置换，与 `f1_sector` 的 placebo 一致）→ 零分布 →
@@ -204,10 +205,12 @@ def main() -> int:
     sg = sg[sg["date"] <= CUT]
 
     # ---------------------------------------------------------------- 分块 G2
-    # 逐块：载入 → PanelRanker（y 排名缓存）→ base_ic + 各门控的 F1 IC
-    per_gate_ds = {g: [] for g in el}          # gate -> [per-factor ΔIC]
-    per_gate_ics = {g: [] for g in el}         # gate -> [f1 IC 序列]
-    base_ics = []
+    # 无偏对称差口径（消除乘性方差稀释偏置）：Δsym,daily = IC(u·w(+g)) − IC(u·w(−g))，
+    # 零假设下期望严格为 0（双侧方差稀释项相消）；符号直接锁定 bank s。
+    # 逐块：载入 → PanelRanker（y 排名缓存）→ 每 (因子×门控) 正负两套 F1 IC。
+    per_gate_ds = {g: [] for g in el}          # gate -> [per-factor Δsym 均值]
+    per_gate_syms = {g: [] for g in el}        # gate -> [per-factor Δsym 日序列]
+    per_gate_factors = {g: [] for g in el}     # gate -> [因子名]（与上面两表对齐）
     day = nd = None
     uniq = sec_ids = None
     dirmap_all = {}
@@ -238,82 +241,125 @@ def main() -> int:
             # 对原始值排名再乘 d（与 f1_batch._centered_u 逐字同义；勿传 d*xv，
             # 否则 d=-1 时负负得正方向全反——f1_sector 同 bug 已并修）。
             u = _centered_u(xv, day, nd, d)
-            xr = d * pr.values(c)
-            br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day)
-            bb = E._daily_corr(br, pr.y, day, nd)
-            base_ics.append(bb)
             for g in el:
                 Gmat, di, ci = gmats[g]
-                ic = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, 1)
-                per_gate_ics[g].append(ic)
-                m1, m2 = np.isfinite(ic), np.isfinite(bb)
-                per_gate_ds[g].append(float(ic[m1].mean() - bb[m2].mean())
-                                      if m1.any() and m2.any() else np.nan)
+                ic_p = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, 1)
+                ic_m = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, -1)
+                m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
+                dsym = np.full(len(ic_p), np.nan)
+                dsym[m1 & m2] = ic_p[m1 & m2] - ic_m[m1 & m2]
+                per_gate_syms[g].append(dsym)
+                per_gate_factors[g].append(c)
+                per_gate_ds[g].append(float(np.nanmean(dsym))
+                                      if np.isfinite(dsym).any() else np.nan)
         del m, pr
         print(f"  块 {ci}/{len(chunks)}（{len(chunk)} 因子） "
               f"{time.time() - t0:.0f}s", flush=True)
 
     # ---------------------------------------------------------------- 组级统计
+    # 无偏对称差 + 机制分簇（与市场 --by-group 对齐）：全池优先，仅全池未过
+    # （多机制对冲）时用 7 真机制簇拯救；t2_promoted/ungrouped 不成簇。
+    def _stat_on(idxs):
+        _ds = np.array([per_gate_ds[g][_j] for _j in idxs])
+        _fin = np.isfinite(_ds)
+        if int(_fin.sum()) < a.min_factors:
+            return None
+        _syms = [per_gate_syms[g][_j] for _j in np.flatnonzero(_fin)]
+        _med = float(np.median(_ds[_fin]))
+        _sgn = np.sign(_med) if _med != 0 else 1.0
+        _same = float((np.sign(_ds[_fin]) == _sgn).mean())
+        _edges = np.linspace(0, T, G2_FOLDS + 1).astype(int)
+        _folds = 0
+        for _i in range(G2_FOLDS):
+            _sl = slice(_edges[_i], _edges[_i + 1])
+            _fd = []
+            for _s in _syms:
+                _a1 = _s[_sl]
+                if np.isfinite(_a1).any():
+                    _fd.append(np.nanmean(_a1))
+            _fd = np.asarray(_fd)
+            _fd = _fd[np.isfinite(_fd)]
+            if len(_fd) >= 5 and np.sign(np.median(_fd)) == _sgn:
+                _folds += 1
+        _rng = np.random.default_rng(0)
+        _nb = max(1, T // G2_BOOT_BLOCK)
+        _boots = np.empty(a.n_boot)
+        for _bi in range(a.n_boot):
+            _pick = _rng.integers(0, _nb, size=_nb)
+            _idx = np.concatenate([np.arange(_j * G2_BOOT_BLOCK,
+                                             min((_j + 1) * G2_BOOT_BLOCK, T))
+                                   for _j in _pick])
+            _per = []
+            for _s in _syms:
+                _a1 = _s[_idx]
+                if np.isfinite(_a1).sum() > 20:
+                    _per.append(np.nanmean(_a1))
+            _boots[_bi] = np.nanmedian(np.asarray(_per))
+        _boots = _boots[np.isfinite(_boots)]
+        _lo = float(np.quantile(_boots, 0.025)) if len(_boots) else np.nan
+        _hi = float(np.quantile(_boots, 0.975)) if len(_boots) else np.nan
+        return {"med": _med, "sgn": _sgn, "same": _same, "folds": _folds,
+                "lo": _lo, "hi": _hi, "n": int(_fin.sum())}
+
+    _gmap = {}
+    try:
+        _roles = pd.read_csv(os.path.join(RESULTS, "roles.csv"))
+        _gmap = dict(zip(_roles["name"].astype(str), _roles["group"].astype(str)))
+    except Exception:
+        pass
     rows = []
-    print(f"\n{'gate':<26s}{'ΔIC中位':>11s}{'同号':>7s}{'4折':>6s}"
-          f"{'CI下界':>11s}{'G3':>6s}")
-    T = len(base_ics[0])
+    print(f"\n{'gate':<26s}{'Δsym中位':>11s}{'同号':>7s}{'4折':>6s}"
+          f"{'CI下界':>11s}{'簇':>16s}{'G3':>6s}")
+    T = len(per_gate_syms[el[0]][0])
     for g in el:
-        ds = np.array(per_gate_ds[g])
-        fin = np.isfinite(ds)
-        if fin.sum() < a.min_factors:
-            print(f"{g:<26s}  跳过（有效因子 {int(fin.sum())} < "
-                  f"min_factors={a.min_factors}）", flush=True)
+        _all = list(range(len(per_gate_syms[g])))
+        _st = _stat_on(_all)
+        if _st is None:
+            print(f"{g:<26s}  跳过（有效因子不足 min_factors={a.min_factors}）",
+                  flush=True)
             continue
-        med = float(np.median(ds[fin]))
-        sgn = np.sign(med) if med != 0 else 1.0
-        same_frac = float((np.sign(ds[fin]) == sgn).mean())
-        ics_g = per_gate_ics[g]
-        edges = np.linspace(0, T, G2_FOLDS + 1).astype(int)
-        folds_same = 0
-        for i in range(G2_FOLDS):
-            sl = slice(edges[i], edges[i + 1])
-            fd = []
-            for ic, bb in zip(ics_g, base_ics):
-                a1, b1 = ic[sl], bb[sl]
-                m1, m2 = np.isfinite(a1), np.isfinite(b1)
-                if m1.any() and m2.any():
-                    fd.append(a1[m1].mean() - b1[m2].mean())
-            fd = np.asarray(fd)
-            fd = fd[np.isfinite(fd)]
-            if len(fd) >= 5 and np.sign(np.median(fd)) == sgn:
-                folds_same += 1
-        # 块自助（时间块；重采样已算好的逐日统计）
-        rng = np.random.default_rng(0)
-        nb = max(1, T // G2_BOOT_BLOCK)
-        boots = np.empty(a.n_boot)
-        for bi in range(a.n_boot):
-            pick = rng.integers(0, nb, size=nb)
-            idx = np.concatenate([np.arange(j * G2_BOOT_BLOCK,
-                                            min((j + 1) * G2_BOOT_BLOCK, T))
-                                  for j in pick])
-            per = []
-            for ic, bb in zip(ics_g, base_ics):
-                a1, b1 = ic[idx], bb[idx]
-                m1, m2 = np.isfinite(a1), np.isfinite(b1)
-                if m1.sum() > 20 and m2.sum() > 20:
-                    per.append(a1[m1].mean() - b1[m2].mean())
-            boots[bi] = np.nanmedian(np.asarray(per))
-        boots = boots[np.isfinite(boots)]
-        ci_lo = float(np.quantile(boots, 0.025)) if len(boots) else np.nan
-        ci_hi = float(np.quantile(boots, 0.975)) if len(boots) else np.nan
-        rows.append({"gate_id": g, "n_factors": int(fin.sum()),
-                     "delta_median": med, "same_frac": same_frac,
-                     "folds_same": folds_same, "ci_lo": ci_lo, "ci_hi": ci_hi,
-                     # **双侧**判定（2026-10-12 修复）：原为 `ci_lo > 0` 单侧，
-                     # 会把稳定负向的调节误判为「与 0 无区别」——实测 14 个行业
-                     # 门控 ΔIC 中位全为负却因此 G2 全灭（而双侧的 G3 5/5 通过）。
-                     "g2_pass": bool(folds_same == G2_FOLDS
-                                     and GG.ci_excludes_zero(ci_lo, ci_hi)
-                                     and same_frac >= G2_SAME_SIGN_MIN),
-                     "g3_pass": False, "g3_p": np.nan})
-        print(f"{g:<26s}{med:>11.5f}{same_frac:>7.2f}{folds_same:>4d}/{G2_FOLDS}"
-              f"{ci_lo:>11.6f}{ci_hi:>11.6f}  [{time.time() - t0:.0f}s]", flush=True)
+        _ok_full = (_st["folds"] == G2_FOLDS) \
+            and GG.ci_excludes_zero(_st["lo"], _st["hi"]) \
+            and _st["same"] >= G2_SAME_SIGN_MIN
+        _grp, _geff = "full_pool", _st["med"]
+        _gsame, _gfolds, _glo, _ghi = _st["same"], _st["folds"], _st["lo"], _st["hi"]
+        _gn, _gok = _st["n"], _ok_full
+        if not _ok_full:
+            _by_grp: dict[str, list[int]] = {}
+            for _j in _all:
+                _gg = _gmap.get(str(per_gate_factors[g][_j]), "ungrouped")
+                if _gg in ("t2_promoted", "ungrouped"):
+                    continue
+                _by_grp.setdefault(_gg, []).append(_j)
+            _best = None
+            for _gnm, _cols in _by_grp.items():
+                if len(_cols) < 5:
+                    continue
+                _s = _stat_on(_cols)
+                if _s is None:
+                    continue
+                _ok = (_s["folds"] == G2_FOLDS) \
+                    and GG.ci_excludes_zero(_s["lo"], _s["hi"]) \
+                    and _s["same"] >= 0.65
+                if _ok and (_best is None or abs(_s["med"]) > abs(_best[1])):
+                    _best = (_gnm, _s["med"], _s["same"], _s["folds"],
+                             _s["lo"], _s["hi"], _s["n"])
+            if _best is not None:
+                _grp, _geff = _best[0], _best[1]
+                _gsame, _gfolds, _glo, _ghi, _gn = _best[2], _best[3], \
+                    _best[4], _best[5], _best[6]
+                _gok = True
+        rows.append({"gate_id": g, "n_factors": _gn,
+                     "delta_median": _st["med"], "same_frac": _st["same"],
+                     "folds_same": _st["folds"], "ci_lo": _st["lo"], "ci_hi": _st["hi"],
+                     "g2_pass": bool(_gok),
+                     "slope_group": _grp, "median_b_eff": _geff,
+                     "slope_group_same": _gsame, "slope_group_folds": _gfolds,
+                     "slope_group_pass": bool(_gok and _grp != "full_pool"),
+                     "g3_pass": False, "g3_p": np.nan, "g3_tested": False})
+        print(f"{g:<26s}{_st['med']:>+11.5f}{_st['same']:>7.2f}"
+              f"{_st['folds']:>4d}/{G2_FOLDS}{_st['lo']:>11.6f}{_grp:>16s}  "
+              f"[{time.time() - t0:.0f}s]", flush=True)
 
     # ---------------------------------------------------------------- G2 先落盘
     # 2026-10-12 修复：G2 是 14 门控 × 124 因子 ≈ 50 分钟的成果，而 G3 更贵
@@ -330,10 +376,17 @@ def main() -> int:
         return 0
 
     # ---------------------------------------------------------------- G3（受限）
-    g3_el = set(a.g3_gates) if a.g3_gates else {r["gate_id"] for r in rows}
+    # 仅幸存者跑 G3（显式 --g3-gates 可覆盖指定）：G2 已是强过滤，全量跑 G3
+    # 是算力浪费；且对称差零假设必须走置换（单因子恒正偏置已证）。
+    if a.g3_gates:
+        g3_el = set(a.g3_gates)
+    else:
+        g3_el = {r["gate_id"] for r in rows if r.get("g2_pass")}
     g3_rows = [r for r in rows if r["gate_id"] in g3_el]
+    for r in rows:
+        r["g3_tested"] = bool(r["gate_id"] in g3_el)
     print(f"\nG3（受限因子集 {min(a.g3_factors, len(names))} × {a.n_perm} 置换 × "
-          f"{len(g3_rows)} 门控）…", flush=True)
+          f"{len(g3_rows)} 幸存门控）…", flush=True)
     g3f = names[:min(a.g3_factors, len(names))]
     m3 = load_panel(g3f)
     pr3 = FR.PanelRanker(m3, verbose=False)
@@ -342,15 +395,11 @@ def main() -> int:
     sec3 = m3["_sec"].astype(str).to_numpy()
     _chk3 = pd.to_datetime(m3["date"]).to_numpy()
     assert (_chk3 == pr3.uniq[pr3.day]).all(), "m3行序与PanelRanker日码错位"
-    b3 = {}
     u3 = {}
     for c in g3f:
         d = dirmap_all[c]
         xv = pd.to_numeric(m3[c], errors="coerce").to_numpy(dtype=float)
         u3[c] = _centered_u(xv, day3, nd3, d)
-        xr = d * pr3.values(c)
-        br = FR.blockwise_rank(np.where(np.isfinite(xr), xr, np.nan), day3)
-        b3[c] = E._daily_corr(br, pr3.y, day3, nd3)
     for r in g3_rows:
         Gmat, colmap = build_sector_gate_matrix(sg, r["gate_id"], uniq3)
         di3, ci3 = prep_row_index(day3, sec3, colmap)
@@ -364,18 +413,19 @@ def main() -> int:
             pidx = np.concatenate([pieces[j] for j in order])[:ndates]
             per = []
             for c in g3f:
-                ic = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
-                                           Gmat[pidx], 1)
-                m1, m2 = np.isfinite(ic), np.isfinite(b3[c])
+                # 对称差零分布：同一置换下正负两套 F1 重建后相减（偏置相消）。
+                ic_p = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
+                                             Gmat[pidx], 1)
+                ic_m = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
+                                             Gmat[pidx], -1)
+                m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
                 if m1.any() and m2.any():
-                    per.append(ic[m1].mean() - b3[c][m2].mean())
+                    per.append(ic_p[m1].mean() - ic_m[m2].mean())
             nulls[pi] = np.nanmedian(np.asarray(per))
         nulls = nulls[np.isfinite(nulls)]
         if len(nulls):
-            # **双侧主判据**（V4.3a gain 口径新族预注册）：G2 已是双侧 CI，
-            # 旧 `form="t"` 族的单侧冻结规格（§8.2，`obs > q95`）会把 s=-1 有效
-            # 门控恒判 False（G3 盲区）。新族测无符号关联强度，方向由 bank s 锁定。
-            # 旧族行不受影响（CSV/台账旧 caliber 原样保留）。
+            # **双侧主判据**（gain 对称差新族预注册）：零假设下期望严格为 0，
+            # 方向由对称差符号锁定（bank s）。
             q05 = float(np.quantile(nulls, 0.05))
             q95 = float(np.quantile(nulls, 0.95))
             q95abs = float(np.quantile(np.abs(nulls), 0.95))
@@ -414,9 +464,10 @@ def main() -> int:
 
     # 台账回写（**共享协议**：与市场线同一 gate_ledger，但记 level=sector）
     lg = GL.GateLedger(a.ledger)
-    # V4.3a：form 记 "gain"（无塌缩 gain 式 F1），与旧 "t"（max 截断） runs 区分；
+    # 对称差口径（无偏）：delta = IC(u·w(+g)) − IC(u·w(−g))，零假设期望严格为 0；
     # g3_rule 记 "two-sided"（新族预注册；旧族单侧冻结规格不受影响）。
-    cal = {"window_end": CUT, "form": "gain", "g3_rule": "two-sided",
+    cal = {"window_end": CUT, "form": "gain-sym", "delta_def": "symmetric",
+           "g3_rule": "two-sided",
            "factor_set": f"stock{len(names)}",
            "label": "r3", "data_version": B.factor_data_version(),
            "n_perm": a.n_perm, "n_boot": a.n_boot}

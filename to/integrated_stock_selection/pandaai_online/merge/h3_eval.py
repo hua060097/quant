@@ -54,12 +54,30 @@ def build_flip_weight(g: np.ndarray, s: int, deadzone: float = 0.10) -> np.ndarr
 
 
 def build_switch_blend(p: np.ndarray, u_off: np.ndarray, u_def: np.ndarray) -> np.ndarray:
-    """F1v3_switch 混合 F = p*u_off + (1-p)*u_def；任一输入非有限 → NaN。"""
+    """F1v3_switch 混合 F = (p*u_off + (1-p)*u_def) / ||(p,1-p)||；任一输入非有限 → NaN。
+
+    等方差归一（消除乘性方差稀释偏置）：动态混合除以当日权重欧氏范数，
+    使其与静态共识（除以 ||(0.5,0.5)|| = √0.5）截面方差对齐；调用方静态
+    共识必须同步除 sqrt(0.5)。旧未归一口径结果作废重跑。
+    """
+    import math
     p = np.asarray(p, dtype=float)
     u_off = np.asarray(u_off, dtype=float)
     u_def = np.asarray(u_def, dtype=float)
     out = p * u_off + (1.0 - p) * u_def
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = out / np.sqrt(p * p + (1.0 - p) * (1.0 - p))
     out[~(np.isfinite(p) & np.isfinite(u_off) & np.isfinite(u_def))] = np.nan
+    return out
+
+
+def static_consensus(u_off: np.ndarray, u_def: np.ndarray) -> np.ndarray:
+    """switch 静态对照共识（与 build_switch_blend 同归一）：(0.5u_off+0.5u_def)/√0.5。"""
+    import math
+    u_off = np.asarray(u_off, dtype=float)
+    u_def = np.asarray(u_def, dtype=float)
+    out = (0.5 * u_off + 0.5 * u_def) / math.sqrt(0.5)
+    out[~(np.isfinite(u_off) & np.isfinite(u_def))] = np.nan
     return out
 
 

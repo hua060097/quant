@@ -123,14 +123,21 @@ def main() -> int:
     sdf_all["_absd"] = sdf_all["delta_median"].abs()
     sdf_all = sdf_all.sort_values(["g2_pass", "g3_pass", "_absd"],
                                   ascending=[False, False, False])
-    # entries（Class4 认证交互）只收 g2_pass；0 通过时取首行兜底（诚实记录）。
+    # entries（Class4 认证交互）：g2_pass 且（G3 未测 或 g3_pass）。
+    # G3 默认跳过时 g3_tested=False → 只要求 g2；跑过 G3 则必须双过。
     # direct（Class3 背景坐标）用全序另行贪心，不在此过滤。
-    _passed = sdf_all[sdf_all.get("g2_pass") == True].copy()
+    def _sector_ok(_r) -> bool:
+        if _r.get("g2_pass") != True:
+            return False
+        if "g3_tested" in sdf_all.columns and bool(_r.get("g3_tested")):
+            return bool(_r.get("g3_pass"))
+        return True
+    _passed = sdf_all[sdf_all.apply(_sector_ok, axis=1)].copy()
     if len(_passed):
         sdf = _passed.head(max(0, a.max_sector)).copy()
     else:
         sdf = sdf_all.head(1).copy()
-        print("  warning: sector G2 通过为 0，entries 取首行兜底", flush=True)
+        print("  warning: sector 无合格 entries，取首行兜底", flush=True)
 
     reg = {}
     if os.path.exists(regp):
@@ -160,6 +167,12 @@ def main() -> int:
                         "g3_pass": bool(r.get("g3_pass", False))})
     for _, r in sdf.iterrows():
         dm = float(r.get("delta_median", 0) or 0)
+        # 分簇拯救时用簇中位数定 s（全池 ~0 会锁错方向）。
+        _me = r.get("median_b_eff", None)
+        _me = float(_me) if _me is not None and np.isfinite(float(_me)) else None
+        _dm_use = _me if _me is not None else dm
+        _gsrc = (f"sector group[{r.get('slope_group', '')}] median_b_eff sign"
+                 if _me is not None else "sector delta_median sign")
         # V4.3a：GS_sec_amp_med_accel → base=sec_amp_med, op=accel
         #（旧 split("_")[1] 恒得 "sec" 且 op 硬编码 level）。
         _tail = str(r["gate_id"])[3:] if str(r["gate_id"]).startswith("GS_") else str(r["gate_id"])
@@ -168,8 +181,10 @@ def main() -> int:
             _base, _op = _tail, "level"
         entries.append({"gate_id": str(r["gate_id"]), "level": "sector",
                         "base": _base, "op": _op,
-                        "s": _sign(dm), "s_source": "sector delta_median sign",
-                        "delta_median": dm, "same_frac": float(r.get("same_frac", 0) or 0),
+                        "s": _sign(_dm_use), "s_source": _gsrc,
+                        "delta_median": dm, "median_b_eff": _me,
+                        "slope_group": str(r.get("slope_group", "") or ""),
+                        "same_frac": float(r.get("same_frac", 0) or 0),
                         "score": None,
                         "g3_pass": bool(r.get("g3_pass", False))})
 
