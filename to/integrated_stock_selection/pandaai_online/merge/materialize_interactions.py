@@ -131,8 +131,8 @@ def main() -> int:
     mgates["date"] = pd.to_datetime(mgates["date"])
     sgates = pd.read_parquet(a.gates_sector)
     sgates["date"] = pd.to_datetime(sgates["date"])
-    import ix_build as IX  # noqa: E402
-    secmap = IX.load_sector_map()
+    import gates as G  # noqa: E402  (ix_build 已归档；同文件同值已验证)
+    secmap = G.load_sector_map()
     msec = m["stock_code"].astype(str).map(secmap)
 
     out = pd.DataFrame({"stock_code": m["stock_code"].to_numpy(),

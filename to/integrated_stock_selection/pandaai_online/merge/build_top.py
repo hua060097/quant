@@ -225,16 +225,19 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
     for j in range(len(idxs)):
         if len(kept) >= keep:
             break
-        if not kept:
-            kept.append(j)
+        if j in kept:
+            # 前面被孪生顶替提前入池的 store，再次走到时跳过（防自相关 1.0）。
             continue
         if _is_store[j]:
+            if not kept:
+                kept.append(j)
+                continue
             mx = _mx_vs(j, kept)
             rho_map[idxs[j]] = mx
             if np.isfinite(mx) and mx <= threshold:
                 kept.append(j)
             continue
-        # 非 store：先查孪生（对全部已扫描 store，不限于已选）。
+        # 非 store：先查孪生（对全部已扫描 store，不限于已选；含 kept 为空的首名）。
         _sj, _smx = -1, float('nan')
         for _s in _store_js:
             _c = corr[j, _s]
@@ -245,12 +248,15 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
             if _sj in kept:
                 rho_map[idxs[j]] = _smx
                 continue
-            _ms = _mx_vs(_sj, kept)
-            if np.isfinite(_ms) and _ms <= threshold:
+            _ms = _mx_vs(_sj, kept) if kept else float('nan')
+            if (not kept) or (np.isfinite(_ms) and _ms <= threshold):
                 kept.append(_sj)
                 rho_map[idxs[_sj]] = _ms
             else:
                 rho_map[idxs[j]] = _smx
+            continue
+        if not kept:
+            kept.append(j)
             continue
         mx = _mx_vs(j, kept)
         rho_map[idxs[j]] = mx
@@ -271,7 +277,7 @@ def load_refs_rows() -> pd.DataFrame:
 
 
 def mined_prefilter(top: int, habitat_top: int = 50,
-                    data_cut: str | None = None) -> list[dict]:
+                    data_cut: str | None = None) -> tuple[list, set]:
     ledger = Ledger()
     # 串味修复：只读本 cut 事件；旧 cut（2026-08-21）full-window 免算指标
     # 不得混入本 cut 榜单（须重评，不走 bucket 捷径）。
@@ -303,6 +309,20 @@ def mined_prefilter(top: int, habitat_top: int = 50,
     except Exception as exc:
         print(f'warning: habitat union 跳过 {str(exc)[:100]}', flush=True)
     uniq = list(dict.fromkeys(picks))
+    # habitat 并集哈希集合（供下游 hab 扩面优先排序，避免 400 名截断漏杀）
+    _hab_h = set()
+    try:
+        _hc = []
+        for h, b in rows.items():
+            _hs = [(b['labels'].get(lab) or {}).get('habitat_score')
+                   for lab in ('c2c', 'vwap')]
+            _hs = [float(x) for x in _hs if x is not None and np.isfinite(x)]
+            if _hs:
+                _hc.append((max(_hs), h))
+        _hc.sort(key=lambda x: -x[0])
+        _hab_h = {h for _, h in _hc[:max(0, habitat_top)]}
+    except Exception:
+        pass
     out = []
     for h in uniq:
         b = rows[h]
@@ -313,13 +333,13 @@ def mined_prefilter(top: int, habitat_top: int = 50,
         best = max([s for s in (sia_c, sia_v) if s is not None and np.isfinite(s)],
                    default=0.0)
         out.append({'hash': h, 'formula': b['formula'], 'family': b.get('family') or 'x',
-                    'old_sia': best})
+                    'old_sia': best, 'habitat_pick': bool(h in _hab_h)})
     out.sort(key=lambda r: -r['old_sia'])
     # 加速（2026-09-26）：携带 bucket 全量数据，让 eval_mined 能直接复用台账指标
     for r in out:
         r['bucket'] = rows[r['hash']]
     print(f'mined pick union={len(out)}', flush=True)
-    return out
+    return out, _hab_h
 
 
 def eval_custom(frame: pd.DataFrame | None = None,
@@ -388,6 +408,7 @@ def eval_custom(frame: pd.DataFrame | None = None,
                          'transform': rec['transform'], 'window': rec['window'],
                          'formula_cn': rec['formula_cn'], 'uploaded': rec['uploaded'],
                          'family': rec.get('family', ''),
+                         'habitat_pick': bool(rec.get('habitat_pick', False)),
                          'label': lab, **{k: r.get(k) for k in
                                           ('coverage', 'A_official', 'LGB', 'direction')},
                          **{k: r.get(k) for k in
@@ -485,6 +506,7 @@ def eval_store(frame: pd.DataFrame | None = None,
                          'transform': rec['transform'], 'window': rec['window'],
                          'formula_cn': rec['formula_cn'], 'uploaded': rec['uploaded'],
                          'family': rec.get('family', ''),
+                         'habitat_pick': bool(rec.get('habitat_pick', False)),
                          'label': lab, **{k: r.get(k) for k in
                                           ('coverage', 'A_official', 'LGB', 'direction')},
                          **{k: r.get(k) for k in
@@ -533,6 +555,7 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
                     else int(b.get('direction', 1))
                 rec['labels'][lab] = {'valid': True, 'coverage': np.nan,
                                      'A_official': a_off, 'LGB': lgb, **m}
+            rec['habitat_pick'] = bool(p.get('habitat_pick', False))
             rows.append(rec)
             n_fast += 1
             continue
@@ -570,6 +593,8 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
             ok_any = True
             n_slow += 1
         if ok_any:
+            rec['habitat_pick'] = bool(p.get('habitat_pick', False))
+        if ok_any:
             rows.append(rec)
         if i % 10 == 0 or i == len(picks):
             print(f'  [{i}/{len(picks)}] fast={n_fast} slow={n_slow} {time.time() - t0:.0f}s', flush=True)
@@ -584,6 +609,7 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
                          'transform': rec['transform'], 'window': rec['window'],
                          'formula_cn': rec['formula_cn'], 'uploaded': rec['uploaded'],
                          'family': rec.get('family', ''),
+                         'habitat_pick': bool(rec.get('habitat_pick', False)),
                          'label': lab, **{k: r.get(k) for k in
                                           ('coverage', 'A_official', 'LGB', 'direction')},
                          **{k: r.get(k) for k in
@@ -1013,8 +1039,8 @@ def main() -> int:
     ev = Evaluator(frame)
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
-    mined_df = eval_mined(mined_prefilter(args.top, data_cut=args.data_cut),
-                          frame=frame, ev=ev,
+    _picks, _hab_h = mined_prefilter(args.top, data_cut=args.data_cut)
+    mined_df = eval_mined(_picks, frame=frame, ev=ev,
                           builder=builder, end=args.data_cut)
     custom_df = eval_custom(frame=frame, ev=ev, end=args.data_cut) \
         if args.include_custom else pd.DataFrame()
@@ -1036,7 +1062,7 @@ def main() -> int:
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
             'ic_ir', 'win', 'rank_ic_ir', 'rank_ic_win', 'turnover', 'turnover_month',
             'net', 'long', 'sharpe', 'mdd', 'mono', 'direction', 'n_valid_periods', 'family',
-            'mi', 'mi_std', 'nmi', 'jsd']
+            'mi', 'mi_std', 'nmi', 'jsd', 'habitat_pick']
     # 非线性诊断列（2026-09-26）：正交扫描后回填 vwap 行，其余 NaN
     for _f in (refs_df, mined_df, custom_df, store_df):
         for _k in ('mi', 'mi_std', 'nmi', 'jsd'):
@@ -1162,22 +1188,28 @@ def main() -> int:
     _day_codes, _ = pd.factorize(day_group, sort=True)
     _day_codes = np.asarray(_day_codes)
     _nd_me = int(_day_codes.max()) + 1 if len(_day_codes) else 0
-    # Bug1 修复：habitat 估值扩面——val_store 只含 LGB 前 scan 名，
-    # Class2 低 LGB 因子需按需补算（机制家族过滤 + 上限，避免全量重估）。
+    # habitat 估值扩面——val_store 只含 LGB 前 scan 名；全表扫描，
+    # 优先级：habitat_pick（台账豁免）> store/机制家族 > 其余；上限 150。
     hab_vals: dict = dict(val_store)
     try:
         _HAB_FAMS = ('context', 'ctx', 'vol', 'M7', 'M14', 'M16', 'M17',
                      'shape', 'skew', 'M3', 'store')
-        _extra = []
-        for _pos in range(min(400, len(vwap_df))):
+        _extra0, _extra1, _extra2 = [], [], []
+        for _pos in range(len(vwap_df)):
             _r = vwap_df.iloc[_pos]
             _key = (_r['lib'], str(_r['factor_id']))
             if _key in hab_vals:
                 continue
             _fam = str(_r.get('family', ''))
-            if _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
-                _extra.append((_pos, _r))
-        _extra = _extra[:150]
+            if bool(_r.get('habitat_pick', False)):
+                _extra0.append((_pos, _r))
+            elif _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
+                _extra1.append((_pos, _r))
+            else:
+                _extra2.append((_pos, _r))
+        _extra = (_extra0 + _extra1 + _extra2)[:150]
+        print(f'habitat 扩面候选：pick={len(_extra0)} fam={len(_extra1)} '
+              f'other={len(_extra2)} -> 算{len(_extra)} 个', flush=True)
         for _pos, _r in _extra:
             _key = (_r['lib'], str(_r['factor_id']))
             try:

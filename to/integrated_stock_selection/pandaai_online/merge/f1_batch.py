@@ -281,6 +281,15 @@ def main():
               f"s overridden {n_over} (bank {bank.get('version')}"
               f"{', keep-s-pair' if _keep_s else ''})", flush=True)
     print(f"[{a.tag}] candidates={len(cands)}", flush=True)
+    if not cands:
+        # 空桶早退：某交互桶（如 flip）选出 0 候选时写空表正常退出，
+        # 不进面板/置换流程（防 base_cols[0] IndexError 中断整条 SOP）。
+        pd.DataFrame(columns=["name", "base", "gate", "gate_type", "s", "d",
+                              "form", "delta_mean", "placebo_p", "fail_reason",
+                              "pair_fp", "cached"]).to_csv(
+            a.out, mode="w", header=True, index=False, encoding="utf-8-sig")
+        print(f"[{a.tag}] 空候选：写出空表 -> {a.out}", flush=True)
+        return 0
     # 本批只跑 market 门控（掩码捷径，已证明等价）。
     # sector 门控需全重算（逐置换重排），独立第二批实现。
     sc = [c for c in cands if c["gate_type"] != "market"]

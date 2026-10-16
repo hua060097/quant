@@ -123,7 +123,14 @@ def main() -> int:
     sdf_all["_absd"] = sdf_all["delta_median"].abs()
     sdf_all = sdf_all.sort_values(["g2_pass", "g3_pass", "_absd"],
                                   ascending=[False, False, False])
-    sdf = sdf_all.head(max(0, a.max_sector)).copy()
+    # entries（Class4 认证交互）只收 g2_pass；0 通过时取首行兜底（诚实记录）。
+    # direct（Class3 背景坐标）用全序另行贪心，不在此过滤。
+    _passed = sdf_all[sdf_all.get("g2_pass") == True].copy()
+    if len(_passed):
+        sdf = _passed.head(max(0, a.max_sector)).copy()
+    else:
+        sdf = sdf_all.head(1).copy()
+        print("  warning: sector G2 通过为 0，entries 取首行兜底", flush=True)
 
     reg = {}
     if os.path.exists(regp):

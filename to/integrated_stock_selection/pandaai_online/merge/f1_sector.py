@@ -96,6 +96,14 @@ def main():
               f"s overridden {n_over} (bank {bank.get('version')}"
               f"{', keep-s-pair' if _keep_s else ''})", flush=True)
     print(f"[{a.tag}] candidates={len(cands)}", flush=True)
+    if not cands:
+        # 空桶早退（与 f1_batch 同口径）：写空表正常退出，防 IndexError 中断 SOP。
+        pd.DataFrame(columns=["name", "base", "gate", "gate_type", "s", "d",
+                              "form", "delta_mean", "placebo_p", "fail_reason",
+                              "pair_fp", "cached"]).to_csv(
+            a.out, mode="w", header=True, index=False, encoding="utf-8-sig")
+        print(f"[{a.tag}] 空候选：写出空表 -> {a.out}", flush=True)
+        return 0
     # labels
     lab = B.read_labels(["r3", "y_prod", "tradable"], label_max=label_max, label=f"f1s-{a.tag}")
     lab["date"] = pd.to_datetime(lab["date"])
@@ -114,9 +122,9 @@ def main():
     if missing:
         raise SystemExit(f"门控面板缺少 {len(missing)} 个候选门控: {missing[:8]}")
     print(f"[{a.tag}] gates panel {sg.shape} from {a.gates_parquet}", flush=True)
-    # sector map
-    import ix_build as IX
-    secmap = IX.load_sector_map()
+    # sector map（ix_build 已归档；gates.load_sector_map 同文件同值已验证）
+    import gates as G
+    secmap = G.load_sector_map()
     # base 面板：默认base20历史链路；vwap_top20/specialist读动态面板
     # switch复合键（off__def）不是面板列，只取真实列
     base_cols = sorted({c["base"] for c in cands if not (c.get("base_off") and c.get("base_def"))}

@@ -118,6 +118,16 @@ def main() -> int:
             d["family_status"] = "unregistered"
             d["family_members_hash"] = None
 
+        if not len(d):
+            # 空桶：F1 早退的空表 + 空族清单 → 正常写出空 judged（不断 SOP）。
+            for _c in ("fdr_q", "fdr_sig", "ok_ci", "ok_blocks", "ok_placebo",
+                       "h3_pass"):
+                d[_c] = pd.Series(dtype=float if _c == "fdr_q" else bool)
+            print(f"\n=== {p.name} ===\n  n=0（空桶）：写出空 judged 表")
+            out = p.with_name(p.stem + "_judged.csv")
+            d.to_csv(out, index=False, encoding="utf-8")
+            print(f"  → {out.name}")
+            continue
         d["fdr_q"] = bh_q(d["placebo_p"].to_numpy(float))
         d["fdr_sig"] = d["fdr_q"] <= 0.10
         # 计划 §8.4 的三项要求

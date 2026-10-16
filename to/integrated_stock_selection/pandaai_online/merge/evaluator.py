@@ -234,17 +234,25 @@ def _bank_gate_map(bank_path: str | None = None) -> dict:
         bank = json.load(open(bank_path, encoding="utf-8"))
     except Exception:
         return {}
+    def _mb(e):
+        # median_b_eff 为 None（全池通过）时回退 median_b；直接 or 0 会把
+        # 0.007 级真实值误排成 0（键存在但 None 不触发 get 默认值）。
+        _v = e.get("median_b_eff")
+        if _v is None:
+            _v = e.get("median_b", 0) or 0
+        return abs(float(_v))
     mk = sorted([e for e in bank.get("entries", []) if e.get("level") == "market"],
-                key=lambda e: abs(float(e.get("median_b_eff", e.get("median_b", 0)) or 0)),
-                reverse=True)[:2]
+                key=_mb, reverse=True)[:2]
     sc = sorted([e for e in bank.get("entries", []) if e.get("level") == "sector"],
                 key=lambda e: abs(float(e.get("delta_median", 0) or 0)),
                 reverse=True)[:2]
     out = {}
+    # s 一并取出：搜索期门控值统一乘锁定方向，保证 >0 恒为顺风激活态，
+    # 与 F1 消费侧 s 语义一致（否则 s=-1 门控在语法树中方向颠倒）。
     for i, e in enumerate(mk):
-        out[f"MKT_GATE{i + 1}"] = (str(e["gate_id"]), "market")
+        out[f"MKT_GATE{i + 1}"] = (str(e["gate_id"]), "market", int(e.get("s", 1)))
     for i, e in enumerate(sc):
-        out[f"SEC_GATE{i + 1}"] = (str(e["gate_id"]), "sector")
+        out[f"SEC_GATE{i + 1}"] = (str(e["gate_id"]), "sector", int(e.get("s", 1)))
     return out
 
 
@@ -286,11 +294,12 @@ def ensure_gate_fields(frame: pd.DataFrame, bank_path: str | None = None) -> pd.
         sg = None
     _sec = frame["stock_code"].astype(str).map(sw2_mapping()) \
         if sg is not None else None
-    for fld, (gid, level) in gmap.items():
+    for fld, (gid, level, _s) in gmap.items():
+        _sv = float(_s)
         try:
             if level == "market" and mg is not None and f"{gid}_g" in mg.columns:
                 _m = mg.set_index("date")[f"{gid}_g"]
-                frame[fld] = _dates.map(_m).to_numpy(dtype=float)
+                frame[fld] = (_sv * _dates.map(_m)).to_numpy(dtype=float)
             elif level == "sector" and sg is not None:
                 _piv = sg[sg["gate_id"] == gid].pivot_table(
                     index="date", columns="sector", values="p", aggfunc="mean")
@@ -301,7 +310,7 @@ def ensure_gate_fields(frame: pd.DataFrame, bank_path: str | None = None) -> pd.
                 _Gv = _g.to_numpy(dtype=float)
                 _ok = (_ci >= 0) & (_di >= 0)
                 _vv = np.full(len(frame), np.nan)
-                _vv[_ok] = _Gv[_di[_ok], _ci[_ok]]
+                _vv[_ok] = _sv * _Gv[_di[_ok], _ci[_ok]]
                 frame[fld] = _vv
             else:
                 frame[fld] = np.nan
