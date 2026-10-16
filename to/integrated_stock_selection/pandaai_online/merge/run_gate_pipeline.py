@@ -218,8 +218,8 @@ def main() -> int:
                          "（离线G2符号锁定）；不传则用本轮短名单×s=+1历史行为")
     ap.add_argument("--by-group", action="store_true", default=True,
                     help="V4.3c 机制分簇G2（默认开）：按 roles.csv group 先验簇分别跑斜率"
-                         "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
-                         "旧全池结论保留，新检验族版本")
+                         "口径；t2_promoted/ungrouped不成簇；全池已过用全池median_b，"
+                         "仅全池未过时任一真机制簇达标才拯救；旧全池结论保留")
     ap.add_argument("--no-by-group", dest="by_group", action="store_false",
                     help="关闭机制分簇G2（纯全池口径对照）")
     a = ap.parse_args()
@@ -233,7 +233,8 @@ def main() -> int:
     # 旧实现写死 factor_set="base20" 但实际用 124 因子 → 口径记录不实，
     # 因子集变更不会被 stale 检测发现。真实 factor_set = f"ic{实际列数}"。
     icdf = read_ic_cache(a.ic_cache)
-    # V4.3c 机制分簇映射（roles.csv group；t2_promoted 单列一簇并注明）。
+    # V4.3c 机制分簇映射（roles.csv group；t2_promoted/ungrouped 不成簇，
+    # 仅留全池——循环论证嫌疑）。
     _groups: dict[str, list[int]] = {}
     if a.by_group:
         try:
@@ -241,8 +242,10 @@ def main() -> int:
             _gmap = dict(zip(_roles["name"].astype(str), _roles["group"].astype(str)))
             for _j, _c in enumerate(icdf.columns):
                 _g = _gmap.get(str(_c), "ungrouped")
+                if _g in ("t2_promoted", "ungrouped"):
+                    continue
                 _groups.setdefault(_g, []).append(_j)
-            print(f"  分簇G2：{len(_groups)} 簇 "
+            print(f"  分簇G2：{len(_groups)} 真机制簇 "
                   f"{sorted((g, len(v)) for g, v in _groups.items())}", flush=True)
         except Exception as exc:
             print(f"  warning: 分簇映射失败（{str(exc)[:100]}），退化为全池", flush=True)
@@ -403,12 +406,12 @@ def main() -> int:
         g2_pass = bool((st["folds_same"] == G23.G2_FOLDS)
                        and G23.ci_excludes_zero(lo, hi)
                        and st["same_frac"] >= G23.G2_SAME_SIGN_MIN)
-        # V4.3c 机制分簇 G2（新检验族版本）：任一先验簇达标即认证，
-        # 有效中位数取胜出簇值（供 bank s 锁定；全池 median_b 原样保留）。
-        _grp, _geff = "", float(st["median_b"])
+        # V4.3c 机制分簇 G2（新检验族版本）：全池已过则用全池 median_b
+        #（slope_group 记 full_pool），仅全池未过时启用分簇拯救。
+        _grp, _geff = "full_pool", float(st["median_b"])
         _gsame, _gfolds = float("nan"), 0
         _gok = False
-        if _groups:
+        if _groups and not g2_pass:
             _best = None
             for _gn, _cols in _groups.items():
                 if len(_cols) < 5:

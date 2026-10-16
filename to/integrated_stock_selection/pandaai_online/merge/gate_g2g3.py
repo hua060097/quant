@@ -304,7 +304,8 @@ def main() -> int:
     ap.add_argument("--n-perm", type=int, default=G3_PERM)
     ap.add_argument("--by-group", action="store_true", default=True,
                     help="V4.3c 机制分簇G2（默认开）：按 roles.csv group 先验簇分别跑斜率"
-                         "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
+                         "口径；t2_promoted/ungrouped 不成簇；全池已过则用全池 median_b，"
+                         "仅全池未过时任一真机制簇达标（4折+CI+同号>=0.65）才拯救；"
                          "旧全池结论保留，新检验族版本")
     ap.add_argument("--no-by-group", dest="by_group", action="store_false",
                     help="关闭机制分簇G2（纯全池口径对照）")
@@ -343,8 +344,12 @@ def main() -> int:
             _gmap = dict(zip(_roles["name"].astype(str), _roles["group"].astype(str)))
             for _j, _c in enumerate(icdf.columns):
                 _g = _gmap.get(str(_c), "ungrouped")
-                groups.setdefault(_g, []).append(_j)
-            print(f"  分簇G2：{len(groups)} 簇 "
+                # t2_promoted 为晋升批次标签（循环论证嫌疑）、ungrouped 非机制：
+                # 仅留在全池，不单独成簇。
+                if _g in ("t2_promoted", "ungrouped"):
+                    continue
+                _groups.setdefault(_g, []).append(_j)
+            print(f"  分簇G2：{len(groups)} 真机制簇 "
                   f"{sorted((g, len(v)) for g, v in groups.items())}", flush=True)
         except Exception as exc:
             print(f"  warning: 分簇映射失败（{str(exc)[:100]}），退化为全池", flush=True)
@@ -375,10 +380,12 @@ def main() -> int:
         g3 = g3_placebo(ic, g, n_perm=a.n_perm)
         ok_slope = (st["folds_same"] == G2_FOLDS) and ci_excludes_zero(lo, hi) \
             and st["same_frac"] >= G2_SAME_SIGN_MIN
-        # --- 变体 1b：机制分簇斜率（V4.3c，新检验族版本，默认关） ---
-        _grp, _grp_ok = "", False
+        # --- 变体 1b：机制分簇斜率（V4.3c，新检验族版本，默认开） ---
+        # 全池优先：全池已过则直接用全池 median_b（slope_group 记 full_pool），
+        # 仅全池未过（多机制对冲抵消）时才启用分簇拯救。
+        _grp, _grp_ok = "full_pool", False
         _grp_med, _grp_same, _grp_folds = float("nan"), float("nan"), 0
-        if groups:
+        if groups and not ok_slope:
             _best = None
             for _gn, _cols in groups.items():
                 if len(_cols) < 5:

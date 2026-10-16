@@ -63,10 +63,10 @@ MARKET_BASES = (
     ("vol_med", "个股波动中位数", "个股 20 日收益标准差的中位数"),
     ("newhigh_ratio", "新高占比", "创 60 日新高的个股占比"),
     # V4.3d 新增（A 股短线状态底座；方向中性门已放宽至 0.75）
-    ("nh60_prem", "新高突破溢价", "T-3日创60日新高股持有至T的超额均值再10日平滑"
+    ("nh60_prem", "新高突破溢价", "[T-3,T-1]突破池当日截面秩溢价EMA5"
      "（奖励龙头 vs 核按钮闷杀）"),
-    ("sec_top5_persist", "主线持续度", "行业5日累计收益排名与前一5日排名的跨行业"
-     "Spearman再10日均值（抱团 vs 电风扇轮动）"),
+    ("sec_top5_persist", "主线持续度", "Top5持续效率比+霸榜留存率复合EMA5"
+     "（抱团 vs 电风扇）"),
 )
 
 #: 行业级基础量
@@ -80,6 +80,8 @@ SECTOR_BASES = (
     ("sec_mom_xrank", "行业动量跨行业排名", "行业过去 20 日累计收益的跨行业分位（中期动量梯度）"),
     ("sec_vol", "行业波动率", "行业日收益 20 日滚动标准差（主升/震荡/防御）"),
     ("sec_breadth", "行业上涨宽度", "行业内上涨个股占比（普涨 vs 龙头独涨）"),
+    # V4.3d V2：行业真突破 vs 超跌反弹一日游（成建制新高占比；已是排名口径，仅 level）
+    ("sec_nh60_ratio", "行业新高股占比", "行业内创60日新高股占比5日均值的跨行业分位"),
 )
 
 #: 操作化（对基础量的日序列施加）
@@ -121,6 +123,18 @@ def sector_base_from_raw(c: pd.DataFrame) -> pd.DataFrame:
     sb["sec_breadth"] = sb.set_index(["date", "sector"]).index.map(_bm).to_numpy()
     sb["sec_amt_share"] = sb["_amt"] / sb.groupby("date")["_amt"].transform("sum")
     sb["sec_ret_xrank"] = sb.groupby("date")["_ret"].rank(pct=True)
+    # V4.3d sec_nh60_ratio：行业内创60日新高股占比 → 5日均值 → 跨行业分位排名。
+    # 全程索引对齐；60日滚动需按 (sector,date) 有序。
+    _is_hi = (pd.to_numeric(c["close"], errors="coerce")
+              >= c.groupby("stock_code", sort=False)["close"].transform(
+                  lambda s: s.rolling(60, min_periods=60).max()))
+    _is_hi = _is_hi.fillna(False)
+    _rnh = _is_hi.groupby([c["date"].to_numpy(), c["_sec"].to_numpy()],
+                           sort=True).mean()
+    sb["_nh60"] = sb.set_index(["date", "sector"]).index.map(_rnh).to_numpy()
+    _nh5 = sb.sort_values(["sector", "date"]).groupby("sector", sort=False)["_nh60"] \
+        .transform(lambda s: s.rolling(5, min_periods=5).mean())
+    sb["sec_nh60_ratio"] = _nh5.groupby(sb["date"]).rank(pct=True)
     # V4.3b：中期动量（20 日累计）跨行业分位；行业波动率（20 日 std）。
     # 全程索引对齐（不 reset、不 to_numpy 错位赋值）：_srt 保留 sb 原索引标签。
     _srt = sb.sort_values(["sector", "date"])
@@ -150,9 +164,9 @@ def generate_space() -> list[dict]:
                           "note": note})
     for key, zh, note in SECTOR_BASES:
         for op, opzh, fn in OPS:
-            if key in ("sec_ret_xrank", "sec_amt_share_chg", "sec_mom_xrank") \
-                    and op != "level":
-                continue      # 这三个本身就是变化/排名口径，只取 level
+            if key in ("sec_ret_xrank", "sec_amt_share_chg", "sec_mom_xrank",
+                       "sec_nh60_ratio") and op != "level":
+                continue      # 这四个本身就是变化/排名口径，只取 level
             specs.append({"gate_id": f"GS_{key}_{op}", "level": "sector",
                           "base": key, "base_zh": zh, "op": op, "op_zh": opzh,
                           "note": note})
@@ -229,44 +243,96 @@ def main() -> int:
         lambda s: s.rolling(60, min_periods=60).max())
     mb["newhigh_ratio"] = c.groupby("date").apply(
         lambda x: float((x["close"] >= x["_hi60"]).mean()), include_groups=False)
-    # ---- V4.3d 新增市场基础量（全部只用 ≤T 数据，因果安全） ----
-    _gs = c.groupby("stock_code", sort=False)
-    # nh60_prem：T-3 日创新高集合持有至 T 的超额（相对当日市场均值），10 日平滑
-    _hit = (c["close"] >= c["_hi60"])
-    _hit_lag3 = _hit.groupby(c["stock_code"], sort=False).transform(
-        lambda s: s.shift(3))
-    _fwd3 = c["close"] / _gs["close"].transform(lambda s: s.shift(3)) - 1.0
-    _mkt_fwd3 = _fwd3.groupby(c["date"], sort=True).transform("mean")
-    _hit_lag3 = (_hit_lag3 == True)
-    _prem_raw = ((_fwd3 - _mkt_fwd3).where(_hit_lag3)
-                 .groupby(c["date"], sort=True).mean())
-    _prem_n = (_hit_lag3.groupby(c["date"], sort=True).sum())
-    _prem_raw = _prem_raw.where(_prem_n >= 10)
-    mb["nh60_prem"] = _prem_raw.rolling(10, min_periods=10).mean()
-    # sec_top5_persist：行业5日动量排名 vs 前一5日排名的跨行业 Spearman，10 日均值
-    from scipy.stats import spearmanr as _sp
+    # ---- V4.3d V2 市场基础量（全部只用 ≤T 数据，因果安全） ----
+    # nh60_prem V2：[T-3,T-1]突破池（<25只用T-1距高点最近前30非ST补足）
+    # 当日截面秩溢价 mean(RankPct-0.5)，EMA5。V1 三盲区（空样本/6.5天滞后/
+    # Beta扭曲）已废除。
+    _hit = (c["close"] >= c["_hi60"]).astype(float)
+    _hit_any = _hit.groupby(c["stock_code"], sort=False).transform(
+        lambda s: s.rolling(3, min_periods=1).max().shift(1))
+    _prox = (c["close"] / c["_hi60"].replace(0, np.nan)).where(c["_hi60"] > 0)
+    _r1d = c["pct_chg"]
+    _pdates = pd.to_datetime(c["date"])
+    _hit_any_v = _hit_any.to_numpy()
+    _prox_v = _prox.to_numpy(dtype=float)
+    _r1d_v = pd.to_numeric(_r1d, errors="coerce").to_numpy(dtype=float)
+    _stv = c["is_st"].to_numpy() if "is_st" in c.columns \
+        else np.zeros(len(c), dtype=float)
+    _prem_raw = {}
+    for _dd, _ix in _pdates.groupby(_pdates).groups.items():
+        _ii = np.asarray(_ix)
+        _pool = _hit_any_v[_ii] > 0
+        if int(_pool.sum()) < 25:
+            _px = _prox_v[_ii]
+            _ok = np.isfinite(_px) & (_stv[_ii] != 1)
+            if int(_ok.sum()) >= 30:
+                _cut = np.nanquantile(_px[_ok],
+                                      1.0 - 30.0 / max(1, int(_ok.sum())))
+                _pool = _ok & (_px >= _cut)
+        _rv = _r1d_v[_ii]
+        _fin = np.isfinite(_rv)
+        if int(_fin.sum()) < 10 or int(_pool[_fin].sum()) == 0:
+            _prem_raw[_dd] = np.nan
+            continue
+        _rk = pd.Series(_rv[_fin]).rank(pct=True).to_numpy()
+        _prem_raw[_dd] = float(_rk[_pool[_fin]].mean() - 0.5)
+    _prem_raw = pd.Series(_prem_raw).sort_index()
+    mb["nh60_prem"] = _prem_raw.ewm(span=5, min_periods=3).mean()
+    # sec_top5_persist V2：Top5主线持续效率比 + Top5霸榜留存率，等权复合后 EMA5。
+    # V1（全131行业Spearman）被后100名噪音淹没 + 休整误判，已废除。
     _srt = sb.sort_values(["sector", "date"])
-    _cum5 = _srt.groupby("sector", sort=False)["_ret"].transform(
-        lambda s: s.rolling(5, min_periods=5).sum())
-    _cum5_prev = _cum5.groupby(_srt["sector"], sort=False).transform(
-        lambda s: s.shift(5))
-    _tmp = pd.DataFrame({"date": _srt["date"].to_numpy(),
-                         "sector": _srt["sector"].to_numpy(),
-                         "a": _cum5.to_numpy(dtype=float),
-                         "b": _cum5_prev.to_numpy(dtype=float)})
-    _persist = {}
-    for _dd, _sub in _tmp.groupby("date", sort=True):
-        _ok = _sub[["a", "b"]].notna().all(axis=1)
-        if int(_ok.sum()) >= 10:
-            try:
-                _persist[_dd] = float(_sp(_sub.loc[_ok, "a"],
-                                          _sub.loc[_ok, "b"])[0])
-            except Exception:
-                _persist[_dd] = np.nan
+    _r1 = _srt["_ret"].to_numpy(dtype=float)
+    _secv = _srt["sector"].to_numpy()
+    _dts = pd.to_datetime(_srt["date"]).to_numpy()
+    _ud = np.sort(np.unique(_dts))
+    _dcode = np.searchsorted(_ud, _dts)
+    _scodes, _smap = np.unique(_secv, return_inverse=True)
+    _NS, _ND = len(_scodes), len(_ud)
+    _R = np.full((_ND, _NS), np.nan)
+    _R[_dcode, _smap] = _r1
+    _cum10 = np.full_like(_R, np.nan)
+    _cum3 = np.full_like(_R, np.nan)
+    for _k in range(_NS):
+        _col = _R[:, _k]
+        _s10 = pd.Series(_col).rolling(10, min_periods=10).sum().to_numpy()
+        _s3 = pd.Series(_col).rolling(3, min_periods=3).sum().to_numpy()
+        _cum10[:, _k] = _s10
+        _cum3[:, _k] = _s3
+    _eff, _ret = {}, {}
+    for _ti, _dd in enumerate(_ud):
+        _c10 = _cum10[_ti]
+        _ok10 = np.isfinite(_c10)
+        if int(_ok10.sum()) >= 5:
+            _t5 = np.argsort(-np.where(_ok10, _c10, -np.inf))[:5]
+            _num = float(np.mean(_c10[_t5]))
+            _den = 0.0
+            for _k in range(max(0, _ti - 9), _ti + 1):
+                _rk = _R[_k]
+                _ok = np.isfinite(_rk)
+                if int(_ok.sum()) >= 5:
+                    _d5 = np.argsort(-np.where(_ok, _rk, -np.inf))[:5]
+                    _den += max(float(np.mean(_rk[_d5])), 1e-4)
+            _eff[_dd] = float(np.clip(_num / _den, -1.0, 1.0)) if _den > 0 else np.nan
         else:
-            _persist[_dd] = np.nan
-    _persist = pd.Series(_persist).sort_index()
-    mb["sec_top5_persist"] = _persist.rolling(10, min_periods=10).mean()
+            _eff[_dd] = np.nan
+        if _ti >= 4:
+            _seen = set()
+            _okd = True
+            for _k in range(_ti - 4, _ti + 1):
+                _c3 = _cum3[_k]
+                _ok3 = np.isfinite(_c3)
+                if int(_ok3.sum()) < 5:
+                    _okd = False
+                    break
+                _l5 = set(np.argsort(-np.where(_ok3, _c3, -np.inf))[:5].tolist())
+                _seen |= _l5
+            _ret[_dd] = (25 - len(_seen)) / 20.0 if _okd else np.nan
+        else:
+            _ret[_dd] = np.nan
+    _eff_s = pd.Series(_eff).sort_index()
+    _ret_s = pd.Series(_ret).sort_index()
+    _combo = 0.5 * _eff_s + 0.5 * _ret_s
+    mb["sec_top5_persist"] = _combo.ewm(span=5, min_periods=3).mean()
     # 跨行业离散度
     sd = sb.groupby("date")["_ret"].std().rename("sec_disp")
     mb = mb.join(sd)

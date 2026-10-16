@@ -904,6 +904,8 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - 归档：`_archive/`11文件（s8/ix_build/confirm/prepare_f1/cond_supplement/cond_regime_ic/corr_compare/experiments/h2/pool_v2/stability）+README；ix_build引用改gates（同值验证）；零生产import（已核查smoke/自测）。
 - MAD鲁棒标准化（已落实）：`fastranks.mad_zscore_soft`（median/1.4826MAD，MAD=0回退meanabs→std→NaN；|z|≤5原值，超限对数软压缩保序；合成验证极值z=11.2、旧口径中位压到0.096、严格单调、退化回退全过）。`evaluator.ZSCORE`改mad口径（本地语义与平台ZSCORE分叉已文档备注）；`fitness` vwap改mad预变换+winsor=None（c2c保持z2平台对齐；RankIC/十分位/Top集合逐值不变，仅Pearson走稳健尺度；screen_one为外部共享文件未动）。`export --cs-norm mad|rank|none`（默认mad）：有界/条件门公式（RSI/WR/PSY/KDJ/COUNT/RANK/IF根等，解析失败走标准化）+Class2底座/Class3/Class4保持原值（manifest记bounded_raw_cols），其余mad；skip表扩全集（防重算失真）。合成验证有界判定6/6。
 - V4.3d性能与双模（已落实）：f1_batch逐批bundle预计算+日码整数广播（字典10亿次查找消除）+flip数学捷径（sign(w)*ic，合成逐位恒等）+switch同式广播；specialists逐日IC向量化（与旧spearmanr逐值一致，含30下限与pairwise排名语义）；evaluator ZSCORE/SCALE向量化（逐值一致）。门控规则：中性门0.60→0.75（screen+pipeline双入口；>0.80克隆仍拦）、`--by-group`默认开（双文件）、sector G3默认关（`--run-g3`显式开）。新门控nh60_prem/sec_top5_persist（63→71规格，因果合成验证通过）。
+- t2_promoted剔除+全池优先（已落实）：`t2_promoted`/`ungrouped`不成簇（循环论证）；全池已过用全池median_b（slope_group记full_pool），仅全池未过才分簇拯救（pipeline+gate_g2g3双文件）。
+- V2门控重构（已落实，63→72规格）：nh60_prem改突破池秩溢价EMA5（空样本回填/滞后/扭曲三盲区消除）；sec_top5_persist改效率比+霸榜率复合EMA5；新增行业sec_nh60_ratio（level-only）。合成验证：72/48/24规格清单、三门控p有限（300天小窗53%/69%/92%，5年面板更高）。
 - V4.3d双模靶标（已落实）：specialists rank-lo→1；A类（rank≤60 & |uncond|≥0.030 & 差≥0.025或icir<0.50→gain降回撤）+B类（|t|≥2.5 & 半场max≥0.035 & 胜率≥0.58）；半_winrate内联计算。模式A门控注入：GATE_FIELDS四字段（bank Top2×2，缺bank填NaN自然死亡）+evaluator惰性映射+m14/m16原生flip/switch模板（240样本零无效零lint误杀，门控腿占比42/240）+上传硬拦；bank版本错配仅告警（文档备注）。
 - 性能预期（服务器实测为准）：flip单候选30s→0.005s；specialists逐日IC 10分钟→5秒；sector全量G2约60分钟（G3默认关省4小时）。
 
