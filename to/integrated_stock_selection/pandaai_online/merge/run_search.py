@@ -1080,7 +1080,8 @@ class SearchRun:
                         if (getattr(args, 'crossover', True) and len(recs) >= 2
                                 and self.rng.random() < getattr(args, 'crossover_rate', 0.3)):
                             other = self.rng.choice([r for r in recs if r is not elite])
-                            child = crossover(elite['node'], other['node'], self.rng)
+                            child = crossover(elite['node'], other['node'], self.rng,
+                                              allow_documented=args.allow_documented)
                             branch = 'crossover'
                         elif _ci == 0:
                             # T5：窗口邻域精调优先（围绕精英现值的局部收敛）

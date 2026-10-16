@@ -1146,7 +1146,8 @@ def mutate_window_neighbor(node: Node, rng: random.Random) -> Node:
     return cand if ok else node
 
 
-def crossover(a: Node, b: Node, rng: random.Random) -> Node:
+def crossover(a: Node, b: Node, rng: random.Random,
+              allow_documented: bool = False) -> Node:
     from lint import type_errors  # 惰性导入避免循环
     pa = [(p, c) for p, _, c in positions(a)]
     pb = [(q, d) for q, _, d in positions(b)]
@@ -1180,7 +1181,8 @@ def generate_population(n: int, seed: int, exclude: set[str] | None = None,
             child = mutate(parent, rng, mutation_rate)
             if rng.random() < 0.5:
                 _, other = rng.choice(elites)
-                child = crossover(child, other, rng)
+                child = crossover(child, other, rng,
+                                  allow_documented=allow_documented)
         else:
             family, child = random_tree(rng, allow_documented=allow_documented)
         ok, _ = validate(child, allow_documented=allow_documented)
