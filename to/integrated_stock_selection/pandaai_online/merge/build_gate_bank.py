@@ -70,7 +70,7 @@ def main() -> int:
     ap.add_argument("--sector-g2g3", default=None)
     ap.add_argument("--registry", default=None)
     ap.add_argument("--data-cut", default=W.DEFAULT_DATA_CUT)
-    ap.add_argument("--max-market", type=int, default=8)
+    ap.add_argument("--max-market", type=int, default=10)
     ap.add_argument("--max-sector", type=int, default=5)
     ap.add_argument("--max-sector-direct", type=int, default=2,
                     help="直入模型的正交纯行业状态数（默认2，上限3，需Owner豁免记录）")
@@ -123,21 +123,17 @@ def main() -> int:
     sdf_all["_absd"] = sdf_all["delta_median"].abs()
     sdf_all = sdf_all.sort_values(["g2_pass", "g3_pass", "_absd"],
                                   ascending=[False, False, False])
-    # entries（Class4 认证交互）：g2_pass 且（G3 未测 或 g3_pass）。
-    # G3 默认跳过时 g3_tested=False → 只要求 g2；跑过 G3 则必须双过。
-    # direct（Class3 背景坐标）用全序另行贪心，不在此过滤。
+    # entries（Class4 认证交互）：强制 g2_pass 且 g3_pass（消除“不测 G3
+    # 反而占便宜”的不对称；G3 只对幸存者跑，成本可控；direct 仍用全序贪心）。
     def _sector_ok(_r) -> bool:
-        if _r.get("g2_pass") != True:
-            return False
-        if "g3_tested" in sdf_all.columns and bool(_r.get("g3_tested")):
-            return bool(_r.get("g3_pass"))
-        return True
+        return bool(_r.get("g2_pass")) and bool(_r.get("g3_pass"))
     _passed = sdf_all[sdf_all.apply(_sector_ok, axis=1)].copy()
     if len(_passed):
         sdf = _passed.head(max(0, a.max_sector)).copy()
     else:
-        sdf = sdf_all.head(1).copy()
-        print("  warning: sector 无合格 entries，取首行兜底", flush=True)
+        sdf = sdf_all.head(0).copy()
+        print("  sector entries 为空（无 g2&g3 双过门控；direct 照常贪心）",
+              flush=True)
 
     reg = {}
     if os.path.exists(regp):

@@ -200,6 +200,48 @@ def _g2_worker(args) -> dict:
     return out
 
 
+def _g3_worker(args) -> list:
+    """G3 工作进程：单个门控的部分置换 → [(pi, null值)]。
+
+    pidx 由主进程串行预生成（同一种子同顺序，保证与串行逐位一致）；
+    本进程独立 load_panel/PanelRanker/u3/门控矩阵（约 1GB/进程）。
+    """
+    gid, pi_list, pidx_list, g3f, dirmap, uniq_dates = args
+    import pandas as _pd
+    _m3 = load_panel(g3f)
+    _pr3 = FR.PanelRanker(_m3, verbose=False)
+    _day3, _nd3 = _pr3.day, _pr3.n_days
+    _sec3 = _m3["_sec"].astype(str).to_numpy()
+    _sg = _pd.read_parquet(os.path.join(SPACE, "gate_search_sector.parquet"))
+    _sg["date"] = _pd.to_datetime(_sg["date"])
+    _sg = _sg[_sg["date"] <= CUT]
+    # 日期轴必须与主进程 pidx 预生成完全一致（用传入的 uniq，不能各算各的）。
+    _uniq3 = np.asarray(uniq_dates)
+    _Gmat, _colmap = build_sector_gate_matrix(_sg, gid, _uniq3)
+    assert _Gmat.shape[0] == len(pidx_list[0]), \
+        f"Gmat行数 {_Gmat.shape[0]} != pidx域 {len(pidx_list[0])}（日期轴错位）"
+    _di3, _ci3 = prep_row_index(_day3, _sec3, _colmap)
+    _u3 = {}
+    for _c in g3f:
+        _d = dirmap[_c]
+        _xv = _pd.to_numeric(_m3[_c], errors="coerce").to_numpy(dtype=float)
+        _u3[_c] = _centered_u(_xv, _day3, _nd3, _d)
+    _out = []
+    for _pi, _pidx in zip(pi_list, pidx_list):
+        _per = []
+        for _c in g3f:
+            _icp = f1_ic_series_from_idx(_u3[_c], _day3, _nd3, _pr3.y, _di3, _ci3,
+                                         _Gmat[_pidx], 1)
+            _icm = f1_ic_series_from_idx(_u3[_c], _day3, _nd3, _pr3.y, _di3, _ci3,
+                                         _Gmat[_pidx], -1)
+            _m1, _m2 = np.isfinite(_icp), np.isfinite(_icm)
+            if _m1.any() and _m2.any():
+                _per.append(_icp[_m1].mean() - _icm[_m2].mean())
+        _out.append((_pi, float(np.nanmedian(np.asarray(_per)))
+                     if _per else float("nan")))
+    return _out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="行业侧 G2/G3（专用后端）")
     ap.add_argument("--limit-factors", type=int, default=0)
@@ -457,41 +499,83 @@ def main() -> int:
     print(f"\nG3（受限因子集 {min(a.g3_factors, len(names))} × {a.n_perm} 置换 × "
           f"{len(g3_rows)} 幸存门控）…", flush=True)
     g3f = names[:min(a.g3_factors, len(names))]
+    _dirmap_g3 = {c: dirmap_all[c] for c in g3f}
+    # pidx 预生成（串行，种子固定，保证与串行版逐位一致）。
+    # m3 先行：uniq3（因子×标签交集日期）是 Gmat 行轴与 pidx 的唯一基准；
+    # sg 面板日期更多（1415 vs 1115），混用必错位。
     m3 = load_panel(g3f)
-    pr3 = FR.PanelRanker(m3, verbose=False)
-    day3, nd3 = pr3.day, pr3.n_days
     uniq3 = np.unique(m3["date"].to_numpy())
     sec3 = m3["_sec"].astype(str).to_numpy()
     _chk3 = pd.to_datetime(m3["date"]).to_numpy()
-    assert (_chk3 == pr3.uniq[pr3.day]).all(), "m3行序与PanelRanker日码错位"
-    u3 = {}
-    for c in g3f:
-        d = dirmap_all[c]
-        xv = pd.to_numeric(m3[c], errors="coerce").to_numpy(dtype=float)
-        u3[c] = _centered_u(xv, day3, nd3, d)
+    _pidx_by_gate: dict[str, list] = {}
     for r in g3_rows:
-        Gmat, colmap = build_sector_gate_matrix(sg, r["gate_id"], uniq3)
-        di3, ci3 = prep_row_index(day3, sec3, colmap)
+        Gmat, _ = build_sector_gate_matrix(sg, r["gate_id"], uniq3)
         ndates = Gmat.shape[0]
         nbb = max(1, ndates // PLACEBO_BLOCK)
         pieces = np.array_split(np.arange(ndates), nbb)
         rng2 = np.random.default_rng(0)
-        nulls = np.empty(a.n_perm)
-        for pi in range(a.n_perm):
+        _pl = []
+        for _pi in range(a.n_perm):
             order = rng2.permutation(nbb)
-            pidx = np.concatenate([pieces[j] for j in order])[:ndates]
-            per = []
-            for c in g3f:
-                # 对称差零分布：同一置换下正负两套 F1 重建后相减（偏置相消）。
-                ic_p = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
-                                             Gmat[pidx], 1)
-                ic_m = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
-                                             Gmat[pidx], -1)
-                m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
-                if m1.any() and m2.any():
-                    per.append(ic_p[m1].mean() - ic_m[m2].mean())
-            nulls[pi] = np.nanmedian(np.asarray(per))
-        nulls = nulls[np.isfinite(nulls)]
+            _pl.append(np.concatenate([pieces[j] for j in order])[:ndates])
+        _pidx_by_gate[r["gate_id"]] = _pl
+    _nulls_by_gate: dict[str, np.ndarray] = {}
+    if int(a.jobs) > 1 and g3_rows:
+        # perm 级并行：任务按 (门控, 置换分片) 划分，10 路约 12 分钟。
+        import concurrent.futures as _cf
+        _nj = max(1, int(a.jobs))
+        _tasks = []
+        for r in g3_rows:
+            _pl = _pidx_by_gate[r["gate_id"]]
+            _ch = max(1, len(_pl) // _nj)
+            for _k in range(0, len(_pl), _ch):
+                _tasks.append((r["gate_id"],
+                               list(range(_k, min(_k + _ch, len(_pl)))),
+                               [_pl[_i] for _i in range(_k, min(_k + _ch, len(_pl)))],
+                               g3f, _dirmap_g3, uniq3))
+        print(f"  并行 G3：{len(_tasks)} 任务 × {len(g3f)} 因子 …", flush=True)
+        _buf: dict[str, dict] = {r["gate_id"]: {} for r in g3_rows}
+        with _cf.ProcessPoolExecutor(max_workers=min(_nj, len(_tasks))) as _ex:
+            _futs = { _ex.submit(_g3_worker, _t): _t[0] for _t in _tasks }
+            for _fu in _cf.as_completed(_futs):
+                for _pi, _v in _fu.result():
+                    _buf[_futs[_fu]][_pi] = _v
+        for r in g3_rows:
+            _d = _buf[r["gate_id"]]
+            nulls = np.array([_d[_pi] for _pi in sorted(_d)], dtype=float)
+            _nulls_by_gate[r["gate_id"]] = nulls[np.isfinite(nulls)]
+        print(f"  并行 G3 完成 {time.time() - t0:.0f}s", flush=True)
+    else:
+        pr3 = FR.PanelRanker(m3, verbose=False)
+        day3, nd3 = pr3.day, pr3.n_days
+        _chk3 = pd.to_datetime(m3["date"]).to_numpy()
+        assert (_chk3 == pr3.uniq[pr3.day]).all(), "m3行序与PanelRanker日码错位"
+        u3 = {}
+        for c in g3f:
+            d = dirmap_all[c]
+            xv = pd.to_numeric(m3[c], errors="coerce").to_numpy(dtype=float)
+            u3[c] = _centered_u(xv, day3, nd3, d)
+        for r in g3_rows:
+            Gmat, colmap = build_sector_gate_matrix(sg, r["gate_id"], uniq3)
+            di3, ci3 = prep_row_index(day3, sec3, colmap)
+            nulls = np.empty(a.n_perm)
+            for pi, pidx in enumerate(_pidx_by_gate[r["gate_id"]]):
+                per = []
+                for c in g3f:
+                    # 对称差零分布：同一置换下正负两套 F1 重建后相减（偏置相消）。
+                    ic_p = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
+                                                 Gmat[pidx], 1)
+                    ic_m = f1_ic_series_from_idx(u3[c], day3, nd3, pr3.y, di3, ci3,
+                                                 Gmat[pidx], -1)
+                    m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
+                    if m1.any() and m2.any():
+                        per.append(ic_p[m1].mean() - ic_m[m2].mean())
+                nulls[pi] = np.nanmedian(np.asarray(per))
+            nulls = nulls[np.isfinite(nulls)]
+            _nulls_by_gate[r["gate_id"]] = nulls
+        del m3, pr3
+    for r in g3_rows:
+        nulls = _nulls_by_gate[r["gate_id"]]
         if len(nulls):
             # **双侧主判据**（gain 对称差新族预注册）：零假设下期望严格为 0，
             # 方向由对称差符号锁定（bank s）。
@@ -512,7 +596,6 @@ def main() -> int:
               f"p={r['g3_p']:.4f}  [{time.time() - t0:.0f}s]", flush=True)
         # G3 增量落盘（超时/中断时保住已完成的门控）
         pd.DataFrame(rows).to_csv(a.out, index=False, encoding="utf-8")
-    del m3, pr3
 
     df = pd.DataFrame(rows)
     if len(df):
