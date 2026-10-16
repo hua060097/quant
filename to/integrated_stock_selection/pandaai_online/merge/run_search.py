@@ -1789,11 +1789,18 @@ def cmd_propose(args) -> None:
         print(f"  {mark} {item['canonical'][:100]}")
 
 
-def _ledger_candidates(ledger: Ledger) -> dict:
-    """台账 → {expression_hash: {formula, family, direction, labels: {lab: 指标}}}。"""
+def _ledger_candidates(ledger: Ledger, data_cut: str | None = None) -> dict:
+    """台账 → {expression_hash: {formula, family, direction, labels: {lab: 指标}}}。
+
+    data_cut 非空时硬过滤：只聚合该截止日的事件（缺字段旧记录按 LEGACY 计，
+    与 hashes_for/vfps_for 同口径）。不传则全量（decay 衰减监控等显式跨期诊断用）。
+    """
     out: dict = {}
+    _cut = W.normalize_data_cut(data_cut) if data_cut else None
     for rec in ledger.read():
         if rec.get('event') not in ('fast', 'local'):
+            continue
+        if _cut is not None and str(rec.get('data_cut') or W.LEGACY_DATA_CUT) != _cut:
             continue
         lab = rec.get('label')
         if lab not in LABELS:
@@ -1913,8 +1920,9 @@ def cmd_rescore(args) -> None:
     if not hasattr(args, 'vwap_top'):
         args.vwap_top = 20
     ledger = _ledger_with_cut(args)
-    rows = _ledger_candidates(ledger)
-    print(f'ledger candidates: {len(rows)}（含 fast/local 证据）', flush=True)
+    rows = _ledger_candidates(ledger, data_cut=ledger.data_cut)
+    print(f'ledger candidates: {len(rows)}（含 fast/local 证据，cut={ledger.data_cut}）',
+          flush=True)
     ref = None if args.no_turnover_penalty else args.turnover_ref
     if args.full_top > 0:
         labels = list(args.label or ['c2c', 'vwap'])
@@ -2213,6 +2221,8 @@ def cmd_decay_check(args) -> None:
     注意：池成员（factors.parquet 面板列、无公式）不在此范围——用 refresh_member_sia。
     """
     ledger = _ledger_with_cut(args)
+    # 衰减监控显式跨期：不过滤 data_cut（目的即新旧对照），但全部现窗重评，
+    # 不复用任何旧指标，故无串味。
     rows = _ledger_candidates(ledger)
     frame = load_panel()
     ev = Evaluator(frame)

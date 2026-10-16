@@ -202,48 +202,60 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
     corr = month_end_spearman_matrix(np.column_stack(cols), day_group)
     if corr is None:
         return idxs[:keep], {}, nl_map
-    # V4.3c 孪生双遍：先扫 store（LGB 序）占位，再扫其余；非 store 候选若与
-    # 已选 store 孪生（|ρ|>=twin_thr，即已入库因子的数学孪生体）直接丢弃，
-    # 优先保留 lib=='store' 已有列（防重复入库）；0.70~0.95 同机制变体按 LGB 择优。
+    # 孪生公平单遍（串味修复后的公平版）：按 LGB 降序单遍扫描，谁分高谁先审；
+    # 非 store 候选若与任一已扫描 store 孪生（|ρ|>=twin_thr，即已入库列的
+    # 数学孪生体），由 store 列顶替入池（能进才进）或直接丢弃——低分 store
+    # 永不抢占高分非 store 席位；<0.95 同机制变体按 LGB 与阈值公平竞争。
     _is_store = []
     for _j in range(len(idxs)):
         try:
             _is_store.append(str(df_vwap.iloc[idxs[_j]]['lib']) == 'store')
         except Exception:
             _is_store.append(False)
+    _store_js = [x for x in range(len(idxs)) if _is_store[x]]
     kept, rho_map, twin_of = [], {}, {}
-    for j in [x for x in range(len(idxs)) if _is_store[x]]:
-        if not kept:
-            kept.append(j)
-            continue
-        pair = np.abs(corr[j, kept])
-        finite = pair[np.isfinite(pair)]
-        mx = float(finite.max()) if finite.size else float('nan')
-        rho_map[idxs[j]] = mx
-        if finite.size and mx <= threshold:
-            kept.append(j)
+
+    def _mx_vs(js, ks):
+        if not ks:
+            return float('nan')
+        _p = np.abs(corr[js, ks])
+        _f = _p[np.isfinite(_p)]
+        return float(_f.max()) if _f.size else float('nan')
+
+    for j in range(len(idxs)):
         if len(kept) >= keep:
             break
-    _kept_store = list(kept)
-    for j in [x for x in range(len(idxs)) if not _is_store[x]]:
         if not kept:
             kept.append(j)
             continue
-        pair = np.abs(corr[j, kept])
-        finite = pair[np.isfinite(pair)]
-        mx = float(finite.max()) if finite.size else float('nan')
-        rho_map[idxs[j]] = mx
-        if _kept_store:
-            _ps = np.abs(corr[j, _kept_store])
-            _fs = _ps[np.isfinite(_ps)]
-            _mx_s = float(_fs.max()) if _fs.size else float('nan')
-            if np.isfinite(_mx_s) and _mx_s >= twin_thr:
-                twin_of[idxs[j]] = _mx_s
+        if _is_store[j]:
+            mx = _mx_vs(j, kept)
+            rho_map[idxs[j]] = mx
+            if np.isfinite(mx) and mx <= threshold:
+                kept.append(j)
+            continue
+        # 非 store：先查孪生（对全部已扫描 store，不限于已选）。
+        _sj, _smx = -1, float('nan')
+        for _s in _store_js:
+            _c = corr[j, _s]
+            if np.isfinite(_c) and abs(float(_c)) > (_smx if np.isfinite(_smx) else -1.0):
+                _smx, _sj = abs(float(_c)), _s
+        if _sj >= 0 and np.isfinite(_smx) and _smx >= twin_thr:
+            twin_of[idxs[j]] = {'twin': idxs[_sj], 'rho': _smx}
+            if _sj in kept:
+                rho_map[idxs[j]] = _smx
                 continue
-        if finite.size and mx <= threshold:
+            _ms = _mx_vs(_sj, kept)
+            if np.isfinite(_ms) and _ms <= threshold:
+                kept.append(_sj)
+                rho_map[idxs[_sj]] = _ms
+            else:
+                rho_map[idxs[j]] = _smx
+            continue
+        mx = _mx_vs(j, kept)
+        rho_map[idxs[j]] = mx
+        if np.isfinite(mx) and mx <= threshold:
             kept.append(j)
-        if len(kept) >= keep:
-            break
     return [idxs[j] for j in kept], rho_map, nl_map
 
 
@@ -258,10 +270,13 @@ def load_refs_rows() -> pd.DataFrame:
     return df
 
 
-def mined_prefilter(top: int, habitat_top: int = 50) -> list[dict]:
+def mined_prefilter(top: int, habitat_top: int = 50,
+                    data_cut: str | None = None) -> list[dict]:
     ledger = Ledger()
-    rows = _ledger_candidates(ledger)
-    print(f'ledger candidates: {len(rows)}', flush=True)
+    # 串味修复：只读本 cut 事件；旧 cut（2026-08-21）full-window 免算指标
+    # 不得混入本 cut 榜单（须重评，不走 bucket 捷径）。
+    rows = _ledger_candidates(ledger, data_cut=data_cut)
+    print(f'ledger candidates: {len(rows)} (cut={data_cut})', flush=True)
     picks: list[str] = []
     for lab in ('c2c', 'vwap'):
         cand = []
@@ -998,7 +1013,8 @@ def main() -> int:
     ev = Evaluator(frame)
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
-    mined_df = eval_mined(mined_prefilter(args.top), frame=frame, ev=ev,
+    mined_df = eval_mined(mined_prefilter(args.top, data_cut=args.data_cut),
+                          frame=frame, ev=ev,
                           builder=builder, end=args.data_cut)
     custom_df = eval_custom(frame=frame, ev=ev, end=args.data_cut) \
         if args.include_custom else pd.DataFrame()

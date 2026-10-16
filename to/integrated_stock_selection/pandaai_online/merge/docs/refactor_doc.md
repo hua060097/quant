@@ -898,6 +898,8 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - 合成验证：centered_u三处同值；audit好通过/作弊抓；长宽pivot正确；helper四分支；孪生优先；bank-v2归档。supplements全绿、forms 7/7。长跑零启动（用户服务器跑）。
 - 全链路4断路收口（已落实）：①`mined_prefilter`并集——台账`local`事件记`habitat_score`，prefilter取sia-top200 ∪ habitat-top50（合成验证h08/h09低sia高habitat被捞入）；②面板全量落盘——`vwap_top20_factors.parquet`=`order[:keep_pool]`+席位（json同步扩全集供F1方向表，门控基准仍取前keep_base）；③specialist窗口`--rank-hi 400`/`--max-factors 150`+sector三式cands及`F1v3_sector_*`清单（bank sector s组级预注册）；④direct全序贪心（g2_pass优先+|delta|，14/14全测故无需screen未测量回填，诚实排除未测）+`--max-sector`默认2（>3告警）。
 - 还差的长跑（服务器）：面板重算63规格→pipeline `--by-group`→sector G2/G3全量→bank-v2→build_top全量→specialists→三式F1（market+sector双线）→judge→materialize→export（`--max-sector 2`）。
+- 去重/隔离/防重算三修复（已落实）：①twin单遍公平扫描——旧双遍会让136个store占满keep导致mined第1名也进不去；现按LGB单遍，孪生（≥0.95）由store顶替（能进才进）或丢弃，<0.95按分竞争（合成验证孪生体被store优先丢弃）。②data_cut台账隔离——`_ledger_candidates(ledger, data_cut)`硬过滤（缺字段按LEGACY计），build_top/rescore传本cut，decay显式跨期不变（现窗重评无串味）；旧cut full-window免算捷径自动失效（合成验证高分旧cut h2被隔离）。③F1配对指纹缓存——`f1_cache.py`（pair_fp=sha12(base|gate|s|d|form|label_max|data_version)，JSONL append-only），f1_batch/f1_sector双线命中0秒跳过、`--out`去重覆盖写幂等、`--no-f1-cache`可关。合成验证fp稳定/版本敏感/命中语义全过。
+- Q4确认：门控确为离线一次→bank→日常只读消费（代码即如此，无需改）。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 

@@ -249,6 +249,9 @@ def main():
     ap.add_argument("--gates-parquet", default=None,
                     help="市场门控 parquet 路径（默认 gates_search/market_gates_search.parquet）；"
                          "指向其它候选池时用于批量评估新门控")
+    ap.add_argument("--no-f1-cache", dest="no_f1_cache", action="store_true",
+                    default=False,
+                    help="关闭配对指纹缓存，全部重算（默认启用缓存断点续算）")
     a = ap.parse_args()
     label_max = a.label_max
     if a.gates_parquet:
@@ -343,15 +346,37 @@ def main():
 
     started_empty = not os.path.exists(a.out)
     done_n = 0
+    import f1_cache as FC
+    _cache = {} if a.no_f1_cache else FC.load_cache()
+    _dver = B.factor_data_version()
+    print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
+          f"({'off' if a.no_f1_cache else 'on'})", flush=True)
+    _recs, _n_hit, _n_new = [], 0, 0
     for i, c in enumerate(mk):
         t1 = time.time()
-        rec = {"name": c["name"], "base": c["base"], "gate": c["gate"],
+        _base = (f"{c.get('base_off')}__{c.get('base_def')}"
+                 if a.form == "switch" and c.get("base_off") else c["base"])
+        rec = {"name": c["name"], "base": _base, "gate": c["gate"],
                "gate_type": c["gate_type"], "s": c["s"], "d": c["d"],
                "form": a.form,
                **({"tilt_delta": ""} if a.form == "switch" else {}),
                "search_start": win["search_start"], "search_end": win["search_end"],
                "label_available_max": win["label_available_max"],
                "evidence": win["evidence"]}
+        _fp = FC.pair_fp(_base, c["gate"], c["s"], c["d"], a.form,
+                         label_max, _dver)
+        rec["pair_fp"] = _fp
+        _hit = None if a.no_f1_cache else FC.cache_hit(_fp, _cache)
+        if _hit is not None:
+            rec.update({k: _hit.get(k) for k in FC.STAT_KEYS if _hit.get(k) is not None})
+            rec["fail_reason"] = ""
+            rec["cached"] = True
+            _recs.append(rec)
+            _n_hit += 1
+            print(f"[{a.tag} {i + 1}/{len(mk)}] {c['name']} CACHE-HIT "
+                  f"d={rec.get('delta_mean')} p={rec.get('placebo_p')}", flush=True)
+            continue
+        rec["cached"] = False
         try:
             _gcol = c["gate"] + "_" + (a.form if a.form in ("g", "t") else "g")
             gmap = dict(zip(pd.to_datetime(mg["date"]).dt.date.astype(str),
@@ -390,16 +415,28 @@ def main():
             if a.form == "switch" and "tilt_delta" in r:
                 # switch辅助列：底仓倾斜诊断（与主判定同文件不同列，不进FDR）
                 rec["tilt_delta"] = r.get("tilt_delta")
+            if not a.no_f1_cache:
+                FC.save_result(_fp, {k: rec.get(k) for k in FC.STAT_KEYS
+                                     + ("fail_reason",)})
+                _cache[_fp] = {k: rec.get(k) for k in FC.STAT_KEYS + ("fail_reason",)}
+            _n_new += 1
         except Exception as e:
             import traceback
             rec.update({"fail_reason": str(e)[:300]})
             print(f"[{a.tag}] {c['name']} ERROR {str(e)[:120]}", flush=True)
-        pd.DataFrame([rec]).to_csv(a.out, mode="a", header=(started_empty and i == 0),
-                                   index=False, encoding="utf-8-sig")
+            if not a.no_f1_cache:
+                FC.save_result(_fp, {"fail_reason": rec["fail_reason"]})
+        _recs.append(rec)
         done_n += 1
         print(f"[{a.tag} {done_n}/{len(mk)}] {c['name']} "
               f"d={rec.get('delta_mean')} p={rec.get('placebo_p')} {time.time()-t1:.0f}s", flush=True)
-    print(f"[{a.tag}] DONE", flush=True)
+    # 全量去重覆盖写（按 name keep-last）：多次运行幂等，消灭追加重复行。
+    _out_df = pd.DataFrame(_recs)
+    if len(_out_df):
+        _out_df = _out_df.drop_duplicates(subset=["name"], keep="last")
+    _out_df.to_csv(a.out, mode="w", header=True, index=False, encoding="utf-8-sig")
+    print(f"[{a.tag}] DONE hit={_n_hit} new={_n_new} rows={len(_out_df)} -> {a.out}",
+          flush=True)
 
 
 if __name__ == "__main__":

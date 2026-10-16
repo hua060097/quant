@@ -54,6 +54,9 @@ def main():
         RESULTS, "gates_search", "gate_search_sector.parquet"),
         help="行业门控面板（搜索长表：date/sector/gate_id/raw/p）；"
              "旧手工门控宽表已于 2026-10-12 删除")
+    ap.add_argument("--no-f1-cache", dest="no_f1_cache", action="store_true",
+                    default=False,
+                    help="关闭配对指纹缓存，全部重算（默认启用缓存断点续算）")
     ap.add_argument("--base-panel", choices=("base20", "vwap_top20", "specialist"),
                     default="base20",
                     help="基因子面板（默认base20保证历史可复现；"
@@ -164,15 +167,38 @@ def main():
     # gate 面板矩阵 G[date_idx, sec_idx]，按 uniq 日期顺序
     date_idx = day  # _prepared 按 date 排序，day 即日期码（0..nd-1），与 uniq 顺序一致
     assert nd == n_dates
-    started_empty = not os.path.exists(a.out)
+    import f1_cache as FC
+    _cache = {} if a.no_f1_cache else FC.load_cache()
+    _dver = B.factor_data_version()
+    print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
+          f"({'off' if a.no_f1_cache else 'on'})", flush=True)
     done_n = 0
+    _recs, _n_hit, _n_new = [], 0, 0
     for i, c in enumerate(cands):
         t1 = time.time()
-        rec = {"name": c["name"], "base": c["base"], "gate": c["gate"],
+        _base = (f"{c.get('base_off')}__{c.get('base_def')}"
+                 if a.form == "switch" and c.get("base_off") else c["base"])
+        rec = {"name": c["name"], "base": _base, "gate": c["gate"],
                "gate_type": "sector", "s": c["s"], "d": c["d"], "form": a.form,
                "search_start": win["search_start"], "search_end": win["search_end"],
                "label_available_max": win["label_available_max"],
                "evidence": win["evidence"]}
+        _fp = FC.pair_fp(_base, c["gate"], c["s"], c["d"], a.form,
+                         label_max, _dver)
+        rec["pair_fp"] = _fp
+        _hit = None if a.no_f1_cache else FC.cache_hit(_fp, _cache)
+        if _hit is not None:
+            rec.update({k: _hit.get(k) for k in FC.STAT_KEYS + ("spread_abs_g_corr",
+                                                               "leak_risk")
+                        if _hit.get(k) is not None})
+            rec["fail_reason"] = ""
+            rec["cached"] = True
+            _recs.append(rec)
+            _n_hit += 1
+            print(f"[{a.tag} {i + 1}/{len(cands)}] {c['name']} CACHE-HIT "
+                  f"d={rec.get('delta_mean')} p={rec.get('placebo_p')}", flush=True)
+            continue
+        rec["cached"] = False
         try:
             # 该门控的矩阵（搜索长表：p → 按 form 映射，与 f1_batch 的列语义对齐）
             gp = sg[sg["gate_id"] == c["gate"]].pivot_table(
@@ -334,16 +360,29 @@ def main():
                 "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),
                 "fail_reason": "",
             })
+            if not a.no_f1_cache:
+                _save = {k: rec.get(k) for k in
+                         FC.STAT_KEYS + ("fail_reason", "spread_abs_g_corr", "leak_risk")}
+                FC.save_result(_fp, _save)
+                _cache[_fp] = _save
+            _n_new += 1
         except Exception as e:
             import traceback
             rec.update({"fail_reason": str(e)[:300]})
             print(f"[{a.tag}] {c['name']} ERROR {str(e)[:150]}", flush=True)
-        pd.DataFrame([rec]).to_csv(a.out, mode="a", header=(started_empty and i == 0),
-                                   index=False, encoding="utf-8-sig")
+            if not a.no_f1_cache:
+                FC.save_result(_fp, {"fail_reason": rec["fail_reason"]})
+        _recs.append(rec)
         done_n += 1
         print(f"[{a.tag} {done_n}/{len(cands)}] {c['name']} "
               f"d={rec.get('delta_mean')} p={rec.get('placebo_p')} {time.time()-t1:.0f}s", flush=True)
-    print(f"[{a.tag}] DONE", flush=True)
+    # 全量去重覆盖写（按 name keep-last）：多次运行幂等，消灭追加重复行。
+    _out_df = pd.DataFrame(_recs)
+    if len(_out_df):
+        _out_df = _out_df.drop_duplicates(subset=["name"], keep="last")
+    _out_df.to_csv(a.out, mode="w", header=True, index=False, encoding="utf-8-sig")
+    print(f"[{a.tag}] DONE hit={_n_hit} new={_n_new} rows={len(_out_df)} -> {a.out}",
+          flush=True)
 
 
 if __name__ == "__main__":
