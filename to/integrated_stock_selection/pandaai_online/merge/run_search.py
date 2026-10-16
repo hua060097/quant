@@ -405,7 +405,10 @@ class SearchRun:
             raise SystemExit(
                 f'holdout 切点 {_hol.date()} 不早于数据截止日 {_cut_ts.date()}：'
                 f'保留窗会为空。请调小 --cut 或调大 --data-cut。')
-        self.evaluator = Evaluator(frame)
+        # 内存上限：Evaluator LRU 默认 512 个全面板序列（6.6M 行×8B≈53MB/个，
+        # 全满约 27GB）。搜索期同节点复用集中在单候选评估内，32 个足够；
+        # 纯 memoization 上限，结果逐值不变。
+        self.evaluator = Evaluator(frame, cache_size=32)
         self.ctxs = {lab: DataContext(cycle=args.cycle, frame=frame, label=lab,
                                       end=self.data_cut, evaluator=self.evaluator)
                      for lab in self.labels}
@@ -415,7 +418,7 @@ class SearchRun:
                                                months=args.fast_months,
                                                stratify=(getattr(args, 'fast_stratify', '') or None),
                                                end=self.data_cut)
-            self.fast_evaluator = Evaluator(self.fast_frame)
+            self.fast_evaluator = Evaluator(self.fast_frame, cache_size=32)
             end_ts = pd.Timestamp(self.data_cut)
             start = (end_ts - pd.DateOffset(months=args.fast_months)).strftime('%Y%m%d')
             self.fast_ctxs = {lab: DataContext(cycle=args.cycle, start=start,
