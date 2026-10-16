@@ -40,6 +40,50 @@ def cs_rank_centered(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+#: 天然有界/离散技术指标（物理阈值，禁截面标准化）与条件门根节点。
+_BOUNDED_TECH_OPS = frozenset({
+    'RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'BOLL_WIDTH', 'MASS',
+    'COUNT', 'EVERY', 'EXIST', 'RANK', 'SCALE', 'ZSCORE', 'TS_RANK',
+})
+_GATE_ROOT_OPS = frozenset({'IF', 'GT', 'GE', 'LT', 'LE'})
+
+
+def is_bounded_or_gated_formula(formula_str: str) -> bool:
+    """公式是否天然有界/离散或条件门主导（是则保持原值入模）。
+
+    规则：根节点为条件门/计数/已标准化算子，或子树含 RSI/WR/PSY/KDJ/
+    BOLL_WIDTH 等有界技术指标。解析失败 → False（走标准化分支）。
+    """
+    try:
+        from grammar import walk
+        from parser import parse_formula
+        node = parse_formula(str(formula_str))
+    except Exception:
+        return False
+    try:
+        if node.op in _GATE_ROOT_OPS or node.op in _BOUNDED_TECH_OPS:
+            return True
+        for _, n in walk(node):
+            if n.op in ('RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J',
+                        'BOLL_WIDTH'):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def cs_mad_norm(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """逐日 MAD 鲁棒 Z-score + 软压缩（默认 Class1 口径；保 Top 尾部距离）。"""
+    import fastranks as _FR
+    out = df[['stock_code', 'date']].copy()
+    codes, _ = pd.factorize(pd.to_datetime(df['date']).to_numpy(), sort=True)
+    for c in cols:
+        out[c] = _FR.mad_zscore_soft(
+            pd.to_numeric(df[c], errors='coerce').to_numpy(dtype=float),
+            codes).astype(np.float32)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT)
@@ -50,6 +94,9 @@ def main() -> int:
                          '传 0 显式关闭）')
     ap.add_argument('--alpha-panel', default=str(RESULTS / 'vwap_top20_factors.parquet'),
                     help='Class 1 候选面板（默认读build_top动态面板；缺失则空跑并警告）')
+    ap.add_argument('--cs-norm', default='mad', choices=('mad', 'rank', 'none'),
+                    help='Class1/股性池连续无界列截面标准化：mad=MAD鲁棒Z+软压缩'
+                         '（默认，保Top尾部距离）；rank=居中百分位秩；none=原值')
     ap.add_argument('--out-dir', default=str(RESULTS / 'lgb_ready'))
     args = ap.parse_args()
 
@@ -85,6 +132,35 @@ def main() -> int:
         except Exception:
             seat_cols = []
     alpha_path = Path(args.alpha_panel)
+    # 自适应标准化：有界/条件门公式保持原值（物理阈值），其余按 --cs-norm 处理。
+    _fmap: dict = {}
+    for _jp in (RESULTS / 'vwap_top20.json', RESULTS / 'vwap_habitat_pool.json'):
+        try:
+            _jd = json.load(open(_jp, encoding='utf-8'))
+            _items = _jd.get('base20', _jd.get('members', []))
+            for _it in _items:
+                _fn = str(_it.get('factor', _it.get('factor_id', '')))
+                _fm = _it.get('formula', _it.get('formula_cn', ''))
+                if _fn and _fm:
+                    _fmap.setdefault(_fn, str(_fm))
+        except Exception:
+            pass
+
+    def _split_raw(cols: list[str]) -> tuple[list[str], list[str]]:
+        _raw = [c for c in cols if c in _fmap and is_bounded_or_gated_formula(_fmap[c])]
+        _norm = [c for c in cols if c not in _raw]
+        return _raw, _norm
+
+    def _norm_frame(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        if not cols:
+            return df[['stock_code', 'date']].copy()
+        if args.cs_norm == 'rank':
+            return cs_rank_centered(df, cols)
+        if args.cs_norm == 'none':
+            return df[['stock_code', 'date'] + cols].copy()
+        return cs_mad_norm(df, cols)
+
+    alpha_raw: list[str] = []
     if alpha_path.exists():
         adf = pd.read_parquet(alpha_path)
         adf['date'] = pd.to_datetime(adf['date'])
@@ -93,11 +169,17 @@ def main() -> int:
         _seats = [c for c in seat_cols if c in _all]
         _rest = [c for c in _all if c not in set(_seats)][:args.max_alpha]
         acols = _seats + _rest
-        adf_norm = cs_rank_centered(adf, acols)
+        alpha_raw, _anorm = _split_raw(acols)
+        adf_norm = _norm_frame(adf, _anorm)
+        if alpha_raw:
+            adf_norm = adf_norm.merge(adf[['stock_code', 'date'] + alpha_raw],
+                                      on=['stock_code', 'date'], how='left')
         base_df = base_df.merge(adf_norm, on=['stock_code', 'date'], how='left')
         alpha_features = acols
         if _seats:
             print(f'Class1 席位强制收录 {len(_seats)} 列', flush=True)
+        if alpha_raw:
+            print(f'Class1 有界/条件门原值 {len(alpha_raw)} 列', flush=True)
     else:
         print(f'warning: alpha panel missing {alpha_path}（Class1为空跑，不伪造列）')
 
@@ -148,9 +230,10 @@ def main() -> int:
     else:
         print(f'note: {inter_path} 不存在（Class4为空跑；先跑 --form gain 并过FDR）')
 
-    # 2b. Class2 股性榜单（V4.3c）：vwap_habitat_pool 并入并做截面居中秩。
-    # 6 个固定底座保持原值（历史可比冻结）；新增池列统一居中秩（树分裂不变）。
+    # 2b. Class2 股性榜单（V4.3c/d）：vwap_habitat_pool 并入。
+    # 6 个固定底座保持原值（历史可比冻结）；池列有界/条件门原值，其余按 --cs-norm。
     habitat_pool_features = []
+    habitat_pool_raw: list[str] = []
     _hp_path = RESULTS / 'vwap_habitat_pool.parquet'
     if _hp_path.exists():
         try:
@@ -158,7 +241,11 @@ def main() -> int:
             hdf['date'] = pd.to_datetime(hdf['date'])
             hdf = hdf[hdf['date'] <= pd.Timestamp(args.data_cut)]
             hcols = [c for c in hdf.columns if c not in ('stock_code', 'date')]
-            hdf_norm = cs_rank_centered(hdf, hcols)
+            habitat_pool_raw, _hnorm = _split_raw(hcols)
+            hdf_norm = _norm_frame(hdf, _hnorm)
+            if habitat_pool_raw:
+                hdf_norm = hdf_norm.merge(hdf[['stock_code', 'date'] + habitat_pool_raw],
+                                          on=['stock_code', 'date'], how='left')
             base_df = base_df.merge(hdf_norm, on=['stock_code', 'date'], how='left')
             habitat_pool_features = hcols
             print(f'Class2 股性池并入 {len(hcols)} 列', flush=True)
@@ -183,8 +270,11 @@ def main() -> int:
             'market_broadcast_1xT': [],  # 铁律：永远为空！
         },
         # 供下游训练脚本读取：以下列严禁在训练前做逐日横截面标准化
+        #（全部已是最终形态：原值列禁动，已标准化列重算会失真）
         'skip_daily_cs_norm_cols': interact_features + sector_features
-        + habitat_pool_features + alpha_features,
+        + habitat_pool_features + alpha_features + habitat_features,
+        'cs_norm': args.cs_norm,
+        'bounded_raw_cols': alpha_raw + habitat_pool_raw,
     }
     man_file = out_dir / 'features_manifest.json'
     man_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')

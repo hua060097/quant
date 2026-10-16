@@ -639,7 +639,7 @@ class SearchRun:
         # V4.3c Class2 栖息地快评通道：线性 SiA 外的第二晋级依据（尾部发散+市况反差）。
         hab = {'habitat_score': float('nan'), 'habitat_jsd': float('nan'),
                'habitat_contrast': float('nan')}
-        if getattr(args, 'habitat_track', False):
+        if getattr(self.args, 'habitat_track', False):
             try:
                 _hv = np.asarray(_pri.values(node), dtype=float)
                 _pos = _pri._pos

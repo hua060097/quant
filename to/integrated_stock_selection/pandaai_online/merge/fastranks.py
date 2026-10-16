@@ -36,6 +36,38 @@ MIN_N = E.MIN_N
 NW_LAG = E.NW_LAG
 
 
+def mad_zscore_soft(values: np.ndarray, day, soft_cap: float = 5.0) -> np.ndarray:
+    """MAD 鲁棒 Z-score + 超 cap 对数软压缩（逐日截面，严格单调，无需硬缩尾）。
+
+    z = (x - median) / (1.4826*MAD)；MAD<=1e-12 时回退 1.2533*mean|x-med|，
+    再不行回退 std，仍退化则 NaN。|z|<=cap 原值保留（Top 极值梯度完整）；
+    |z|>cap 用 sign*(cap + ln(1+|z|-cap)) 软压缩（保序，坏点不撑爆直方图）。
+    day 可为任意可 factorize 的日期键（内部编码，与行序无关）。
+    """
+    v = np.asarray(values, dtype=float)
+    codes, _ = pd.factorize(np.asarray(day), sort=True)
+    s = pd.Series(v)
+    g = s.groupby(codes, sort=False)
+    med = g.transform('median')
+    mad = (s - med).abs().groupby(codes, sort=False).transform('median')
+    meanabs = (s - med).abs().groupby(codes, sort=False).transform('mean')
+    std = g.transform('std')
+    tol = 1e-12
+    scale = np.where(np.asarray(mad) > tol, 1.4826 * np.asarray(mad),
+                     np.where(np.asarray(meanabs) > tol,
+                              1.2533 * np.asarray(meanabs),
+                              np.asarray(std, dtype=float)))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        z = (v - np.asarray(med, dtype=float)) / np.where(scale > tol, scale, np.nan)
+    az = np.abs(z)
+    cap = float(soft_cap)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        _soft = np.sign(z) * (cap + np.log1p(np.maximum(az - cap, 0.0)))
+    out = np.where(az <= cap, z, _soft)
+    out[~np.isfinite(np.asarray(v))] = np.nan
+    return out
+
+
 def centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndarray:
     """有向居中百分位秩 u = d*(RankPct-0.5) ∈ [-0.5, 0.5]（F1v3 全族统一定义）。
 

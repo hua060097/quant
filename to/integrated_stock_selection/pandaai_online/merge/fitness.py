@@ -128,8 +128,16 @@ class DataContext:
             dy = np.array([pd.Timestamp(x).year for x in ud])
         if fixed_direction == 0:
             v = -v
+        # V4.3d：c2c 保持 WINSOR='z2'（平台校准对齐，不动）；vwap 本地主线改
+        # MAD 鲁棒口径 + 软压缩（预变换后 winsor=None）：逐日严格单调，
+        # RankIC/十分位归属/Top 集合逐值不变，仅 Pearson IC 与多空均值走稳健尺度，
+        # 保护 Top 0.1% 极值不被 ±2σ 拍平。screen_one 为外部共享文件，不动它。
+        _w = WINSOR if self.label_kind == 'c2c' else None
+        if self.label_kind != 'c2c':
+            import fastranks as _FR
+            v = _FR.mad_zscore_soft(np.asarray(v, dtype=float), di)
         r = screen_one(np.asarray(v, dtype=float), np.asarray(y, dtype=float), c, di, len(ud),
-                       dm, dy, name, self.label_name, self.ppy, winsor=WINSOR)
+                       dm, dy, name, self.label_name, self.ppy, winsor=_w)
         r['factor'] = name
         if fixed_direction is not None:
             r['direction'] = int(fixed_direction)

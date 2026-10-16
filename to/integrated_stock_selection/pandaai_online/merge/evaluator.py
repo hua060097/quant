@@ -505,9 +505,14 @@ class Evaluator:
             if op == 'RANK':
                 return g.rank(pct=True)
             if op == 'ZSCORE':
-                # 向量化（提速约 10 倍）：Cython 原生聚合替代逐组 Python lambda。
-                # 与旧式逐值一致（含 std==0 → inf 语义，ddof=1 两边同默认）。
-                return (s - g.transform('mean')) / g.transform('std')
+                # MAD 鲁棒口径（V4.3d）：中位数/MAD 对极值免疫，无需硬缩尾；
+                # 超 5σ 对数软压缩（保序）。旧 mean/std 口径见 git 历史。
+                # 注意：本地 ZSCORE 语义与平台 ZSCORE 不再逐值一致（平台校准
+                # 仅约束 c2c 评估层 screen_one 的 z2 口径，不约束算子）。
+                import fastranks as _FR
+                _codes, _ = pd.factorize(self.dates.to_numpy(), sort=True)
+                return pd.Series(_FR.mad_zscore_soft(
+                    s.to_numpy(dtype=float), _codes), index=self.frame.index)
             _lo = g.transform('min')
             _hi = g.transform('max')
             return 2.0 * (s - _lo) / (_hi - _lo).replace(0, np.nan) - 1.0
