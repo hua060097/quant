@@ -153,9 +153,59 @@ def f1_ic_series(u, day, nd, yrk, sec_ids, G, colmap, s=1):
     return f1_ic_series_from_idx(u, day, nd, yrk, date_idx, ci, G, s)
 
 
+def _g2_worker(args) -> dict:
+    """G2 工作进程：因子子集 × 全部行业门控 → 对称差日序列。
+
+    自包含（独立 load_panel/PanelRanker/门控索引；CUT 取模块全局，与主进程一致），
+    返回 {gate: [(factor, dsym_mean, dsym_daily_list, d), ...]}
+    （daily 转 list 便于 pickle）。
+    """
+    facs, gates, chunk = args
+    import pandas as _pd
+    out: dict = {g: [] for g in gates}
+    _sg = _pd.read_parquet(os.path.join(SPACE, "gate_search_sector.parquet"))
+    _sg["date"] = _pd.to_datetime(_sg["date"])
+    _sg = _sg[_sg["date"] <= CUT].copy()
+    _day = _nd = None
+    _uniq = _sec = None
+    _gmats = {}
+    _chunks = [facs[i:i + chunk] for i in range(0, len(facs), chunk)]
+    for _ck in _chunks:
+        _m = load_panel(_ck)
+        _pr = FR.PanelRanker(_m, verbose=False)
+        if _day is None:
+            _day, _nd = _pr.day, _pr.n_days
+            _uniq = np.unique(_m["date"].to_numpy())
+            _sec = _m["_sec"].astype(str).to_numpy()
+            for _g in gates:
+                _Gm, _cm = build_sector_gate_matrix(_sg, _g, _uniq)
+                _di, _ci = prep_row_index(_day, _sec, _cm)
+                _gmats[_g] = (_Gm, _di, _ci)
+        for _c in _ck:
+            _ic_raw = _pr.daily_ic(_pr.x_rank(_c))
+            _d = 1.0 if float(np.nanmean(_ic_raw)) >= 0 else -1.0
+            _xv = pd.to_numeric(_m[_c], errors="coerce").to_numpy(dtype=float)
+            _u = _centered_u(_xv, _day, _nd, _d)
+            for _g in gates:
+                _Gm, _di, _ci = _gmats[_g]
+                _icp = f1_ic_series_from_idx(_u, _day, _nd, _pr.y, _di, _ci, _Gm, 1)
+                _icm = f1_ic_series_from_idx(_u, _day, _nd, _pr.y, _di, _ci, _Gm, -1)
+                _m1, _m2 = np.isfinite(_icp), np.isfinite(_icm)
+                _ds = np.full(len(_icp), np.nan)
+                _ds[_m1 & _m2] = _icp[_m1 & _m2] - _icm[_m1 & _m2]
+                out[_g].append((_c, float(np.nanmean(_ds))
+                                if np.isfinite(_ds).any() else float("nan"),
+                                _ds.tolist(), float(_d)))
+        del _m, _pr
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="行业侧 G2/G3（专用后端）")
     ap.add_argument("--limit-factors", type=int, default=0)
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="G2 并行工作进程数（按因子分组；12 核服务器建议 10；"
+                         "默认 1 保持原行为）")
     ap.add_argument("--gates", nargs="*", default=None)
     ap.add_argument("--g3-gates", nargs="*", default=None,
                     help="只对这些门控跑 G3（G2 仍跑全部）。成本 ≈ n_gates × n_perm × "
@@ -211,50 +261,69 @@ def main() -> int:
     per_gate_ds = {g: [] for g in el}          # gate -> [per-factor Δsym 均值]
     per_gate_syms = {g: [] for g in el}        # gate -> [per-factor Δsym 日序列]
     per_gate_factors = {g: [] for g in el}     # gate -> [因子名]（与上面两表对齐）
-    day = nd = None
-    uniq = sec_ids = None
     dirmap_all = {}
-    chunks = [names[i:i + a.chunk] for i in range(0, len(names), a.chunk)]
-    for ci, chunk in enumerate(chunks, 1):
-        m = load_panel(chunk)
-        pr = FR.PanelRanker(m, verbose=(ci == 1))
-        if day is None:
-            day, nd = pr.day, pr.n_days
-            uniq = np.unique(m["date"].to_numpy())
-            sec_ids = m["_sec"].astype(str).to_numpy()
-            # 对齐断言：m 已按 date 排序，PanelRanker 内排序应为恒等，
-            # 否则门控归属/日内分组全错位（bank-v1 行业脏数据主因之一）。
-            _chk = pd.to_datetime(m["date"]).to_numpy()
-            assert (_chk == pr.uniq[pr.day]).all(), "m行序与PanelRanker日码错位"
-            # 预计算每个门控的 (date_idx, sector_col_idx)，避免逐 (因子×门控) 重算
-            gmats = {}
-            for g in el:
-                Gmat, colmap = build_sector_gate_matrix(sg, g, uniq)
-                di, ci = prep_row_index(day, sec_ids, colmap)
-                gmats[g] = (Gmat, di, ci)
-            print(f"  索引预计算完成 {time.time() - t0:.0f}s", flush=True)
-        for c in chunk:
-            _ic_raw = pr.daily_ic(pr.x_rank(c))         # 方向 = sign(全样本 IC 均值)
-            d = 1.0 if float(np.nanmean(_ic_raw)) >= 0 else -1.0
-            dirmap_all[c] = d
-            xv = pd.to_numeric(m[c], errors="coerce").to_numpy(dtype=float)
-            # 对原始值排名再乘 d（与 f1_batch._centered_u 逐字同义；勿传 d*xv，
-            # 否则 d=-1 时负负得正方向全反——f1_sector 同 bug 已并修）。
-            u = _centered_u(xv, day, nd, d)
-            for g in el:
-                Gmat, di, ci = gmats[g]
-                ic_p = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, 1)
-                ic_m = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, -1)
-                m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
-                dsym = np.full(len(ic_p), np.nan)
-                dsym[m1 & m2] = ic_p[m1 & m2] - ic_m[m1 & m2]
-                per_gate_syms[g].append(dsym)
-                per_gate_factors[g].append(c)
-                per_gate_ds[g].append(float(np.nanmean(dsym))
-                                      if np.isfinite(dsym).any() else np.nan)
-        del m, pr
-        print(f"  块 {ci}/{len(chunks)}（{len(chunk)} 因子） "
-              f"{time.time() - t0:.0f}s", flush=True)
+    if int(a.jobs) > 1:
+        # 并行 G2：按因子分组，每组独立进程（各自 load_panel/PanelRanker）。
+        import concurrent.futures as _cf
+        _nj = max(1, int(a.jobs))
+        _groups = [names[i::max(1, _nj)] for i in range(max(1, _nj))]
+        _groups = [gg for gg in _groups if gg]
+        print(f"  并行 G2：{len(_groups)} 组 × {len(el)} 门控 …", flush=True)
+        with _cf.ProcessPoolExecutor(max_workers=len(_groups)) as _ex:
+            _futs = [_ex.submit(_g2_worker, (gg, el, a.chunk)) for gg in _groups]
+            for _fu in _cf.as_completed(_futs):
+                _res = _fu.result()
+                for _g in el:
+                    for _c, _dm, _dl, _dd in _res.get(_g, []):
+                        per_gate_factors[_g].append(_c)
+                        per_gate_ds[_g].append(_dm)
+                        per_gate_syms[_g].append(np.asarray(_dl, dtype=float))
+                        dirmap_all[_c] = _dd
+        print(f"  并行 G2 完成 {time.time() - t0:.0f}s", flush=True)
+    else:
+        day = nd = None
+        uniq = sec_ids = None
+        chunks = [names[i:i + a.chunk] for i in range(0, len(names), a.chunk)]
+        for ci, chunk in enumerate(chunks, 1):
+            m = load_panel(chunk)
+            pr = FR.PanelRanker(m, verbose=(ci == 1))
+            if day is None:
+                day, nd = pr.day, pr.n_days
+                uniq = np.unique(m["date"].to_numpy())
+                sec_ids = m["_sec"].astype(str).to_numpy()
+                # 对齐断言：m 已按 date 排序，PanelRanker 内排序应为恒等，
+                # 否则门控归属/日内分组全错位（bank-v1 行业脏数据主因之一）。
+                _chk = pd.to_datetime(m["date"]).to_numpy()
+                assert (_chk == pr.uniq[pr.day]).all(), "m行序与PanelRanker日码错位"
+                # 预计算每个门控的 (date_idx, sector_col_idx)，避免逐 (因子×门控) 重算
+                gmats = {}
+                for g in el:
+                    Gmat, colmap = build_sector_gate_matrix(sg, g, uniq)
+                    di, ci = prep_row_index(day, sec_ids, colmap)
+                    gmats[g] = (Gmat, di, ci)
+                print(f"  索引预计算完成 {time.time() - t0:.0f}s", flush=True)
+            for c in chunk:
+                _ic_raw = pr.daily_ic(pr.x_rank(c))         # 方向 = sign(全样本 IC 均值)
+                d = 1.0 if float(np.nanmean(_ic_raw)) >= 0 else -1.0
+                dirmap_all[c] = d
+                xv = pd.to_numeric(m[c], errors="coerce").to_numpy(dtype=float)
+                # 对原始值排名再乘 d（与 f1_batch._centered_u 逐字同义；勿传 d*xv，
+                # 否则 d=-1 时负负得正方向全反——f1_sector 同 bug 已并修）。
+                u = _centered_u(xv, day, nd, d)
+                for g in el:
+                    Gmat, di, ci = gmats[g]
+                    ic_p = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, 1)
+                    ic_m = f1_ic_series_from_idx(u, day, nd, pr.y, di, ci, Gmat, -1)
+                    m1, m2 = np.isfinite(ic_p), np.isfinite(ic_m)
+                    dsym = np.full(len(ic_p), np.nan)
+                    dsym[m1 & m2] = ic_p[m1 & m2] - ic_m[m1 & m2]
+                    per_gate_syms[g].append(dsym)
+                    per_gate_factors[g].append(c)
+                    per_gate_ds[g].append(float(np.nanmean(dsym))
+                                          if np.isfinite(dsym).any() else np.nan)
+            del m, pr
+            print(f"  块 {ci}/{len(chunks)}（{len(chunk)} 因子） "
+                  f"{time.time() - t0:.0f}s", flush=True)
 
     # ---------------------------------------------------------------- 组级统计
     # 无偏对称差 + 机制分簇（与市场 --by-group 对齐）：全池优先，仅全池未过
