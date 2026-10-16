@@ -44,6 +44,29 @@ HERE = Path(__file__).resolve().parent
 OUT_DIR = HERE / 'out'
 CORR_THRESHOLD = 0.7
 
+#: 并行工作进程共享（fork 继承，免 pickling 大面板）
+_MP_FRAME = None
+_MP_END = None
+
+
+def _par_init(lock) -> None:
+    """进程池初始化：ledger 跨进程写锁（frame/end 经 fork 继承）."""
+    import ledger as _LG
+    _LG.set_write_lock(lock)
+
+
+def _par_jobs(n) -> int:
+    """并行度归一化：非 posix 平台退化串行（spawn 下大面板 pickling 太贵）."""
+    import os
+    try:
+        nj = max(1, int(n or 1))
+    except Exception:
+        return 1
+    if nj > 1 and os.name != "posix":
+        print("  [warn] 非 posix 平台，--jobs 退化为串行", flush=True)
+        return 1
+    return nj
+
 
 def _ref_spec_key(spec: dict) -> str:
     raw = json.dumps(spec, sort_keys=True, ensure_ascii=False, default=str)
@@ -355,7 +378,7 @@ def eval_custom(frame: pd.DataFrame | None = None,
     if frame is None:
         frame = load_panel()
     if ev is None:
-        ev = Evaluator(frame)
+        ev = Evaluator(frame, cache_size=32)
     specs = load_all_custom_specs()
     print(f'custom specs={len(specs)}', flush=True)
     ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
@@ -458,7 +481,7 @@ def eval_store(frame: pd.DataFrame | None = None,
     if frame is None:
         frame = load_panel()
     if ev is None:
-        ev = Evaluator(frame)
+        ev = Evaluator(frame, cache_size=32)
     m, pos = _aligned if _aligned is not None else _store_aligned(frame)
     if m is None:
         return pd.DataFrame()
@@ -516,23 +539,91 @@ def eval_store(frame: pd.DataFrame | None = None,
     return pd.DataFrame(flat)
 
 
+def _eval_mined_one(p: dict, ctxs: dict, ev: Evaluator, ledger: Ledger):
+    """单个 pick 慢路径求值（串行/并行共用；ledger 在并行时经进程锁直写）。
+    返回 (rec_or_None, n_slow_inc)。"""
+    try:
+        node = parse_formula(p['formula'])
+    except Exception:
+        return None, 0
+    try:
+        f_full = ev.values(node)
+    except Exception:
+        return None, 0
+    name = f"{p['family']}:{p['hash'][:10]}"
+    rec = {'lib': 'mined', 'factor_id': p['hash'][:12], 'name_cn': p['formula'],
+           'base': None, 'transform': None, 'window': None,
+           'formula_cn': p['formula'], 'uploaded': '', 'family': p['family'],
+           'labels': {}}
+    ok_any = False
+    n_inc = 0
+    for lab, ctx in ctxs.items():
+        v = np.asarray(f_full, dtype=float)[ctx._pos]
+        cov = float(np.isfinite(v).mean()) if len(v) else 0.0
+        if cov <= 0.1:
+            rec['labels'][lab] = {'valid': False, 'coverage': cov}
+            continue
+        m = ctx.screen(v, name=name)
+        t = tier1(m)
+        t['coverage'] = cov
+        a_off = float(sia_of(m))
+        lgb = lgb_score(m)
+        t['direction'] = int(m.get('direction', 1))
+        rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
+                              'LGB': lgb, **t}
+        ledger.log('local', node, int(m.get('direction', 1)), family=p['family'],
+                   label=lab, data={'metrics': m, 'tier1': t,
+                                    'source': 'aligned-top'})
+        ok_any = True
+        n_inc += 1
+    if ok_any:
+        rec['habitat_pick'] = bool(p.get('habitat_pick', False))
+        return rec, n_inc
+    return None, 0
+
+
+def _eval_mined_worker(chunk) -> tuple:
+    """慢路径工作进程：picks 子集 → ([(原序号, rec)], n_slow)。
+    frame/end 经 fork 继承；自建小缓存 Evaluator（省 26GB）+ ctx；ledger 直写经锁。"""
+    from evaluator import Evaluator
+    from fitness import DataContext
+    from ledger import Ledger
+    frame, end = _MP_FRAME, _MP_END
+    ev = Evaluator(frame, cache_size=32)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=end)
+            for lab in ('c2c', 'vwap')}
+    ledger = Ledger()
+    out, ns = [], 0
+    for idx, p in chunk:
+        try:
+            rec, inc = _eval_mined_one(p, ctxs, ev, ledger)
+        except Exception:
+            continue
+        if rec is not None:
+            out.append((idx, rec))
+            ns += inc
+    return out, ns
+
+
 def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
                 ev: Evaluator | None = None,
                 builder: FactorBuilder | None = None,
-                end: str | None = None) -> pd.DataFrame:
+                end: str | None = None, jobs: int = 1) -> pd.DataFrame:
     ledger = Ledger()
     if frame is None:
         frame = load_panel()
     print(f'panel rows={len(frame):,}', flush=True)
     if ev is None:
-        ev = Evaluator(frame)
+        ev = Evaluator(frame, cache_size=32)
     if builder is None:
         builder = FactorBuilder(frame)
     ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
             for lab in ('c2c', 'vwap')}
-    rows = []
+    # 快路径串行（纯字典运算无 ledger 写）→ 慢候选收集
+    tmp: list = []
+    slow: list = []
     t0 = time.time()
-    n_fast = n_slow = 0
+    n_fast = 0
     for i, p in enumerate(picks, 1):
         # 加速（2026-09-26）：台账已有 full-window 双标签指标的直接复用，不重评
         b = p.get('bucket') or {}
@@ -556,48 +647,40 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
                 rec['labels'][lab] = {'valid': True, 'coverage': np.nan,
                                      'A_official': a_off, 'LGB': lgb, **m}
             rec['habitat_pick'] = bool(p.get('habitat_pick', False))
-            rows.append(rec)
+            tmp.append((i, rec))
             n_fast += 1
             continue
-        try:
-            node = parse_formula(p['formula'])
-        except Exception:
-            continue
-        try:
-            f_full = ev.values(node)
-        except Exception:
-            continue
-        name = f"{p['family']}:{p['hash'][:10]}"
-        rec = {'lib': 'mined', 'factor_id': p['hash'][:12], 'name_cn': p['formula'],
-               'base': None, 'transform': None, 'window': None,
-               'formula_cn': p['formula'], 'uploaded': '', 'family': p['family'],
-               'labels': {}}
-        ok_any = False
-        for lab, ctx in ctxs.items():
-            v = np.asarray(f_full, dtype=float)[ctx._pos]
-            cov = float(np.isfinite(v).mean()) if len(v) else 0.0
-            if cov <= 0.1:
-                rec['labels'][lab] = {'valid': False, 'coverage': cov}
-                continue
-            m = ctx.screen(v, name=name)
-            t = tier1(m)
-            t['coverage'] = cov
-            a_off = float(sia_of(m))
-            lgb = lgb_score(m)
-            t['direction'] = int(m.get('direction', 1))
-            rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
-                                  'LGB': lgb, **t}
-            ledger.log('local', node, int(m.get('direction', 1)), family=p['family'],
-                       label=lab, data={'metrics': m, 'tier1': t,
-                                        'source': 'aligned-top'})
-            ok_any = True
-            n_slow += 1
-        if ok_any:
-            rec['habitat_pick'] = bool(p.get('habitat_pick', False))
-        if ok_any:
-            rows.append(rec)
-        if i % 10 == 0 or i == len(picks):
-            print(f'  [{i}/{len(picks)}] fast={n_fast} slow={n_slow} {time.time() - t0:.0f}s', flush=True)
+        slow.append((i, p))
+    print(f'  fast-path: {n_fast} 复用，{len(slow)} 需现算 {time.time() - t0:.0f}s', flush=True)
+    n_slow = 0
+    nj = _par_jobs(jobs)
+    if nj <= 1 or len(slow) <= 1:
+        for k, (i, p) in enumerate(slow, 1):
+            rec, inc = _eval_mined_one(p, ctxs, ev, ledger)
+            if rec is not None:
+                tmp.append((i, rec))
+                n_slow += inc
+            if k % 10 == 0 or k == len(slow):
+                print(f'  [{k}/{len(slow)}] slow={n_slow} {time.time() - t0:.0f}s', flush=True)
+    else:
+        import concurrent.futures as _cf
+        import multiprocessing as _mp
+        global _MP_FRAME, _MP_END
+        _MP_FRAME, _MP_END = frame, (end or W.DEFAULT_DATA_CUT)
+        _nj = min(nj, len(slow))
+        _chunks = [slow[i::_nj] for i in range(_nj)]
+        _lock = _mp.Lock()
+        _done = 0
+        with _cf.ProcessPoolExecutor(max_workers=_nj, initializer=_par_init,
+                                      initargs=(_lock,)) as _ex:
+            for _out, _ns in _ex.map(_eval_mined_worker, _chunks):
+                tmp.extend(_out)
+                n_slow += _ns
+                _done += 1
+                print(f'  [chunk {_done}/{len(_chunks)}] slow={n_slow} {time.time() - t0:.0f}s',
+                      flush=True)
+    tmp.sort(key=lambda x: x[0])
+    rows = [r for _, r in tmp]
     flat = []
     for rec in rows:
         for lab in ('c2c', 'vwap'):
@@ -1007,6 +1090,9 @@ def main() -> int:
     ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT,
                     help='数据截止日铁律（默认 2025-12-31）：load_panel/DataContext/'
                          'pos_me/B.read_factors 全链路钳制，严禁触及 2026 数据（PLAN §20.6.2）')
+    ap.add_argument('--jobs', type=int, default=1,
+                    help='eval_mined 慢路径并行进程数（按候选分片；12 核建议 8；'
+                         '结果与串行逐值一致，非 posix 平台自动退化串行）')
     args = ap.parse_args()
 
     t0 = time.time()
@@ -1036,12 +1122,12 @@ def main() -> int:
 
     # V4.3c data-cut 铁律：面板/评估/pos_me/因子读取全部钳制在 cut 内。
     frame = load_panel(data_cut=args.data_cut)
-    ev = Evaluator(frame)
+    ev = Evaluator(frame, cache_size=32)
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
     _picks, _hab_h = mined_prefilter(args.top, data_cut=args.data_cut)
     mined_df = eval_mined(_picks, frame=frame, ev=ev,
-                          builder=builder, end=args.data_cut)
+                          builder=builder, end=args.data_cut, jobs=args.jobs)
     custom_df = eval_custom(frame=frame, ev=ev, end=args.data_cut) \
         if args.include_custom else pd.DataFrame()
     # V4.3c：_store_aligned 全局只调一次（eval_store 与 store_vals 复用，

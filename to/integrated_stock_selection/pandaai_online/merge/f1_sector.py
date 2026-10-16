@@ -25,6 +25,7 @@ sys.path.insert(0, HERE)
 import boundary as B
 import eval_v2 as E
 import fastranks as FR
+import gates as G
 import h3_eval as H
 import windows as W
 
@@ -35,6 +36,222 @@ LABEL_MAX = W.FACTOR_SCREEN_MAX
 N_PERM = 200
 PLACEBO_BLOCK = 20
 SEED = 0
+
+
+#: 并行工作进程共享（fork 继承，免 pickling 大面板）
+_F1S_CTX = None
+
+
+def _par_jobs(n) -> int:
+    """并行度归一化：非 posix 平台退化串行（spawn 下大面板 pickling 太贵）."""
+    import os
+    try:
+        nj = max(1, int(n or 1))
+    except Exception:
+        return 1
+    if nj > 1 and os.name != "posix":
+        print("  [warn] 非 posix 平台，--jobs 退化为串行", flush=True)
+        return 1
+    return nj
+
+
+def _run_f1_sector_one(c: dict, idx: int, rec: dict, ctx: dict) -> dict:
+    """单个候选完整计算（串行/并行共用；不碰缓存文件，由父进程统一落缓存）。
+    返回填好的 rec（含 fail_reason；异常路径与串行一致）。"""
+    m, sg, uniq = ctx["m"], ctx["sg"], ctx["uniq"]
+    day, nd, n_dates = ctx["day"], ctx["nd"], ctx["n_dates"]
+    sec_ids, sec_uniq, yrk = ctx["sec_ids"], ctx["sec_uniq"], ctx["yrk"]
+    date_idx, Ubar = ctx["date_idx"], ctx["Ubar"]
+    form, tag = ctx["form"], ctx["tag"]
+    try:
+        # 该门控的矩阵（搜索长表：p → 按 form 映射，与 f1_batch 的列语义对齐）
+        gp = sg[sg["gate_id"] == c["gate"]].pivot_table(
+            index="date", columns="sector", values="p", aggfunc="mean")
+        if form == "t":
+            arr = G.thresh_form(gp.to_numpy(dtype=float).ravel())
+            gp = pd.DataFrame(arr.reshape(gp.shape),
+                              index=gp.index, columns=gp.columns)
+        else:
+            gp = 2.0 * gp - 1.0
+        gp = gp.reindex(pd.to_datetime(uniq))
+        Gm = gp.to_numpy(dtype=float)  # [n_dates, n_sectors_all]
+        # switch用原始分位矩阵P（与G同行列对齐，不随form映射改变）
+        Praw = sg[sg["gate_id"] == c["gate"]].pivot_table(
+            index="date", columns="sector", values="p", aggfunc="mean")
+        Praw = Praw.reindex(pd.to_datetime(uniq))
+        Pmat = Praw.reindex(columns=gp.columns).to_numpy(dtype=float)
+        # sector 列对齐到 sec_uniq
+        gp_cols = list(gp.columns)
+        gp_set = set(gp_cols)
+        col_idx = np.array([gp_cols.index(s) if s in gp_set else -1 for s in sec_uniq])
+        sec_row = sec_ids  # 每行的 sector 位置
+        _is_switch = (form == "switch")
+        if _is_switch:
+            # switch复合base不是面板列；掩码改用off/def有效性（u在下文对齐）
+            z = np.full(len(m), np.nan)
+            for _cc in (c.get("base_off"), c.get("base_def")):
+                _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
+                z = np.where(np.isfinite(_xv), 1.0, z)
+        else:
+            xv = pd.to_numeric(m[c["base"]], errors="coerce").to_numpy(dtype=float)
+            z = c["d"] * xv
+        rv = pd.to_numeric(m["r3"], errors="coerce").to_numpy(dtype=float)
+        _is_gain = (form == "gain")
+        _is_flip = (form == "flip")
+        _is_switch = (form == "switch")
+        if _is_switch and (not c.get("base_off") or not c.get("base_def")):
+            raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
+        if _is_gain or _is_flip:
+            # F1v3_gain/flip：有向居中秩u（与f1_batch._centered_u逐字同定义：
+            # 对**原始值**排名再乘一次d。旧代码对已乘d的z排名后再乘d，
+            # d=-1时负负得正方向全反——base20有16/20个d=-1）。
+            from f1_batch import _centered_u as _cu
+            u_row = _cu(xv, day, nd, int(c["d"]))
+        elif _is_switch:
+            # switch legs方向：cands自带d_off/d_def（缺省1）；统一调公共定义。
+            u_off_row, u_def_row = None, None
+            for _cc, _dd, _slot in ((c["base_off"], int(c.get("d_off", 1)), 0),
+                                    (c["base_def"], int(c.get("d_def", 1)), 1)):
+                _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
+                _u = FR.centered_u(_xv, day, nd, _dd)
+                if _slot == 0:
+                    u_off_row = _u
+                else:
+                    u_def_row = _u
+            u_row = None
+        else:
+            u_row = None
+
+        def f1_scores(Gm_, Pm=None):
+            okrow = (sec_row >= 0) & np.isfinite(z)
+            ci = col_idx[sec_row[okrow]]
+            valid_col = ci >= 0
+            vv = np.full(okrow.sum(), np.nan)
+            rr, cc = date_idx[okrow][valid_col], ci[valid_col]
+            vv[valid_col] = Gm_[rr, cc]
+            f1 = np.full(len(m), np.nan)
+            if _is_gain:
+                ww = H.build_gain_weight(vv, c["s"])
+                f1[okrow] = u_row[okrow] * ww
+            elif _is_flip:
+                ww = H.build_flip_weight(vv, c["s"])
+                f1[okrow] = u_row[okrow] * ww
+            elif _is_switch:
+                Puse = Pm if Pm is not None else Pmat
+                pv = np.full(okrow.sum(), np.nan)
+                pv[valid_col] = Puse[rr, cc]
+                pv = np.clip(pv, 0.0, 1.0)
+                f1[okrow] = H.build_switch_blend(
+                    pv, u_off_row[okrow], u_def_row[okrow])
+            else:
+                ww = np.maximum(c["s"] * vv, 0.0)
+                f1[okrow] = z[okrow] * ww
+            return f1
+
+        def _tilt_ic(F1k: np.ndarray) -> np.ndarray:
+            # 底仓倾斜（与市场 gain 同构）：S=Ubar+0.25·F vs Ubar+0.25·u。
+            _fr = FR.blockwise_rank(
+                np.where(np.isfinite(Ubar + 0.25 * F1k),
+                         Ubar + 0.25 * F1k, np.nan), day)
+            return E._daily_corr(_fr, yrk, day, nd)
+
+        def f1_ic_of(Gm_, Pm=None):
+            if _is_gain:
+                return _tilt_ic(f1_scores(Gm_, Pm))
+            fr = FR.blockwise_rank(f1_scores(Gm_, Pm), day)   # 2.4× vs _within_rank
+            return E._daily_corr(fr, yrk, day, nd)
+
+        f1_ic = f1_ic_of(Gm)
+        if _is_gain:
+            _s_static = Ubar + 0.25 * u_row
+            br = FR.blockwise_rank(
+                np.where(np.isfinite(_s_static), _s_static, np.nan), day)
+        elif _is_flip:
+            br = FR.blockwise_rank(np.where(np.isfinite(u_row), u_row, np.nan), day)
+        elif _is_switch:
+            _static = H.static_consensus(u_off_row, u_def_row)
+            br = FR.blockwise_rank(np.where(np.isfinite(_static), _static, np.nan), day)
+        else:
+            br = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
+        base_ic = E._daily_corr(br, yrk, day, nd)
+        if _is_switch:
+            rec["base"] = f"{c['base_off']}__{c['base_def']}"
+        dl = H.delta_ic(np.asarray(uniq), f1_ic, base_ic)
+        # slope 用日均门控（诊断）
+        gmean = np.nanmean(Gm, axis=1)
+        sl = H.slope_test(base_ic, gmean)
+        # placebo：日期块置换（全行业同置换）
+        rng = np.random.default_rng(SEED)
+        nb = max(1, n_dates // PLACEBO_BLOCK)
+        pieces = np.array_split(np.arange(n_dates), nb)
+        obs = float(np.nanmean(f1_ic) - np.nanmean(base_ic)) \
+            if np.isfinite(f1_ic).any() and np.isfinite(base_ic).any() else float("nan")
+
+        def _d2(f1s):
+            f1s = np.asarray(f1s, dtype=float)
+            ff = f1s[np.isfinite(f1s)]
+            bb = base_ic[np.isfinite(base_ic)]
+            if len(ff) == 0 or len(bb) == 0:
+                return float("nan")
+            return float(ff.mean() - bb.mean())
+
+        nulls = np.empty(N_PERM)
+        for pi in range(N_PERM):
+            order = rng.permutation(nb)
+            pidx = np.concatenate([pieces[j] for j in order])[:n_dates]
+            if _is_switch:
+                nulls[pi] = _d2(f1_ic_of(Gm[pidx], Pmat[pidx]))
+            else:
+                nulls[pi] = _d2(f1_ic_of(Gm[pidx]))
+        nulls = nulls[np.isfinite(nulls)]
+        # 净增益诊断：相对随机置换门控的增量（扣除零分布基线；判定仍用 H3 原口径）。
+        mu_null = float(np.mean(nulls)) if len(nulls) else float("nan")
+        if len(nulls) == 0 or not np.isfinite(obs):
+            p = float("nan")
+        else:
+            k = int((np.abs(nulls) >= abs(obs)).sum())
+            p = float((1 + k) / (len(nulls) + 1))
+        # spread / level-leak（诊断）：F1 分数的日内百分位排名 → spread
+        f1s = f1_scores(Gm)
+        fr_all = FR.blockwise_rank(f1s, day)
+        dcnt = np.bincount(day, minlength=nd).astype(float)
+        rkp = fr_all / np.maximum(dcnt[day], 1)
+        sp_f1 = H.daily_spread(np.arange(nd), rkp, rv, day, nd, q=0.2)
+        ga = np.nanmean(np.abs(Gm), axis=1)
+        mm = np.isfinite(sp_f1) & np.isfinite(ga)
+        if mm.sum() < 30:
+            scorr = float("nan")
+        else:
+            ra = pd.Series(sp_f1[mm]).rank().to_numpy()
+            rb = pd.Series(ga[mm]).rank().to_numpy()
+            ra -= ra.mean(); rb -= rb.mean()
+            den = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
+            scorr = float((ra * rb).sum() / den) if den > 0 else float("nan")
+        rec.update({
+            "delta_mean": dl.get("mean"), "delta_ci_lo": dl.get("ci_lo"),
+            "delta_ci_hi": dl.get("ci_hi"), "nblocks_pos": dl.get("nblocks_pos"),
+            "blocks": json.dumps(dl.get("blocks"), ensure_ascii=False),
+            "slope_b": sl.get("b"), "slope_t": sl.get("t"),
+            "placebo_p": p, "placebo_obs": obs,
+            "placebo_q95": float(np.quantile(np.abs(nulls), 0.95)) if len(nulls) else float("nan"),
+            "delta_net": (float(dl.get("mean") - mu_null)
+                          if np.isfinite(dl.get("mean", float("nan")))
+                          and np.isfinite(mu_null) else float("nan")),
+            "spread_abs_g_corr": scorr,
+            "leak_risk": bool(abs(scorr) > 0.8) if np.isfinite(scorr) else False,
+            "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),
+            "fail_reason": "",
+        })
+    except Exception as e:
+        rec.update({"fail_reason": str(e)[:300]})
+        print(f"[{tag}] {c['name']} ERROR {str(e)[:150]}", flush=True)
+    return rec
+
+
+def _f1_sector_worker(args) -> tuple:
+    """工作进程：(序号, 候选, rec骨架) → (序号, rec)。共享经 fork 继承。"""
+    idx, c, rec = args
+    return idx, _run_f1_sector_one(c, idx, rec, _F1S_CTX)
 
 
 def main():
@@ -57,6 +274,9 @@ def main():
     ap.add_argument("--no-f1-cache", dest="no_f1_cache", action="store_true",
                     default=False,
                     help="关闭配对指纹缓存，全部重算（默认启用缓存断点续算）")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="未命中缓存候选的并行进程数（12 核建议 8；"
+                         "结果与串行逐值一致，非 posix 平台自动退化串行）")
     ap.add_argument("--base-panel", choices=("base20", "vwap_top20", "specialist"),
                     default="base20",
                     help="基因子面板（默认base20保证历史可复现；"
@@ -199,10 +419,10 @@ def main():
     _dver = B.factor_data_version()
     print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
           f"({'off' if a.no_f1_cache else 'on'})", flush=True)
-    done_n = 0
     _recs, _n_hit, _n_new = [], 0, 0
+    # 缓存命中判定（纯字典运算）串行；未命中才进计算（串行/并行）
+    _miss = []
     for i, c in enumerate(cands):
-        t1 = time.time()
         _base = (f"{c.get('base_off')}__{c.get('base_def')}"
                  if a.form == "switch" and c.get("base_off") else c["base"])
         rec = {"name": c["name"], "base": _base, "gate": c["gate"],
@@ -220,209 +440,56 @@ def main():
                         if _hit.get(k) is not None})
             rec["fail_reason"] = ""
             rec["cached"] = True
-            _recs.append(rec)
+            _recs.append((i, rec))
             _n_hit += 1
             print(f"[{a.tag} {i + 1}/{len(cands)}] {c['name']} CACHE-HIT "
                   f"d={rec.get('delta_mean')} p={rec.get('placebo_p')}", flush=True)
             continue
         rec["cached"] = False
-        try:
-            # 该门控的矩阵（搜索长表：p → 按 form 映射，与 f1_batch 的列语义对齐）
-            gp = sg[sg["gate_id"] == c["gate"]].pivot_table(
-                index="date", columns="sector", values="p", aggfunc="mean")
-            if a.form == "t":
-                arr = G.thresh_form(gp.to_numpy(dtype=float).ravel())
-                gp = pd.DataFrame(arr.reshape(gp.shape),
-                                  index=gp.index, columns=gp.columns)
-            else:
-                gp = 2.0 * gp - 1.0
-            gp = gp.reindex(pd.to_datetime(uniq))
-            G = gp.to_numpy(dtype=float)  # [n_dates, n_sectors_all]
-            # switch用原始分位矩阵P（与G同行列对齐，不随form映射改变）
-            Praw = sg[sg["gate_id"] == c["gate"]].pivot_table(
-                index="date", columns="sector", values="p", aggfunc="mean")
-            Praw = Praw.reindex(pd.to_datetime(uniq))
-            Pmat = Praw.reindex(columns=gp.columns).to_numpy(dtype=float)
-            # sector 列对齐到 sec_uniq
-            gp_cols = list(gp.columns)
-            gp_set = set(gp_cols)
-            col_idx = np.array([gp_cols.index(s) if s in gp_set else -1 for s in sec_uniq])
-            sec_row = sec_ids  # 每行的 sector 位置
-            _is_switch = (a.form == "switch")
-            if _is_switch:
-                # switch复合base不是面板列；掩码改用off/def有效性（u在下文对齐）
-                z = np.full(len(m), np.nan)
-                for _cc in (c.get("base_off"), c.get("base_def")):
-                    _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
-                    z = np.where(np.isfinite(_xv), 1.0, z)
-            else:
-                xv = pd.to_numeric(m[c["base"]], errors="coerce").to_numpy(dtype=float)
-                z = c["d"] * xv
-            rv = pd.to_numeric(m["r3"], errors="coerce").to_numpy(dtype=float)
-            _is_gain = (a.form == "gain")
-            _is_flip = (a.form == "flip")
-            _is_switch = (a.form == "switch")
-            if _is_switch and (not c.get("base_off") or not c.get("base_def")):
-                raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
-            if _is_gain or _is_flip:
-                # F1v3_gain/flip：有向居中秩u（与f1_batch._centered_u逐字同定义：
-                # 对**原始值**排名再乘一次d。旧代码对已乘d的z排名后再乘d，
-                # d=-1时负负得正方向全反——base20有16/20个d=-1）。
-                from f1_batch import _centered_u as _cu
-                u_row = _cu(xv, day, nd, int(c["d"]))
-            elif _is_switch:
-                # switch legs方向：cands自带d_off/d_def（缺省1）；统一调公共定义。
-                u_off_row, u_def_row = None, None
-                for _cc, _dd, _slot in ((c["base_off"], int(c.get("d_off", 1)), 0),
-                                        (c["base_def"], int(c.get("d_def", 1)), 1)):
-                    _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
-                    _u = FR.centered_u(_xv, day, nd, _dd)
-                    if _slot == 0:
-                        u_off_row = _u
-                    else:
-                        u_def_row = _u
-                u_row = None
-            else:
-                u_row = None
+        _miss.append((i, c, rec, _fp))
+    _n_total = len(cands)
 
-            def f1_scores(Gm, Pm=None):
-                gv = np.full(len(m), np.nan)
-                okrow = (sec_row >= 0) & np.isfinite(z)
-                ci = col_idx[sec_row[okrow]]
-                valid_col = ci >= 0
-                vv = np.full(okrow.sum(), np.nan)
-                rr, cc = date_idx[okrow][valid_col], ci[valid_col]
-                vv[valid_col] = Gm[rr, cc]
-                f1 = np.full(len(m), np.nan)
-                if _is_gain:
-                    ww = H.build_gain_weight(vv, c["s"])
-                    f1[okrow] = u_row[okrow] * ww
-                elif _is_flip:
-                    ww = H.build_flip_weight(vv, c["s"])
-                    f1[okrow] = u_row[okrow] * ww
-                elif _is_switch:
-                    Puse = Pm if Pm is not None else Pmat
-                    pv = np.full(okrow.sum(), np.nan)
-                    pv[valid_col] = Puse[rr, cc]
-                    pv = np.clip(pv, 0.0, 1.0)
-                    f1[okrow] = H.build_switch_blend(
-                        pv, u_off_row[okrow], u_def_row[okrow])
-                else:
-                    ww = np.maximum(c["s"] * vv, 0.0)
-                    f1[okrow] = z[okrow] * ww
-                return f1
+    def _post(_idx, _rec, _fp, _t1):
+        if not a.no_f1_cache:
+            _save = {k: _rec.get(k) for k in
+                     FC.STAT_KEYS + ("fail_reason", "spread_abs_g_corr", "leak_risk")}
+            FC.save_result(_fp, _save)
+            _cache[_fp] = _save
+        _recs.append((_idx, _rec))
+        print(f"[{a.tag} {_idx + 1}/{_n_total}] {_rec.get('name')} "
+              f"d={_rec.get('delta_mean')} p={_rec.get('placebo_p')} {time.time()-_t1:.0f}s",
+              flush=True)
+        return 1
 
-            def _tilt_ic(F1k: np.ndarray) -> np.ndarray:
-                # 底仓倾斜（与市场 gain 同构）：S=Ubar+0.25·F vs Ubar+0.25·u。
-                # 单因子恒正权重数学上无法提升单因子 IC（方差稀释偏置），
-                # 倾斜把权重缩 0.25（偏置×1/16 可忽略）并度量多因子组合增量。
-                _fr = FR.blockwise_rank(
-                    np.where(np.isfinite(Ubar + 0.25 * F1k),
-                             Ubar + 0.25 * F1k, np.nan), day)
-                return E._daily_corr(_fr, yrk, day, nd)
-
-            def f1_ic_of(Gm, Pm=None):
-                if _is_gain:
-                    return _tilt_ic(f1_scores(Gm, Pm))
-                fr = FR.blockwise_rank(f1_scores(Gm, Pm), day)   # 2.4× vs _within_rank
-                return E._daily_corr(fr, yrk, day, nd)
-
-            f1_ic = f1_ic_of(G)
-            if _is_gain:
-                _s_static = Ubar + 0.25 * u_row
-                br = FR.blockwise_rank(
-                    np.where(np.isfinite(_s_static), _s_static, np.nan), day)
-            elif _is_flip:
-                br = FR.blockwise_rank(np.where(np.isfinite(u_row), u_row, np.nan), day)
-            elif _is_switch:
-                _static = H.static_consensus(u_off_row, u_def_row)
-                br = FR.blockwise_rank(np.where(np.isfinite(_static), _static, np.nan), day)
-            else:
-                br = FR.blockwise_rank(np.where(np.isfinite(z), z, np.nan), day)
-            base_ic = E._daily_corr(br, yrk, day, nd)
-            if _is_switch:
-                rec["base"] = f"{c['base_off']}__{c['base_def']}"
-            dl = H.delta_ic(np.asarray(uniq), f1_ic, base_ic)
-            # slope 用日均门控（诊断）
-            gmean = np.nanmean(G, axis=1)
-            sl = H.slope_test(base_ic, gmean)
-            # placebo：日期块置换（全行业同置换）
-            rng = np.random.default_rng(SEED)
-            nb = max(1, n_dates // PLACEBO_BLOCK)
-            pieces = np.array_split(np.arange(n_dates), nb)
-            obs = float(np.nanmean(f1_ic) - np.nanmean(base_ic)) \
-                if np.isfinite(f1_ic).any() and np.isfinite(base_ic).any() else float("nan")
-            def _d2(f1s):
-                f1s = np.asarray(f1s, dtype=float)
-                ff = f1s[np.isfinite(f1s)]
-                bb = base_ic[np.isfinite(base_ic)]
-                if len(ff) == 0 or len(bb) == 0:
-                    return float("nan")
-                return float(ff.mean() - bb.mean())
-
-            nulls = np.empty(N_PERM)
-            for pi in range(N_PERM):
-                order = rng.permutation(nb)
-                pidx = np.concatenate([pieces[j] for j in order])[:n_dates]
-                if _is_switch:
-                    nulls[pi] = _d2(f1_ic_of(G[pidx], Pmat[pidx]))
-                else:
-                    nulls[pi] = _d2(f1_ic_of(G[pidx]))
-            nulls = nulls[np.isfinite(nulls)]
-            # 净增益诊断：相对随机置换门控的增量（扣除零分布基线；判定仍用 H3 原口径）。
-            mu_null = float(np.mean(nulls)) if len(nulls) else float("nan")
-            if len(nulls) == 0 or not np.isfinite(obs):
-                p = float("nan")
-            else:
-                k = int((np.abs(nulls) >= abs(obs)).sum())
-                p = float((1 + k) / (len(nulls) + 1))
-            # spread / level-leak（诊断）：F1 分数的日内百分位排名 → spread
-            f1s = f1_scores(G)
-            fr_all = FR.blockwise_rank(f1s, day)
-            dcnt = np.bincount(day, minlength=nd).astype(float)
-            rkp = fr_all / np.maximum(dcnt[day], 1)
-            sp_f1 = H.daily_spread(np.arange(nd), rkp, rv, day, nd, q=0.2)
-            ga = np.nanmean(np.abs(G), axis=1)
-            mm = np.isfinite(sp_f1) & np.isfinite(ga)
-            if mm.sum() < 30:
-                scorr = float("nan")
-            else:
-                ra = pd.Series(sp_f1[mm]).rank().to_numpy()
-                rb = pd.Series(ga[mm]).rank().to_numpy()
-                ra -= ra.mean(); rb -= rb.mean()
-                den = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
-                scorr = float((ra * rb).sum() / den) if den > 0 else float("nan")
-            rec.update({
-                "delta_mean": dl.get("mean"), "delta_ci_lo": dl.get("ci_lo"),
-                "delta_ci_hi": dl.get("ci_hi"), "nblocks_pos": dl.get("nblocks_pos"),
-                "blocks": json.dumps(dl.get("blocks"), ensure_ascii=False),
-                "slope_b": sl.get("b"), "slope_t": sl.get("t"),
-                "placebo_p": p, "placebo_obs": obs,
-                "placebo_q95": float(np.quantile(np.abs(nulls), 0.95)) if len(nulls) else float("nan"),
-                "delta_net": (float(dl.get("mean") - mu_null)
-                              if np.isfinite(dl.get("mean", float("nan")))
-                              and np.isfinite(mu_null) else float("nan")),
-                "spread_abs_g_corr": scorr,
-                "leak_risk": bool(abs(scorr) > 0.8) if np.isfinite(scorr) else False,
-                "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),
-                "fail_reason": "",
-            })
-            if not a.no_f1_cache:
-                _save = {k: rec.get(k) for k in
-                         FC.STAT_KEYS + ("fail_reason", "spread_abs_g_corr", "leak_risk")}
-                FC.save_result(_fp, _save)
-                _cache[_fp] = _save
-            _n_new += 1
-        except Exception as e:
-            import traceback
-            rec.update({"fail_reason": str(e)[:300]})
-            print(f"[{a.tag}] {c['name']} ERROR {str(e)[:150]}", flush=True)
-            if not a.no_f1_cache:
-                FC.save_result(_fp, {"fail_reason": rec["fail_reason"]})
-        _recs.append(rec)
-        done_n += 1
-        print(f"[{a.tag} {done_n}/{len(cands)}] {c['name']} "
-              f"d={rec.get('delta_mean')} p={rec.get('placebo_p')} {time.time()-t1:.0f}s", flush=True)
+    _nj = _par_jobs(a.jobs)
+    if _nj <= 1 or len(_miss) <= 1:
+        for i, c, rec, _fp in _miss:
+            t1 = time.time()
+            _ctx1 = {"m": m, "sg": sg, "uniq": uniq, "day": day, "nd": nd,
+                     "n_dates": n_dates, "sec_ids": sec_ids, "sec_uniq": sec_uniq,
+                     "yrk": yrk, "date_idx": date_idx, "Ubar": _Ubar,
+                     "form": a.form, "tag": a.tag}
+            _run_f1_sector_one(c, i, rec, _ctx1)
+            _n_new += _post(i, rec, _fp, t1)
+    else:
+        import concurrent.futures as _cf
+        global _F1S_CTX
+        _F1S_CTX = {"m": m, "sg": sg, "uniq": uniq, "day": day, "nd": nd,
+                    "n_dates": n_dates, "sec_ids": sec_ids, "sec_uniq": sec_uniq,
+                    "yrk": yrk, "date_idx": date_idx, "Ubar": _Ubar,
+                    "form": a.form, "tag": a.tag}
+        _nj = min(_nj, len(_miss))
+        print(f"[{a.tag}] 并行计算：{len(_miss)} 候选 × {_nj} 进程 …", flush=True)
+        _t1_all = {i: time.time() for i, _, _, _ in _miss}
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            _order = {i: k for k, (i, _, _, _) in enumerate(_miss)}
+            for idx, _rec in _ex.map(_f1_sector_worker,
+                                     [(i, c, rec) for i, c, rec, _ in _miss]):
+                _k = _order[idx]
+                _, _, _, _fp = _miss[_k]
+                _n_new += _post(idx, _rec, _fp, _t1_all[idx])
+    _recs.sort(key=lambda x: x[0])
+    _recs = [r for _, r in _recs]
     # 全量去重覆盖写（按 name keep-last）：多次运行幂等，消灭追加重复行。
     _out_df = pd.DataFrame(_recs)
     if len(_out_df):

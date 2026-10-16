@@ -220,6 +220,82 @@ def run_one_market_switch(m, base_cols_all: list[str], d_map: dict,
     return res
 
 
+#: 并行工作进程共享（fork 继承，免 pickling 大面板/bundle）
+_F1B_CTX = None
+
+
+def _par_jobs(n) -> int:
+    """并行度归一化：非 posix 平台退化串行（spawn 下大面板 pickling 太贵）."""
+    import os
+    try:
+        nj = max(1, int(n or 1))
+    except Exception:
+        return 1
+    if nj > 1 and os.name != "posix":
+        print("  [warn] 非 posix 平台，--jobs 退化为串行", flush=True)
+        return 1
+    return nj
+
+
+def _run_f1_batch_one(c: dict, idx: int, rec: dict, ctx: dict) -> dict:
+    """单个候选完整计算（串行/并行共用；不碰缓存文件，由父进程统一落缓存）。
+    返回填好的 rec（含 fail_reason；异常路径与串行一致）。"""
+    m, base_cols = ctx["m"], ctx["base_cols"]
+    b20, mg, uniq = ctx["b20"], ctx["mg"], ctx["uniq"]
+    ic_cache, prep = ctx["ic_cache"], ctx["prep"]
+    form, tag = ctx["form"], ctx["tag"]
+    try:
+        _gcol = c["gate"] + "_" + (form if form in ("g", "t") else "g")
+        gmap = dict(zip(pd.to_datetime(mg["date"]).dt.date.astype(str),
+                        mg[_gcol].to_numpy()))
+        g = np.array([gmap.get(str(pd.Timestamp(dd).date()), np.nan) for dd in uniq])
+        if form in ("gain", "flip", "switch"):
+            if c["gate_type"] != "market":
+                raise SystemExit(f"f1_batch {form}分支只接受market候选"
+                                 f"（sector请走f1_sector --form {form}）")
+            if form == "gain":
+                r = run_one_market_gain(m, base_cols, b20, c["base"], g, c["s"],
+                                        uniq, prep=prep)
+            elif form == "flip":
+                r = run_one_market_flip(m, base_cols, b20, c["base"], g, c["s"],
+                                        uniq, prep=prep)
+            else:
+                if not c.get("base_off") or not c.get("base_def"):
+                    raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
+                r = run_one_market_switch(m, base_cols, b20, c["base_off"],
+                                          c["base_def"], g, uniq, prep=prep)
+                rec["base"] = f"{c['base_off']}__{c['base_def']}"
+        else:
+            r = run_one_market(m, c["base"], c["d"], g, c["s"], uniq, ic_cache[c["base"]])
+        r.pop("_f1_ic", None)
+        dl = r["delta"]
+        pl = r["placebo"]
+        sl = r["slope"]
+        rec.update({
+            "delta_mean": dl.get("mean"), "delta_ci_lo": dl.get("ci_lo"),
+            "delta_ci_hi": dl.get("ci_hi"), "nblocks_pos": dl.get("nblocks_pos"),
+            "blocks": json.dumps(dl.get("blocks"), ensure_ascii=False),
+            "slope_b": sl.get("b"), "slope_t": sl.get("t"),
+            "placebo_p": pl.get("p"), "placebo_obs": pl.get("obs"),
+            "placebo_q95": pl.get("null_q95"), "placebo_pct": pl.get("pct"),
+            "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),
+            "fail_reason": "",
+        })
+        if form == "switch" and "tilt_delta" in r:
+            # switch辅助列：底仓倾斜诊断（与主判定同文件不同列，不进FDR）
+            rec["tilt_delta"] = r.get("tilt_delta")
+    except Exception as e:
+        rec.update({"fail_reason": str(e)[:300]})
+        print(f"[{tag}] {c['name']} ERROR {str(e)[:120]}", flush=True)
+    return rec
+
+
+def _f1_batch_worker(args) -> tuple:
+    """工作进程：(序号, 候选, rec骨架) → (序号, rec)。共享经 fork 继承。"""
+    idx, c, rec = args
+    return idx, _run_f1_batch_one(c, idx, rec, _F1B_CTX)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cands", required=True)
@@ -250,6 +326,9 @@ def main():
     ap.add_argument("--no-f1-cache", dest="no_f1_cache", action="store_true",
                     default=False,
                     help="关闭配对指纹缓存，全部重算（默认启用缓存断点续算）")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="未命中缓存候选的并行进程数（12 核建议 8；"
+                         "结果与串行逐值一致，非 posix 平台自动退化串行）")
     a = ap.parse_args()
     label_max = a.label_max
     if a.gates_parquet:
@@ -356,16 +435,15 @@ def main():
     if _prep is not None:
         print(f"[{a.tag}] market bundle ready ({len(base_cols)} bases)", flush=True)
 
-    started_empty = not os.path.exists(a.out)
-    done_n = 0
     import f1_cache as FC
     _cache = {} if a.no_f1_cache else FC.load_cache()
     _dver = B.factor_data_version()
     print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
           f"({'off' if a.no_f1_cache else 'on'})", flush=True)
     _recs, _n_hit, _n_new = [], 0, 0
+    # 缓存命中判定（纯字典运算）串行；未命中才进计算（串行/并行）
+    _miss = []
     for i, c in enumerate(mk):
-        t1 = time.time()
         _base = (f"{c.get('base_off')}__{c.get('base_def')}"
                  if a.form == "switch" and c.get("base_off") else c["base"])
         rec = {"name": c["name"], "base": _base, "gate": c["gate"],
@@ -383,67 +461,57 @@ def main():
             rec.update({k: _hit.get(k) for k in FC.STAT_KEYS if _hit.get(k) is not None})
             rec["fail_reason"] = ""
             rec["cached"] = True
-            _recs.append(rec)
+            _recs.append((i, rec))
             _n_hit += 1
             print(f"[{a.tag} {i + 1}/{len(mk)}] {c['name']} CACHE-HIT "
                   f"d={rec.get('delta_mean')} p={rec.get('placebo_p')}", flush=True)
             continue
         rec["cached"] = False
-        try:
-            _gcol = c["gate"] + "_" + (a.form if a.form in ("g", "t") else "g")
-            gmap = dict(zip(pd.to_datetime(mg["date"]).dt.date.astype(str),
-                            mg[_gcol].to_numpy()))
-            g = np.array([gmap.get(str(pd.Timestamp(dd).date()), np.nan) for dd in uniq])
-            if a.form in ("gain", "flip", "switch"):
-                if c["gate_type"] != "market":
-                    raise SystemExit(f"f1_batch {a.form}分支只接受market候选"
-                                     f"（sector请走f1_sector --form {a.form}）")
-                if a.form == "gain":
-                    r = run_one_market_gain(m, base_cols, b20, c["base"], g, c["s"],
-                                            uniq, prep=_prep)
-                elif a.form == "flip":
-                    r = run_one_market_flip(m, base_cols, b20, c["base"], g, c["s"],
-                                            uniq, prep=_prep)
-                else:
-                    if not c.get("base_off") or not c.get("base_def"):
-                        raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
-                    r = run_one_market_switch(m, base_cols, b20, c["base_off"],
-                                              c["base_def"], g, uniq, prep=_prep)
-                    rec["base"] = f"{c['base_off']}__{c['base_def']}"
+        _miss.append((i, c, rec, _fp))
+
+    _n_total = len(mk)
+
+    def _post(_idx, _rec, _fp, _t1):
+        if not a.no_f1_cache:
+            if _rec.get("fail_reason"):
+                FC.save_result(_fp, {"fail_reason": _rec["fail_reason"]})
             else:
-                r = run_one_market(m, c["base"], c["d"], g, c["s"], uniq, ic_cache[c["base"]])
-            r.pop("_f1_ic", None)
-            dl = r["delta"]
-            pl = r["placebo"]
-            sl = r["slope"]
-            rec.update({
-                "delta_mean": dl.get("mean"), "delta_ci_lo": dl.get("ci_lo"),
-                "delta_ci_hi": dl.get("ci_hi"), "nblocks_pos": dl.get("nblocks_pos"),
-                "blocks": json.dumps(dl.get("blocks"), ensure_ascii=False),
-                "slope_b": sl.get("b"), "slope_t": sl.get("t"),
-                "placebo_p": pl.get("p"), "placebo_obs": pl.get("obs"),
-                "placebo_q95": pl.get("null_q95"), "placebo_pct": pl.get("pct"),
-                "n_days_f1": dl.get("n_days_f1"), "n_days_base": dl.get("n_days_base"),
-                "fail_reason": "",
-            })
-            if a.form == "switch" and "tilt_delta" in r:
-                # switch辅助列：底仓倾斜诊断（与主判定同文件不同列，不进FDR）
-                rec["tilt_delta"] = r.get("tilt_delta")
-            if not a.no_f1_cache:
-                FC.save_result(_fp, {k: rec.get(k) for k in FC.STAT_KEYS
+                FC.save_result(_fp, {k: _rec.get(k) for k in FC.STAT_KEYS
                                      + ("fail_reason",)})
-                _cache[_fp] = {k: rec.get(k) for k in FC.STAT_KEYS + ("fail_reason",)}
-            _n_new += 1
-        except Exception as e:
-            import traceback
-            rec.update({"fail_reason": str(e)[:300]})
-            print(f"[{a.tag}] {c['name']} ERROR {str(e)[:120]}", flush=True)
-            if not a.no_f1_cache:
-                FC.save_result(_fp, {"fail_reason": rec["fail_reason"]})
-        _recs.append(rec)
-        done_n += 1
-        print(f"[{a.tag} {done_n}/{len(mk)}] {c['name']} "
-              f"d={rec.get('delta_mean')} p={rec.get('placebo_p')} {time.time()-t1:.0f}s", flush=True)
+                _cache[_fp] = {k: _rec.get(k) for k in FC.STAT_KEYS + ("fail_reason",)}
+        _recs.append((_idx, _rec))
+        print(f"[{a.tag} {_idx + 1}/{_n_total}] {_rec.get('name')} "
+              f"d={_rec.get('delta_mean')} p={_rec.get('placebo_p')} {time.time()-_t1:.0f}s",
+              flush=True)
+        return 1
+
+    _nj = _par_jobs(a.jobs)
+    if _nj <= 1 or len(_miss) <= 1:
+        for i, c, rec, _fp in _miss:
+            t1 = time.time()
+            _ctx1 = {"m": m, "base_cols": base_cols, "b20": b20, "mg": mg,
+                     "uniq": uniq, "ic_cache": ic_cache, "prep": _prep,
+                     "form": a.form, "tag": a.tag, "win": win}
+            _run_f1_batch_one(c, i, rec, _ctx1)
+            _n_new += _post(i, rec, _fp, t1)
+    else:
+        import concurrent.futures as _cf
+        global _F1B_CTX
+        _F1B_CTX = {"m": m, "base_cols": base_cols, "b20": b20, "mg": mg,
+                    "uniq": uniq, "ic_cache": ic_cache, "prep": _prep,
+                    "form": a.form, "tag": a.tag, "win": win}
+        _nj = min(_nj, len(_miss))
+        print(f"[{a.tag}] 并行计算：{len(_miss)} 候选 × {_nj} 进程 …", flush=True)
+        _t1_all = {i: time.time() for i, _, _, _ in _miss}
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            _order = {i: k for k, (i, _, _, _) in enumerate(_miss)}
+            for idx, _rec in _ex.map(_f1_batch_worker,
+                                     [(i, c, rec) for i, c, rec, _ in _miss]):
+                _k = _order[idx]
+                _, _, _, _fp = _miss[_k]
+                _n_new += _post(idx, _rec, _fp, _t1_all[idx])
+    _recs.sort(key=lambda x: x[0])
+    _recs = [r for _, r in _recs]
     # 全量去重覆盖写（按 name keep-last）：多次运行幂等，消灭追加重复行。
     _out_df = pd.DataFrame(_recs)
     if len(_out_df):

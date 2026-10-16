@@ -66,6 +66,127 @@ def _dsign(v) -> int:
     return -1 if iv in (0, -1) else 1
 
 
+#: 并行工作进程共享（fork 继承，免 pickling 大面板/store 映射）
+_SP_CTX = None
+
+
+def _par_jobs(n) -> int:
+    """并行度归一化：非 posix 平台退化串行（spawn 下大面板 pickling 太贵）."""
+    import os
+    try:
+        nj = max(1, int(n or 1))
+    except Exception:
+        return 1
+    if nj > 1 and os.name != "posix":
+        print("  [warn] 非 posix 平台，--jobs 退化为串行", flush=True)
+        return 1
+    return nj
+
+
+def _run_specialist_one(r, ctx: dict):
+    """单个因子偏科评估（串行/并行共用）：返回 pool 记录（未选中也返回，含 selected 标记；
+    完全失败返回 None）。"""
+    import pandas as _pd
+    frame, ev = ctx["frame"], ctx["ev"]
+    builder, specs = ctx["builder"], ctx["specs"]
+    store_map, gpanel, gates = ctx["store_map"], ctx["gpanel"], ctx["gates"]
+    pos, labels, row_dates = ctx["pos"], ctx["labels"], ctx["row_dates"]
+    t_min = ctx["t_min"]
+    from decorrelate_top import factor_full_values
+    fid, lib = str(r["factor_id"]), str(r["lib"])
+    try:
+        full = factor_full_values(lib, fid, str(r.get("formula_cn", "")), frame,
+                                  ev, builder, specs, store_map)
+        if full is None:
+            return None
+    except Exception:
+        return None
+    vals = np.asarray(full, dtype=float)[pos]
+    ud, ic = _daily_rankic(vals, labels, row_dates)
+    udates = _pd.to_datetime(ud)
+    best = None
+    for g in gates:
+        sub = gpanel[gpanel["gate_id"] == g["gate_id"]].set_index("date")["p"]
+        gg = (2.0 * sub - 1.0).reindex(udates).to_numpy(dtype=float)
+        m = np.isfinite(ic) & np.isfinite(gg)
+        if m.sum() < 60:
+            continue
+        st = H.slope_test(ic[m], gg[m])
+        t = st.get("t")
+        if t is None or not np.isfinite(t):
+            continue
+        if best is None or abs(float(t)) > abs(best["t"]):
+            hi = gg[m] >= np.nanmedian(gg[m])
+            lo = ~hi
+            _hi_ic = ic[m][hi]
+            _lo_ic = ic[m][lo]
+            best = {"gate": g["gate_id"], "s": int(g["s"]), "t": float(t),
+                    "b": float(st.get("b", float("nan"))),
+                    "hi_ic": float(np.nanmean(_hi_ic)),
+                    "lo_ic": float(np.nanmean(_lo_ic)),
+                    "hi_win": float(np.nanmean(_hi_ic > 0)) if len(_hi_ic) else float("nan"),
+                    "lo_win": float(np.nanmean(_lo_ic > 0)) if len(_lo_ic) else float("nan")}
+    if best is None:
+        return None
+    uncond = r.get("rank_ic")
+    try:
+        uncond = float(uncond) if uncond is not None and np.isfinite(float(uncond)) else 0.0
+    except Exception:
+        uncond = 0.0
+    suggested = "flip" if (np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"])
+                           and best["hi_ic"] * best["lo_ic"] < 0) else "gain"
+    # V4.3a：个体 s_pair——按自身有向斜率符号锁定，而非照抄 bank 组级 s。
+    _ds = _dsign(r.get("direction"))
+    _b = best["b"]
+    _s_pair = int(best["s"]) if not np.isfinite(_b) \
+        else (1 if (_ds * _b) >= 0 else -1)
+    # V4.3d 双模硬门槛（禁纯弱噪声混入）：
+    # A类【强但有回撤的主力】rank<=60 & |uncond|>=0.030 &（高低差>=0.025 或 icir<0.50）
+    # B类【真半场王者】|t|>=t_min & max(|hi|,|lo|)>=0.035 & 半场胜率>=0.58
+    try:
+        _icir = float(r.get("ic_ir"))
+    except Exception:
+        _icir = float("nan")
+    _au = abs(uncond)
+    _hdiff = abs(best["hi_ic"] - best["lo_ic"]) \
+        if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
+    _hmax = max(abs(best["hi_ic"]), abs(best["lo_ic"])) \
+        if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
+    _wmax = max(best["hi_win"], best["lo_win"]) \
+        if np.isfinite(best["hi_win"]) and np.isfinite(best["lo_win"]) else float("nan")
+    _cls_a = (int(r["_rank"]) <= 60 and _au >= 0.030
+              and (np.isfinite(_hdiff) and _hdiff >= 0.025
+                   or (np.isfinite(_icir) and _icir < 0.50)))
+    _cls_b = (abs(best["t"]) >= t_min
+              and np.isfinite(_hmax) and _hmax >= 0.035
+              and np.isfinite(_wmax) and _wmax >= 0.58)
+    _cls = "A" if _cls_a else ("B" if _cls_b else "")
+    if _cls == "A":
+        suggested = "gain"
+    rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
+           "formula": str(r.get("formula_cn", "")),
+           "direction": _ds,
+           "rank": int(r["_rank"]), "LGB": float(r.get("LGB", 0) or 0),
+           "uncond_rank_ic": uncond, "gate": best["gate"], "s": _s_pair,
+           "s_bank": int(best["s"]),
+           "t_slope": best["t"], "slope_b": best["b"],
+           "hi_ic": best["hi_ic"], "lo_ic": best["lo_ic"],
+           "hi_win": best["hi_win"], "lo_win": best["lo_win"],
+           "suggested_form": suggested, "target_class": _cls,
+           "selected": bool(_cls != "")}
+    return rec
+
+
+def _specialist_worker(args) -> tuple:
+    """工作进程：(序号, 行) → (序号, pool记录或None)。共享经 fork 继承。"""
+    idx, r = args
+    try:
+        rec = _run_specialist_one(r, _SP_CTX)
+    except Exception:
+        return idx, None
+    return idx, rec
+
+
 def _latest_flat() -> str:
     cands = sorted(Path(OUT_DIR).glob("ALIGNED_TOP2_*_flat.csv"),
                    key=lambda p: p.stat().st_mtime)
@@ -133,6 +254,9 @@ def main() -> int:
                     help="已算出的specialist_pool.json，跳过其中已有factor_id")
     ap.add_argument("--no-export-panel", action="store_true",
                     help="只输出pool/cands JSON，不写因子值面板")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="因子评估并行进程数（12 核建议 8；"
+                         "结果与串行逐值一致，非 posix 平台自动退化串行）")
     a = ap.parse_args()
 
     t0 = time.time()
@@ -163,7 +287,7 @@ def main() -> int:
             pass
 
     frame = load_panel()
-    ev = Evaluator(frame)
+    ev = Evaluator(frame, cache_size=32)
     from refs import FactorBuilder
     builder = FactorBuilder(frame)
     from decorrelate_top import factor_full_values, load_all_specs
@@ -175,7 +299,7 @@ def main() -> int:
     labels = ctx.labels.astype(float)
     print(f"ctx rows={ctx.n_rows:,} days={len(np.unique(ctx.row_dates))}", flush=True)
 
-    pool, panel_vals = [], {}
+    pool = []
     todo = [r for _, r in window.iterrows() if str(r["factor_id"]) not in done_ids]
     todo = todo[:max(0, a.max_factors)]
     # store 存量列一次性批量映射（单次读表；四源 helper 统一消费）。
@@ -194,95 +318,44 @@ def main() -> int:
             print(f"store 批量映射 {len(store_map)}/{len(_need_store)} 列", flush=True)
     except Exception as _e:
         print(f"warning: store 批量映射失败 {str(_e)[:100]}", flush=True)
-    for i, r in enumerate(todo, 1):
-        fid, lib = str(r["factor_id"]), str(r["lib"])
-        try:
-            full = factor_full_values(lib, fid, str(r.get("formula_cn", "")), frame,
-                                      ev, builder, specs_by_id, store_map)
-            if full is None:
+    # 单因子评估走 _run_specialist_one（串行/并行共用）；面板值由导出兜底现算，
+    # 不再全量缓存（原 panel_vals 150×53MB≈8GB，是内存峰值主因之一）。
+    _sp_ctx = {"frame": frame, "ev": ev, "builder": builder,
+               "specs": specs_by_id, "store_map": store_map,
+               "gpanel": gpanel, "gates": gates, "pos": pos,
+               "labels": labels, "row_dates": ctx.row_dates,
+               "t_min": a.t_min}
+    _nj = _par_jobs(a.jobs)
+    if _nj <= 1 or len(todo) <= 1:
+        for i, r in enumerate(todo, 1):
+            try:
+                rec = _run_specialist_one(r, _sp_ctx)
+            except Exception:
                 continue
-        except Exception:
-            continue
-        vals = np.asarray(full, dtype=float)[pos]
-        panel_vals[fid] = np.asarray(full, dtype=float)
-        ud, ic = _daily_rankic(vals, labels, ctx.row_dates)
-        udates = pd.to_datetime(ud)
-        best = None
-        for g in gates:
-            sub = gpanel[gpanel["gate_id"] == g["gate_id"]].set_index("date")["p"]
-            gg = (2.0 * sub - 1.0).reindex(udates).to_numpy(dtype=float)
-            m = np.isfinite(ic) & np.isfinite(gg)
-            if m.sum() < 60:
+            if rec is None:
                 continue
-            st = H.slope_test(ic[m], gg[m])
-            t = st.get("t")
-            if t is None or not np.isfinite(t):
-                continue
-            if best is None or abs(float(t)) > abs(best["t"]):
-                hi = gg[m] >= np.nanmedian(gg[m])
-                lo = ~hi
-                _hi_ic = ic[m][hi]
-                _lo_ic = ic[m][lo]
-                best = {"gate": g["gate_id"], "s": int(g["s"]), "t": float(t),
-                        "b": float(st.get("b", float("nan"))),
-                        "hi_ic": float(np.nanmean(_hi_ic)),
-                        "lo_ic": float(np.nanmean(_lo_ic)),
-                        "hi_win": float(np.nanmean(_hi_ic > 0)) if len(_hi_ic) else float("nan"),
-                        "lo_win": float(np.nanmean(_lo_ic > 0)) if len(_lo_ic) else float("nan")}
-        if best is None:
-            continue
-        uncond = r.get("rank_ic")
-        try:
-            uncond = float(uncond) if uncond is not None and np.isfinite(float(uncond)) else 0.0
-        except Exception:
-            uncond = 0.0
-        suggested = "flip" if (np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"])
-                               and best["hi_ic"] * best["lo_ic"] < 0) else "gain"
-        # V4.3a：个体 s_pair——按自身有向斜率符号锁定，而非照抄 bank 组级 s。
-        # best["b"] 为原始 IC 对中心化门控的斜率；有向斜率 = d_sign*b；
-        # ≥0 → 高门控放大有效 → s=+1，否则 s=-1（配反则 F1 ΔIC 必负被拒）。
-        _ds = _dsign(r.get("direction"))
-        _b = best["b"]
-        _s_pair = int(best["s"]) if not np.isfinite(_b) \
-            else (1 if (_ds * _b) >= 0 else -1)
-        # V4.3d 双模硬门槛（禁纯弱噪声混入）：
-        # A类【强但有回撤的主力】rank<=60 & |uncond|>=0.030 &（高低差>=0.025 或 icir<0.50）
-        # B类【真半场王者】|t|>=t_min & max(|hi|,|lo|)>=0.035 & 半场胜率>=0.58
-        try:
-            _icir = float(r.get("ic_ir"))
-        except Exception:
-            _icir = float("nan")
-        _au = abs(uncond)
-        _hdiff = abs(best["hi_ic"] - best["lo_ic"]) \
-            if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
-        _hmax = max(abs(best["hi_ic"]), abs(best["lo_ic"])) \
-            if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
-        _wmax = max(best["hi_win"], best["lo_win"]) \
-            if np.isfinite(best["hi_win"]) and np.isfinite(best["lo_win"]) else float("nan")
-        _cls_a = (int(r["_rank"]) <= 60 and _au >= 0.030
-                  and (np.isfinite(_hdiff) and _hdiff >= 0.025
-                       or (np.isfinite(_icir) and _icir < 0.50)))
-        _cls_b = (abs(best["t"]) >= a.t_min
-                  and np.isfinite(_hmax) and _hmax >= 0.035
-                  and np.isfinite(_wmax) and _wmax >= 0.58)
-        _cls = "A" if _cls_a else ("B" if _cls_b else "")
-        if _cls == "A":
-            suggested = "gain"
-        rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
-               "formula": str(r.get("formula_cn", "")),
-               "direction": _ds,
-               "rank": int(r["_rank"]), "LGB": float(r.get("LGB", 0) or 0),
-               "uncond_rank_ic": uncond, "gate": best["gate"], "s": _s_pair,
-               "s_bank": int(best["s"]),
-               "t_slope": best["t"], "slope_b": best["b"],
-               "hi_ic": best["hi_ic"], "lo_ic": best["lo_ic"],
-               "hi_win": best["hi_win"], "lo_win": best["lo_win"],
-               "suggested_form": suggested, "target_class": _cls,
-               "selected": bool(_cls != "")}
-        pool.append(rec)
-        if i % 10 == 0 or i == len(todo):
-            print(f"  [{i}/{len(todo)}] {fid} t={best['t']:+.2f}@{best['gate']} "
-                  f"sel={rec['selected']} {time.time()-t0:.0f}s", flush=True)
+            pool.append(rec)
+            if i % 10 == 0 or i == len(todo):
+                print(f"  [{i}/{len(todo)}] {rec['factor_id']} "
+                      f"t={rec['t_slope']:+.2f}@{rec['gate']} "
+                      f"sel={rec['selected']} {time.time()-t0:.0f}s", flush=True)
+    else:
+        import concurrent.futures as _cf
+        global _SP_CTX
+        _SP_CTX = _sp_ctx
+        _nj = min(_nj, len(todo))
+        print(f"  并行评估：{len(todo)} 因子 × {_nj} 进程 …", flush=True)
+        _items = list(enumerate(todo, 1))
+        _done, _buf = 0, []
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            for _idx, _rec in _ex.map(_specialist_worker, _items):
+                if _rec is not None:
+                    _buf.append((_idx, _rec))
+                _done += 1
+                if _done % 10 == 0 or _done == len(todo):
+                    print(f"  [{_done}/{len(todo)}] {time.time()-t0:.0f}s", flush=True)
+        _buf.sort(key=lambda x: x[0])
+        pool = [r for _, r in _buf]
 
     sel = [p for p in pool if p["selected"]]
     _na = sum(1 for p in sel if p.get("target_class") == "A")
@@ -330,9 +403,6 @@ def main() -> int:
         for _, r in vdf.iterrows():
             id2row[str(r["factor_id"])] = r
         for fid in sorted(need_ids):
-            if fid in panel_vals:
-                cols[fid] = np.asarray(panel_vals[fid], dtype=float)
-                continue
             r = id2row.get(fid)
             if r is None:
                 continue

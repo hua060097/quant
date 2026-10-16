@@ -56,6 +56,17 @@ def _record_version(rec: dict) -> str:
     return str(rec.get('data_version') or '')
 
 
+# 进程安全写锁（多进程并行评估用）：默认 None = 原单进程行为；
+# 并行入口通过 set_write_lock(multiprocessing.Lock()) 启用，fork 继承。
+_WRITE_LOCK = None
+
+
+def set_write_lock(lock) -> None:
+    """启用 ledger.jsonl 跨进程互斥追加（幂等，可重复调用）."""
+    global _WRITE_LOCK
+    _WRITE_LOCK = lock
+
+
 class Ledger:
     def __init__(self, path: Path | str = DEFAULT_PATH,
                  data_cut: str | None = DEFAULT_DATA_CUT,
@@ -108,9 +119,19 @@ class Ledger:
             record['data_version'] = str(ver)
         if struct_fp:
             record['struct_fp'] = struct_fp
-        with self.path.open('a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        self._append_line(record)
         return record
+
+    def _append_line(self, record: dict) -> None:
+        """单行追加（进程安全：_WRITE_LOCK 置位时互斥）."""
+        _line = json.dumps(record, ensure_ascii=False) + '\n'
+        if _WRITE_LOCK is not None:
+            with _WRITE_LOCK:
+                with self.path.open('a', encoding='utf-8') as f:
+                    f.write(_line)
+        else:
+            with self.path.open('a', encoding='utf-8') as f:
+                f.write(_line)
 
     def log_raw(self, event: str, formula: str, direction: int | None = None,
                 family: str = '', hypothesis: str = '', data: dict | None = None,
@@ -141,8 +162,7 @@ class Ledger:
             record['data_version'] = str(ver)
         if struct_fp:
             record['struct_fp'] = struct_fp
-        with self.path.open('a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        self._append_line(record)
         return record
 
     # ------------------------------------------------------------- sidecar
