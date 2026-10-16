@@ -302,10 +302,12 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(SPACE, "g2g3.csv"))
     ap.add_argument("--n-boot", type=int, default=G2_BOOT_N)
     ap.add_argument("--n-perm", type=int, default=G3_PERM)
-    ap.add_argument("--by-group", action="store_true", default=False,
-                    help="V4.3c 机制分簇G2（默认关）：按 roles.csv group 先验簇分别跑斜率"
+    ap.add_argument("--by-group", action="store_true", default=True,
+                    help="V4.3c 机制分簇G2（默认开）：按 roles.csv group 先验簇分别跑斜率"
                          "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
                          "旧全池结论保留，新检验族版本")
+    ap.add_argument("--no-by-group", dest="by_group", action="store_false",
+                    help="关闭机制分簇G2（纯全池口径对照）")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

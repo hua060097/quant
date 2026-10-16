@@ -197,7 +197,9 @@ def main() -> int:
     # B2（2026-10-12）：市场线 IC 缓存此前硬编码且无血缘记录——数据截止日移动会
     # 静默使用旧 IC。现给参数 + 血缘 sidecar + CUT 守卫（见 read_ic_cache）。
     ap.add_argument("--ic-cache", default=os.path.join(RESULTS, "ic_stock_2025.parquet"))
-    ap.add_argument("--corr-max", type=float, default=0.6)
+    ap.add_argument("--corr-max", type=float, default=0.75,
+                    help="方向中性上限（V4.3放宽：flip/switch 以牛熊趋势门控为最佳"
+                         "开关，旧 0.60 误杀 newhigh 系；>0.80 纯指数克隆仍拦截）")
     ap.add_argument("--n-boot", type=int, default=200)
     ap.add_argument("--n-perm", type=int, default=100)
     ap.add_argument("--stop-state", default=GS.DEFAULT_PATH,
@@ -214,10 +216,12 @@ def main() -> int:
     ap.add_argument("--gate-bank", default=None,
                     help="已认证门控字典certified_gate_bank.json：cands的门控与s改从bank读取"
                          "（离线G2符号锁定）；不传则用本轮短名单×s=+1历史行为")
-    ap.add_argument("--by-group", action="store_true", default=False,
-                    help="V4.3c 机制分簇G2（默认关）：按 roles.csv group 先验簇分别跑斜率"
+    ap.add_argument("--by-group", action="store_true", default=True,
+                    help="V4.3c 机制分簇G2（默认开）：按 roles.csv group 先验簇分别跑斜率"
                          "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
                          "旧全池结论保留，新检验族版本")
+    ap.add_argument("--no-by-group", dest="by_group", action="store_false",
+                    help="关闭机制分簇G2（纯全池口径对照）")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

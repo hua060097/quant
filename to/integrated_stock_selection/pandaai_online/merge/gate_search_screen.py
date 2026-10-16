@@ -17,8 +17,8 @@
   第二级（后续）：仅对存活者跑 F1（贵：全量面板 + 200 次 placebo）
 
 用法：
-    python gate_search_screen.py --corr-max 0.6
-    python gate_search_screen.py --corr-max 0.6 --out results/merge_v2/gates_search/screen.csv
+    python gate_search_screen.py --corr-max 0.75
+    python gate_search_screen.py --corr-max 0.75 --out results/merge_v2/gates_search/screen.csv
 """
 from __future__ import annotations
 
@@ -101,8 +101,9 @@ def market_direction() -> pd.DataFrame:
 def main() -> int:
     ap = argparse.ArgumentParser(description="门控搜索 G0 + 方向中性度粗筛")
     ap.add_argument("--space-dir", default=SPACE)
-    ap.add_argument("--corr-max", type=float, default=0.6,
-                    help="|corr(p, 市场方向分位)| 上限；超限即判为方向代理")
+    ap.add_argument("--corr-max", type=float, default=0.75,
+                    help="|corr(p, 市场方向分位)| 上限（V4.3放宽：与管线同口径，"
+                         "释放 flip/switch 趋势开关门控；>0.80 纯指数克隆仍拦截）")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):

@@ -171,7 +171,8 @@ def _scale_infer(node: Node) -> str | None:
                 'TURNOVER': 'bounded', 'MKT_RET': 'bounded', 'IND_RET': 'bounded',
                 'BETA60': 'bounded', 'BETA20': 'bounded', 'IND_EXCESS': 'bounded',
                 'IVOL20': 'bounded', 'VWAP': 'bounded', 'AMIHUD20': 'bounded',
-                'DISP': 'bounded'}.get(node.name)
+                'DISP': 'bounded', 'MKT_GATE1': 'bounded', 'MKT_GATE2': 'bounded',
+                'SEC_GATE1': 'bounded', 'SEC_GATE2': 'bounded'}.get(node.name)
     cs = [_scale_infer(a) for a in node.args]
     if op in ('NEG', 'ABS'):
         return cs[0] if cs else None
@@ -215,7 +216,9 @@ def _cs_infer(node: Node, depth: int = 0) -> str | None:
     if op == 'CONST':
         return 'broadcast'
     if op == 'FIELD':
-        return 'broadcast' if node.name == 'MKT_RET' else 'varying'
+        if node.name in ('MKT_RET', 'MKT_GATE1', 'MKT_GATE2'):
+            return 'broadcast'
+        return 'varying'
     cs = [_cs_infer(a, depth + 1) for a in node.args]
     if op in ('NEG', 'ABS'):
         return cs[0] if cs else None

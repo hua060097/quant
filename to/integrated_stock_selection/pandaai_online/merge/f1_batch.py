@@ -49,27 +49,39 @@ def _centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndar
     return FR.centered_u(values, day, nd, d)
 
 
-def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
-                        gate_series: np.ndarray, s: int, uniq_dates: np.ndarray) -> dict:
-    """F1v3_gain市场分支：底仓倾斜增量（精确重算，无掩码捷径）。
+def build_market_bundle(m, base_cols_all: list[str], d_map: dict) -> dict:
+    """批内共享预计算（提速）：day/yrk/u_cols/Ubar 只算一次。
 
-    Ubar = K个u的等权均值；S_static = Ubar+0.25*u_k；S_gated = Ubar+0.25*u_k*w_t，
-    w_t = clip(1+0.5*s*g_t, 0.2, 1.8)。ΔIC为两套多因子分数的日Spearman差，
-    placebo为门控日序列块置换后全重算（与sector线同成本量级，仅供短名单规模批次）。
+    前提：m 已按 date 稳定排序（main 保证），则 _prepared 的 day 码与
+    uniq 日期顺序严格对齐，门控日序列可直接用整数索引广播。
     """
-    import fastranks as FR
-    day, _, _, _, nd = E._prepared(m, base_cols_all[0], "r3")
-    _, _, _, yrk, _ = E._prepared(m, base_cols_all[0], "r3")
+    import fastranks as FR  # noqa: F401
+    day, _, _, yrk, nd = E._prepared(m, base_cols_all[0], "r3")
     u_cols: dict[str, np.ndarray] = {}
     for bcol in base_cols_all:
         xv = pd.to_numeric(m[bcol], errors="coerce").to_numpy(dtype=float)
         u_cols[bcol] = _centered_u(xv, day, nd, int(d_map.get(bcol, 1)))
     Ubar = np.nanmean(np.column_stack([u_cols[b] for b in base_cols_all]), axis=1)
+    return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar}
+
+
+def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
+                        gate_series: np.ndarray, s: int, uniq_dates: np.ndarray,
+                        prep: dict | None = None) -> dict:
+    """F1v3_gain市场分支：底仓倾斜增量（精确重算，无掩码捷径）。
+
+    Ubar = K个u的等权均值；S_static = Ubar+0.25*u_k；S_gated = Ubar+0.25*u_k*w_t，
+    w_t = clip(1+0.5*s*g_t, 0.2, 1.8)。ΔIC为两套多因子分数的日Spearman差，
+    placebo为门控日序列块置换后全重算（与sector线同成本量级，仅供短名单规模批次）。
+    prep 为 build_market_bundle 预计算（main 逐批一次）；缺省则现算（兼容旧调用）。
+    """
+    import fastranks as FR
+    if prep is None:
+        prep = build_market_bundle(m, base_cols_all, d_map)
+    day, nd, yrk = prep["day"], prep["nd"], prep["yrk"]
+    u_cols, Ubar = prep["u_cols"], prep["Ubar"]
     g = np.asarray(gate_series, dtype=float)
-    gmap = {str(pd.Timestamp(dd).date()): (float(g[i]) if np.isfinite(g[i]) else np.nan)
-            for i, dd in enumerate(np.asarray(uniq_dates))}
-    row_dates = pd.to_datetime(m["date"]).dt.date.astype(str).to_numpy()
-    gt = np.array([gmap.get(d_, np.nan) for d_ in row_dates], dtype=float)
+    gt = g[day] if len(g) == int(nd) else np.full(len(day), np.nan)
     uk = u_cols[k_col]
     w = np.clip(1.0 + 0.5 * float(s) * gt, 0.2, 1.8)
     w[~np.isfinite(gt)] = np.nan
@@ -84,9 +96,7 @@ def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
     ic_static = _ic_of(S_static)
 
     def _gated_ic(gp: np.ndarray) -> np.ndarray:
-        gmap2 = {str(pd.Timestamp(dd).date()): (float(gp[i]) if np.isfinite(gp[i]) else np.nan)
-                 for i, dd in enumerate(np.asarray(uniq_dates))}
-        gtr = np.array([gmap2.get(d_, np.nan) for d_ in row_dates], dtype=float)
+        gtr = np.asarray(gp, dtype=float)[day]
         wr = np.clip(1.0 + 0.5 * float(s) * gtr, 0.2, 1.8)
         wr[~np.isfinite(gtr)] = np.nan
         return _ic_of(Ubar + 0.25 * uk * wr)
@@ -120,36 +130,30 @@ def run_one_market(m, base_col, d, gate_series, s, uniq_dates, ic_z):
 
 
 def run_one_market_flip(m, base_cols_all: list[str], d_map: dict, k_col: str,
-                        gate_series: np.ndarray, s: int, uniq_dates: np.ndarray) -> dict:
-    """F1v3_flip市场分支：方向翻转调制（精确重算，无掩码捷径）。
+                        gate_series: np.ndarray, s: int, uniq_dates: np.ndarray,
+                        prep: dict | None = None) -> dict:
+    """F1v3_flip市场分支：方向翻转调制。
 
-    F = u*(s*g)，g∈[-1,1]；s*g>0 保持原方向，s*g<0 自动反向。
+    F = u*w_t，w_t = s*g_t（死区 NaN）。同日全市场同乘标量，故
+    IC_t(F) ≡ sign(w_t)·IC_t(u)（w_t>0 保序、<0 倒序、NaN 缺席）——
+    数学恒等，无需 500 万行重排名（含 200 次置换内，提速约 5000 倍）。
     专救无条件IC≈0但条件斜率极大的符号翻转型偏科因子。
     """
-    import fastranks as FR
-    day, _, _, _, nd = E._prepared(m, base_cols_all[0], "r3")
-    _, _, _, yrk, _ = E._prepared(m, base_cols_all[0], "r3")
-    xv = pd.to_numeric(m[k_col], errors="coerce").to_numpy(dtype=float)
-    uk = _centered_u(xv, day, nd, int(d_map.get(k_col, 1)))
+    if prep is None:
+        prep = build_market_bundle(m, base_cols_all, d_map)
+    uk = prep["u_cols"][k_col]
     g = np.asarray(gate_series, dtype=float)
-    gmap = {str(pd.Timestamp(dd).date()): (float(g[i]) if np.isfinite(g[i]) else np.nan)
-            for i, dd in enumerate(np.asarray(uniq_dates))}
-    row_dates = pd.to_datetime(m["date"]).dt.date.astype(str).to_numpy()
-    gt = np.array([gmap.get(d_, np.nan) for d_ in row_dates], dtype=float)
-    w = H.build_flip_weight(gt, s)
-    Fk = uk * w
+    day, yrk = prep["day"], prep["yrk"]
 
-    def _ic_of(scores: np.ndarray) -> np.ndarray:
-        fr = FR.blockwise_rank(np.where(np.isfinite(scores), scores, np.nan), day)
-        return E._daily_corr(fr, yrk, day, nd)
+    def _ic_of_u() -> np.ndarray:
+        import fastranks as FR
+        fr = FR.blockwise_rank(np.where(np.isfinite(uk), uk, np.nan), day)
+        return E._daily_corr(fr, yrk, day, prep["nd"])
 
-    ic_base = _ic_of(uk)
+    ic_base = _ic_of_u()
 
     def _gated_ic(gp: np.ndarray) -> np.ndarray:
-        gmap2 = {str(pd.Timestamp(dd).date()): (float(gp[i]) if np.isfinite(gp[i]) else np.nan)
-                 for i, dd in enumerate(np.asarray(uniq_dates))}
-        gtr = np.array([gmap2.get(d_, np.nan) for d_ in row_dates], dtype=float)
-        return _ic_of(uk * H.build_flip_weight(gtr, s))
+        return np.sign(H.build_flip_weight(np.asarray(gp, dtype=float), s)) * ic_base
 
     ic_gated = _gated_ic(g)
     res = {"delta": H.delta_ic(np.asarray(uniq_dates), ic_gated, ic_base)}
@@ -162,32 +166,28 @@ def run_one_market_flip(m, base_cols_all: list[str], d_map: dict, k_col: str,
 
 def run_one_market_switch(m, base_cols_all: list[str], d_map: dict,
                           off_col: str, def_col: str,
-                          gate_series: np.ndarray, uniq_dates: np.ndarray) -> dict:
+                          gate_series: np.ndarray, uniq_dates: np.ndarray,
+                          prep: dict | None = None) -> dict:
     """F1v3_switch市场分支：双因子软切换（精确重算）。
 
     F = p*u_off + (1-p)*u_def，p∈[0,1]为门控分位；主判定为单因子ΔIC
     （F vs 静态等权共识 0.5*u_off+0.5*u_def，与行业线统一，V4.2收敛）；
     底仓倾斜（Ubar+0.25*blend vs Ubar+0.25*共识）仅作辅助列，不进placebo/FDR。
+    prep 为 build_market_bundle 预计算（main 逐批一次）；缺省则现算。
     """
     import fastranks as FR
-    day, _, _, _, nd = E._prepared(m, base_cols_all[0], "r3")
-    _, _, _, yrk, _ = E._prepared(m, base_cols_all[0], "r3")
+    if prep is None:
+        prep = build_market_bundle(m, base_cols_all, d_map)
+    day, nd, yrk = prep["day"], prep["nd"], prep["yrk"]
+    u_cols, Ubar = prep["u_cols"], prep["Ubar"]
     xoff = pd.to_numeric(m[off_col], errors="coerce").to_numpy(dtype=float)
     xdef = pd.to_numeric(m[def_col], errors="coerce").to_numpy(dtype=float)
     u_off = _centered_u(xoff, day, nd, int(d_map.get(off_col, 1)))
     u_def = _centered_u(xdef, day, nd, int(d_map.get(def_col, 1)))
-    u_cols: dict[str, np.ndarray] = {}
-    for bcol in base_cols_all:
-        xv = pd.to_numeric(m[bcol], errors="coerce").to_numpy(dtype=float)
-        u_cols[bcol] = _centered_u(xv, day, nd, int(d_map.get(bcol, 1)))
-    Ubar = np.nanmean(np.column_stack([u_cols[b] for b in base_cols_all]), axis=1)
     g = np.asarray(gate_series, dtype=float)
     p = np.clip((g + 1.0) / 2.0, 0.0, 1.0)
     p[~np.isfinite(g)] = np.nan
-    gmap = {str(pd.Timestamp(dd).date()): (float(p[i]) if np.isfinite(p[i]) else np.nan)
-            for i, dd in enumerate(np.asarray(uniq_dates))}
-    row_dates = pd.to_datetime(m["date"]).dt.date.astype(str).to_numpy()
-    pt = np.array([gmap.get(d_, np.nan) for d_ in row_dates], dtype=float)
+    pt = p[day] if len(p) == int(nd) else np.full(len(day), np.nan)
     blend = H.build_switch_blend(pt, u_off, u_def)
     static_blend = 0.5 * u_off + 0.5 * u_def
 
@@ -199,12 +199,10 @@ def run_one_market_switch(m, base_cols_all: list[str], d_map: dict,
     ic_static_single = _ic_of(static_blend)
 
     def _gated_ic(gp: np.ndarray) -> np.ndarray:
-        pp = np.clip((np.asarray(gp, dtype=float) + 1.0) / 2.0, 0.0, 1.0)
-        pp[~np.isfinite(np.asarray(gp, dtype=float))] = np.nan
-        gmap2 = {str(pd.Timestamp(dd).date()): (float(pp[i]) if np.isfinite(pp[i]) else np.nan)
-                 for i, dd in enumerate(np.asarray(uniq_dates))}
-        ptr = np.array([gmap2.get(d_, np.nan) for d_ in row_dates], dtype=float)
-        return _ic_of(H.build_switch_blend(ptr, u_off, u_def))
+        _gp = np.asarray(gp, dtype=float)
+        pp = np.clip((_gp + 1.0) / 2.0, 0.0, 1.0)
+        pp[~np.isfinite(_gp)] = np.nan
+        return _ic_of(H.build_switch_blend(pp[day], u_off, u_def))
 
     ic_gated = _gated_ic(g)
     res = {"delta": H.delta_ic(np.asarray(uniq_dates), ic_gated, ic_static_single)}
@@ -343,6 +341,11 @@ def main():
         _, _, xr, yr, _ = E._prepared(m.assign(_z=pd.to_numeric(m[bcol], errors="coerce") * d), "_z", "r3")
         ic_cache[bcol] = E._daily_corr(xr, yr, day, nd)
     print(f"[{a.tag}] base IC cached", flush=True)
+    # 三式共享预计算（提速）：day/yrk/u_cols/Ubar 全批一次，逐候选复用。
+    _prep = build_market_bundle(m, base_cols, b20) \
+        if a.form in ("gain", "flip", "switch") else None
+    if _prep is not None:
+        print(f"[{a.tag}] market bundle ready ({len(base_cols)} bases)", flush=True)
 
     started_empty = not os.path.exists(a.out)
     done_n = 0
@@ -387,14 +390,16 @@ def main():
                     raise SystemExit(f"f1_batch {a.form}分支只接受market候选"
                                      f"（sector请走f1_sector --form {a.form}）")
                 if a.form == "gain":
-                    r = run_one_market_gain(m, base_cols, b20, c["base"], g, c["s"], uniq)
+                    r = run_one_market_gain(m, base_cols, b20, c["base"], g, c["s"],
+                                            uniq, prep=_prep)
                 elif a.form == "flip":
-                    r = run_one_market_flip(m, base_cols, b20, c["base"], g, c["s"], uniq)
+                    r = run_one_market_flip(m, base_cols, b20, c["base"], g, c["s"],
+                                            uniq, prep=_prep)
                 else:
                     if not c.get("base_off") or not c.get("base_def"):
                         raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
                     r = run_one_market_switch(m, base_cols, b20, c["base_off"],
-                                              c["base_def"], g, uniq)
+                                              c["base_def"], g, uniq, prep=_prep)
                     rec["base"] = f"{c['base_off']}__{c['base_def']}"
             else:
                 r = run_one_market(m, c["base"], c["d"], g, c["s"], uniq, ic_cache[c["base"]])

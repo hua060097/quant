@@ -62,6 +62,11 @@ MARKET_BASES = (
     ("amp_med", "振幅中位数", "(high−low)/close 的中位数"),
     ("vol_med", "个股波动中位数", "个股 20 日收益标准差的中位数"),
     ("newhigh_ratio", "新高占比", "创 60 日新高的个股占比"),
+    # V4.3d 新增（A 股短线状态底座；方向中性门已放宽至 0.75）
+    ("nh60_prem", "新高突破溢价", "T-3日创60日新高股持有至T的超额均值再10日平滑"
+     "（奖励龙头 vs 核按钮闷杀）"),
+    ("sec_top5_persist", "主线持续度", "行业5日累计收益排名与前一5日排名的跨行业"
+     "Spearman再10日均值（抱团 vs 电风扇轮动）"),
 )
 
 #: 行业级基础量
@@ -224,6 +229,44 @@ def main() -> int:
         lambda s: s.rolling(60, min_periods=60).max())
     mb["newhigh_ratio"] = c.groupby("date").apply(
         lambda x: float((x["close"] >= x["_hi60"]).mean()), include_groups=False)
+    # ---- V4.3d 新增市场基础量（全部只用 ≤T 数据，因果安全） ----
+    _gs = c.groupby("stock_code", sort=False)
+    # nh60_prem：T-3 日创新高集合持有至 T 的超额（相对当日市场均值），10 日平滑
+    _hit = (c["close"] >= c["_hi60"])
+    _hit_lag3 = _hit.groupby(c["stock_code"], sort=False).transform(
+        lambda s: s.shift(3))
+    _fwd3 = c["close"] / _gs["close"].transform(lambda s: s.shift(3)) - 1.0
+    _mkt_fwd3 = _fwd3.groupby(c["date"], sort=True).transform("mean")
+    _hit_lag3 = (_hit_lag3 == True)
+    _prem_raw = ((_fwd3 - _mkt_fwd3).where(_hit_lag3)
+                 .groupby(c["date"], sort=True).mean())
+    _prem_n = (_hit_lag3.groupby(c["date"], sort=True).sum())
+    _prem_raw = _prem_raw.where(_prem_n >= 10)
+    mb["nh60_prem"] = _prem_raw.rolling(10, min_periods=10).mean()
+    # sec_top5_persist：行业5日动量排名 vs 前一5日排名的跨行业 Spearman，10 日均值
+    from scipy.stats import spearmanr as _sp
+    _srt = sb.sort_values(["sector", "date"])
+    _cum5 = _srt.groupby("sector", sort=False)["_ret"].transform(
+        lambda s: s.rolling(5, min_periods=5).sum())
+    _cum5_prev = _cum5.groupby(_srt["sector"], sort=False).transform(
+        lambda s: s.shift(5))
+    _tmp = pd.DataFrame({"date": _srt["date"].to_numpy(),
+                         "sector": _srt["sector"].to_numpy(),
+                         "a": _cum5.to_numpy(dtype=float),
+                         "b": _cum5_prev.to_numpy(dtype=float)})
+    _persist = {}
+    for _dd, _sub in _tmp.groupby("date", sort=True):
+        _ok = _sub[["a", "b"]].notna().all(axis=1)
+        if int(_ok.sum()) >= 10:
+            try:
+                _persist[_dd] = float(_sp(_sub.loc[_ok, "a"],
+                                          _sub.loc[_ok, "b"])[0])
+            except Exception:
+                _persist[_dd] = np.nan
+        else:
+            _persist[_dd] = np.nan
+    _persist = pd.Series(_persist).sort_index()
+    mb["sec_top5_persist"] = _persist.rolling(10, min_periods=10).mean()
     # 跨行业离散度
     sd = sb.groupby("date")["_ret"].std().rename("sec_disp")
     mb = mb.join(sd)

@@ -15,9 +15,11 @@ import pandas as pd
 
 import _paths  # noqa: F401
 from cache_utils import find_stock_features
-from field_catalog import (EXTENDED_ONLY_FIELDS, LOCAL_COLUMN, LOCAL_ONLY_FIELDS,
-                             PLATFORM_FIELDS, sw2_mapping)
+from field_catalog import (EXTENDED_ONLY_FIELDS, GATE_FIELDS, LOCAL_COLUMN,
+                             LOCAL_ONLY_FIELDS, PLATFORM_FIELDS, sw2_mapping)
 from grammar import Node, virtual_node
+
+_GATE_WARNED: set[str] = set()
 
 _RAW_COLUMNS = ('stock_code', 'date', 'open', 'high', 'low', 'close', 'volume',
                 'amount', 'turnover_rate', 'total_mv', 'is_limit_up', 'is_can_buy', 'is_st')
@@ -216,6 +218,101 @@ def ensure_extended_fields(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _bank_gate_map(bank_path: str | None = None) -> dict:
+    """读 bank 取 Top2 市场 + Top2 行业门控（按 |median_b|/|delta_median|）。
+
+    返回 {字段名: (gate_id, level)}；bank 缺失/无条目 → {}（调用方填 NaN）。
+    """
+    import json
+    import os
+    from pathlib import Path
+    if bank_path is None:
+        bank_path = str(Path(__file__).resolve().parent.parent.parent
+                        / "results" / "merge_v2" / "gates_search"
+                        / "certified_gate_bank.json")
+    try:
+        bank = json.load(open(bank_path, encoding="utf-8"))
+    except Exception:
+        return {}
+    mk = sorted([e for e in bank.get("entries", []) if e.get("level") == "market"],
+                key=lambda e: abs(float(e.get("median_b_eff", e.get("median_b", 0)) or 0)),
+                reverse=True)[:2]
+    sc = sorted([e for e in bank.get("entries", []) if e.get("level") == "sector"],
+                key=lambda e: abs(float(e.get("delta_median", 0) or 0)),
+                reverse=True)[:2]
+    out = {}
+    for i, e in enumerate(mk):
+        out[f"MKT_GATE{i + 1}"] = (str(e["gate_id"]), "market")
+    for i, e in enumerate(sc):
+        out[f"SEC_GATE{i + 1}"] = (str(e["gate_id"]), "sector")
+    return out
+
+
+def ensure_gate_fields(frame: pd.DataFrame, bank_path: str | None = None) -> pd.DataFrame:
+    """V4.3d 模式A：bank Top 门控映射为只读扩展字段（值域 [-1, 1]），供 GP 内嵌进化。
+
+    市场：market_gates_search.parquet `{gid}_g` 列（已中心化）按日期映射；
+    行业：gate_search_sector.parquet 长表 pivot → 2p-1，按 (date, sector) 映射。
+    bank/面板缺失 → 全列 NaN（搜索可独立运行，耦合式自然死亡）+ 进程内一次告警。
+    """
+    import json
+    from pathlib import Path
+    if all(c in frame.columns for c in GATE_FIELDS):
+        return frame
+    gmap = _bank_gate_map(bank_path)
+    _dates = pd.to_datetime(frame["date"])
+    if not gmap:
+        if "gate" not in _GATE_WARNED:
+            _GATE_WARNED.add("gate")
+            print("warning: certified_gate_bank.json 缺失，GATE_FIELDS 填 NaN "
+                  "（门控耦合式自然死亡，搜索照常）", flush=True)
+        for c in GATE_FIELDS:
+            if c not in frame.columns:
+                frame[c] = np.nan
+        return frame
+    _root = Path(__file__).resolve().parent.parent.parent / "results" / "merge_v2"
+    try:
+        mg = pd.read_parquet(_root / "gates_search" / "market_gates_search.parquet",
+                             columns=["date"] + [f"{g[0]}_g" for g in gmap.values()
+                                                 if g[1] == "market"])
+        mg["date"] = pd.to_datetime(mg["date"])
+    except Exception:
+        mg = None
+    try:
+        _need_sec = sorted({g[0] for g in gmap.values() if g[1] == "sector"})
+        sg = pd.read_parquet(_root / "gates_search" / "gate_search_sector.parquet")
+        sg = sg[sg["gate_id"].isin(_need_sec)].copy() if len(_need_sec) else sg.iloc[0:0]
+    except Exception:
+        sg = None
+    _sec = frame["stock_code"].astype(str).map(sw2_mapping()) \
+        if sg is not None else None
+    for fld, (gid, level) in gmap.items():
+        try:
+            if level == "market" and mg is not None and f"{gid}_g" in mg.columns:
+                _m = mg.set_index("date")[f"{gid}_g"]
+                frame[fld] = _dates.map(_m).to_numpy(dtype=float)
+            elif level == "sector" and sg is not None:
+                _piv = sg[sg["gate_id"] == gid].pivot_table(
+                    index="date", columns="sector", values="p", aggfunc="mean")
+                _g = (2.0 * _piv - 1.0)
+                _cols, _cset = list(_g.columns), set(_g.columns)
+                _ci = np.array([_cols.index(x) if x in _cset else -1 for x in _sec])
+                _di = _g.index.get_indexer(_dates)
+                _Gv = _g.to_numpy(dtype=float)
+                _ok = (_ci >= 0) & (_di >= 0)
+                _vv = np.full(len(frame), np.nan)
+                _vv[_ok] = _Gv[_di[_ok], _ci[_ok]]
+                frame[fld] = _vv
+            else:
+                frame[fld] = np.nan
+        except Exception:
+            frame[fld] = np.nan
+    for c in GATE_FIELDS:
+        if c not in frame.columns:
+            frame[c] = np.nan
+    return frame
+
+
 class Evaluator:
     """在固定面板上求值；子表达式按 AST 节点缓存（LRU）。"""
 
@@ -316,6 +413,11 @@ class Evaluator:
                 if node.name not in self.frame.columns:
                     ensure_extended_fields(self.frame)
                 return self.frame[node.name]
+            if node.name in GATE_FIELDS:
+                # V4.3d 模式A：bank Top 门控只读映射（缺 bank 则 NaN 自然死亡）
+                if node.name not in self.frame.columns:
+                    ensure_gate_fields(self.frame)
+                return self.frame[node.name]
             return self.evaluate(virtual_node(node.name))
         if op == 'CONST':
             return pd.Series(float(node.value), index=self.frame.index)
@@ -403,8 +505,12 @@ class Evaluator:
             if op == 'RANK':
                 return g.rank(pct=True)
             if op == 'ZSCORE':
-                return g.transform(lambda x: (x - x.mean()) / x.std())
-            return g.transform(lambda x: 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0)
+                # 向量化（提速约 10 倍）：Cython 原生聚合替代逐组 Python lambda。
+                # 与旧式逐值一致（含 std==0 → inf 语义，ddof=1 两边同默认）。
+                return (s - g.transform('mean')) / g.transform('std')
+            _lo = g.transform('min')
+            _hi = g.transform('max')
+            return 2.0 * (s - _lo) / (_hi - _lo).replace(0, np.nan) - 1.0
         if op in ('REF', 'DELAY'):
             return self._shift(args[0], w)
         if op in ('DIFF', 'DELTA'):

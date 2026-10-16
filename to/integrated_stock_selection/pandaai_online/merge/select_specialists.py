@@ -76,23 +76,42 @@ def _latest_flat() -> str:
 
 def _daily_rankic(values: np.ndarray, labels: np.ndarray,
                   dates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """逐日截面Spearman IC（vwap标签，周期采样对齐后的行）。"""
-    from scipy.stats import spearmanr
-    ud = np.unique(dates)
-    ic = np.full(len(ud), np.nan)
-    for i, dd in enumerate(ud):
-        m = (dates == dd)
-        v, y = values[m], labels[m]
-        ok = np.isfinite(v) & np.isfinite(y)
-        if ok.sum() < 30:
-            continue
-        try:
-            r = spearmanr(v[ok], y[ok])
-            r = r[0] if isinstance(r, tuple) else getattr(r, "statistic", float("nan"))
-        except Exception:
-            r = float("nan")
-        ic[i] = float(r) if np.isfinite(r) else np.nan
-    return ud, ic
+    """逐日截面Spearman IC（vwap标签，周期采样对齐后的行）。
+
+    向量化实现（提速约 100 倍）：日码一次 factorize，blockwise_rank 一次排名，
+    bincount 一次相关——替代逐日全表扫描 + 5 万次 scipy.spearmanr。
+    语义与旧实现逐值一致（含 30 样本下限；tied-rank 用 average 法，
+    与 spearmanr 默认一致）。
+    """
+    import fastranks as FR
+    v = np.asarray(values, dtype=float)
+    y = np.asarray(labels, dtype=float)
+    order = np.argsort(np.asarray(dates), kind="stable")
+    vs, ys = v[order], y[order]
+    dcodes, uniq = pd.factorize(np.asarray(dates)[order], sort=True)
+    dcodes = np.asarray(dcodes)
+    nd = int(dcodes.max()) + 1 if len(dcodes) else 0
+    # pairwise 子集内排名（与旧 spearmanr(v[ok], y[ok]) 逐值一致；各自排名会错位）。
+    m = np.isfinite(vs) & np.isfinite(ys)
+    fr = FR.blockwise_rank(np.where(m, vs, np.nan), dcodes)
+    yr = FR.blockwise_rank(np.where(m, ys, np.nan), dcodes)
+    ok = np.isfinite(fr) & np.isfinite(yr)
+    d = dcodes[ok]
+    x, yy = fr[ok], yr[ok]
+    n = np.bincount(d, minlength=nd).astype(float)
+    sx = np.bincount(d, weights=x, minlength=nd)
+    sy = np.bincount(d, weights=yy, minlength=nd)
+    sxx = np.bincount(d, weights=x * x, minlength=nd)
+    syy = np.bincount(d, weights=yy * yy, minlength=nd)
+    sxy = np.bincount(d, weights=x * yy, minlength=nd)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cov = sxy - sx * sy / np.where(n > 0, n, 1)
+        vx = sxx - sx * sx / np.where(n > 0, n, 1)
+        vy = syy - sy * sy / np.where(n > 0, n, 1)
+        r = cov / np.sqrt(vx * vy)
+    r[n < 30] = np.nan
+    r[~np.isfinite(r)] = np.nan
+    return np.asarray(uniq), r
 
 
 def main() -> int:
@@ -100,7 +119,8 @@ def main() -> int:
     ap.add_argument("--flat", default="")
     ap.add_argument("--bank", default=os.path.join(SPACE, "certified_gate_bank.json"))
     ap.add_argument("--label", default="vwap")
-    ap.add_argument("--rank-lo", type=int, default=21)
+    ap.add_argument("--rank-lo", type=int, default=1,
+                    help="V4.3d双模：起点放宽至#1，允许主力强因子参与gain降回撤")
     ap.add_argument("--rank-hi", type=int, default=400,
                     help="断路3修复：flip 型正负抵消因子 LGB≈0 排在 #200 之后，"
                          "150 会系统漏杀；默认扫到 #400（flat 全覆盖）")
@@ -201,10 +221,14 @@ def main() -> int:
             if best is None or abs(float(t)) > abs(best["t"]):
                 hi = gg[m] >= np.nanmedian(gg[m])
                 lo = ~hi
+                _hi_ic = ic[m][hi]
+                _lo_ic = ic[m][lo]
                 best = {"gate": g["gate_id"], "s": int(g["s"]), "t": float(t),
                         "b": float(st.get("b", float("nan"))),
-                        "hi_ic": float(np.nanmean(ic[m][hi])),
-                        "lo_ic": float(np.nanmean(ic[m][lo]))}
+                        "hi_ic": float(np.nanmean(_hi_ic)),
+                        "lo_ic": float(np.nanmean(_lo_ic)),
+                        "hi_win": float(np.nanmean(_hi_ic > 0)) if len(_hi_ic) else float("nan"),
+                        "lo_win": float(np.nanmean(_lo_ic > 0)) if len(_lo_ic) else float("nan")}
         if best is None:
             continue
         uncond = r.get("rank_ic")
@@ -221,6 +245,29 @@ def main() -> int:
         _b = best["b"]
         _s_pair = int(best["s"]) if not np.isfinite(_b) \
             else (1 if (_ds * _b) >= 0 else -1)
+        # V4.3d 双模硬门槛（禁纯弱噪声混入）：
+        # A类【强但有回撤的主力】rank<=60 & |uncond|>=0.030 &（高低差>=0.025 或 icir<0.50）
+        # B类【真半场王者】|t|>=t_min & max(|hi|,|lo|)>=0.035 & 半场胜率>=0.58
+        try:
+            _icir = float(r.get("ic_ir"))
+        except Exception:
+            _icir = float("nan")
+        _au = abs(uncond)
+        _hdiff = abs(best["hi_ic"] - best["lo_ic"]) \
+            if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
+        _hmax = max(abs(best["hi_ic"]), abs(best["lo_ic"])) \
+            if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
+        _wmax = max(best["hi_win"], best["lo_win"]) \
+            if np.isfinite(best["hi_win"]) and np.isfinite(best["lo_win"]) else float("nan")
+        _cls_a = (int(r["_rank"]) <= 60 and _au >= 0.030
+                  and (np.isfinite(_hdiff) and _hdiff >= 0.025
+                       or (np.isfinite(_icir) and _icir < 0.50)))
+        _cls_b = (abs(best["t"]) >= a.t_min
+                  and np.isfinite(_hmax) and _hmax >= 0.035
+                  and np.isfinite(_wmax) and _wmax >= 0.58)
+        _cls = "A" if _cls_a else ("B" if _cls_b else "")
+        if _cls == "A":
+            suggested = "gain"
         rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
                "formula": str(r.get("formula_cn", "")),
                "direction": _ds,
@@ -229,15 +276,18 @@ def main() -> int:
                "s_bank": int(best["s"]),
                "t_slope": best["t"], "slope_b": best["b"],
                "hi_ic": best["hi_ic"], "lo_ic": best["lo_ic"],
-               "suggested_form": suggested,
-               "selected": bool(abs(best["t"]) >= a.t_min and abs(uncond) < a.uncond_max)}
+               "hi_win": best["hi_win"], "lo_win": best["lo_win"],
+               "suggested_form": suggested, "target_class": _cls,
+               "selected": bool(_cls != "")}
         pool.append(rec)
         if i % 10 == 0 or i == len(todo):
             print(f"  [{i}/{len(todo)}] {fid} t={best['t']:+.2f}@{best['gate']} "
                   f"sel={rec['selected']} {time.time()-t0:.0f}s", flush=True)
 
     sel = [p for p in pool if p["selected"]]
-    print(f"specialists: {len(sel)}/{len(pool)} (|t|>={a.t_min}, |uncond|<{a.uncond_max})",
+    _na = sum(1 for p in sel if p.get("target_class") == "A")
+    _nb = sum(1 for p in sel if p.get("target_class") == "B")
+    print(f"specialists: {len(sel)}/{len(pool)} (A主力={_na}, B半场={_nb})",
           flush=True)
 
     # switch对：offense/defense代表 × bank前2门控（V1启发式，上限max-switch）

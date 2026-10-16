@@ -159,8 +159,11 @@ def main() -> int:
     ap.add_argument("--g3-gates", nargs="*", default=None,
                     help="只对这些门控跑 G3（G2 仍跑全部）。成本 ≈ n_gates × n_perm × "
                          "g3_factors × 1.38**秒**（实测）；不给则全部跑")
-    ap.add_argument("--no-g3", action="store_true", default=False,
-                    help="只跑 G2 并落盘后退出（G2 ≈ 50 分钟；用于修正 G2 判定而不重算 G3）")
+    ap.add_argument("--no-g3", action="store_true", default=True,
+                    help="默认跳过 G3（行业 G3 与下游 f1_sector 200 次置换重复，省数小时；"
+                         "G2 双侧已足够强）。加 --run-g3 则跑 G3。")
+    ap.add_argument("--run-g3", dest="no_g3", action="store_false",
+                    help="显式跑 G3（与 --g3-gates 联用限定门控）")
     ap.add_argument("--chunk", type=int, default=15,
                     help="因子分块（控制内存；每块独立建 PanelRanker 缓存 y 排名）")
     ap.add_argument("--n-boot", type=int, default=G2_BOOT_N)

@@ -14,7 +14,7 @@ from typing import Iterator
 
 import _paths  # noqa: F401
 from field_catalog import (
-    ARITY, CS_OPS, CONST_WHITELIST, EXPONENTS, EXTENDED_ONLY_FIELDS,
+    ARITY, CS_OPS, CONST_WHITELIST, EXPONENTS, EXTENDED_ONLY_FIELDS, GATE_FIELDS,
     LOCAL_ONLY_FIELDS, MAX_DEPTH, MP_NONE, PARAM_OPS, PLATFORM_FIELDS,
     SHIFT_WINDOWS, TS_OPS, VERIFIED_OPS, WINDOWS, default_mp,
 )
@@ -222,6 +222,8 @@ def validate(node: Node, allow_documented: bool = False,
             if n.name in LOCAL_ONLY_FIELDS and allow_documented:
                 continue
             if n.name in EXTENDED_ONLY_FIELDS and allow_documented:
+                continue
+            if n.name in GATE_FIELDS and allow_documented:
                 continue
             return False, f'unknown field {n.name}'
         if n.op == 'CONST':
@@ -612,7 +614,7 @@ def m14_context(rng: random.Random) -> Node:
     w = _win(rng, (20, 40, 60, 120))
     w2 = _win(rng, (5, 10, 20, 40))
     wb = _win(rng, (10, 20, 40, 60))
-    form = rng.randrange(10)
+    form = rng.randrange(12)
     if form == 0:
         # 市况门：市场均量下行期做反转、上行期做动量（市况状态切换）
         cond = Node('LT', (ts('TS_MEAN', mkt, w), const(0)))
@@ -646,6 +648,14 @@ def m14_context(rng: random.Random) -> Node:
         # 市场残差平滑：剥离市场成分后的特质收益
         node = ts('TS_MEAN', Node('TS_REGRESS_RESID', (ret, mkt), window=wb,
                                  mp=default_mp('TS_REGRESS_RESID', wb)), w2)
+    elif form == 10:
+        # V4.3d 模式A：市场门控翻转（牛市做动量、熊市做反转的原生进化形）
+        node = Node('MUL', (field('MKT_GATE1'),
+                            Node('RANK', (ts('TS_MEAN', ret, w2),))))
+    elif form == 11:
+        # V4.3d 模式A：行业门控条件加权（高状态行业放大个股腿）
+        node = Node('MUL', (field('SEC_GATE1'),
+                            Node('RANK', (ts('TS_MEAN', ret, w2),))))
     else:
         # 相对行业残量信息比：IND_EXCESS 的均值/波动（V4.3 扩展字段腿）
         iex = field('IND_EXCESS')
@@ -787,7 +797,7 @@ def m16_ctx_interaction(rng: random.Random) -> Node:
         lambda rng: virtual_node('GAP1'),
         lambda rng: virtual_node('BODY'),
     ]
-    form = rng.randrange(8)
+    form = rng.randrange(10)
     if form in (1, 2, 4, 5):
         # 秩算术/秩选优：行业状态腿（跨行业变异）合法；broadcast 腿截面秩恒 0.5 → 排除
         a = rng.choice(ctx_legs + state_legs)(rng)
@@ -799,7 +809,13 @@ def m16_ctx_interaction(rng: random.Random) -> Node:
         a = rng.choice(ctx_legs)(rng)
     b = rng.choice(base_legs)(rng)
     w = _win(rng, (10, 20, 40))
-    if form == 0:
+    if form == 8:
+        # V4.3d 模式A：市场门控翻转（原生进化形 flip）
+        node = Node('MUL', (field('MKT_GATE1'), Node('RANK', (b,))))
+    elif form == 9:
+        # V4.3d 模式A：行业门控条件加权（原生进化形 sector-gain）
+        node = Node('MUL', (field('SEC_GATE1'), Node('RANK', (b,))))
+    elif form == 0:
         cond = Node('GT', (a, ts('TS_MEAN', a, w)))
         node = ts('TS_MEAN', Node('IF', (cond, b, const(0))), w)
     elif form == 1:

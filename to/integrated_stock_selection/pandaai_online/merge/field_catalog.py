@@ -24,6 +24,12 @@ LOCAL_ONLY_FIELDS = ('MKT_RET', 'IND_RET', 'BETA60', 'DISP')
 # 不动（历史指纹/台账可比性）；扩展列走独立惰性分支。
 EXTENDED_ONLY_FIELDS = ('VWAP', 'IND_EXCESS', 'BETA20', 'IVOL20', 'AMIHUD20')
 
+# 认证门控注入字段（V4.3d 模式A）：bank Top2 市场/行业门控的只读映射，
+# 值域 [-1, 1]（市场 panel _g 列本已中心化；行业 p 现场转 2p-1）。
+# bank 缺失时填 NaN（搜索可独立运行，门控耦合式自然死亡）；bank 版本与搜索
+# cut 不一致时仅告警（门控值是历史统计量，不污染 PIT，但结论要注明版本）。
+GATE_FIELDS = ('MKT_GATE1', 'MKT_GATE2', 'SEC_GATE1', 'SEC_GATE2')
+
 # 本地专用算子（T9，2026-09-25）：滚动 y~x 回归——平台无对应算子，可用于本地搜索；
 # 含这些算子的公式只在 competition export/upload adapter 禁止上传；grammar 按 local capability 放行。
 LOCAL_ONLY_OPS = ('TS_REGRESS_RESID', 'TS_REGRESS_BETA')
@@ -167,5 +173,7 @@ def formula_uses_local(text: str) -> bool:
     if any(re.search(rf'\b{f}\b', t) for f in LOCAL_ONLY_FIELDS):
         return True
     if any(re.search(rf'\b{f}\b', t) for f in EXTENDED_ONLY_FIELDS):
+        return True
+    if any(re.search(rf'\b{f}\b', t) for f in GATE_FIELDS):
         return True
     return any(re.search(rf'\b{op}\s*\(', t) for op in LOCAL_ONLY_OPS)

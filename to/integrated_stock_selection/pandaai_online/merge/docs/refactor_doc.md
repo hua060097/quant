@@ -900,6 +900,9 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - 还差的长跑（服务器）：面板重算63规格→pipeline `--by-group`→sector G2/G3全量→bank-v2→build_top全量→specialists→三式F1（market+sector双线）→judge→materialize→export（`--max-sector 2`）。
 - 去重/隔离/防重算三修复（已落实）：①twin单遍公平扫描——旧双遍会让136个store占满keep导致mined第1名也进不去；现按LGB单遍，孪生（≥0.95）由store顶替（能进才进）或丢弃，<0.95按分竞争（合成验证孪生体被store优先丢弃）。②data_cut台账隔离——`_ledger_candidates(ledger, data_cut)`硬过滤（缺字段按LEGACY计），build_top/rescore传本cut，decay显式跨期不变（现窗重评无串味）；旧cut full-window免算捷径自动失效（合成验证高分旧cut h2被隔离）。③F1配对指纹缓存——`f1_cache.py`（pair_fp=sha12(base|gate|s|d|form|label_max|data_version)，JSONL append-only），f1_batch/f1_sector双线命中0秒跳过、`--out`去重覆盖写幂等、`--no-f1-cache`可关。合成验证fp稳定/版本敏感/命中语义全过。
 - Q4确认：门控确为离线一次→bank→日常只读消费（代码即如此，无需改）。
+- V4.3d性能与双模（已落实）：f1_batch逐批bundle预计算+日码整数广播（字典10亿次查找消除）+flip数学捷径（sign(w)*ic，合成逐位恒等）+switch同式广播；specialists逐日IC向量化（与旧spearmanr逐值一致，含30下限与pairwise排名语义）；evaluator ZSCORE/SCALE向量化（逐值一致）。门控规则：中性门0.60→0.75（screen+pipeline双入口；>0.80克隆仍拦）、`--by-group`默认开（双文件）、sector G3默认关（`--run-g3`显式开）。新门控nh60_prem/sec_top5_persist（63→71规格，因果合成验证通过）。
+- V4.3d双模靶标（已落实）：specialists rank-lo→1；A类（rank≤60 & |uncond|≥0.030 & 差≥0.025或icir<0.50→gain降回撤）+B类（|t|≥2.5 & 半场max≥0.035 & 胜率≥0.58）；半_winrate内联计算。模式A门控注入：GATE_FIELDS四字段（bank Top2×2，缺bank填NaN自然死亡）+evaluator惰性映射+m14/m16原生flip/switch模板（240样本零无效零lint误杀，门控腿占比42/240）+上传硬拦；bank版本错配仅告警（文档备注）。
+- 性能预期（服务器实测为准）：flip单候选30s→0.005s；specialists逐日IC 10分钟→5秒；sector全量G2约60分钟（G3默认关省4小时）。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 
