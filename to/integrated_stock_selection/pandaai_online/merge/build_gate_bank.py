@@ -44,7 +44,7 @@ import windows as W  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RESULTS = os.path.join(ROOT, "results", "merge_v2")
 SPACE = os.path.join(RESULTS, "gates_search")
-BANK_VERSION = "bank-v1"
+BANK_VERSION = "bank-v2"
 
 
 def _sha12(path: str) -> str:
@@ -131,11 +131,21 @@ def main() -> int:
 
     entries = []
     for _, r in mdf.iterrows():
+        # V4.3c：优先用分簇有效中位数 median_b_eff（--by-group 胜出簇符号），
+        # 否则回退全池 median_b；s 来源如实记录。
+        mb_eff = r.get("median_b_eff", None)
+        mb_eff = float(mb_eff) if mb_eff is not None and np.isfinite(float(mb_eff)) else None
         mb = float(r.get("median_b", 0) or 0)
+        mb_use = mb_eff if mb_eff is not None else mb
+        _grp = str(r.get("slope_group", "") or "")
         entries.append({"gate_id": str(r["gate_id"]), "level": "market",
                         "base": str(r.get("base", "")), "op": str(r.get("op", "")),
-                        "s": _sign(mb), "s_source": "G2 median_b sign",
-                        "median_b": mb, "same_frac": float(r.get("same_frac", 0) or 0),
+                        "s": _sign(mb_use),
+                        "s_source": f"G2 group[{_grp}] median_b_eff sign"
+                        if _grp and mb_eff is not None else "G2 median_b sign",
+                        "median_b": mb, "median_b_eff": mb_eff,
+                        "slope_group": _grp,
+                        "same_frac": float(r.get("same_frac", 0) or 0),
                         "score": float(r.get("score", 0) or 0),
                         "g3_pass": bool(r.get("g3_pass", False))})
     for _, r in sdf.iterrows():
@@ -232,6 +242,19 @@ def main() -> int:
             "direct_note": direct_note,
             "entries": entries}
     outp = os.path.join(space, "certified_gate_bank.json")
+    # 版本归档：覆写前若存在旧版 bank，原样归档（禁静默覆盖）。
+    if os.path.exists(outp):
+        try:
+            _old = json.load(open(outp, encoding="utf-8"))
+            _ov = str(_old.get("version", "unknown"))
+            if _ov != BANK_VERSION:
+                _arc = os.path.join(space, f"certified_gate_bank_{_ov}.json")
+                if not os.path.exists(_arc):
+                    with open(_arc, "w", encoding="utf-8") as _f:
+                        json.dump(_old, _f, ensure_ascii=False, indent=1)
+                    print(f"  旧版归档 → {_arc}")
+        except Exception as _e:
+            print(f"  旧版归档跳过（{str(_e)[:80]}）")
     with open(outp, "w", encoding="utf-8") as f:
         json.dump(bank, f, ensure_ascii=False, indent=1)
     print(f"bank -> {outp} (market {bank['n_market']} / sector {bank['n_sector']})")

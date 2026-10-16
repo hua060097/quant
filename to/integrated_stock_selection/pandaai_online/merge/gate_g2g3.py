@@ -409,6 +409,7 @@ def main() -> int:
             "slope_group": _grp, "slope_group_median": _grp_med,
             "slope_group_same": _grp_same, "slope_group_folds": _grp_folds,
             "slope_group_pass": bool(_grp_ok),
+            "median_b_eff": _grp_med if _grp_ok else st["median_b"],
             "thr_delta_median": sd_["median_d"], "thr_same_frac": sd_["same_frac"],
             "thr_folds": sd_["folds_same"], "thr_ci_lo": dlo, "thr_ci_hi": dhi,
             "g2_thr_pass": bool(ok_thr),

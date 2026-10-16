@@ -214,6 +214,10 @@ def main() -> int:
     ap.add_argument("--gate-bank", default=None,
                     help="已认证门控字典certified_gate_bank.json：cands的门控与s改从bank读取"
                          "（离线G2符号锁定）；不传则用本轮短名单×s=+1历史行为")
+    ap.add_argument("--by-group", action="store_true", default=False,
+                    help="V4.3c 机制分簇G2（默认关）：按 roles.csv group 先验簇分别跑斜率"
+                         "口径，任一簇 4 折同号+CI不含0+簇内同号>=0.65 即认证并记录受益簇；"
+                         "旧全池结论保留，新检验族版本")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -225,6 +229,20 @@ def main() -> int:
     # 旧实现写死 factor_set="base20" 但实际用 124 因子 → 口径记录不实，
     # 因子集变更不会被 stale 检测发现。真实 factor_set = f"ic{实际列数}"。
     icdf = read_ic_cache(a.ic_cache)
+    # V4.3c 机制分簇映射（roles.csv group；t2_promoted 单列一簇并注明）。
+    _groups: dict[str, list[int]] = {}
+    if a.by_group:
+        try:
+            _roles = pd.read_csv(os.path.join(RESULTS, "roles.csv"))
+            _gmap = dict(zip(_roles["name"].astype(str), _roles["group"].astype(str)))
+            for _j, _c in enumerate(icdf.columns):
+                _g = _gmap.get(str(_c), "ungrouped")
+                _groups.setdefault(_g, []).append(_j)
+            print(f"  分簇G2：{len(_groups)} 簇 "
+                  f"{sorted((g, len(v)) for g, v in _groups.items())}", flush=True)
+        except Exception as exc:
+            print(f"  warning: 分簇映射失败（{str(exc)[:100]}），退化为全池", flush=True)
+            _groups = {}
     # 面板内容哈希（2026-10-13 增量筛选补丁）：不进 caliber 就会出现"同 spec
     # 面板被重生成（gate_search_space 重跑）→ 台账误判 completed 而漏重筛"。
     reg_path_p = os.path.join(a.space_dir, "gate_search_registry.json")
@@ -381,6 +399,30 @@ def main() -> int:
         g2_pass = bool((st["folds_same"] == G23.G2_FOLDS)
                        and G23.ci_excludes_zero(lo, hi)
                        and st["same_frac"] >= G23.G2_SAME_SIGN_MIN)
+        # V4.3c 机制分簇 G2（新检验族版本）：任一先验簇达标即认证，
+        # 有效中位数取胜出簇值（供 bank s 锁定；全池 median_b 原样保留）。
+        _grp, _geff = "", float(st["median_b"])
+        _gsame, _gfolds = float("nan"), 0
+        _gok = False
+        if _groups:
+            _best = None
+            for _gn, _cols in _groups.items():
+                if len(_cols) < 5:
+                    continue
+                _sic = ic[:, _cols]
+                _sst = G23.g2_stat(_sic, gser)
+                _lo, _hi = G23.g2_ci_bootstrap(_sic, gser, n_boot=a.n_boot)
+                _ok = (_sst["folds_same"] == G23.G2_FOLDS) \
+                    and G23.ci_excludes_zero(_lo, _hi) \
+                    and _sst["same_frac"] >= 0.65
+                if _ok and (_best is None
+                            or abs(_sst["median_b"]) > abs(_best[1])):
+                    _best = (_gn, _sst["median_b"], _sst["same_frac"],
+                             _sst["folds_same"])
+            if _best is not None:
+                _grp, _geff, _gsame, _gfolds = _best
+                _gok = True
+                g2_pass = True
         row = {"gate_id": gid, "level": spec["level"], "base": spec["base"],
                "op": spec["op"], "state": spec["_state"],
                "g0_cont": g0c["g0_status"], "neutral": neutral,
@@ -388,16 +430,20 @@ def main() -> int:
                "same_frac": st["same_frac"], "folds_same": st["folds_same"],
                "ci_lo": lo, "g2_pass": g2_pass, "g3_pass": g3["pass"],
                "g3_p": g3.get("p_two_sided"), "value_fp": vfp,
-               "on_frac": sp["on_frac"], "rho_time": rho_t}
+               "on_frac": sp["on_frac"], "rho_time": rho_t,
+               "slope_group": _grp, "median_b_eff": _geff,
+               "slope_group_same": _gsame, "slope_group_folds": _gfolds,
+               "slope_group_pass": bool(_gok)}
         lg.log("g2g3", spec, caliber=CALIBER,
                verdict=("candidate" if (g2_pass and neutral) else
                         "proxy" if not neutral else
                         "weak" if g2_pass else "reject"),
-               data={"median_b": st["median_b"], "same_frac": st["same_frac"],
-                     "folds_same": st["folds_same"], "ci_lo": lo,
-                     "g2_pass": g2_pass, "g3_pass": g3["pass"],
-                     "g3_p": g3.get("p_one_sided"), "value_fp": vfp,
-                     "dir_corr": cmax})
+                data={"median_b": st["median_b"], "same_frac": st["same_frac"],
+                      "folds_same": st["folds_same"], "ci_lo": lo,
+                      "g2_pass": g2_pass, "g3_pass": g3["pass"],
+                      "g3_p": g3.get("p_one_sided"), "value_fp": vfp,
+                      "dir_corr": cmax, "slope_group": _grp,
+                      "median_b_eff": _geff, "slope_group_pass": bool(_gok)})
         rows.append(row)
         print(f"{gid:<28s}{'OK':>4s}{'OK':>6s}"
               f"{('WARN' if sp['warn'] else 'OK'):>6s}{g0c['g0_status']:>6s}"

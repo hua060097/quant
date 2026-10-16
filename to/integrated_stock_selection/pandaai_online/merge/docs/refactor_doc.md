@@ -891,7 +891,9 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - 验收：`g2g3_sector.csv` 14行；`delta_median`脱离-0.020塌缩带；bank-v2 sector≥2；回归7/7不动。
 - 追加三修复（已落实`5a6f1ed`）：`f1_batch`漏排序（旧g/t经`_prepared`/日期键免疫，只有新三式中招）+对齐断言；`select_specialists`个体`s_pair`（有向斜率符号锁定，specialist面板时bank只过滤不覆盖）；`materialize`三批合并落盘（空通过不清空）+`build_gate_bank` sector base/op解析。
 - 全仓审计结论（已落实）：生产链其余`d`写入方全源自`base20.json`（±1安全）；中心化其余路径全为`2p-1`；日期其余全为日期键映射或自带排序。诊断工具（corr_compare/stability/cond）自洽，无新增修复。
-- 数据警示（2026-10-15 22:51）：`factors.parquet`现为155列版（疑似上游重生成），roles 136个股名仅49列在库！store第四源=49列；sector G2全量将以约40因子运行（`factor_set`如实记录），待262列恢复后重跑以对齐market线124因子口径。
+- 数据状态更新：`factors.parquet`已恢复262列完整版（Owner确认，mtime 10-05），store第四源=136列全量，sector G2按124 STOCK全跑。155列警示解除。
+- 漏网三修复之上再补四修复（已落实，待服务器跑）：①habitat估值断路——`val_store`只含LGB前150名，Class2低LGB因子永不进入；修为机制家族过滤（context/vol/shape/M7/M14/store）+上限150按需补算，与扫描值合并为`hab_vals`。②去重口径——席位/股性池改窗内逐日截面Spearman均值（与扫描矩阵同口径），禁500万行混合corrcoef。③data-cut铁律——`build_top`加`--data-cut`（默认2025-12-31），`load_panel`/`DataContext`/`pos_me`/`B.read_factors`全链路钳制（旧默认END='20260821'曾放行2026）；panel store列批量单读。④分簇接线——`run_gate_pipeline --by-group`写`median_b_eff/slope_group_*`列（`gate_g2g3.py`独跑是断链的）；`build_gate_bank`读eff锁定s并升`bank-v2`（覆写前旧版自动归档）。合成验证：孪生体被store优先丢弃、bank-v2归档+s取簇符号（全池-0.0002→簇+0.009锁+1）。
+- Owner三拍板（已生效）：G3双侧（新gain族）、habitat通道默认开（`--no-habitat-track`对照）、262列按全量跑；`export_lgb_dataset`最后一步显式`--max-sector 2`。
 
 ### V4.3b：行业基础量+3 → bank-v3（扩池，市场不动；代码已落实`182183f`，面板重算待服务器）
 

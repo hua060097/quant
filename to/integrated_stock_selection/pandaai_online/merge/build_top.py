@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 import _paths  # noqa: F401
+import windows as W
 from cache_utils import find_stock_features
 from decorrelate_top import load_all_specs, month_end_spearman_matrix
 from evaluator import Evaluator, load_panel
@@ -292,7 +293,8 @@ def mined_prefilter(top: int) -> list[dict]:
 
 
 def eval_custom(frame: pd.DataFrame | None = None,
-                ev: Evaluator | None = None) -> pd.DataFrame:
+                ev: Evaluator | None = None,
+                end: str | None = None) -> pd.DataFrame:
     """V4.1三源合一之custom源：评估`custom_registry`全部已注册自定义因子。
 
     与`eval_mined`同口径（双标签DataContext全窗重估，LGB按`refs.lgb_score T_ref=0.3`），
@@ -306,7 +308,7 @@ def eval_custom(frame: pd.DataFrame | None = None,
         ev = Evaluator(frame)
     specs = load_all_custom_specs()
     print(f'custom specs={len(specs)}', flush=True)
-    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
             for lab in ('c2c', 'vwap')}
     rows = []
     for fid, spec in sorted(specs.items()):
@@ -365,15 +367,16 @@ def eval_custom(frame: pd.DataFrame | None = None,
     return pd.DataFrame(flat)
 
 
-def _store_aligned(frame: pd.DataFrame):
+def _store_aligned(frame: pd.DataFrame, cut: str | None = None):
     """存量列对齐到 frame 行：返回 (m, pos)，m 含 store 列，pos[i] 为 frame 第 i 行
-    在 m 中的行号（-1=缺失）。与 mkt_sector_test 同映射模式。"""
+    在 m 中的行号（-1=缺失）。与 mkt_sector_test 同映射模式。
+    cut 为 data_cut 上界（默认 frame 最大日；传 cut 以遵守铁律）。"""
     import boundary as B
     from store_sync import store_columns
     cols = store_columns()
     if not cols:
         return None, None
-    _dmax = str(pd.to_datetime(frame["date"]).max().date())
+    _dmax = str(cut) if cut else str(pd.to_datetime(frame["date"]).max().date())
     fac = B.read_factors(cols, data_max=_dmax, label="store-eval")
     fac["date"] = pd.to_datetime(fac["date"])
     m = fac.merge(frame[["stock_code", "date"]].drop_duplicates(),
@@ -389,7 +392,8 @@ def _store_aligned(frame: pd.DataFrame):
 
 
 def eval_store(frame: pd.DataFrame | None = None,
-                ev: Evaluator | None = None) -> pd.DataFrame:
+                ev: Evaluator | None = None,
+                end: str | None = None) -> pd.DataFrame:
     """V4.3c 第四源 store：评估 factors.parquet 存量个股列。
 
     口径与 eval_mined/eval_custom 完全一致（双标签 DataContext 全窗重估，
@@ -407,7 +411,7 @@ def eval_store(frame: pd.DataFrame | None = None,
         return pd.DataFrame()
     cols = [c for c in m.columns if c not in ("stock_code", "date")]
     print(f'store columns={len(cols)}', flush=True)
-    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
             for lab in ('c2c', 'vwap')}
     rows = []
     for fid in cols:
@@ -460,7 +464,8 @@ def eval_store(frame: pd.DataFrame | None = None,
 
 def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
                 ev: Evaluator | None = None,
-                builder: FactorBuilder | None = None) -> pd.DataFrame:
+                builder: FactorBuilder | None = None,
+                end: str | None = None) -> pd.DataFrame:
     ledger = Ledger()
     if frame is None:
         frame = load_panel()
@@ -469,7 +474,7 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
         ev = Evaluator(frame)
     if builder is None:
         builder = FactorBuilder(frame)
-    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+    ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
             for lab in ('c2c', 'vwap')}
     rows = []
     t0 = time.time()
@@ -556,6 +561,24 @@ def eval_mined(picks: list[dict], frame: pd.DataFrame | None = None,
     return pd.DataFrame(flat)
 
 
+def _xsec_spearman(a: np.ndarray, b: np.ndarray, day_codes: np.ndarray,
+                   nd: int, min_n: int = 30) -> float:
+    """窗内逐日截面 Spearman 均值（与正交扫描 month_end_spearman_matrix 同口径；
+    禁止跨日期股票混合 corrcoef）。"""
+    import fastranks as FR
+    import eval_v2 as E
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    m = np.isfinite(a) & np.isfinite(b)
+    if m.sum() < min_n:
+        return float('nan')
+    ra = FR.blockwise_rank(np.where(m, a, np.nan), day_codes)
+    rb = FR.blockwise_rank(np.where(m, b, np.nan), day_codes)
+    ic = E._daily_corr(ra, rb, day_codes, nd)
+    ic = ic[np.isfinite(ic)]
+    return float(ic.mean()) if len(ic) else float('nan')
+
+
 def _window_shim_ctx(day_group: np.ndarray, y_me: np.ndarray):
     """选择窗 shim ctx：供 cond_ic_metrics 在 pos_me 切片上计算窗内条件 IC。
 
@@ -570,6 +593,7 @@ def _window_shim_ctx(day_group: np.ndarray, y_me: np.ndarray):
 def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                   val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
                   y_vwap_me: np.ndarray, prep_me: dict,
+                  day_codes: np.ndarray, nd_me: int,
                   n_seats: int = 10, t_min: float = 2.5,
                   threshold: float = 0.7) -> tuple[list[int], list[dict]]:
     """Class1 栖息地尖兵席位（V4.3c）：扫描已估值但未入选者中 hot5_q80 |t|>=2.5 者，
@@ -623,10 +647,7 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         _mx = 0.0
         _ok = True
         for _pv in pool_vals:
-            _m = np.isfinite(_v) & np.isfinite(_pv)
-            if _m.sum() < 30:
-                continue
-            _c = np.corrcoef(_v[_m], _pv[_m])[0, 1]
+            _c = _xsec_spearman(_v, _pv, day_codes, nd_me)
             if np.isfinite(_c) and abs(float(_c)) > threshold:
                 _ok = False
                 _mx = max(_mx, abs(float(_c)))
@@ -643,6 +664,7 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
 def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                  val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
                  y_vwap_me: np.ndarray, prep_me: dict, vwap_nl: dict,
+                 day_codes: np.ndarray, nd_me: int,
                  top_n: int = 10, threshold: float = 0.7) -> list[dict]:
     """Class2 股性榜单（V4.3c）：已估值扫描候选按 habitat_score 排名，
     与 Class1 池内 + 榜内逐一 |ρ|<=threshold 正交取 TopN。
@@ -696,10 +718,7 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         _v = np.asarray(val_store[_key], dtype=float)
         _ok = True
         for _pv in pool_vals:
-            _m = np.isfinite(_v) & np.isfinite(_pv)
-            if _m.sum() < 30:
-                continue
-            _c = np.corrcoef(_v[_m], _pv[_m])[0, 1]
+            _c = _xsec_spearman(_v, _pv, day_codes, nd_me)
             if np.isfinite(_c) and abs(float(_c)) > threshold:
                 _ok = False
                 break
@@ -761,12 +780,12 @@ def pct(x) -> str:
 def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                   builder: FactorBuilder, specs_by_id: dict,
                   vwap_order: list[int] | None, vwap_df: pd.DataFrame,
-                  prep: dict | None = None) -> list[dict]:
+                  prep: dict | None = None, end: str | None = None) -> list[dict]:
     """双榜入选者的条件 RankIC（2026-09-25）：栖息地（hot5/hot2）+ 市场状态族，
     与主管线 COND-IC 同口径。c2c 榜 top20 + 榜2 正交入选者并集，逐候选×逐标签。"""
     from cond_ic import build_cond_prep, cond_ic_metrics
     cond_prep = prep if prep is not None else build_cond_prep(frame)
-    _ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev)
+    _ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
              for lab in ('c2c', 'vwap')}
     c2c_sel = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False).head(20)
     vwap_sel = (vwap_df.iloc[vwap_order] if vwap_order else vwap_df.head(20))
@@ -910,6 +929,9 @@ def main() -> int:
                     help='Class2股性榜单TopN（按habitat_score正交，默认10）')
     ap.add_argument('--export-panel', action='store_true', default=False,
                     help='导出vwap_top20.json与因子值面板（默认关闭；只需JSON时可只看榜单）')
+    ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT,
+                    help='数据截止日铁律（默认 2025-12-31）：load_panel/DataContext/'
+                         'pos_me/B.read_factors 全链路钳制，严禁触及 2026 数据（PLAN §20.6.2）')
     args = ap.parse_args()
 
     t0 = time.time()
@@ -937,13 +959,17 @@ def main() -> int:
         print(f'saved {md_path}  {time.time() - t0:.0f}s', flush=True)
         return 0
 
-    frame = load_panel()
+    # V4.3c data-cut 铁律：面板/评估/pos_me/因子读取全部钳制在 cut 内。
+    frame = load_panel(data_cut=args.data_cut)
     ev = Evaluator(frame)
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
-    mined_df = eval_mined(mined_prefilter(args.top), frame=frame, ev=ev, builder=builder)
-    custom_df = eval_custom(frame=frame, ev=ev) if args.include_custom else pd.DataFrame()
-    store_df = eval_store(frame=frame, ev=ev) if args.include_store else pd.DataFrame()
+    mined_df = eval_mined(mined_prefilter(args.top), frame=frame, ev=ev,
+                          builder=builder, end=args.data_cut)
+    custom_df = eval_custom(frame=frame, ev=ev, end=args.data_cut) \
+        if args.include_custom else pd.DataFrame()
+    store_df = eval_store(frame=frame, ev=ev, end=args.data_cut) \
+        if args.include_store else pd.DataFrame()
     cols = ['lib', 'factor_id', 'name_cn', 'base', 'transform', 'window', 'formula_cn',
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
             'ic_ir', 'win', 'rank_ic_ir', 'rank_ic_win', 'turnover', 'turnover_month',
@@ -988,8 +1014,9 @@ def main() -> int:
     c2c_df = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False)
 
     from fitness import START, END as FIT_END
+    _fit_end = min(str(FIT_END), str(args.data_cut))
     mask_d = ((frame['date'] >= pd.Timestamp(START))
-              & (frame['date'] <= pd.Timestamp(FIT_END))).to_numpy()
+              & (frame['date'] <= pd.Timestamp(_fit_end))).to_numpy()
     # [CORR-CALIBRATION 2026-10-02] 相关性截面由「每月最后 1 个交易日」改为「月内全部交易日」。
     # 与 decorrelate_top / dedup / pool_matrix 同步；pos_me 形参名沿用旧名以保持兼容。
     pos_me = np.flatnonzero(mask_d)
@@ -1007,7 +1034,7 @@ def main() -> int:
     store_vals: dict = {}
     if args.include_store:
         try:
-            _sm, _spos = _store_aligned(frame)
+            _sm, _spos = _store_aligned(frame, cut=args.data_cut)
             if _sm is not None:
                 for _c in [c for c in _sm.columns if c not in ("stock_code", "date")]:
                     _vv = np.full(len(frame), np.nan)
@@ -1070,6 +1097,53 @@ def main() -> int:
     seat_order: list[int] = []
     seat_detail: list[dict] = []
     hab_pool: list[dict] = []
+    _day_codes, _ = pd.factorize(day_group, sort=True)
+    _day_codes = np.asarray(_day_codes)
+    _nd_me = int(_day_codes.max()) + 1 if len(_day_codes) else 0
+    # Bug1 修复：habitat 估值扩面——val_store 只含 LGB 前 scan 名，
+    # Class2 低 LGB 因子需按需补算（机制家族过滤 + 上限，避免全量重估）。
+    hab_vals: dict = dict(val_store)
+    try:
+        _HAB_FAMS = ('context', 'ctx', 'vol', 'M7', 'M14', 'M16', 'M17',
+                     'shape', 'skew', 'M3', 'store')
+        _extra = []
+        for _pos in range(min(400, len(vwap_df))):
+            _r = vwap_df.iloc[_pos]
+            _key = (_r['lib'], str(_r['factor_id']))
+            if _key in hab_vals:
+                continue
+            _fam = str(_r.get('family', ''))
+            if _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
+                _extra.append((_pos, _r))
+        _extra = _extra[:150]
+        for _pos, _r in _extra:
+            _key = (_r['lib'], str(_r['factor_id']))
+            try:
+                if _r['lib'] == 'mined':
+                    _vv = np.asarray(ev.values(parse_formula(str(_r['formula_cn']))),
+                                     dtype=float)[pos_me]
+                elif _r['lib'] == 'custom':
+                    from custom_registry import evaluate_custom_factor as _ecfx
+                    from custom_registry import load_all_custom_specs as _lcsx
+                    _spx = _lcsx().get(str(_r['factor_id']))
+                    if _spx is None:
+                        continue
+                    _vv = np.asarray(_ecfx(_spx, frame, ev), dtype=float)[pos_me]
+                elif _r['lib'] == 'store':
+                    _vv = store_vals.get(str(_r['factor_id']))
+                    if _vv is None:
+                        continue
+                else:
+                    _spx = _specs.get(str(_r['factor_id']))
+                    if _spx is None:
+                        continue
+                    _vv = builder.get_factor(_spx).to_numpy(dtype=float)[pos_me]
+                hab_vals[_key] = np.asarray(_vv, dtype=np.float32)
+            except Exception:
+                continue
+        print(f'habitat 估值扩面：+{len(hab_vals) - len(val_store)} 个', flush=True)
+    except Exception as exc:
+        print(f'warning: habitat 扩面失败 {str(exc)[:120]}', flush=True)
     try:
         from cond_ic import build_cond_prep
         _prep_me_full = build_cond_prep(frame)
@@ -1077,14 +1151,16 @@ def main() -> int:
                              for k, v in _prep_me_full['tags'].items()}}
         if args.habitat_seats > 0 and len(val_store):
             seat_order, seat_detail = habitat_seats(
-                vwap_df, vwap_order, val_store, pos_me, day_group,
-                y_vwap_me, _prep_me, n_seats=args.habitat_seats)
+                vwap_df, vwap_order, hab_vals, pos_me, day_group,
+                y_vwap_me, _prep_me, _day_codes, _nd_me,
+                n_seats=args.habitat_seats)
             print(f'栖息地席位：{len(seat_order)} 个 '
                   f'{[d["factor_id"] for d in seat_detail]}', flush=True)
         if args.habitat_pool > 0 and len(val_store):
             hab_pool = habitat_pool(
-                vwap_df, vwap_order, val_store, pos_me, day_group,
-                y_vwap_me, _prep_me, vwap_nl, top_n=args.habitat_pool)
+                vwap_df, vwap_order, hab_vals, pos_me, day_group,
+                y_vwap_me, _prep_me, vwap_nl, _day_codes, _nd_me,
+                top_n=args.habitat_pool)
             print(f'Class2股性榜单：{len(hab_pool)} 个', flush=True)
     except Exception as exc:
         print(f'warning: 栖息地席位/股性榜单失败 {str(exc)[:150]}', flush=True)
@@ -1207,7 +1283,27 @@ def main() -> int:
         if args.export_panel and _top20:
             _panel_cols = {'stock_code': frame['stock_code'].to_numpy(),
                            'date': pd.to_datetime(frame['date']).to_numpy()}
-            for _r in _picked + [vwap_df.iloc[_sp] for _sp in seat_order]:
+            # V4.3c：store 列一次性批量读取（禁循环内单列重复读 7GB 表）。
+            _panel_rows = _picked + [vwap_df.iloc[_sp] for _sp in seat_order]
+            _panel_store = sorted({_r.get('factor_id') for _r in _panel_rows
+                                   if _r.get('lib') == 'store'})
+            _panel_smap: dict = {}
+            if _panel_store:
+                try:
+                    import boundary as _B
+                    _sf = _B.read_factors(_panel_store, data_max=args.data_cut,
+                                          label='top20-panel-store')
+                    _m = _sf.merge(frame[['stock_code', 'date']],
+                                   on=['stock_code', 'date'], how='right')
+                    for _c in _panel_store:
+                        _vv = _m[_c].to_numpy(dtype=float) if _c in _m.columns else None
+                        if _vv is not None and len(_vv) == len(frame):
+                            _panel_smap[_c] = _vv
+                    del _sf, _m
+                except Exception as _e:
+                    print(f'  warning: panel store 批量读失败 {str(_e)[:100]}',
+                          flush=True)
+            for _r in _panel_rows:
                 _fid = str(_r.get('factor_id'))
                 try:
                     if _r.get('lib') == 'mined':
@@ -1220,16 +1316,7 @@ def main() -> int:
                         _vals = np.asarray(_ecf(_spec, frame, ev), dtype=float) \
                             if _spec is not None else np.full(len(frame), np.nan)
                     elif _r.get('lib') == 'store':
-                        import boundary as _B
-                        _sf = _B.read_factors([_fid], data_max=str(
-                            pd.to_datetime(frame['date']).max().date()),
-                            label='top20-panel-store')
-                        _m = _sf.merge(frame[['stock_code', 'date']],
-                                       on=['stock_code', 'date'], how='right')
-                        _vv = _m[_fid].to_numpy(dtype=float) \
-                            if _fid in _m.columns else np.full(len(frame), np.nan)
-                        _vals = _vv if len(_vv) == len(frame) \
-                            else np.full(len(frame), np.nan)
+                        _vals = _panel_smap.get(_fid, np.full(len(frame), np.nan))
                     else:
                         _spec = _specs.get(_fid)
                         _vals = builder.get_factor(_spec).to_numpy(dtype=float) \
@@ -1251,9 +1338,8 @@ def main() -> int:
             _store_map = {}
             if _store_need:
                 import boundary as _B2
-                _sf2 = _B2.read_factors(_store_need, data_max=str(
-                    pd.to_datetime(frame['date']).max().date()),
-                    label='habitat-pool-store')
+                _sf2 = _B2.read_factors(_store_need, data_max=args.data_cut,
+                                        label='habitat-pool-store')
                 _m2 = _sf2.merge(frame[['stock_code', 'date']],
                                  on=['stock_code', 'date'], how='right')
                 for _c in _store_need:
