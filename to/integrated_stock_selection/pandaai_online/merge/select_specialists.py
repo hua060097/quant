@@ -81,7 +81,14 @@ def _resolve_axis(r, roles_group_map: dict | None = None) -> str:
     if fam in AXIS_OF:
         return AXIS_OF[fam]
     if fam.startswith("ref:"):
-        return fam[4:] or "other"
+        # flat.csv 的 refs 行经 build_top.norm_refs 覆写为 'ref:'+lib，
+        # lib 取值见 refs.py LIB_REPOS/--libs（directional/risk-pattern/
+        # volume-stat/dir-adapt），与 refs.py 注册时的 ref:<axis> 轴名是两套
+        # 命名——兼容字典优先，轴名原值直通。
+        _r_ax = fam[4:]
+        return {"directional": "trend_position", "dir-adapt": "trend_position",
+                "risk-pattern": "volatility",
+                "volume-stat": "liquidity_size"}.get(_r_ax, _r_ax or "other")
     if fam.startswith("custom_"):
         return fam[7:] or "other"
     if fam == "store":

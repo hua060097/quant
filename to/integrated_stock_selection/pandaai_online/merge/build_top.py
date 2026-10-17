@@ -1022,24 +1022,18 @@ def _hab_score_worker(args) -> tuple:
 
 
 def _pair_vs_pool(v_s: np.ndarray, pool_s: list, day_s: np.ndarray,
-                  nd: int, threshold: float, jobs: int = 1) -> bool:
+                  nd: int, threshold: float) -> bool:
     """候选（已按 day_s 重排）与池的正交否决（返回 True=拒绝）。
-    与串行 early-break 判定恒等：串行在首个 |ρ|>threshold 处跳出拒绝；
-    并行求全量后取 any，拒绝布尔一致（_mx 仅局部变量，未进输出明细，
-    全量 max 与提前跳出的 max-so-far 差异不可观测）。
+    串行 early-break：首个 |ρ|>threshold 即 return True。大多数落选候选
+    在前 1~3 对即淘汰（仅 1.5~5 秒），远快于全量 map 后 any（80 对必满）。
+    刻意不用线程/进程池：blockwise_rank 内层是 Python for 循环，
+    GIL 下多线程加速有限，而全量计算丢掉 early-break 反而放大算量 20~40 倍。
     输入须行序一致（day_s 单调 + 数组同序重排），否则结果无意义。"""
-    _nj = max(1, int(jobs or 1))
-    if _nj <= 1 or len(pool_s) <= 1:
-        for _pv in pool_s:
-            _c = _xsec_spearman(v_s, _pv, day_s, nd)
-            if np.isfinite(_c) and abs(float(_c)) > threshold:
-                return True
-        return False
-    import concurrent.futures as _cf
-    with _cf.ThreadPoolExecutor(max_workers=min(_nj, len(pool_s))) as _ex:
-        _cs = list(_ex.map(lambda _pv: _xsec_spearman(v_s, _pv, day_s, nd),
-                           pool_s))
-    return any(np.isfinite(_c) and abs(float(_c)) > threshold for _c in _cs)
+    for _pv in pool_s:
+        _c = _xsec_spearman(v_s, _pv, day_s, nd)
+        if np.isfinite(_c) and abs(float(_c)) > threshold:
+            return True
+    return False
 
 
 def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
@@ -1135,7 +1129,7 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
             break
         _v_s = np.asarray(val_store[(r['lib'], str(r['factor_id']))],
                           dtype=float)[_order_me]
-        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold, jobs):
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold):
             continue
         seats.append(_pos)
         pool_s.append(_v_s)
@@ -1228,7 +1222,7 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         if len(out) >= top_n:
             break
         _v_s = np.asarray(val_store[_key], dtype=float)[_order_me]
-        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold, jobs):
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold):
             continue
         pool_s.append(_v_s)
         out.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
