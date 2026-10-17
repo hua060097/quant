@@ -116,6 +116,63 @@ def _cache_save(cache_dir: Path | None, key: str, v: np.ndarray) -> None:
         pass
 
 
+#: twin 扫描值计算工作进程共享（fork 继承，免 pickling 大面板）
+_SCAN_CTX = None
+
+
+def _scan_value_key(r, specs_by_id):
+    """单行分支判定 + 缓存键（纯查表/解析，不求值；与循环体内联逻辑逐字一致）。
+    返回 (branch, key)：branch ∈ mined/custom/store/refs；
+    解析失败或查表缺失返回 (None, None)（调用方跳过，与原 continue 一致）。"""
+    try:
+        if r['lib'] == 'mined':
+            node = parse_formula(str(r['formula_cn']))
+            return "mined", expression_hash(node)
+        if r['lib'] == 'custom':
+            from custom_registry import load_all_custom_specs as _lcs
+            _spec = _lcs().get(str(r['factor_id']))
+            if _spec is None:
+                return None, None
+            return "custom", 'custom_' + _spec.spec_hash
+        if r['lib'] == 'store':
+            return "store", 'store_' + str(r['factor_id'])
+        spec = specs_by_id.get(str(r['factor_id']))
+        if spec is None:
+            return None, None
+        return "refs", _ref_spec_key(spec)
+    except Exception:
+        return None, None
+
+
+def _scan_value_worker(args) -> tuple:
+    """扫描值工作进程：(序号, branch, lib, fid, 公式) →
+    (序号, float32数组或None)。串行回退直接调本函数，串并同一份求值代码。
+    store 分支不走 worker（值已在内存 store_vals，主进程直填）。"""
+    idx, branch, lib, fid, formula = args
+    _c = _SCAN_CTX
+    try:
+        if branch == "mined":
+            node = parse_formula(str(formula))
+            v = np.asarray(_c["ev"].values(node), dtype=float)[_c["pos_me"]]
+        elif branch == "custom":
+            from custom_registry import evaluate_custom_factor as _ecf
+            from custom_registry import load_all_custom_specs as _lcs
+            _spec = _lcs().get(str(fid))
+            if _spec is None:
+                return idx, None
+            v = np.asarray(_ecf(_spec, _c["frame"], _c["ev"]),
+                           dtype=float)[_c["pos_me"]]
+        else:
+            spec = _c["specs"].get(str(fid))
+            if spec is None:
+                return idx, None
+            v = _c["builder"].get_factor(spec).to_numpy(
+                dtype=float)[_c["pos_me"]]
+        return idx, np.asarray(v, dtype=np.float32)
+    except Exception:
+        return idx, None
+
+
 def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                             builder: FactorBuilder, pos_me: np.ndarray,
                             day_group: np.ndarray, specs_by_id: dict,
@@ -127,7 +184,8 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
                             label: str = '',
                             y_me: np.ndarray | None = None,
                             store_vals: dict | None = None,
-                            twin_thr: float = 0.95) -> tuple[list[int], dict, dict]:
+                            twin_thr: float = 0.95,
+                            jobs: int = 1) -> tuple[list[int], dict, dict]:
     """榜2 排序层轻量正交（2026-09-24）：按 LGB 降序扫描前 max_scan 个候选，
     逐日截面 |Spearman|>threshold 的只留 LGB 最优者（与 decorrelate_top 同判据，
     但在榜单生成时即生效，decorrelate_top 仍可独立复核）。
@@ -140,73 +198,84 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
 
     返回 (保留的 df 行号顺序, {df行号: 与已选者的最大|ρ|},
     {df索引标签: {'mi','mi_std','nmi','n_months','jsd'}})；值不可得的候选跳过。
+
+    jobs：值计算阶段并行进程数（缓存命中/缺失判定串行，未命中经进程池并行；
+    合并后按行序还原，twin 判定与串行逐值一致；MI/JSD 与 twin 判定保持串行）。
     """
     cols, idxs = [], []
+    # Phase A（串行）：分支判定 + 缓存命中直填；store 走内存直填；
+    # 未命中排队。行序在 Phase B 合并后还原，twin 优先级顺序不变。
+    _done: list = []  # (i_row, key, r, v)
+    _miss: list = []  # (i_row, key, r, branch)
     for i_row, (_, r) in enumerate(df_vwap.head(max_scan).iterrows()):
         key = None
         try:
-            if r['lib'] == 'mined':
-                node = parse_formula(str(r['formula_cn']))
-                key = expression_hash(node)
-                v = _cache_load(cache_dir, key, len(pos_me))
-                if v is None:
-                    v = np.asarray(ev.values(node), dtype=float)[pos_me].astype(np.float32)
-                    _cache_save(cache_dir, key, v)
-                    if stats is not None:
-                        stats['miss'] = stats.get('miss', 0) + 1
-                elif stats is not None:
-                    stats['hit'] = stats.get('hit', 0) + 1
-            elif r['lib'] == 'custom':
-                try:
-                    from custom_registry import evaluate_custom_factor as _ecf
-                    from custom_registry import load_all_custom_specs as _lcs
-                    _spec = _lcs().get(str(r['factor_id']))
-                    if _spec is None:
-                        continue
-                    key = 'custom_' + _spec.spec_hash
-                    v = _cache_load(cache_dir, key, len(pos_me))
-                    if v is None:
-                        v = np.asarray(_ecf(_spec, frame, ev), dtype=float)[pos_me] \
-                            .astype(np.float32)
-                        _cache_save(cache_dir, key, v)
-                        if stats is not None:
-                            stats['miss'] = stats.get('miss', 0) + 1
-                    elif stats is not None:
-                        stats['hit'] = stats.get('hit', 0) + 1
-                except Exception:
-                    continue
-            elif r['lib'] == 'store':
+            branch, key = _scan_value_key(r, specs_by_id)
+            if branch is None:
+                continue
+            if branch == "store":
                 # V4.3c store 源：值来自预对齐的存量面板（不走 specs/builder）。
                 try:
                     if store_vals is None or str(r['factor_id']) not in store_vals:
                         continue
-                    key = 'store_' + str(r['factor_id'])
                     v = np.asarray(store_vals[str(r['factor_id'])],
                                    dtype=float).astype(np.float32)
                     if len(v) != len(pos_me):
                         continue
                 except Exception:
                     continue
-            else:
-                spec = specs_by_id.get(str(r['factor_id']))
-                if spec is None:
-                    continue
-                key = _ref_spec_key(spec)
-                v = _cache_load(cache_dir, key, len(pos_me))
-                if v is None:
-                    v = builder.get_factor(spec).to_numpy(dtype=float)[pos_me] \
-                        .astype(np.float32)
-                    _cache_save(cache_dir, key, v)
-                    if stats is not None:
-                        stats['miss'] = stats.get('miss', 0) + 1
-                elif stats is not None:
-                    stats['hit'] = stats.get('hit', 0) + 1
+                _done.append((i_row, key, r, v))
+                continue
+            v = _cache_load(cache_dir, key, len(pos_me))
+            if v is None:
+                _miss.append((i_row, key, r, branch))
+                continue
+            if stats is not None:
+                stats['hit'] = stats.get('hit', 0) + 1
+            _done.append((i_row, key, r, v))
         except Exception:
             continue
-        cols.append(v.astype(np.float32))
-        idxs.append(i_row)
-        if val_store is not None and key is not None:
-            val_store[(r['lib'], str(r['factor_id']))] = v
+    # Phase B：未命中求值（串行回退直接调 worker，串并同一份代码；
+    # map 有序，合并后按 i_row 还原行序，twin 优先级与原循环一致）。
+    _nj = _par_jobs(jobs)
+    _got: list = []  # (i_row, key, r, v-or-None)
+    global _SCAN_CTX
+    if _miss:
+        if _nj > 1 and len(_miss) > 1:
+            import concurrent.futures as _cf
+            _SCAN_CTX = {"frame": frame, "ev": ev, "builder": builder,
+                         "specs": specs_by_id, "pos_me": pos_me}
+            _nj = min(_nj, len(_miss))
+            print(f'正交扫描并行求值：{len(_miss)} 个 × {_nj} 进程 …', flush=True)
+            with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+                for _k, _vv in _ex.map(
+                        _scan_value_worker,
+                        [(k, _br, str(_rr['lib']), str(_rr['factor_id']),
+                          str(_rr.get('formula_cn', '')))
+                         for k, (_ii, _kk, _rr, _br) in enumerate(_miss)]):
+                    _ii, _kk, _rr, _br = _miss[_k]
+                    _got.append((_ii, _kk, _rr, _vv))
+        else:
+            _SCAN_CTX = {"frame": frame, "ev": ev, "builder": builder,
+                         "specs": specs_by_id, "pos_me": pos_me}
+            for _k, (_ii, _kk, _rr, _br) in enumerate(_miss):
+                _, _vv = _scan_value_worker(
+                    (_k, _br, str(_rr['lib']), str(_rr['factor_id']),
+                     str(_rr.get('formula_cn', ''))))
+                _got.append((_ii, _kk, _rr, _vv))
+        for (_ii, _kk, _rr, _vv) in _got:
+            if _vv is None:
+                continue
+            _cache_save(cache_dir, _kk, _vv)
+            if stats is not None:
+                stats['miss'] = stats.get('miss', 0) + 1
+            _done.append((_ii, _kk, _rr, _vv))
+    _done.sort(key=lambda x: x[0])
+    for (_i_row, _key, _rr, _vv) in _done:
+        cols.append(_vv.astype(np.float32))
+        idxs.append(_i_row)
+        if val_store is not None and _key is not None:
+            val_store[(_rr['lib'], str(_rr['factor_id']))] = _vv
     # 非线性诊断（2026-09-26）：只对 vwap 扫描候选算 MI/JSD（c2c 不动）；
     # 用已求值（cols），不新增因子求值。
     nl_map: dict = {}
@@ -1523,7 +1592,7 @@ def main() -> int:
             max_scan=args.scan, keep=max(args.keep_pool, args.keep_base),
             cache_dir=cache_dir, val_store=val_store,
             stats=cache_stats, label='vwap', y_me=y_vwap_me,
-            store_vals=store_vals or None)
+            store_vals=store_vals or None, jobs=args.jobs)
         payload['vwap_orthogonal'] = bool(vwap_order)
         payload['vwap_orth_scan'] = int(min(args.scan, len(vwap_df)))
         print(f'榜2 正交：候选 {len(vwap_df)} → 保留 {len(vwap_order)}  '
@@ -1536,7 +1605,8 @@ def main() -> int:
         c2c_order, c2c_rho, _ = vwap_orthogonal_indices(
             c2c_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
             max_scan=args.scan, cache_dir=cache_dir, val_store=val_store,
-            stats=cache_stats, label='c2c', store_vals=store_vals or None)
+            stats=cache_stats, label='c2c', store_vals=store_vals or None,
+            jobs=args.jobs)
         payload['c2c_orthogonal'] = bool(c2c_order)
         payload['c2c_orth_scan'] = int(min(args.scan, len(c2c_df)))
         print(f'榜1 正交：候选 {len(c2c_df)} → 保留 {len(c2c_order)}  '
