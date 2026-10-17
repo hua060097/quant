@@ -392,33 +392,41 @@ def main():
     n_sec = len(sec_uniq)
     # R3 日内排名（全候选共享）
     _, _, _, yrk, _ = E._prepared(m, base_cols[0], "r3")
-    # gain 底仓倾斜底座（与市场 gain 同构）：Ubar 为全部 base 有向居中秩均值，
-    # 方向取 cands 中同 base 首次出现的 d（与逐候选 u_row 口径一致）。
-    _dmap: dict[str, int] = {}
-    for _cc in cands:
-        for _bb in ([_cc.get("base")] if not _cc.get("base_off")
-                    else [_cc.get("base_off"), _cc.get("base_def")]):
-            if _bb and _bb not in _dmap:
-                _k = "d_off" if _bb == _cc.get("base_off") else (
-                    "d_def" if _bb == _cc.get("base_def") else "d")
-                try:
-                    _dmap[_bb] = int(_cc.get(_k, 1))
-                except Exception:
-                    _dmap[_bb] = 1
-    _u_all: dict[str, np.ndarray] = {}
-    for _bc in base_cols:
-        _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
-        _u_all[_bc] = FR.centered_u(_xv, day, nd, int(_dmap.get(_bc, 1)))
-    _Ubar = np.nanmean(np.column_stack(list(_u_all.values())), axis=1) \
-        if _u_all else np.full(len(m), np.nan)
+    # gain 底仓倾斜底座（V4.3x 修复）：固定参考底仓（vwap_top20 roster 在
+    # specialist 面板中的有向居中秩均值），不再按 batch base_cols 自求平均——
+    # 同质偏科桶自求平均会把交互信号吸进底仓（方差主导致边际 tilt 归零），
+    # 且使 pair 缓存带批次依赖。roster 缺失/可用列不足时回退 batch 口径+告警。
+    from f1_batch import build_reference_ubar
+    _Ubar, _ubar_info = build_reference_ubar(m, day, nd)
+    if _Ubar is None:
+        print(f"  [warn] 参考底仓不可用（{_ubar_info}），回退 batch Ubar"
+              f"（批次相关！）", flush=True)
+        _dmap: dict[str, int] = {}
+        for _cc in cands:
+            for _bb in ([_cc.get("base")] if not _cc.get("base_off")
+                        else [_cc.get("base_off"), _cc.get("base_def")]):
+                if _bb and _bb not in _dmap:
+                    _k = "d_off" if _bb == _cc.get("base_off") else (
+                        "d_def" if _bb == _cc.get("base_def") else "d")
+                    try:
+                        _dmap[_bb] = int(_cc.get(_k, 1))
+                    except Exception:
+                        _dmap[_bb] = 1
+        _u_all: dict[str, np.ndarray] = {}
+        for _bc in base_cols:
+            _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
+            _u_all[_bc] = FR.centered_u(_xv, day, nd, int(_dmap.get(_bc, 1)))
+        _Ubar = np.nanmean(np.column_stack(list(_u_all.values())), axis=1) \
+            if _u_all else np.full(len(m), np.nan)
     # gate 面板矩阵 G[date_idx, sec_idx]，按 uniq 日期顺序
     date_idx = day  # _prepared 按 date 排序，day 即日期码（0..nd-1），与 uniq 顺序一致
     assert nd == n_dates
     import f1_cache as FC
     _cache = {} if a.no_f1_cache else FC.load_cache()
     _dver = B.factor_data_version()
+    _ubar_fp = (_ubar_info or {}).get("hash", "")
     print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
-          f"({'off' if a.no_f1_cache else 'on'})", flush=True)
+          f"({'off' if a.no_f1_cache else 'on'}) ubar={_ubar_fp}", flush=True)
     _recs, _n_hit, _n_new = [], 0, 0
     # 缓存命中判定（纯字典运算）串行；未命中才进计算（串行/并行）
     _miss = []
@@ -431,7 +439,7 @@ def main():
                "label_available_max": win["label_available_max"],
                "evidence": win["evidence"]}
         _fp = FC.pair_fp(_base, c["gate"], c["s"], c["d"], a.form,
-                         label_max, _dver)
+                         label_max, _dver, _ubar_fp)
         rec["pair_fp"] = _fp
         _hit = None if a.no_f1_cache else FC.cache_hit(_fp, _cache)
         if _hit is not None:

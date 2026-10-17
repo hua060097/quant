@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """门控交互配对指纹缓存（f1_batch / f1_sector 共享）：pair 级去重续算。
 
-pair_fp = sha12(base|gate|s|d|form|label_max|data_version)：同一口径配对在
-同一数据版本下只算一次（200 次置换是主要成本）。缓存文件
-results/merge_v2/gates_search/f1_pair_cache.jsonl（append-only JSONL，
+pair_fp = sha12(base|gate|s|d|form|label_max|data_version|ubar_fp)：同一口径配对在
+同一数据版本、同一底仓参考下只算一次（200 次置换是主要成本）。ubar_fp 为底仓
+参考指纹（roster 哈希；batch 回退时为 batch 内容哈希）——tilt 类 verdict 依赖
+Ubar，不同 Ubar 下同名 pair 数值不同，必须分身份，否则静默复用错值。
+缓存文件 results/merge_v2/gates_search/f1_pair_cache.jsonl（append-only JSONL，
 每行 {fp, result}；result 含全部统计量 + fail_reason + 写入时间）。
 
 命中（同 fp 且无 fail_reason）：调用方直接复用统计量，0 秒跳过置换。
@@ -31,10 +33,11 @@ STAT_KEYS = ("delta_mean", "delta_ci_lo", "delta_ci_hi", "nblocks_pos", "blocks"
 
 
 def pair_fp(base: str, gate: str, s, d, form: str, label_max: str,
-            data_version: str = "") -> str:
-    """配对唯一身份（含口径与数据版本；任一变化即新身份）。"""
+            data_version: str = "", ubar_fp: str = "") -> str:
+    """配对唯一身份（含口径、数据版本与底仓参考；任一变化即新身份）。"""
     raw = "|".join([str(base), str(gate), str(s), str(d), str(form),
-                    str(label_max), str(data_version or "")])
+                    str(label_max), str(data_version or ""),
+                    str(ubar_fp or "")])
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 

@@ -603,30 +603,66 @@ def main() -> int:
                 zip(_rdf["name"].tolist(), _rdf["group"].tolist())}
     except Exception:
         _roles_group_map = {}
-    by_axis: dict[str, list] = {}
-    for _, r in vdf.iterrows():
-        ax = _resolve_axis(r, _roles_group_map)
-        by_axis.setdefault(ax, []).append(r)
-    off_cands, def_cands = [], []
-    for ax in OFFENSE_AXES:
-        off_cands += list(by_axis.get(ax, []))[:3]
-    for ax in DEFENSE_AXES:
-        def_cands += list(by_axis.get(ax, []))[:3]
+    # switch互补配对（V4.3x 修复）：旧口径按无条件LGB取轴代表——全天候强因子
+    # 静态等权已享分散化红利（信噪比×√2），动态切换白白丢红利却无状态收益，
+    # 故0/12恒灭。新口径（gemini裁决）：off=进攻轴∩对**同一门控**有向斜率
+    # 显著为正（signed_t≥+1.5），def=防御轴∩显著为负（signed_t≤-1.5）；
+    # gate取各因子自身best gate（有斜率统计的唯门口径），按|signed_t|降序
+    # 配对，上限max-switch。选出几个算几个，不凑数。
     switch_pairs = []
-    for g in gates[:2]:
-        for ro in off_cands:
-            for rd in def_cands:
-                if str(ro["factor_id"]) == str(rd["factor_id"]):
-                    continue
-                switch_pairs.append({"off": str(ro["factor_id"]), "def": str(rd["factor_id"]),
-                                     "gate": g["gate_id"], "s": int(g["s"])})
-                if len(switch_pairs) >= a.max_switch:
-                    break
+    _slope_thr = 1.5
+
+    def _signed_t(p):
+        try:
+            _t = float(p.get("t_slope", float("nan")))
+        except Exception:
+            return float("nan")
+        return p.get("direction", 1) * _t if np.isfinite(_t) else float("nan")
+
+    _off_pool = [p for p in sel
+                 if _resolve_axis(pd.Series({"family": p.get("family"),
+                                             "factor_id": p.get("factor_id"),
+                                             "formula": p.get("formula"),
+                                             "formula_cn": p.get("formula")}),
+                                  _roles_group_map) in OFFENSE_AXES
+                 and np.isfinite(_signed_t(p)) and _signed_t(p) >= _slope_thr]
+    _def_pool = [p for p in sel
+                 if _resolve_axis(pd.Series({"family": p.get("family"),
+                                             "factor_id": p.get("factor_id"),
+                                             "formula": p.get("formula"),
+                                             "formula_cn": p.get("formula")}),
+                                  _roles_group_map) in DEFENSE_AXES
+                 and np.isfinite(_signed_t(p)) and _signed_t(p) <= -_slope_thr]
+    _by_gate_off: dict[str, list] = {}
+    _by_gate_def: dict[str, list] = {}
+    for p in _off_pool:
+        _by_gate_off.setdefault(str(p["gate"]), []).append(p)
+    for p in _def_pool:
+        _by_gate_def.setdefault(str(p["gate"]), []).append(p)
+    for _gid in sorted(set(_by_gate_off) & set(_by_gate_def)):
+        _os = sorted(_by_gate_off[_gid], key=lambda p: -abs(_signed_t(p)))
+        _ds_ = sorted(_by_gate_def[_gid], key=lambda p: -abs(_signed_t(p)))
+        _used_off, _used_def = set(), set()
+        for ro in _os:
             if len(switch_pairs) >= a.max_switch:
                 break
-        if len(switch_pairs) >= a.max_switch:
-            break
-    print(f"switch pairs: {len(switch_pairs)}", flush=True)
+            if str(ro["factor_id"]) in _used_off:
+                continue
+            for rd in _ds_:
+                if (str(rd["factor_id"]) in _used_def
+                        or str(ro["factor_id"]) == str(rd["factor_id"])):
+                    continue
+                switch_pairs.append({
+                    "off": str(ro["factor_id"]), "def": str(rd["factor_id"]),
+                    "gate": _gid, "s": int(ro.get("s_bank", 1)),
+                    "off_t": round(_signed_t(ro), 3),
+                    "def_t": round(_signed_t(rd), 3)})
+                _used_off.add(str(ro["factor_id"]))
+                _used_def.add(str(rd["factor_id"]))
+                break
+    print(f"switch pairs: {len(switch_pairs)} "
+          f"(off_pool={len(_off_pool)} def_pool={len(_def_pool)}, "
+          f"互补口径 |signed_t|>={_slope_thr})", flush=True)
 
     # 面板导出：specialists + switch legs 全量值
     need_ids = {p["factor_id"] for p in sel}

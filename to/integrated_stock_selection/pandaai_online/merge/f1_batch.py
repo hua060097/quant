@@ -7,6 +7,7 @@ cands JSON: [{name, base, gate, gate_type(market/sector), s, d}]
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -49,11 +50,44 @@ def _centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndar
     return FR.centered_u(values, day, nd, d)
 
 
+def build_reference_ubar(m, day: np.ndarray, nd: int,
+                         roster_path: str | None = None):
+    """固定参考底仓（V4.3x 修复）：vwap_top20 roster 在 m 中的列的有向居中秩均值。
+
+    替代按 batch base_cols 求平均——同质偏科桶自求平均会把交互信号吸进底仓
+    （方差主导致边际 tilt 归零），且使 pair 缓存带批次依赖（已删库的根因）。
+    参考集跨 batch 固定（同 build_top 版本内），故 tilt 口径与缓存双双稳定。
+    roster 缺失/可用列 <5 时返回 (None, info)（调用方回退 batch Ubar + 告警）。
+    返回 (Ubar_or_None, {"n_bases": int, "hash": str})；hash 进 pair_fp，
+    build_top 重跑（roster 变更）后旧缓存自动失效，无需手动删库。
+    """
+    _rp = roster_path or os.path.join(RESULTS, "vwap_top20.json")
+    try:
+        _items = json.load(open(_rp, encoding="utf-8")).get("base20", [])
+        _refs = [(str(_b.get("factor")), int(_b.get("direction", 1)))
+                 for _b in _items if _b.get("factor")]
+    except Exception:
+        return None, {"n_bases": 0, "hash": "no-roster"}
+    _cols = [c for c, _ in _refs if c in m.columns]
+    if len(_cols) < 5:
+        return None, {"n_bases": len(_cols), "hash": "too-few"}
+    _dd = {c: d for c, d in _refs}
+    _us = []
+    for _bc in _cols:
+        _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
+        _us.append(_centered_u(_xv, day, nd, int(_dd.get(_bc, 1))))
+    _h = hashlib.sha1("|".join(f"{c}:{_dd.get(c, 1)}" for c in _cols
+                               ).encode()).hexdigest()[:12]
+    return np.nanmean(np.column_stack(_us), axis=1), {"n_bases": len(_cols),
+                                                      "hash": _h}
+
+
 def build_market_bundle(m, base_cols_all: list[str], d_map: dict) -> dict:
     """批内共享预计算（提速）：day/yrk/u_cols/Ubar 只算一次。
 
     前提：m 已按 date 稳定排序（main 保证），则 _prepared 的 day 码与
     uniq 日期顺序严格对齐，门控日序列可直接用整数索引广播。
+    Ubar 取固定参考底仓（见 build_reference_ubar），不再随 batch 成分漂移。
     """
     import fastranks as FR  # noqa: F401
     day, _, _, yrk, nd = E._prepared(m, base_cols_all[0], "r3")
@@ -61,8 +95,21 @@ def build_market_bundle(m, base_cols_all: list[str], d_map: dict) -> dict:
     for bcol in base_cols_all:
         xv = pd.to_numeric(m[bcol], errors="coerce").to_numpy(dtype=float)
         u_cols[bcol] = _centered_u(xv, day, nd, int(d_map.get(bcol, 1)))
-    Ubar = np.nanmean(np.column_stack([u_cols[b] for b in base_cols_all]), axis=1)
-    return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar}
+    Ubar, _uinfo = build_reference_ubar(m, day, nd)
+    if Ubar is None:
+        print(f"  [warn] 参考底仓不可用（{_uinfo}），回退 batch Ubar（批次相关！）",
+              flush=True)
+        Ubar = np.nanmean(np.column_stack([u_cols[b] for b in base_cols_all]),
+                          axis=1)
+        _uinfo = {"n_bases": len(base_cols_all),
+                  "hash": "batch:" + hashlib.sha1(
+                      ",".join(sorted(base_cols_all)).encode()
+                      ).hexdigest()[:8]}
+    else:
+        print(f"  参考底仓：roster {_uinfo['n_bases']} 列 hash={_uinfo['hash']}",
+              flush=True)
+    return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar,
+            "ubar_info": _uinfo}
 
 
 def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
@@ -458,11 +505,15 @@ def main():
     _prep = build_market_bundle(m, base_cols, b20) \
         if a.form in ("gain", "flip", "switch") else None
     if _prep is not None:
-        print(f"[{a.tag}] market bundle ready ({len(base_cols)} bases)", flush=True)
+        print(f"[{a.tag}] market bundle ready ({len(base_cols)} bases) "
+              f"ubar={_prep.get('ubar_info', {}).get('hash', 'n/a')}", flush=True)
 
     import f1_cache as FC
     _cache = {} if a.no_f1_cache else FC.load_cache()
     _dver = B.factor_data_version()
+    # 底仓参考指纹进 pair_fp：tilt/switch verdict 依赖 Ubar，换底仓=换身份。
+    _ubar_fp = (_prep or {}).get("ubar_info", {}).get("hash", "") \
+        if a.form in ("gain", "flip", "switch") else ""
     print(f"[{a.tag}] f1_pair_cache: {len(_cache)} hit-able "
           f"({'off' if a.no_f1_cache else 'on'})", flush=True)
     _recs, _n_hit, _n_new = [], 0, 0
@@ -479,7 +530,7 @@ def main():
                "label_available_max": win["label_available_max"],
                "evidence": win["evidence"]}
         _fp = FC.pair_fp(_base, c["gate"], c["s"], c["d"], a.form,
-                         label_max, _dver)
+                         label_max, _dver, _ubar_fp)
         rec["pair_fp"] = _fp
         _hit = None if a.no_f1_cache else FC.cache_hit(_fp, _cache)
         if _hit is not None:
