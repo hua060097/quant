@@ -85,13 +85,26 @@ def centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndarr
 
 
 def blockwise_rank(v: np.ndarray, day: np.ndarray) -> np.ndarray:
-    """日内平均秩（NaN 保持 NaN）。要求 `day` 已排序（块连续）。
+    """日内平均秩（NaN 保持 NaN）。
 
-    与 `eval_v2._within_rank` 的 lexsort 实现逐值一致，实测快 2.4×。
+    要求 `day` 块连续（同日行相邻；单调非降即满足）。若传入 stock-major
+    等未排序 `day`（如 `evaluator.load_panel()` 行序经 `pos_me` 切片后的
+    `_day_codes`），自动稳定排序后计算再映射回原行序——与已排序输入逐值一致。
+    不加此守卫时 660 万行会被切成 660 万个长度 1 碎块：每次调用触发上千万次
+    单元素 `rankdata`（~80 秒/对）且碎块秩恒为 1.0 使下游相关恒为 NaN
+    （`habitat_seats` early-break 永不触发 + 正交检查静默放行）。
+    与 `eval_v2._within_rank` 的 lexsort 实现逐值一致，实测快 2.4×；
+    已排序输入仅多一道向量化单调性检查，零行为变化。
     """
     v = np.asarray(v, dtype=float)
+    day = np.asarray(day)
     r = np.full(len(v), np.nan)
     if len(v) == 0:
+        return r
+    if len(day) > 1 and bool(np.any(day[1:] < day[:-1])):
+        order = np.argsort(day, kind="stable")
+        r_sorted = blockwise_rank(v[order], day[order])
+        r[order] = r_sorted
         return r
     b = np.flatnonzero(np.r_[True, day[1:] != day[:-1]])
     e = np.r_[b[1:], len(v)]
