@@ -237,6 +237,26 @@ def _par_jobs(n) -> int:
     return nj
 
 
+def _merge_cand_directions(cands: list[dict], b20: dict) -> dict:
+    """把 cands 自带方向合并进 b20（switch legs 补齐专用）。
+
+    specialist/vwap_top20 面板时 b20 仅含池内因子方向，switch legs
+   （off/def，常来自池外）会回退 d=1 丢掉 d_off/d_def（run_one_market_switch
+    经 d_map.get 取方向）。仅填**缺失键**，已有键不动——防污染 g/t 分支
+    ic_cache 的池内方向。返回同一 b20（原地更新）。
+    """
+    for _c in cands or []:
+        try:
+            if _c.get("base") and _c["base"] not in b20 and _c.get("d") is not None:
+                b20[_c["base"]] = int(_c["d"])
+            for _kk, _dk in (("base_off", "d_off"), ("base_def", "d_def")):
+                if _c.get(_kk) and _c[_kk] not in b20:
+                    b20[_c[_kk]] = int(_c.get(_dk, 1))
+        except Exception:
+            continue
+    return b20
+
+
 def _run_f1_batch_one(c: dict, idx: int, rec: dict, ctx: dict) -> dict:
     """单个候选完整计算（串行/并行共用；不碰缓存文件，由父进程统一落缓存）。
     返回填好的 rec（含 fail_reason；异常路径与串行一致）。"""
@@ -413,6 +433,8 @@ def main():
         del fac
         b20 = {b["factor"]: b["direction"] for b in
                json.load(open(os.path.join(RESULTS, "base20.json"), encoding="utf-8"))["base20"]}
+    # switch 方向补齐（双分支共用；缺失键 only，详见 _merge_cand_directions）。
+    _merge_cand_directions(cands, b20)
     # V4.3a：m 必须按 date 稳定排序（fac stock-major；_prepared 只排内部副本；
     # gain/flip/switch 用 m 行序的 xv/row_dates 配 date-major 的 day/yrk——同源错位）。
     # 旧 g/t 经 _prepared/ic_cache 与日期键映射天然免疫。

@@ -51,6 +51,51 @@ OUT_DIR = HERE
 OFFENSE_AXES = ("trend_position",)
 DEFENSE_AXES = ("volatility", "distribution", "liquidity_size")
 
+#: roles.csv group → switch配对轴（store 因子无模板 family，按存量分组映射；
+#: context 系分组不属于进攻/防御，不映射，保守归 other）。
+_STORE_GROUP_AXIS = {
+    "momentum_and_position": "trend_position",
+    "directional_alpha": "trend_position",
+    "volatility_and_liquidity": "volatility",
+    "risk_and_exhaustion": "volatility",
+    "tail_protect": "volatility",
+    "capital_flow_risk": "liquidity_size",
+}
+#: proposal 公式算子启发式（run_search 提案 family 固定为 'proposal'，
+#: 按公式根节点/算子特征映射；命中多类时防御优先，无命中归 other）。
+_PROPOSAL_DEF_OPS = ("STDDEV", "VAR", "SKEW", "AMIHUD")
+_PROPOSAL_OFF_OPS = ("SLOPE", "RET1", "HIGH")
+
+
+def _resolve_axis(r, roles_group_map: dict | None = None) -> str:
+    """switch 配对用机制轴归属（纯查表 + 字符串启发式，无外部调用）。
+
+    优先级：AXIS_OF（M 模板 family）> `ref:<axis>` 去前缀（本身即轴名）
+    > `custom_<axis>` 去前缀 > store 按 roles.csv group
+    > proposal 按公式算子启发式 > other。
+    此前 `AXIS_OF.get(family, "other")` 把 store / ref:* / proposal /
+    custom_* 全判成 other，使它们永远进不了 OFFENSE/DEFENSE 候选。
+    """
+    from grammar import AXIS_OF
+    fam = str(r.get("family", "") or "")
+    if fam in AXIS_OF:
+        return AXIS_OF[fam]
+    if fam.startswith("ref:"):
+        return fam[4:] or "other"
+    if fam.startswith("custom_"):
+        return fam[7:] or "other"
+    if fam == "store":
+        return _STORE_GROUP_AXIS.get(
+            (roles_group_map or {}).get(str(r.get("factor_id", ""))), "other")
+    if fam == "proposal":
+        f = str(r.get("formula", "") or r.get("formula_cn", "") or "").upper()
+        if any(k in f for k in _PROPOSAL_DEF_OPS):
+            return "volatility"
+        if any(k in f for k in _PROPOSAL_OFF_OPS):
+            return "trend_position"
+        return "other"
+    return "other"
+
 
 def _dsign(v) -> int:
     """flat direction 0/1 → F1/落盘 ±1（0=反向；refs_cond_t1.py:98 同口径）。
@@ -364,10 +409,21 @@ def main() -> int:
           flush=True)
 
     # switch对：offense/defense代表 × bank前2门控（V1启发式，上限max-switch）
-    from grammar import AXIS_OF
+    # roles.csv 因子名→group 映射（store 配对用；缺文件/缺列时退化为空映射，
+    # store 全归 other，即旧行为）。
+    _roles_group_map: dict = {}
+    try:
+        _roles_csv = os.path.join(RESULTS, "roles.csv")
+        if os.path.exists(_roles_csv):
+            _rdf = pd.read_csv(_roles_csv, usecols=["name", "group"])
+            _roles_group_map = {
+                str(_rn): str(_rg) for _rn, _rg in
+                zip(_rdf["name"].tolist(), _rdf["group"].tolist())}
+    except Exception:
+        _roles_group_map = {}
     by_axis: dict[str, list] = {}
     for _, r in vdf.iterrows():
-        ax = AXIS_OF.get(str(r.get("family", "")), "other")
+        ax = _resolve_axis(r, _roles_group_map)
         by_axis.setdefault(ax, []).append(r)
     off_cands, def_cands = [], []
     for ax in OFFENSE_AXES:
