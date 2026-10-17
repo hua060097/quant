@@ -135,6 +135,58 @@ def _par_jobs(n) -> int:
     return nj
 
 
+def _sector_tsec(vals_signed: np.ndarray, labels: np.ndarray,
+                 row_dates: np.ndarray, sec: dict, gid: str) -> float:
+    """单因子对单行业门控的横截面 halves 响应 t（sector 预筛用）。
+
+    g>=0 行业半场 vs g<0 行业半场 的逐日 RankIC 配对差 → nw_t。
+    绝不用日均门控 gmean 做斜率：横截面门控（S×T，靠同日内行业间差异）
+    求跨行业日均会把信号抹平归零，误杀真赢家。
+    vals_signed 须已乘因子方向（signed basis）；返回 signed t（排序/过滤用 |t|）。
+    sec 缺失/门控缺失/公共日不足 → NaN（调用方跳过）。
+    """
+    try:
+        import pandas as _pd
+        from eval_v2 import nw_t
+        _G = (sec.get("panels") or {}).get(gid)
+        if _G is None:
+            return float("nan")
+        _day = np.asarray((sec.get("row_day") or {}).get(gid, []), dtype=int)
+        _col = np.asarray((sec.get("row_col") or {}).get(gid, []), dtype=int)
+        _n = len(vals_signed)
+        if len(_day) != _n or len(_col) != _n:
+            return float("nan")
+        _ok = (_day >= 0) & (_col >= 0)
+        if _ok.sum() < 60:
+            return float("nan")
+        _g = np.full(_n, np.nan)
+        _g[_ok] = np.asarray(_G["G"], dtype=float)[_day[_ok], _col[_ok]]
+        _v = np.asarray(vals_signed, dtype=float)
+        _y = np.asarray(labels, dtype=float)
+        _d = np.asarray(row_dates)
+        _fin = np.isfinite(_g) & np.isfinite(_v) & np.isfinite(_y)
+        _hi_m = _fin & (_g >= 0)
+        _lo_m = _fin & (_g < 0)
+        if _hi_m.sum() < 30 or _lo_m.sum() < 30:
+            return float("nan")
+        _ud_hi, _ic_hi = _daily_rankic(_v[_hi_m], _y[_hi_m], _d[_hi_m])
+        _ud_lo, _ic_lo = _daily_rankic(_v[_lo_m], _y[_lo_m], _d[_lo_m])
+        _s_hi = _pd.Series(_ic_hi, index=_pd.to_datetime(_ud_hi))
+        _s_lo = _pd.Series(_ic_lo, index=_pd.to_datetime(_ud_lo))
+        _common = _s_hi.index.intersection(_s_lo.index)
+        if len(_common) < 10:
+            return float("nan")
+        _diff = (_s_hi.reindex(_common) - _s_lo.reindex(_common)).to_numpy(
+            dtype=float)
+        _diff = _diff[np.isfinite(_diff)]
+        if len(_diff) < 10:
+            return float("nan")
+        _t = nw_t(_diff)
+        return float(_t) if _t is not None and np.isfinite(_t) else float("nan")
+    except Exception:
+        return float("nan")
+
+
 def _run_specialist_one(r, ctx: dict):
     """单个因子偏科评估（串行/并行共用）：返回 pool 记录（未选中也返回，含 selected 标记；
     完全失败返回 None）。"""
@@ -172,12 +224,20 @@ def _run_specialist_one(r, ctx: dict):
             lo = ~hi
             _hi_ic = ic[m][hi]
             _lo_ic = ic[m][lo]
+            # 半场胜率 = 与该半场自身 IC 均值同号的天数占比（防 flip 负半场
+            # 误杀：flip 高低半场异号，任一固定符号阈值必杀一半；_ds=±1 均自洽）。
+            # hi_ic/lo_ic 保持原始 measured 口径展示（F1 不消费，仅审计）。
+            _hi_mean = float(np.nanmean(_hi_ic)) if len(_hi_ic) else float("nan")
+            _lo_mean = float(np.nanmean(_lo_ic)) if len(_lo_ic) else float("nan")
+            _hi_win = (float(np.nanmean(np.sign(_hi_ic) == np.sign(_hi_mean)))
+                       if len(_hi_ic) and np.isfinite(_hi_mean) else float("nan"))
+            _lo_win = (float(np.nanmean(np.sign(_lo_ic) == np.sign(_lo_mean)))
+                       if len(_lo_ic) and np.isfinite(_lo_mean) else float("nan"))
             best = {"gate": g["gate_id"], "s": int(g["s"]), "t": float(t),
                     "b": float(st.get("b", float("nan"))),
                     "hi_ic": float(np.nanmean(_hi_ic)),
                     "lo_ic": float(np.nanmean(_lo_ic)),
-                    "hi_win": float(np.nanmean(_hi_ic > 0)) if len(_hi_ic) else float("nan"),
-                    "lo_win": float(np.nanmean(_lo_ic > 0)) if len(_lo_ic) else float("nan")}
+                    "hi_win": _hi_win, "lo_win": _lo_win}
     if best is None:
         return None
     uncond = r.get("rank_ic")
@@ -193,28 +253,39 @@ def _run_specialist_one(r, ctx: dict):
     _s_pair = int(best["s"]) if not np.isfinite(_b) \
         else (1 if (_ds * _b) >= 0 else -1)
     # V4.3d 双模硬门槛（禁纯弱噪声混入）：
-    # A类【强但有回撤的主力】rank<=60 & |uncond|>=0.030 &（高低差>=0.025 或 icir<0.50）
-    # B类【真半场王者】|t|>=t_min & max(|hi|,|lo|)>=0.035 & 半场胜率>=0.58
-    try:
-        _icir = float(r.get("ic_ir"))
-    except Exception:
-        _icir = float("nan")
+    # A类【强但有回撤的主力】rank<=60 & |uncond|>=0.030 & |t|>=2.0 & 高低差>=0.025
+    #   （旧 or _icir<0.50 分支在 flat 未年化 ic_ir 口径下 100% 恒真，已删除）
+    # B类【真半场王者】|t|>=t_min & 主半场（|ic|较大者）|ic|>=0.035 且同向胜率>=0.58
     _au = abs(uncond)
     _hdiff = abs(best["hi_ic"] - best["lo_ic"]) \
         if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
-    _hmax = max(abs(best["hi_ic"]), abs(best["lo_ic"])) \
-        if np.isfinite(best["hi_ic"]) and np.isfinite(best["lo_ic"]) else float("nan")
-    _wmax = max(best["hi_win"], best["lo_win"]) \
-        if np.isfinite(best["hi_win"]) and np.isfinite(best["lo_win"]) else float("nan")
+    _ahi = abs(best["hi_ic"]) if np.isfinite(best["hi_ic"]) else -1.0
+    _alo = abs(best["lo_ic"]) if np.isfinite(best["lo_ic"]) else -1.0
     _cls_a = (int(r["_rank"]) <= 60 and _au >= 0.030
-              and (np.isfinite(_hdiff) and _hdiff >= 0.025
-                   or (np.isfinite(_icir) and _icir < 0.50)))
+              and np.isfinite(best["t"]) and abs(best["t"]) >= 2.0
+              and np.isfinite(_hdiff) and _hdiff >= 0.025)
     _cls_b = (abs(best["t"]) >= t_min
-              and np.isfinite(_hmax) and _hmax >= 0.035
-              and np.isfinite(_wmax) and _wmax >= 0.58)
+              and ((_ahi >= _alo and _ahi >= 0.035
+                    and np.isfinite(best["hi_win"]) and best["hi_win"] >= 0.58)
+                   or (_alo > _ahi and _alo >= 0.035
+                       and np.isfinite(best["lo_win"]) and best["lo_win"] >= 0.58)))
     _cls = "A" if _cls_a else ("B" if _cls_b else "")
-    if _cls == "A":
+    # A 类主力统一走 gain（降回撤）；高低异号的 flip 即使达 A 也不覆盖。
+    if _cls == "A" and best["hi_ic"] * best["lo_ic"] >= 0:
         suggested = "gain"
+    # 行业 halves 响应 t_sec（Bug4 预筛用；signed basis，与 traded 方向一致）。
+    _t_sec: dict = {}
+    try:
+        _secb = ctx.get("sec")
+        if _secb is not None:
+            _sv = _ds * np.asarray(vals, dtype=float)
+            for _sg in _secb.get("gates", []):
+                _gid = str(_sg.get("gate_id", ""))
+                if not _gid:
+                    continue
+                _t_sec[_gid] = _sector_tsec(_sv, labels, row_dates, _secb, _gid)
+    except Exception:
+        pass
     rec = {"factor_id": fid, "lib": lib, "family": str(r.get("family", "")),
            "formula": str(r.get("formula_cn", "")),
            "direction": _ds,
@@ -225,6 +296,8 @@ def _run_specialist_one(r, ctx: dict):
            "hi_ic": best["hi_ic"], "lo_ic": best["lo_ic"],
            "hi_win": best["hi_win"], "lo_win": best["lo_win"],
            "suggested_form": suggested, "target_class": _cls,
+           "t_sec": {k: (float(v) if v is not None else float("nan"))
+                     for k, v in _t_sec.items()},
            "selected": bool(_cls != "")}
     return rec
 
@@ -237,6 +310,44 @@ def _specialist_worker(args) -> tuple:
     except Exception:
         return idx, None
     return idx, rec
+
+
+def _market_cand_score(p) -> float:
+    """市场桶截断评分 |t_slope|*|hi-lo|（方向无关；缺失按 0 计，优先截掉）。"""
+    try:
+        _t = p.get("t_slope")
+        _t = abs(float(_t)) if _t is not None and np.isfinite(float(_t)) else 0.0
+    except Exception:
+        _t = 0.0
+    try:
+        _hi, _lo = p.get("hi_ic"), p.get("lo_ic")
+        _hd = abs(float(_hi) - float(_lo)) \
+            if _hi is not None and _lo is not None \
+            and np.isfinite(float(_hi)) and np.isfinite(float(_lo)) else 0.0
+    except Exception:
+        _hd = 0.0
+    return _t * _hd
+
+
+def _select_sector_cands(sub: list, sec_gates: list, cap: int, scand_fn) -> list:
+    """行业桶装配：按 |t_sec| 降序 + |t|>=2.0 过滤 + Top 上限（分门控）。
+    绝不用日均门控 gmean。缺 t_sec 的门控无候选。返回 cand 记录列表。"""
+    import numpy as _np
+    sec_cands = []
+    _cap_s = max(0, int(cap))
+    for sg in sec_gates or []:
+        _gid = str(sg.get("gate_id", ""))
+        if not _gid:
+            continue
+        _ranked = sorted(
+            [p for p in sub
+             if _np.isfinite((p.get("t_sec") or {}).get(_gid, float("nan")))
+             and abs((p.get("t_sec") or {})[_gid]) >= 2.0],
+            key=lambda p: -abs(p["t_sec"][_gid]))
+        if len(_ranked) > _cap_s:
+            _ranked = _ranked[:_cap_s]
+        sec_cands += [scand_fn(p, sg) for p in _ranked]
+    return sec_cands
 
 
 def _latest_flat() -> str:
@@ -299,8 +410,16 @@ def main() -> int:
                          "150 会系统漏杀；默认扫到 #400（flat 全覆盖）")
     ap.add_argument("--t-min", type=float, default=2.5)
     ap.add_argument("--uncond-max", type=float, default=0.05)
-    ap.add_argument("--max-factors", type=int, default=150)
+    ap.add_argument("--max-factors", type=int, default=400,
+                    help="扫描上限（默认 400 覆盖 #1~#400 全窗，释放 #151~#400 "
+                         "的 flip 富集区；旧 150 会把无条件 LGB≈0 的 flip 全截掉）")
     ap.add_argument("--max-switch", type=int, default=12)
+    ap.add_argument("--max-market-cands", type=int, default=20,
+                    help="单 form 市场桶容量上限：超限时按 |t_slope|*|hi-lo| "
+                         "降序截断（防 FDR 分母膨胀；flip 同口径）")
+    ap.add_argument("--max-sector-cands", type=int, default=15,
+                    help="单行业门控单 form 容量上限：按 |t_sec| 降序截断 "
+                         "（使 sector 检验族 M<=15*门控数）")
     ap.add_argument("--data-cut", default=W.DEFAULT_DATA_CUT)
     ap.add_argument("--resume", default="",
                     help="已算出的specialist_pool.json，跳过其中已有factor_id")
@@ -329,6 +448,39 @@ def main() -> int:
                              columns=["date", "gate_id", "p"])
     gpanel["date"] = pd.to_datetime(gpanel["date"])
 
+    # 行业预筛静态 bundle（Bug4）：sector 门控横截面 halves 响应 t_sec 用。
+    # 缺面板/secmap 时为 None → t_sec 全空，sector cands 为空并大声告警
+    # （不清灰旧行为，避免静默重演 FDR 分母膨胀）。
+    sec_gates = [e for e in bank.get("entries", []) if e.get("level") == "sector"]
+    print(f"bank sector gates={len(sec_gates)}", flush=True)
+    _sec_static = None
+    if sec_gates:
+        try:
+            import gates as _G
+            _secmap = _G.load_sector_map()
+            _sg = pd.read_parquet(os.path.join(SPACE, "gate_search_sector.parquet"),
+                                  columns=["date", "sector", "gate_id", "p"])
+            _sg["date"] = pd.to_datetime(_sg["date"])
+            _gates = {}
+            for _e in sec_gates:
+                _gid = str(_e["gate_id"])
+                _piv = _sg[_sg["gate_id"] == _gid].pivot_table(
+                    index="date", columns="sector", values="p", aggfunc="mean")
+                _piv = _piv.sort_index()
+                _gates[_gid] = {
+                    "dates": _piv.index.to_numpy(),
+                    "cols": [str(c) for c in _piv.columns],
+                    "G": (2.0 * _piv.to_numpy(dtype=float) - 1.0)}
+            _sec_static = {"gates": [{"gate_id": str(e["gate_id"])}
+                                     for e in sec_gates],
+                           "secmap": {str(k): str(v) for k, v in _secmap.items()},
+                           "panels": _gates}
+            print(f"sector 预筛面板 gates={len(_gates)}", flush=True)
+        except Exception as _e:
+            print(f"warning: sector 预筛面板加载失败 {str(_e)[:120]}，"
+                  f"sector cands 将为空", flush=True)
+            _sec_static = None
+
     done_ids: set[str] = set()
     if a.resume and os.path.exists(a.resume):
         try:
@@ -350,6 +502,29 @@ def main() -> int:
     row_dates = pd.to_datetime(ctx.row_dates)
     labels = ctx.labels.astype(float)
     print(f"ctx rows={ctx.n_rows:,} days={len(np.unique(ctx.row_dates))}", flush=True)
+
+    # ctx 行级行业索引（sector 预筛用；与 ctx 同行序，一次算好）。
+    # row_day/row_col 按门控分别对齐（各门控日期覆盖可能不同，-1 表缺失）。
+    _sec_bundle = None
+    if _sec_static is not None:
+        try:
+            _row_sec_name = pd.Series(
+                np.asarray(ctx.stock_codes).astype(str)).map(
+                    _sec_static["secmap"]).fillna("__NA__").to_numpy()
+            _row_dates64 = pd.to_datetime(np.asarray(ctx.row_dates)).to_numpy()
+            _sec_bundle = {
+                "gates": _sec_static["gates"],
+                "panels": _sec_static["panels"],
+                "row_day": {
+                    gid: pd.DatetimeIndex(gp["dates"]).get_indexer(_row_dates64)
+                    for gid, gp in _sec_static["panels"].items()},
+                "row_col": {
+                    gid: np.array([{c: j for j, c in enumerate(gp["cols"])}.get(
+                        s, -1) for s in _row_sec_name])
+                    for gid, gp in _sec_static["panels"].items()}}
+        except Exception as _e:
+            print(f"warning: sector 行索引失败 {str(_e)[:120]}", flush=True)
+            _sec_bundle = None
 
     pool = []
     todo = [r for _, r in window.iterrows() if str(r["factor_id"]) not in done_ids]
@@ -376,7 +551,7 @@ def main() -> int:
                "specs": specs_by_id, "store_map": store_map,
                "gpanel": gpanel, "gates": gates, "pos": pos,
                "labels": labels, "row_dates": ctx.row_dates,
-               "t_min": a.t_min}
+               "t_min": a.t_min, "sec": _sec_bundle}
     _nj = _par_jobs(a.jobs)
     if _nj <= 1 or len(todo) <= 1:
         for i, r in enumerate(todo, 1):
@@ -503,6 +678,11 @@ def main() -> int:
 
     for form in ("gain", "flip"):
         sub = [p for p in sel if p["suggested_form"] == form]
+        _cap = max(0, int(a.max_market_cands))
+        if len(sub) > _cap:
+            sub = sorted(sub, key=_market_cand_score, reverse=True)[:_cap]
+            print(f"specialist_cands_{form}.json: Top-{_cap} 按|t|*|hdiff|截断",
+                  flush=True)
         with open(os.path.join(RESULTS, f"specialist_cands_{form}.json"), "w",
                    encoding="utf-8") as f:
             json.dump([_cand(p, form) for p in sub], f, ensure_ascii=False, indent=1)
@@ -542,7 +722,16 @@ def main() -> int:
                     "d": int(dirmap.get(p["factor_id"], 1)), "form": form}
         for form in ("gain", "flip"):
             sub = [p for p in sel if p["suggested_form"] == form]
-            sec_cands = [_scand(p, form, sg) for p in sub for sg in sec_gates]
+            # Bug4 行业预筛：按 |t_sec| 降序 + |t|>=2.0 过滤 + Top 上限。
+            # 绝不用日均门控 gmean（横截面信号会被抹平）。缺 t_sec 时该门控
+            # 无候选（大声告警，不清灰旧行为）。
+            _before = len(sub)
+            sec_cands = _select_sector_cands(
+                sub, sec_gates, a.max_sector_cands,
+                lambda p, sg, _f=form: _scand(p, _f, sg))
+            if not sec_cands and _before:
+                print(f"warning: specialist_sector_cands_{form}.json 为空 "
+                      f"（{len(sub)} 候选中无 |t_sec|>=2.0 者）", flush=True)
             with open(os.path.join(RESULTS, f"specialist_sector_cands_{form}.json"),
                       "w", encoding="utf-8") as f:
                 json.dump(sec_cands, f, ensure_ascii=False, indent=1)
