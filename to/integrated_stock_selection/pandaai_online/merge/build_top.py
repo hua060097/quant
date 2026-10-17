@@ -756,6 +756,160 @@ def _xsec_spearman(a: np.ndarray, b: np.ndarray, day_codes: np.ndarray,
     return float(ic.mean()) if len(ic) else float('nan')
 
 
+#: hab 扩面工作进程共享（fork 继承，免 pickling 大面板）
+_HABX_CTX = None
+#: 扩面 worker 进程内 custom 注册表懒加载（进程级单例，免每任务重复读表）
+_LCSX_CACHE = None
+
+
+def _habx_key(lib: str, fid: str, formula_cn: str, specs: dict | None):
+    """扩面值缓存键（与 twin 扫描同键，保证跨阶段命中一致）。
+    mined→表达式哈希；custom→'custom_'+spec_hash；refs→_ref_spec_key；
+    store 不走缓存（值已在内存 store_vals）；解析/查表失败返回 None（跳过）。"""
+    try:
+        if lib == "mined":
+            return expression_hash(parse_formula(str(formula_cn)))
+        if lib == "custom":
+            from custom_registry import load_all_custom_specs as _lcs
+            _sp = _lcs().get(str(fid))
+            return ("custom_" + _sp.spec_hash) if _sp is not None else None
+        if lib == "store":
+            return None
+        _spx = (specs or {}).get(str(fid))
+        return _ref_spec_key(_spx) if _spx is not None else None
+    except Exception:
+        return None
+
+
+def _habx_worker(args) -> tuple:
+    """扩面工作进程：(序号, hab键, lib, fid, 公式, 缓存键) →
+    (序号, hab键, 缓存键, float32数组或None)。串行回退直接调本函数，
+    故串并同一份求值代码，零漂移。"""
+    idx, key, lib, fid, formula_cn, ckey = args
+    _c = _HABX_CTX
+    try:
+        if lib == "mined":
+            _vv = np.asarray(_c["ev"].values(parse_formula(str(formula_cn))),
+                             dtype=float)[_c["pos_me"]]
+        elif lib == "custom":
+            global _LCSX_CACHE
+            from custom_registry import evaluate_custom_factor as _ecf
+            from custom_registry import load_all_custom_specs as _lcs
+            if _LCSX_CACHE is None:
+                _LCSX_CACHE = _lcs()
+            _sp = _LCSX_CACHE.get(str(fid))
+            if _sp is None:
+                return idx, key, ckey, None
+            _vv = np.asarray(_ecf(_sp, _c["frame"], _c["ev"]),
+                             dtype=float)[_c["pos_me"]]
+        else:
+            _spx = _c["specs"].get(str(fid))
+            if _spx is None:
+                return idx, key, ckey, None
+            _vv = _c["builder"].get_factor(_spx).to_numpy(
+                dtype=float)[_c["pos_me"]]
+        return idx, key, ckey, np.asarray(_vv, dtype=np.float32)
+    except Exception:
+        return idx, key, ckey, None
+
+
+def _habitat_expand(vwap_df, val_store: dict, store_vals: dict, ev,
+                    builder, frame, pos_me: np.ndarray, cache_dir,
+                    specs: dict, jobs: int = 1):
+    """habitat 估值扩面（串行/并行共用装配）。
+    val_store 只含 LGB 前 scan 名；全表扫描，优先级：habitat_pick（台账豁免）
+    > store/机制家族 > 其余；上限 150。
+    返回 (hab_vals, extra_keys)：hab_vals 初始为 dict(val_store) 的拷贝；
+    extra_keys 为扩面候选键集（seats 漏斗优先排序用）。
+    求值经 _habx_worker（串行回退直接调，串并同一份代码）；命中 value_cache
+    的直接复用（与 twin 扫描同键）。整体失败时 warning 降级（hab_vals 退化
+    为 dict(val_store)），与旧行为一致。"""
+    hab_vals: dict = dict(val_store)
+    _extra_all: list = []
+    try:
+        _HAB_FAMS = ('context', 'ctx', 'vol', 'M7', 'M14', 'M16', 'M17',
+                     'shape', 'skew', 'M3', 'store')
+        _extra0, _extra1, _extra2 = [], [], []
+        for _pos in range(len(vwap_df)):
+            _r = vwap_df.iloc[_pos]
+            _key = (_r['lib'], str(_r['factor_id']))
+            if _key in hab_vals:
+                continue
+            _fam = str(_r.get('family', ''))
+            if bool(_r.get('habitat_pick', False)):
+                _extra0.append((_pos, _r))
+            elif _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
+                _extra1.append((_pos, _r))
+            else:
+                _extra2.append((_pos, _r))
+        _extra_all = (_extra0 + _extra1 + _extra2)[:150]
+        print(f'habitat 扩面候选：pick={len(_extra0)} fam={len(_extra1)} '
+              f'other={len(_extra2)} -> 算{len(_extra_all)} 个', flush=True)
+        # 预检（串行，纯查表+读缓存）：store 走内存直填；命中 value_cache 的
+        # 直接复用（与 twin 扫描同键）；未命中才进求值（串行/并行）。
+        _hx_tasks: list = []
+        for _pos, _r in _extra_all:
+            _key = (_r['lib'], str(_r['factor_id']))
+            try:
+                if _r['lib'] == 'store':
+                    _vv = store_vals.get(str(_r['factor_id']))
+                    if _vv is None:
+                        continue
+                    hab_vals[_key] = np.asarray(_vv, dtype=np.float32)
+                    continue
+                _ckey = _habx_key(str(_r['lib']), str(_r['factor_id']),
+                                  str(_r.get('formula_cn', '')), specs)
+                if _ckey is None:
+                    continue
+                _vhit = _cache_load(cache_dir, _ckey, len(pos_me))
+                if _vhit is not None:
+                    hab_vals[_key] = _vhit
+                    continue
+                _hx_tasks.append((_key, str(_r['lib']), str(_r['factor_id']),
+                                  str(_r.get('formula_cn', '')), _ckey))
+            except Exception:
+                continue
+        _hx_nj = _par_jobs(jobs)
+        _hx_results: list = []
+        global _HABX_CTX
+        if _hx_tasks and _hx_nj > 1 and len(_hx_tasks) > 1:
+            import concurrent.futures as _cf
+            _HABX_CTX = {"frame": frame, "ev": ev, "builder": builder,
+                         "specs": specs, "pos_me": pos_me}
+            _hx_nj = min(_hx_nj, len(_hx_tasks))
+            print(f'habitat 扩面并行求值：{len(_hx_tasks)} 个 × {_hx_nj} 进程 …',
+                  flush=True)
+            with _cf.ProcessPoolExecutor(max_workers=_hx_nj) as _ex:
+                for _, _key, _ckey, _vv in _ex.map(
+                        _habx_worker,
+                        [(k, _key, _lib, _fid, _f, _ck)
+                         for k, (_key, _lib, _fid, _f, _ck) in
+                         enumerate(_hx_tasks)]):
+                    _hx_results.append((_key, _ckey, _vv))
+        else:
+            _HABX_CTX = {"frame": frame, "ev": ev, "builder": builder,
+                         "specs": specs, "pos_me": pos_me}
+            for _i, (_key, _lib, _fid, _f, _ckey) in enumerate(_hx_tasks):
+                _, _key2, _ckey2, _vv = _habx_worker(
+                    (_i, _key, _lib, _fid, _f, _ckey))
+                _hx_results.append((_key2, _ckey2, _vv))
+        for _key, _ckey, _vv in _hx_results:
+            if _vv is None:
+                continue
+            _cache_save(cache_dir, _ckey, _vv)
+            hab_vals[_key] = _vv
+        print(f'habitat 估值扩面：+{len(hab_vals) - len(val_store)} 个', flush=True)
+    except Exception as exc:
+        print(f'warning: habitat 扩面失败 {str(exc)[:120]}', flush=True)
+    _extra_keys = set()
+    try:
+        for _xp, _xr in _extra_all:
+            _extra_keys.add((_xr['lib'], str(_xr['factor_id'])))
+    except Exception:
+        _extra_keys = set()
+    return hab_vals, _extra_keys
+
+
 def _window_shim_ctx(day_group: np.ndarray, y_me: np.ndarray):
     """选择窗 shim ctx：供 cond_ic_metrics 在 pos_me 切片上计算窗内条件 IC。
 
@@ -1418,66 +1572,14 @@ def main() -> int:
     _nd_me = int(_day_codes.max()) + 1 if len(_day_codes) else 0
     # habitat 估值扩面——val_store 只含 LGB 前 scan 名；全表扫描，
     # 优先级：habitat_pick（台账豁免）> store/机制家族 > 其余；上限 150。
-    hab_vals: dict = dict(val_store)
-    try:
-        _HAB_FAMS = ('context', 'ctx', 'vol', 'M7', 'M14', 'M16', 'M17',
-                     'shape', 'skew', 'M3', 'store')
-        _extra0, _extra1, _extra2 = [], [], []
-        for _pos in range(len(vwap_df)):
-            _r = vwap_df.iloc[_pos]
-            _key = (_r['lib'], str(_r['factor_id']))
-            if _key in hab_vals:
-                continue
-            _fam = str(_r.get('family', ''))
-            if bool(_r.get('habitat_pick', False)):
-                _extra0.append((_pos, _r))
-            elif _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
-                _extra1.append((_pos, _r))
-            else:
-                _extra2.append((_pos, _r))
-        _extra = (_extra0 + _extra1 + _extra2)[:150]
-        print(f'habitat 扩面候选：pick={len(_extra0)} fam={len(_extra1)} '
-              f'other={len(_extra2)} -> 算{len(_extra)} 个', flush=True)
-        for _pos, _r in _extra:
-            _key = (_r['lib'], str(_r['factor_id']))
-            try:
-                if _r['lib'] == 'mined':
-                    _vv = np.asarray(ev.values(parse_formula(str(_r['formula_cn']))),
-                                     dtype=float)[pos_me]
-                elif _r['lib'] == 'custom':
-                    from custom_registry import evaluate_custom_factor as _ecfx
-                    from custom_registry import load_all_custom_specs as _lcsx
-                    _spx = _lcsx().get(str(_r['factor_id']))
-                    if _spx is None:
-                        continue
-                    _vv = np.asarray(_ecfx(_spx, frame, ev), dtype=float)[pos_me]
-                elif _r['lib'] == 'store':
-                    _vv = store_vals.get(str(_r['factor_id']))
-                    if _vv is None:
-                        continue
-                else:
-                    _spx = _specs.get(str(_r['factor_id']))
-                    if _spx is None:
-                        continue
-                    _vv = builder.get_factor(_spx).to_numpy(dtype=float)[pos_me]
-                hab_vals[_key] = np.asarray(_vv, dtype=np.float32)
-            except Exception:
-                continue
-        print(f'habitat 估值扩面：+{len(hab_vals) - len(val_store)} 个', flush=True)
-    except Exception as exc:
-        print(f'warning: habitat 扩面失败 {str(exc)[:120]}', flush=True)
+    hab_vals, _extra_keys = _habitat_expand(
+        vwap_df, val_store, store_vals, ev, builder, frame, pos_me,
+        cache_dir, _specs, jobs=args.jobs)
     try:
         from cond_ic import build_cond_prep
         _prep_me_full = build_cond_prep(frame)
         _prep_me = {'tags': {k: np.asarray(v)[pos_me]
                              for k, v in _prep_me_full['tags'].items()}}
-        # 扩面键集合（seats 漏斗优先排序用；与 hab_vals 同键空间）。
-        _extra_keys = set()
-        try:
-            for _xp, _xr in _extra:
-                _extra_keys.add((_xr['lib'], str(_xr['factor_id'])))
-        except Exception:
-            _extra_keys = set()
         if args.habitat_seats > 0 and len(val_store):
             seat_order, seat_detail = habitat_seats(
                 vwap_df, vwap_order, hab_vals, pos_me, day_group,
