@@ -36,3 +36,9 @@ bigqmt_signal_trader_local_config.py
 !/to/integrated_stock_selection/results/merge_v2/gates_search/diag_f1_market_search_t.csv
 !/to/integrated_stock_selection/results/merge_v2/gates_search/diag_f1_market_search_t_judged.csv
 !/to/integrated_stock_selection/results/merge_v2/gates_search/diag_f1_market_search_t_bygate.csv
+
+# V4.3x run 2026-10-18 归档：关键清单白名单（from_server_20261018；大产物不进）
+!/to/integrated_stock_selection/results/merge_v2/from_server_20261018/lgb_ready/features_manifest.json
+!/to/integrated_stock_selection/results/merge_v2/from_server_20261018/lgb_ready/features_manifest_with_h3.json
+!/to/integrated_stock_selection/results/merge_v2/from_server_20261018/vwap_top20.json
+!/to/integrated_stock_selection/results/merge_v2/from_server_20261018/gates_search/family_manifest_F1v3_*.json

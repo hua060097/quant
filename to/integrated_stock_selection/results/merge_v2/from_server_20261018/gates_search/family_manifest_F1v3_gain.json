@@ -1,0 +1,123 @@
+{
+ "family_id": "F1v3_gain",
+ "family_version": "2026-10-12",
+ "spec_ref": "PLAN §21（F1v3新族：bank门控 × 偏科/机制代表因子；form=gain，与F1v2平行对照，不得合并FDR）",
+ "registry": "specialist_cands_gain.json",
+ "n_expected": 20,
+ "n_duplicates": 0,
+ "gates": [
+  "GM_limit_ratio_ratio",
+  "GM_newhigh_ratio_chg",
+  "GM_turn_med_accel"
+ ],
+ "n_bases": 20,
+ "s_values": [
+  -1
+ ],
+ "spec_cap": 20,
+ "form": "gain",
+ "members_hash": "150fe7a67d85",
+ "members": [
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "mi_post_high_drawdown",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R509",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "t2_compress_atr_ratio_7",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R608",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R773",
+   "s": -1
+  },
+  {
+   "gate": "GM_turn_med_accel",
+   "base": "2e7e20eff971",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R344",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "idiosyncratic_vol_60d",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R510",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "stk_realized_vol_20d",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R609",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "R245",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R345",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "true_turnover_10d",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R774",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "R246",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "R688",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "t2_vol_scaled_lower_wick_10",
+   "s": -1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "R081",
+   "s": -1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "downside_beta",
+   "s": -1
+  }
+ ],
+ "note": "成员来自cands JSON原文；switch复合base键保持逐一对应可校验。"
+}

@@ -1,0 +1,42 @@
+{
+ "family_id": "F1v3_switch",
+ "family_version": "2026-10-12",
+ "spec_ref": "PLAN §21（F1v3新族：bank门控 × 偏科/机制代表因子；form=switch，与F1v2平行对照，不得合并FDR）",
+ "registry": "specialist_cands_switch.json",
+ "n_expected": 4,
+ "n_duplicates": 0,
+ "gates": [
+  "GM_limit_ratio_ratio",
+  "GM_newhigh_ratio_chg"
+ ],
+ "n_bases": 4,
+ "s_values": [
+  1
+ ],
+ "spec_cap": 4,
+ "form": "switch",
+ "members_hash": "57eae85316f7",
+ "members": [
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "qs_range_ratio_cv5__R742",
+   "s": 1
+  },
+  {
+   "gate": "GM_limit_ratio_ratio",
+   "base": "breakdown_120_confirm_volume__R740",
+   "s": 1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "breakdown_250_confirm_volume__mi_post_high_drawdown",
+   "s": 1
+  },
+  {
+   "gate": "GM_newhigh_ratio_chg",
+   "base": "breakout_250_vol_scaled__R509",
+   "s": 1
+  }
+ ],
+ "note": "成员来自cands JSON原文；switch复合base键保持逐一对应可校验。"
+}

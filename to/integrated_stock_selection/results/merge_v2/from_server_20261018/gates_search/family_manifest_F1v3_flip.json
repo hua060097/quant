@@ -1,0 +1,16 @@
+{
+ "family_id": "F1v3_flip",
+ "family_version": "2026-10-12",
+ "spec_ref": "PLAN §21（F1v3新族：bank门控 × 偏科/机制代表因子；form=flip，与F1v2平行对照，不得合并FDR）",
+ "registry": "specialist_cands_flip.json",
+ "n_expected": 0,
+ "n_duplicates": 0,
+ "gates": [],
+ "n_bases": 0,
+ "s_values": [],
+ "spec_cap": 0,
+ "form": "flip",
+ "members_hash": "da39a3ee5e6b",
+ "members": [],
+ "note": "成员来自cands JSON原文；switch复合base键保持逐一对应可校验。"
+}

@@ -1,0 +1,96 @@
+{
+ "family_id": "F1v3_sector_gain",
+ "family_version": "2026-10-12",
+ "spec_ref": "PLAN §21（F1v3新族：bank门控 × 偏科/机制代表因子；form=gain，与F1v2平行对照，不得合并FDR）",
+ "registry": "specialist_sector_cands_gain.json",
+ "n_expected": 15,
+ "n_duplicates": 0,
+ "gates": [
+  "GS_sec_xs_disp_level"
+ ],
+ "n_bases": 15,
+ "s_values": [
+  1
+ ],
+ "spec_cap": 15,
+ "form": "gain",
+ "members_hash": "862f30537cef",
+ "members": [
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "030d44087af2",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "breakdown_120_confirm_volume",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "breakdown_250_confirm_volume",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "a03ac08d0b02",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "breakdown_60_confirm_volume",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "t2_breakdown_60_confirm_volume",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "6f1435828536",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "93ad66d60250",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "bdf8c3aee48d",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "b43f685674d0",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "f55ff45d608b",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "f7c89d2a7610",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "601a902bd358",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "17094fef1746",
+   "s": 1
+  },
+  {
+   "gate": "GS_sec_xs_disp_level",
+   "base": "f7a901aaa741",
+   "s": 1
+  }
+ ],
+ "note": "成员来自cands JSON原文；switch复合base键保持逐一对应可校验。"
+}

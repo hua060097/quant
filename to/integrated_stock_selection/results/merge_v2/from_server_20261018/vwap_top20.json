@@ -1,0 +1,338 @@
+{
+ "generated_at": "2026-10-17T13:18:51",
+ "n": 46,
+ "base20": [
+  {
+   "factor": "t2_mined_bcdb635e05e8",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:t2_mined_bcdb635e05e8",
+   "lib": "store"
+  },
+  {
+   "factor": "t2_mined_9e4de7eae7df",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:t2_mined_9e4de7eae7df",
+   "lib": "store"
+  },
+  {
+   "factor": "turnover_ratio_20_60_amountvol14_rank",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:turnover_ratio_20_60_amountvol14_rank",
+   "lib": "store"
+  },
+  {
+   "factor": "612257d8115c",
+   "direction": -1,
+   "family": "M11_regime",
+   "formula": "TS_MEAN(IF((TS_ZSCORE(TURNOVER,60))>(0.5),((CLOSE)/(DELAY(CLOSE,2)))-(1),0),40)",
+   "lib": "mined"
+  },
+  {
+   "factor": "ce65187dd3a5",
+   "direction": -1,
+   "family": "M2_liquidity",
+   "formula": "(TS_MEAN(TURNOVER,20))/(TS_MEAN(TURNOVER,250))",
+   "lib": "mined"
+  },
+  {
+   "factor": "t2_mined_2053d38e4c27",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:t2_mined_2053d38e4c27",
+   "lib": "store"
+  },
+  {
+   "factor": "f003467c4f19",
+   "direction": -1,
+   "family": "M16_interaction",
+   "formula": "TS_MEAN(IF((SLOPE(LOG(MARKET_CAP),40))>(TS_MEAN(SLOPE(LOG(CLOSE),40),20)),((VOLUME)/(TS_MEAN(VOLUME,250)))-(1),0),6)",
+   "lib": "mined"
+  },
+  {
+   "factor": "94bf49868a61",
+   "direction": -1,
+   "family": "M8_gate",
+   "formula": "TS_MEAN(IF((RANK(TURNOVER))>(0.5),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),40)",
+   "lib": "mined"
+  },
+  {
+   "factor": "712e36dfaf40",
+   "direction": -1,
+   "family": "M8_gate",
+   "formula": "TS_MEAN(IF((TURNOVER)>(TS_MEAN(TURNOVER,20)),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),20)",
+   "lib": "mined"
+  },
+  {
+   "factor": "f82fa54b7c3d",
+   "direction": -1,
+   "family": "proposal",
+   "formula": "TS_MEAN(IF((TURNOVER)>(TS_MEAN(TURNOVER,10)),AMOUNT,0),10)",
+   "lib": "mined"
+  },
+  {
+   "factor": "8a5d629f29a7",
+   "direction": -1,
+   "family": "M11_regime",
+   "formula": "TS_MEAN(IF((TS_ZSCORE(TURNOVER,40))>(0.5),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),14)",
+   "lib": "mined"
+  },
+  {
+   "factor": "d26e0e5219a9",
+   "direction": 1,
+   "family": "M14_context",
+   "formula": "0-(TS_MEAN((((CLOSE)/(DELAY(CLOSE,1)))-(1))-((BETA60)*(MKT_RET)),120))",
+   "lib": "mined"
+  },
+  {
+   "factor": "22f1b27a3fdf",
+   "direction": -1,
+   "family": "M13_tech",
+   "formula": "BOLL_WIDTH(TS_MEAN(AMOUNT,60),5)",
+   "lib": "mined"
+  },
+  {
+   "factor": "bdf8c3aee48d",
+   "direction": -1,
+   "family": "proposal",
+   "formula": "TS_MEAN(IF((TURNOVER)>(COUNT(TURNOVER,12)),VOLUME,0),3)",
+   "lib": "mined"
+  },
+  {
+   "factor": "cdd9487db7fa",
+   "direction": -1,
+   "family": "M8_gate",
+   "formula": "TS_MEAN(IF((CLOSE)>(DELAY(CLOSE,40)),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),40)",
+   "lib": "mined"
+  },
+  {
+   "factor": "b43f685674d0",
+   "direction": 1,
+   "family": "M9_composite",
+   "formula": "(((RANK(0-(0-(CORR(CLOSE,TURNOVER,120)))))+(RANK(0-(TS_MEAN(TURNOVER,40)))))+(RANK(0-(TS_MEAN(((CLOSE)/(DELAY(CLOSE,1)))-(1),120)))))+(RANK(0-(((VOLUME)/(TS_MEAN(VOLUME,250)))-(1))))",
+   "lib": "mined"
+  },
+  {
+   "factor": "99c24edeab96",
+   "direction": -1,
+   "family": "M7_volatility",
+   "formula": "STDDEV(0-(0-(TS_MEAN(AMOUNT,20))),6)",
+   "lib": "mined"
+  },
+  {
+   "factor": "28ddd4bb12b6",
+   "direction": -1,
+   "family": "proposal",
+   "formula": "(TS_MEAN(TS_MEAN(AMOUNT,6),5))/(TS_MIN(TURNOVER,120))",
+   "lib": "mined"
+  },
+  {
+   "factor": "2727b0b343ed",
+   "direction": -1,
+   "family": "M8_gate",
+   "formula": "TS_MEAN(IF((TS_MEAN(CLOSE,20))>=(DELAY(CLOSE,20)),VOLUME,0),10)",
+   "lib": "mined"
+  },
+  {
+   "factor": "R345",
+   "direction": 1,
+   "family": "ref:risk-pattern",
+   "formula": "smooth(range_ratio, window=7)",
+   "lib": "risk-pattern"
+  },
+  {
+   "factor": "ret40_reversal_amihud_rank",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:ret40_reversal_amihud_rank",
+   "lib": "store"
+  },
+  {
+   "factor": "sector_correlation_20d",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:sector_correlation_20d",
+   "lib": "store"
+  },
+  {
+   "factor": "mkt_ret_corr_120d",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:mkt_ret_corr_120d",
+   "lib": "store"
+  },
+  {
+   "factor": "price_ma60_ratio",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:price_ma60_ratio",
+   "lib": "store"
+  },
+  {
+   "factor": "b_up_count_20d",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:b_up_count_20d",
+   "lib": "store"
+  },
+  {
+   "factor": "b_touch_10d",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:b_touch_10d",
+   "lib": "store"
+  },
+  {
+   "factor": "cond_cum5_ma_ret5",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:cond_cum5_ma_ret5",
+   "lib": "store"
+  },
+  {
+   "factor": "log_price_slope_20d",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:log_price_slope_20d",
+   "lib": "store"
+  },
+  {
+   "factor": "2e7e20eff971",
+   "direction": -1,
+   "family": "proposal",
+   "formula": "EMA(((VOLUME)/(TS_MEAN(VOLUME,250)))-((RANK(((CLOSE)/(TS_MAX(HIGH,250)))-(1)))+(RANK(((OPEN)/(DELAY(CLOSE,1)))-(1)))),5)",
+   "lib": "mined"
+  },
+  {
+   "factor": "4b1ef2152b54",
+   "direction": -1,
+   "family": "proposal",
+   "formula": "TS_MEAN(IF((TURNOVER)>(COUNT((ABS(((CLOSE)/(DELAY(CLOSE,250)))-(1)))/(TS_MEAN(ABS(((CLOSE)/(DELAY(CLOSE,1)))-(1)),250)),10)),VOLUME,0),6)",
+   "lib": "mined"
+  },
+  {
+   "factor": "a03ac08d0b02",
+   "direction": -1,
+   "family": "M8_gate",
+   "formula": "TS_MEAN(IF((CLOSE)>(DELAY(CLOSE,20)),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),40)",
+   "lib": "mined"
+  },
+  {
+   "factor": "alpha_001",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:alpha_001",
+   "lib": "store"
+  },
+  {
+   "factor": "0d77b14d4882",
+   "direction": 1,
+   "family": "M10_shape",
+   "formula": "(STDDEV(IF((((CLOSE)/(DELAY(CLOSE,1)))-(1))<(0),((CLOSE)/(DELAY(CLOSE,1)))-(1),0),60))/(STDDEV(((CLOSE)/(DELAY(CLOSE,1)))-(1),60))",
+   "lib": "mined"
+  },
+  {
+   "factor": "mass_index_reversal",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:mass_index_reversal",
+   "lib": "store"
+  },
+  {
+   "factor": "33c0e8b07c17",
+   "direction": -1,
+   "family": "M2_liquidity",
+   "formula": "EMA(((VOLUME)/(TS_MIN(VOLUME,120)))-(1),10)",
+   "lib": "mined"
+  },
+  {
+   "factor": "breakout_250_vol_scaled",
+   "direction": -1,
+   "family": "ref:dir-adapt",
+   "formula": "vol_scaled(breakout, 250)",
+   "lib": "dir-adapt"
+  },
+  {
+   "factor": "ma5_slope",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:ma5_slope",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "severe_abnormal_pressure_10d_pct",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:severe_abnormal_pressure_10d_pct",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "reg_severe_up_10d_ratio_pct",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:reg_severe_up_10d_ratio_pct",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "ts_buy_sm_amount_rate_intra_sector",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:ts_buy_sm_amount_rate_intra_sector",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "max_rally_20d",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:max_rally_20d",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "abnormal_deviation_3d_ratio",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:abnormal_deviation_3d_ratio",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "t2_mined_a71e1027f89e_pct",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:t2_mined_a71e1027f89e_pct",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "high_level_churn_risk_10d",
+   "direction": -1,
+   "family": "store",
+   "formula": "store:high_level_churn_risk_10d",
+   "lib": "store",
+   "habitat_seat": true
+  },
+  {
+   "factor": "5840f8c1f79f",
+   "direction": -1,
+   "family": "M14_context",
+   "formula": "TS_MEAN(TS_REGRESS_RESID(((CLOSE)/(DELAY(CLOSE,1)))-(1),MKT_RET,20),20)",
+   "lib": "mined",
+   "habitat_seat": true
+  },
+  {
+   "factor": "price_impact",
+   "direction": 1,
+   "family": "store",
+   "formula": "store:price_impact",
+   "lib": "store",
+   "habitat_seat": true
+  }
+ ]
+}
