@@ -72,6 +72,19 @@ def is_bounded_or_gated_formula(formula_str: str) -> bool:
     return False
 
 
+def is_raw_formula(formula_str: str) -> bool:
+    """列是否保持原值入模（禁截面标准化）。
+
+    store 存量列（factors.parquet）：生产口径已是最终形态（部分已 zscore、
+    部分天然有界/离散），禁二次标准化——其"公式"是标记串 'store:<fid>'，
+    parse 必失败会误落标准化分支（实证：ma5_slope 被重标 1.45× 且尾部被
+    软压缩 max|Δ|=6.3），故显式豁免；与有界/条件门公式同列处理。
+    """
+    if str(formula_str).startswith('store:'):
+        return True
+    return is_bounded_or_gated_formula(formula_str)
+
+
 def cs_mad_norm(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """逐日 MAD 鲁棒 Z-score + 软压缩（默认 Class1 口径；保 Top 尾部距离）。"""
     import fastranks as _FR
@@ -147,7 +160,8 @@ def main() -> int:
             pass
 
     def _split_raw(cols: list[str]) -> tuple[list[str], list[str]]:
-        _raw = [c for c in cols if c in _fmap and is_bounded_or_gated_formula(_fmap[c])]
+        # store 存量列与有界/条件门公式同列处理：保持原值（见 is_raw_formula）。
+        _raw = [c for c in cols if c in _fmap and is_raw_formula(_fmap[c])]
         _norm = [c for c in cols if c not in _raw]
         return _raw, _norm
 
@@ -179,7 +193,7 @@ def main() -> int:
         if _seats:
             print(f'Class1 席位强制收录 {len(_seats)} 列', flush=True)
         if alpha_raw:
-            print(f'Class1 有界/条件门原值 {len(alpha_raw)} 列', flush=True)
+            print(f'Class1 有界/条件门/store原值 {len(alpha_raw)} 列', flush=True)
     else:
         print(f'warning: alpha panel missing {alpha_path}（Class1为空跑，不伪造列）')
 
