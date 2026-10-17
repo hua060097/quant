@@ -445,12 +445,15 @@ def main():
     _ud = np.unique(pd.to_datetime(m["date"]).to_numpy())
     assert (pd.to_datetime(m["date"]).to_numpy() == _ud[day]).all(), "m行序与日码错位"
     uniq = np.unique(m["date"].to_numpy())
+    # 预计算每 base 的 IC_z（d·x）日序列（仅 g/t 分支消费；新三式走 bundle，
+    # 跳过以省 82 次全表 _prepared 拷贝的时间与 transient 内存峰值）。
     ic_cache = {}
-    for bcol in base_cols:
-        d = b20.get(bcol, 1)
-        _, _, xr, yr, _ = E._prepared(m.assign(_z=pd.to_numeric(m[bcol], errors="coerce") * d), "_z", "r3")
-        ic_cache[bcol] = E._daily_corr(xr, yr, day, nd)
-    print(f"[{a.tag}] base IC cached", flush=True)
+    if a.form in ("g", "t"):
+        for bcol in base_cols:
+            d = b20.get(bcol, 1)
+            _, _, xr, yr, _ = E._prepared(m.assign(_z=pd.to_numeric(m[bcol], errors="coerce") * d), "_z", "r3")
+            ic_cache[bcol] = E._daily_corr(xr, yr, day, nd)
+        print(f"[{a.tag}] base IC cached", flush=True)
     # 三式共享预计算（提速）：day/yrk/u_cols/Ubar 全批一次，逐候选复用。
     _prep = build_market_bundle(m, base_cols, b20) \
         if a.form in ("gain", "flip", "switch") else None
