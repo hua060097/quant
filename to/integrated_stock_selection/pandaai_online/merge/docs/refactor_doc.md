@@ -983,3 +983,19 @@ python export_lgb_dataset.py --max-alpha 80 --max-interact 25
 - W3多元共线（VIF/残差比≥0.35）：便宜，可提前到V4.3c附带（终选环节加一道检查，不动搜索）。
 - W4开`universe`掩码+台账基线切换；`sw2_mapping`静态漂移（PLAN D5已知）。
 - W5单表7.3GB瓶颈：`--extra_factors_path`侧挂增量表（方向已定，V4.2收敛在案）。
+
+### V4.3x（2026-10-18）选项B修复+store豁免二次标准化（两 commit 已推送）
+
+**选项B（`4724a9d`）——两处统计口径错位根治，F1门控交互首次全闭环：**
+- 固定参考底仓：`f1_batch.build_reference_ubar`（f1_batch/f1_sector 共用）——底仓 `Ubar` 改为 `vwap_top20.json` roster 在面板中的有向居中秩均值（本次19列，hash 进 `pair_fp` 的 `ubar_fp` 维度），不再按 batch `base_cols` 自求平均。根治：①同质偏科桶自求平均把交互信号吸进底仓（Top15 新人 gain 边际归零）；②pair 缓存批次依赖（roster 变更自动失效，无需手动删库）。roster 缺失/可用列<5 回退 batch 口径+`batch:`hash+告警。
+- switch 互补配对：off=进攻轴∩signed_t≥+1.5、def=防御轴∩signed_t≤-1.5、per-gate（各因子自身 best gate）、1:1 去重、|signed_t| 降序、上限 max-switch。旧口径（无条件 LGB 轴代表=全天候强因子）静态等权已享分散化红利，动态切换恒 0/12；新口径配对为顺逆风互补对。
+- 结果（200 次置换）：market switch 4/4 过（d=+0.016~+0.020，p=q=0.005）；sector switch 4/4 过（d=+0.020~+0.023）；market gain 12/20 过 FDR（R081 等 d 最高 +0.0040，q 0.0124~0.0597）；sector gain 0/15（真实结论：横截面强响应 ≠ 底仓边际增量）。
+- 方法论披露：互补对按同窗斜率选出（两阶段预筛，与 specialists 口径一致），族清单 n_expected 登记、placebo/fdr 同表。
+
+**store 豁免二次标准化（`c63c894`）——影响面=仅导出矩阵：**
+- 根因：`export_lgb_dataset._split_raw` 对 store 列的"公式"是标记串 `store:<fid>`，parse 必失败→误落 `cs_mad_norm` 分支（逐日 MAD+尾部软压缩）。实证（5049 股真数据）：`ma5_slope` 被重标 1.45× 且尾部压缩 max|Δ|=6.3；影响 28 个 store 列（23 Class1 席位+5 股性池成员）。
+- 修复：抽 `is_raw_formula`（`store:` 前缀→True，其余走有界/条件门判定），`_split_raw` 接入（Class1/股性池两分支共用自动覆盖）；`bounded_raw_cols` manifest 现含 28 store+1 有界（审计可见）。
+- 影响面核验：上游全链路（build_top 评估/孪生/席位、specialists 斜率、F1 检验、materialize）消费 store 值全为**原值+秩口径统计**（单调变换不变）→ 榜单/池/cands/F1 判定/approved_interactions 零影响；**唯一受影响产物=导出的训练矩阵**（Stage15 未消费，无外溢）。
+- 终验（`ops_final_verify`）：29/29 raw 列 vs 直接源面板 max|diff|=0、NaN 零失配；28/28 store 列 vs factors.parquet 逐位一致；`selftest_export_guard` PASS（84 特征无 c2c-only、roster 46 全在 vwap 榜）。
+- 交付物：`lgb_ready/lgb_features.parquet`（84 特征，md5 ddfcddd3…）、`lgb_features_with_h3.parquet`（91 特征，含 7 旧轮 sector H3 赢家差集）、`approved_interactions.parquet`（20 列 FDR 通过）、`approved_interactions_h3.parquet`（27 列全量 H3）。
+- 注：`is_bounded_or_gated_formula` 与 store 豁免均为导出层列级判定，不改任何冻结的搜索/检验逻辑。
