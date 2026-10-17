@@ -465,10 +465,54 @@ def _store_aligned(frame: pd.DataFrame, cut: str | None = None):
     return m, pos
 
 
+#: eval_store 工作进程共享（fork 继承；store 列评估不写台账，无需写锁）
+_ES_CTX = None
+
+
+def _eval_store_one(fid: str, f_full: np.ndarray, frame_len: int,
+                    pos: np.ndarray, ctxs: dict):
+    """单 store 列双标签评估（串行/并行共用；纯函数，无台账写）。
+    返回 rec（ok_any 为假时返回 None，与原循环的 append 条件一致）。
+    异常直接抛出（与原串行循环一致：坏列即中断，便于暴露数据问题）。"""
+    from fitness import sia_of, tier1
+    from refs import lgb_score
+    rec = {'lib': 'store', 'factor_id': fid, 'name_cn': fid,
+           'base': None, 'transform': None, 'window': None,
+           'formula_cn': f'store:{fid}', 'uploaded': '', 'family': 'store',
+           'labels': {}}
+    ok_any = False
+    for lab, ctx in ctxs.items():
+        v = np.full(frame_len, np.nan)
+        v[pos >= 0] = f_full[pos[pos >= 0]]
+        v = v[ctx._pos]
+        cov = float(np.isfinite(v).mean()) if len(v) else 0.0
+        if cov <= 0.1:
+            rec['labels'][lab] = {'valid': False, 'coverage': cov}
+            continue
+        sc = ctx.screen(v, name=fid)
+        t = tier1(sc)
+        t['coverage'] = cov
+        a_off = float(sia_of(sc))
+        lgb = lgb_score(sc)
+        t['direction'] = int(sc.get('direction', 1))
+        rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
+                              'LGB': lgb, **t}
+        ok_any = True
+    return rec if ok_any else None
+
+
+def _eval_store_worker(fid: str):
+    """store 列工作进程：fid → rec-or-None。共享经 fork 继承。"""
+    _ctx = _ES_CTX
+    f_full = _ctx["m"][fid].to_numpy(dtype=float)
+    return _eval_store_one(fid, f_full, _ctx["frame_len"], _ctx["pos"],
+                           _ctx["ctxs"])
+
+
 def eval_store(frame: pd.DataFrame | None = None,
-                ev: Evaluator | None = None,
-                end: str | None = None,
-                _aligned=None) -> pd.DataFrame:
+                 ev: Evaluator | None = None,
+                 end: str | None = None,
+                 _aligned=None, jobs: int = 1) -> pd.DataFrame:
     """V4.3c 第四源 store：评估 factors.parquet 存量个股列.
 
     口径与 eval_mined/eval_custom 完全一致（双标签 DataContext 全窗重估，
@@ -477,6 +521,7 @@ def eval_store(frame: pd.DataFrame | None = None,
     防重复入选由正交扫描孪生优先（store 优先）承担。
     范围：roles.csv role in (STOCK, STOCK_REL, CROSS_SEC) ∩ 文件实际列。
     _aligned：main 已调过 _store_aligned 时传入 (m, pos)，避免重复读表。
+    jobs：列级并行进程数（各列独立、无台账写；结果与串行逐值一致）。
     """
     if frame is None:
         frame = load_panel()
@@ -490,34 +535,25 @@ def eval_store(frame: pd.DataFrame | None = None,
     ctxs = {lab: DataContext(frame=frame, label=lab, evaluator=ev, end=(end or W.DEFAULT_DATA_CUT))
             for lab in ('c2c', 'vwap')}
     rows = []
-    for fid in cols:
-        if fid not in m.columns:
-            continue
-        f_full = m[fid].to_numpy(dtype=float)
-        rec = {'lib': 'store', 'factor_id': fid, 'name_cn': fid,
-               'base': None, 'transform': None, 'window': None,
-               'formula_cn': f'store:{fid}', 'uploaded': '', 'family': 'store',
-               'labels': {}}
-        ok_any = False
-        for lab, ctx in ctxs.items():
-            v = np.full(len(frame), np.nan)
-            v[pos >= 0] = f_full[pos[pos >= 0]]
-            v = v[ctx._pos]
-            cov = float(np.isfinite(v).mean()) if len(v) else 0.0
-            if cov <= 0.1:
-                rec['labels'][lab] = {'valid': False, 'coverage': cov}
+    _nj = _par_jobs(jobs)
+    if _nj <= 1 or len(cols) <= 1:
+        for fid in cols:
+            if fid not in m.columns:
                 continue
-            sc = ctx.screen(v, name=fid)
-            t = tier1(sc)
-            t['coverage'] = cov
-            a_off = float(sia_of(sc))
-            lgb = lgb_score(sc)
-            t['direction'] = int(sc.get('direction', 1))
-            rec['labels'][lab] = {'valid': True, 'coverage': cov, 'A_official': a_off,
-                                  'LGB': lgb, **t}
-            ok_any = True
-        if ok_any:
-            rows.append(rec)
+            f_full = m[fid].to_numpy(dtype=float)
+            rec = _eval_store_one(fid, f_full, len(frame), pos, ctxs)
+            if rec is not None:
+                rows.append(rec)
+    else:
+        import concurrent.futures as _cf
+        global _ES_CTX
+        _ES_CTX = {"m": m, "pos": pos, "ctxs": ctxs, "frame_len": len(frame)}
+        _nj = min(_nj, len(cols))
+        print(f'store 并行评估：{len(cols)} 列 × {_nj} 进程 …', flush=True)
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            for _rec in _ex.map(_eval_store_worker, cols):
+                if _rec is not None:
+                    rows.append(_rec)
     flat = []
     for rec in rows:
         for lab in ('c2c', 'vwap'):
@@ -1248,7 +1284,7 @@ def main() -> int:
             print(f'warning: store 对齐失败（{str(exc)[:120]}），跳过store源',
                   flush=True)
     store_df = eval_store(frame=frame, ev=ev, end=args.data_cut,
-                          _aligned=_store_aligned_once) \
+                          _aligned=_store_aligned_once, jobs=args.jobs) \
         if _store_aligned_once is not None else pd.DataFrame()
     cols = ['lib', 'factor_id', 'name_cn', 'base', 'transform', 'window', 'formula_cn',
             'uploaded', 'label', 'coverage', 'A_official', 'LGB', 'sia', 'rank_ic', 'ic',
