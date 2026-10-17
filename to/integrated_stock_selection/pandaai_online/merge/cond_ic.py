@@ -138,11 +138,16 @@ def _stat_block(ic_by_day: np.ndarray, prefix: str) -> dict:
 
 
 def cond_ic_metrics(ctx, source, prep: dict, name: str = 'factor',
-                    min_stocks: int = MIN_STOCKS) -> dict:
+                    min_stocks: int = MIN_STOCKS,
+                    tags: tuple | list | None = None) -> dict:
     """单因子在全部条件族上的子集内逐日 RankIC（与主管线 cond_* 键名一致）。
 
     source: AST 节点或因子值数组（面板行序；数组须与 ctx 面板同长，如
-    f_full[ctx._pos]）——refs 面板因子（无公式）用数组入口。"""
+    f_full[ctx._pos]）——refs 面板因子（无公式）用数组入口。
+    tags: 只算指定条件族（默认 None = 全算 10 个，保持历史行为）。
+    habitat_seats 只需 ('hot5_q80',)，habitat_pool 只需 ('mkt_up','mkt_dn')，
+    省去无关族的逐日重排名。布局（_cond_ctx_layout）仍全量构建并走 ctx 缓存，
+    与 tags 无关；返回字典仅含请求族的键。"""
     layout = _cond_ctx_layout(ctx, prep)
     order_di = layout['order_di']
     seg = layout['seg']
@@ -151,7 +156,10 @@ def cond_ic_metrics(ctx, source, prep: dict, name: str = 'factor',
     # ctx.labels 同步到 day-order
     lab_sorted = ctx.labels[order_di]
     out: dict = {}
+    _want = set(tags) if tags is not None else None
     for tag, info in layout['tags'].items():
+        if _want is not None and tag not in _want:
+            continue
         rows = info['rows']
         dc = info['dcodes']
         key = f'cond_{tag}'

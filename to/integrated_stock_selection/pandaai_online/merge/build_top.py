@@ -731,20 +731,77 @@ def _window_shim_ctx(day_group: np.ndarray, y_me: np.ndarray):
                            labels=np.asarray(y_me, dtype=float))
 
 
+#: seats/pool 打分工作进程共享（fork 继承，免 pickling 大面板字典）
+_HABSC_CTX = None
+
+
+def _hab_score_worker(args) -> tuple:
+    """打分工作进程：(序号, key, 因子名, kind) → (序号, 载荷)。
+    kind='seat' 返回 (t, ndays)；kind='pool' 返回 (mu, md)（可含 None）。
+    共享经 fork 继承；异常返回失败载荷（父进程过滤逻辑与串行一致）。
+    父进程侧的阈值/过滤/排序代码串并共用，逐字同一份。"""
+    idx, key, fname, kind = args
+    _ctx = _HABSC_CTX
+    try:
+        from cond_ic import cond_ic_metrics
+        _arr = np.asarray(_ctx["vals"][key], dtype=float)
+        if kind == "seat":
+            per = cond_ic_metrics(_ctx["shim"], _arr, _ctx["prep"],
+                                  name=fname, tags=("hot5_q80",))
+            t = per.get("cond_hot5_q80_rank_ic_tstat")
+            nd = per.get("cond_hot5_q80_ndays", 0)
+            t = float(t) if t is not None and np.isfinite(t) else float("nan")
+            return idx, (t, nd)
+        per = cond_ic_metrics(_ctx["shim"], _arr, _ctx["prep"],
+                              name=fname, tags=("mkt_up", "mkt_dn"))
+        return idx, (per.get("cond_mkt_up_rank_ic_mean"),
+                     per.get("cond_mkt_dn_rank_ic_mean"))
+    except Exception:
+        if kind == "seat":
+            return idx, (float("nan"), 0)
+        return idx, (None, None)
+
+
+def _pair_vs_pool(v_s: np.ndarray, pool_s: list, day_s: np.ndarray,
+                  nd: int, threshold: float, jobs: int = 1) -> bool:
+    """候选（已按 day_s 重排）与池的正交否决（返回 True=拒绝）。
+    与串行 early-break 判定恒等：串行在首个 |ρ|>threshold 处跳出拒绝；
+    并行求全量后取 any，拒绝布尔一致（_mx 仅局部变量，未进输出明细，
+    全量 max 与提前跳出的 max-so-far 差异不可观测）。
+    输入须行序一致（day_s 单调 + 数组同序重排），否则结果无意义。"""
+    _nj = max(1, int(jobs or 1))
+    if _nj <= 1 or len(pool_s) <= 1:
+        for _pv in pool_s:
+            _c = _xsec_spearman(v_s, _pv, day_s, nd)
+            if np.isfinite(_c) and abs(float(_c)) > threshold:
+                return True
+        return False
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=min(_nj, len(pool_s))) as _ex:
+        _cs = list(_ex.map(lambda _pv: _xsec_spearman(v_s, _pv, day_s, nd),
+                           pool_s))
+    return any(np.isfinite(_c) and abs(float(_c)) > threshold for _c in _cs)
+
+
 def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                   val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
                   y_vwap_me: np.ndarray, prep_me: dict,
                   day_codes: np.ndarray, nd_me: int,
                   n_seats: int = 10, t_min: float = 2.5,
-                  threshold: float = 0.7) -> tuple[list[int], list[dict]]:
+                  threshold: float = 0.7,
+                  extra_keys: set | None = None, jobs: int = 1) -> tuple[list[int], list[dict]]:
     """Class1 栖息地尖兵席位（V4.3c）：扫描已估值但未入选者中 hot5_q80 |t|>=2.5 者，
     按 t 降序、与池内+席位间逐一 |ρ|<=threshold 正交保留，上限 n_seats。
 
     新选择族版本（预注册阈值 2.5/0.7/配额 10）；快评通道 C 豁免禁令不动
     （仅终选席位，不碰快评）。返回 (df 行号, 明细)。
+    漏斗（V4.3x 修复）：habitat_pick > 本轮扩面 > LGB，上限 250——旧
+    sorted(-LGB)[:60] 把低无条件 LGB 的栖息地扩面候选全挡在门外。
+    加速（零语义变更）：打分经进程池并行（tags 只算 hot5_q80，过滤逐字同
+    串行）；行序在内存中一次重排（day_s 单调 + 数组同序副本，pos_me 与
+    磁盘缓存不动），pairwise 经线程池并行（判定与串行 early-break 恒等）。
     """
     from cond_ic import cond_ic_metrics
-    from decorrelate_top import month_end_spearman_matrix
     # vwap_order 为 head 枚举 positional 行号（与 iloc 对齐，非 index 标签）。
     kept = set(vwap_order or [])
     cands = []
@@ -756,47 +813,73 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         if _key not in val_store:
             continue
         cands.append((_pos, r))
-    cands = sorted(cands, key=lambda x: -float(x[1].get('LGB', 0) or 0))[:60]
+    _exk = extra_keys or set()
+
+    def _ck(x):
+        _p2, _r2 = x
+        _k2 = (_r2['lib'], str(_r2['factor_id']))
+        _pr = (0 if bool(_r2.get('habitat_pick', False))
+               else (1 if _k2 in _exk else 2))
+        return (_pr, -float(_r2.get('LGB', 0) or 0))
+
+    cands = sorted(cands, key=_ck)[:250]
     shim = _window_shim_ctx(day_group, y_vwap_me)
     scored = []
-    for _pos, r in cands:
+    _nj = _par_jobs(jobs)
+    _use_par = _nj > 1 and len(cands) > 1
+    _seat_cache: dict = {}
+    if _use_par:
+        import concurrent.futures as _cf
+        global _HABSC_CTX
+        _HABSC_CTX = {"shim": shim, "prep": prep_me, "vals": val_store}
+        _nj = min(_nj, len(cands))
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            for _idx, _pay in _ex.map(
+                    _hab_score_worker,
+                    [(k, (rr['lib'], str(rr['factor_id'])), str(rr['factor_id']),
+                      "seat") for k, (_pp, rr) in enumerate(cands)]):
+                _seat_cache[_idx] = _pay
+    for _k, (_pos, r) in enumerate(cands):
         try:
-            per = cond_ic_metrics(shim, val_store[(r['lib'], str(r['factor_id']))],
-                                  prep_me, name=str(r['factor_id']))
-            t = per.get('cond_hot5_q80_rank_ic_tstat')
-            nd = per.get('cond_hot5_q80_ndays', 0)
-            t = float(t) if t is not None and np.isfinite(t) else float('nan')
+            if _use_par:
+                t, nd = _seat_cache.get(_k, (float("nan"), 0))
+            else:
+                per = cond_ic_metrics(shim, val_store[(r['lib'], str(r['factor_id']))],
+                                      prep_me, name=str(r['factor_id']),
+                                      tags=("hot5_q80",))
+                t = per.get('cond_hot5_q80_rank_ic_tstat')
+                nd = per.get('cond_hot5_q80_ndays', 0)
+                t = float(t) if t is not None and np.isfinite(t) else float('nan')
             if np.isfinite(t) and abs(t) >= t_min and nd >= 10:
                 scored.append((_pos, r, t))
         except Exception:
             continue
     scored.sort(key=lambda x: -abs(x[2]))
-    pool_vals = []
+    # 行序一次重排（内存副本；pos_me 与磁盘 value_cache 不动）：day_s 单调后
+    # blockwise_rank 守卫直通，省掉 pairwise 近万次 660 万行 argsort。
+    # 重排对（值数组, day）一致进行，_daily_corr 行序无关，故结果与碎裂行序
+    # 逐值一致（fp 求和顺序差异除外，~1e-12，不影响阈值判定）。
+    _order_me = np.argsort(np.asarray(day_codes), kind="stable")
+    _day_s = np.asarray(day_codes)[_order_me]
+    pool_s = []
     for _kp in (vwap_order or []):
         try:
             _r = vwap_df.iloc[_kp]
             _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
             if _vv is not None:
-                pool_vals.append(np.asarray(_vv, dtype=float))
+                pool_s.append(np.asarray(_vv, dtype=float)[_order_me])
         except Exception:
             continue
     seats, detail = [], []
     for _pos, r, t in scored:
         if len(seats) >= n_seats:
             break
-        _v = np.asarray(val_store[(r['lib'], str(r['factor_id']))], dtype=float)
-        _mx = 0.0
-        _ok = True
-        for _pv in pool_vals:
-            _c = _xsec_spearman(_v, _pv, day_codes, nd_me)
-            if np.isfinite(_c) and abs(float(_c)) > threshold:
-                _ok = False
-                _mx = max(_mx, abs(float(_c)))
-                break
-        if not _ok:
+        _v_s = np.asarray(val_store[(r['lib'], str(r['factor_id']))],
+                          dtype=float)[_order_me]
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold, jobs):
             continue
         seats.append(_pos)
-        pool_vals.append(_v)
+        pool_s.append(_v_s)
         detail.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
                        'hot5_q80_t': round(float(t), 3)})
     return seats, detail
@@ -806,26 +889,23 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                  val_store: dict, pos_me: np.ndarray, day_group: np.ndarray,
                  y_vwap_me: np.ndarray, prep_me: dict, vwap_nl: dict,
                  day_codes: np.ndarray, nd_me: int,
-                 top_n: int = 10, threshold: float = 0.7) -> list[dict]:
+                 top_n: int = 10, threshold: float = 0.7,
+                 jobs: int = 1) -> list[dict]:
     """Class2 股性榜单（V4.3c）：已估值扫描候选按 habitat_score 排名，
     与 Class1 池内 + 榜内逐一 |ρ|<=threshold 正交取 TopN。
 
     habitat_score = jsd_tails + 0.5*|mkt_up_ic - mkt_dn_ic|（精确 cond 版；
     快评用 pooled 代理版）。返回 [{factor_id, lib, score, jsd, contrast}]。
+    加速（零语义变更）：cond 经进程池并行（tags 只算 mkt_up/mkt_dn）；
+    行序在内存中一次重排（与 seats 同模式，pos_me 与磁盘缓存不动），
+    pairwise 经线程池并行（判定与串行 early-break 恒等）。
     """
     from cond_ic import cond_ic_metrics
     from nonlinear import jsd_tails
     shim = _window_shim_ctx(day_group, y_vwap_me)
-    pool_vals = []
-    for _kp in (vwap_order or []):
-        try:
-            _r = vwap_df.iloc[_kp]
-            _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
-            if _vv is not None:
-                pool_vals.append(np.asarray(_vv, dtype=float))
-        except Exception:
-            continue
-    scored = []
+    _nj = _par_jobs(jobs)
+    # 打分键全集（串并同序；并行时先批量算 cond，再走同一串行组装循环）
+    _keys: list = []
     _seen = set()
     for _pos in range(len(vwap_df)):
         r = vwap_df.iloc[_pos]
@@ -833,15 +913,47 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         if _key in _seen or _key not in val_store:
             continue
         _seen.add(_key)
+        _keys.append((_pos, _key))
+    _use_par = _nj > 1 and len(_keys) > 1
+    _cond_cache: dict = {}
+    if _use_par:
+        import concurrent.futures as _cf
+        global _HABSC_CTX
+        _HABSC_CTX = {"shim": shim, "prep": prep_me, "vals": val_store}
+        _nj = min(_nj, len(_keys))
+        with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+            for _idx, _pay in _ex.map(
+                    _hab_score_worker,
+                    [(k, _key, str(_key[1]), "pool") for k, (_pp, _key) in
+                     enumerate(_keys)]):
+                _cond_cache[_idx] = _pay
+    _order_me = np.argsort(np.asarray(day_codes), kind="stable")
+    _day_s = np.asarray(day_codes)[_order_me]
+    pool_s = []
+    for _kp in (vwap_order or []):
+        try:
+            _r = vwap_df.iloc[_kp]
+            _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
+            if _vv is not None:
+                pool_s.append(np.asarray(_vv, dtype=float)[_order_me])
+        except Exception:
+            continue
+    scored = []
+    for _k, (_pos, _key) in enumerate(_keys):
+        r = vwap_df.iloc[_pos]
         try:
             _v = np.asarray(val_store[_key], dtype=float)
             _nl = vwap_nl.get(vwap_df.index[_pos]) or {}
             _jsd = _nl.get('jsd')
             if _jsd is None or not np.isfinite(_jsd):
                 _jsd = float(jsd_tails(_v, np.asarray(y_vwap_me, dtype=float)))
-            per = cond_ic_metrics(shim, _v, prep_me, name=str(r['factor_id']))
-            _mu = per.get('cond_mkt_up_rank_ic_mean')
-            _md = per.get('cond_mkt_dn_rank_ic_mean')
+            if _use_par:
+                _mu, _md = _cond_cache.get(_k, (None, None))
+            else:
+                per = cond_ic_metrics(shim, _v, prep_me, name=str(r['factor_id']),
+                                      tags=("mkt_up", "mkt_dn"))
+                _mu = per.get('cond_mkt_up_rank_ic_mean')
+                _md = per.get('cond_mkt_dn_rank_ic_mean')
             _con = (abs(float(_mu) - float(_md))
                     if _mu is not None and _md is not None
                     and np.isfinite(_mu) and np.isfinite(_md) else float('nan'))
@@ -856,16 +968,10 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
     for _key, r, _sc, _j, _con in scored:
         if len(out) >= top_n:
             break
-        _v = np.asarray(val_store[_key], dtype=float)
-        _ok = True
-        for _pv in pool_vals:
-            _c = _xsec_spearman(_v, _pv, day_codes, nd_me)
-            if np.isfinite(_c) and abs(float(_c)) > threshold:
-                _ok = False
-                break
-        if not _ok:
+        _v_s = np.asarray(val_store[_key], dtype=float)[_order_me]
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold, jobs):
             continue
-        pool_vals.append(_v)
+        pool_s.append(_v_s)
         out.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
                     'family': str(r.get('family', '')),
                     'formula_cn': str(r.get('formula_cn', '')),
@@ -1329,18 +1435,26 @@ def main() -> int:
         _prep_me_full = build_cond_prep(frame)
         _prep_me = {'tags': {k: np.asarray(v)[pos_me]
                              for k, v in _prep_me_full['tags'].items()}}
+        # 扩面键集合（seats 漏斗优先排序用；与 hab_vals 同键空间）。
+        _extra_keys = set()
+        try:
+            for _xp, _xr in _extra:
+                _extra_keys.add((_xr['lib'], str(_xr['factor_id'])))
+        except Exception:
+            _extra_keys = set()
         if args.habitat_seats > 0 and len(val_store):
             seat_order, seat_detail = habitat_seats(
                 vwap_df, vwap_order, hab_vals, pos_me, day_group,
                 y_vwap_me, _prep_me, _day_codes, _nd_me,
-                n_seats=args.habitat_seats)
+                n_seats=args.habitat_seats, extra_keys=_extra_keys,
+                jobs=args.jobs)
             print(f'栖息地席位：{len(seat_order)} 个 '
                   f'{[d["factor_id"] for d in seat_detail]}', flush=True)
         if args.habitat_pool > 0 and len(val_store):
             hab_pool = habitat_pool(
                 vwap_df, vwap_order, hab_vals, pos_me, day_group,
                 y_vwap_me, _prep_me, vwap_nl, _day_codes, _nd_me,
-                top_n=args.habitat_pool)
+                top_n=args.habitat_pool, jobs=args.jobs)
             print(f'Class2股性榜单：{len(hab_pool)} 个', flush=True)
     except Exception as exc:
         print(f'warning: 栖息地席位/股性榜单失败 {str(exc)[:150]}', flush=True)
