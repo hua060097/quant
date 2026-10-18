@@ -29,9 +29,15 @@
 ④ `id_late30_amt_share` 尾盘30分钟成交占比：amount(14:35~15:00)/全天 amount
 ⑤ `id_updown_vol_ratio` 日内上下行波动比：std(阳线5分钟收益)/std(阴线5分钟收益)
 ⑥ `id_dd_recovery`      日内最大回撤修复度：(日终close − 回撤谷底)/(回撤峰 − 谷底)；
-                        无回撤日 = 1.0；谷底取最大回撤首次出现处
+                        峰值/谷底取 bar high/low（防漏 bar 内高低点）；相对回撤
+                        深度 <0.5% 视为无有效回撤=1.0；截断 [0,1]（防小回撤爆破，
+                        旧口径实测 max=707）
+⑦~⑩ `*_s3` 平滑变体     ① ② ⑤ ⑥ 的 3 日滚动均值（min_periods=2；覆盖月界；
+                        降单日脉冲噪声与换手，原版保持裸值对照）
 
 质量门槛：当日 bar 数 ≥20 才出值；⑤ 另要求阳线/阴线各 ≥3 根。
+并发安全：首次构建经 flock 互斥 + 双检（多进程首用不重复建/不写坏）；
+落盘为临时文件 + 原子 rename。多进程场景仍建议先手动 `--build` 一次。
 """
 from __future__ import annotations
 
@@ -79,7 +85,12 @@ CACHE_PATH = MIN_DIR / 'daily_features_cache.parquet'
 META_PATH = MIN_DIR / 'daily_features_cache.meta.json'
 
 FACTOR_COLS = ('hi_amt_share20', 'hi_shadow_dump', 'late30_ret',
-               'late30_amt_share', 'updown_vol_ratio', 'dd_recovery')
+               'late30_amt_share', 'updown_vol_ratio', 'dd_recovery',
+               'hi_amt_share20_s3', 'hi_shadow_dump_s3',
+               'updown_vol_ratio_s3', 'dd_recovery_s3')
+#: 3日滚动均值平滑变体（降单日脉冲噪声/换手；覆盖月度边界，全量拼接后算）
+SMOOTH3_BASE = ('hi_amt_share20', 'hi_shadow_dump', 'updown_vol_ratio',
+                'dd_recovery')
 _MIN_BARS = 20
 _MIN_HALF = 3
 
@@ -110,6 +121,7 @@ def _agg_month(fp: Path) -> pd.DataFrame | None:
     dt = df['datetime'].dt
     mins = (dt.hour.to_numpy() * 60 + dt.minute.to_numpy())
     close = df['close'].to_numpy(dtype=float)
+    low = df['low'].to_numpy(dtype=float)
     amt = df['amount'].to_numpy(dtype=float)
     g = df.groupby(gk, sort=False)
     # 5分钟收益（组内 shift；prev<=0 置 NaN）
@@ -118,15 +130,15 @@ def _agg_month(fp: Path) -> pd.DataFrame | None:
         r = close / np.where(prev > 0, prev, np.nan) - 1.0
     df['_r_up'] = np.where(r > 0, r, np.nan)
     df['_r_dn'] = np.where(r < 0, r, np.nan)
-    # 日内回撤（组内 cummax）
-    cm = g['close'].cummax().to_numpy(dtype=float)
+    # 日内回撤（组内 cummax；峰值用 bar high、谷底用 bar low，防漏 5 分钟内高低点）
+    cm = g['high'].cummax().to_numpy(dtype=float)
     with np.errstate(invalid='ignore', divide='ignore'):
-        dd = (cm - close) / np.where(cm > 0, cm, np.nan)
+        dd = (cm - low) / np.where(cm > 0, cm, np.nan)
     df['_dd'] = dd
     dd_max = df.groupby(gk, sort=False)['_dd'].transform('max').to_numpy(float)
     trough = dd >= (dd_max - 1e-15)          # 首次触底（agg first 取最早行）
     df['_peak_t'] = np.where(trough, cm, np.nan)
-    df['_trough_c'] = np.where(trough, close, np.nan)
+    df['_trough_c'] = np.where(trough, low, np.nan)
     # 14:30 收盘（bar 标签 14:30 覆盖 14:25~14:30）与尾盘成交（14:35~15:00）
     df['_c1430'] = np.where(mins == 870, close, np.nan)
     df['_late_amt'] = np.where(mins > 870, amt, 0.0)
@@ -191,14 +203,19 @@ def _finalize(agg: pd.DataFrame) -> pd.DataFrame:
         & (dn_s > 1e-12)
     with np.errstate(invalid='ignore', divide='ignore'):
         updown = np.where(ok5, up_s / np.maximum(dn_s, 1e-4), np.nan)
-    # ⑥ 最大回撤修复度（无回撤=1.0）
+    # ⑥ 最大回撤修复度（V4.3x 修复：小回撤防爆 + [0,1] 截断）
+    # 旧口径对"回撤深度≈0"的噪声日会算出 +50~+700 的爆破值（实测max=707）；
+    # 现：相对回撤深度 <0.5% 视为无有效回撤 → 1.0；有有效回撤才计算，
+    # 并截断到 [0,1]（1.0=已修复至回撤前峰值；超出部分由动量族因子表达）。
     peak_t = agg['peak_t'].to_numpy(dtype=float)
     trough_c = agg['trough_c'].to_numpy(dtype=float)
     denom = peak_t - trough_c
     with np.errstate(invalid='ignore', divide='ignore'):
-        rec = np.where(np.isfinite(denom) & (denom > 1e-12),
-                       (close_last - trough_c) / np.where(denom > 1e-12, denom, np.nan),
-                       np.where(np.isfinite(trough_c), 1.0, np.nan))
+        depth_rel = np.where(peak_t > 0, denom / np.where(peak_t > 0, peak_t, np.nan), np.nan)
+        _rec = (close_last - trough_c) / np.where(denom > 1e-12, denom, np.nan)
+    rec = np.where(np.isfinite(depth_rel) & (depth_rel >= 0.005),
+                   np.clip(_rec, 0.0, 1.0),
+                   np.where(np.isfinite(trough_c), 1.0, np.nan))
     q = agg['n_bars'].to_numpy() >= _MIN_BARS
     for name, v in (('hi_amt_share20', hi_share), ('hi_shadow_dump', dump),
                     ('late30_ret', late_ret), ('late30_amt_share', late_share),
@@ -208,8 +225,45 @@ def _finalize(agg: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _cache_is_current() -> bool:
+    """缓存是否与当前月份集一致（双检锁内复用）。"""
+    if not CACHE_PATH.exists() or not META_PATH.exists():
+        return False
+    try:
+        meta = json.loads(META_PATH.read_text(encoding='utf-8'))
+        return meta.get('months') == [f.parent.name for f in _month_files()]
+    except Exception:
+        return False
+
+
+def _build_with_lock() -> None:
+    """跨进程互斥构建（flock；多进程首用并发安全）。
+    拿锁后二次检查——等待期间别人已建好则直接跳过，不重复 8 份计算。
+    Windows 无 fcntl：退化为无锁（本地单进程约定），仍靠原子写防损坏。"""
+    lockp = CACHE_PATH.with_name(CACHE_PATH.name + '.lock')
+    try:
+        lf = open(lockp, 'w')
+    except Exception:
+        lf = None
+    try:
+        if lf is not None:
+            try:
+                import fcntl
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            except Exception:
+                pass
+        if not _cache_is_current():
+            build_cache(force=True)
+    finally:
+        if lf is not None:
+            try:
+                lf.close()
+            except Exception:
+                pass
+
+
 def build_cache(force: bool = False) -> Path:
-    """全量重建日频聚合缓存（逐月聚合→总装→落盘+meta）。"""
+    """全量重建日频聚合缓存（逐月聚合→总装→s3平滑→原子落盘+meta）。"""
     files = _month_files()
     if not files:
         raise SystemExit(f"分钟数据目录为空：{MIN_DIR}")
@@ -234,8 +288,17 @@ def build_cache(force: bool = False) -> Path:
               f"{time.time() - t0:.0f}s", flush=True)
     full = pd.concat(parts, ignore_index=True)
     out = _finalize(full)
+    # 3日滚动均值平滑变体（全量拼接后算，覆盖月度边界；min_periods=2）
+    out = out.sort_values(['stock_code', 'date'], kind='stable').reset_index(drop=True)
+    for _c in SMOOTH3_BASE:
+        out[_c + '_s3'] = (out.groupby('stock_code', sort=False)[_c]
+                           .rolling(3, min_periods=2).mean()
+                           .reset_index(level=0, drop=True).to_numpy(dtype=np.float64))
     MIN_DIR.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(CACHE_PATH, index=False)
+    # 原子写：临时文件 + os.replace（并发下不产生半写文件）
+    tmp_path = CACHE_PATH.with_name(CACHE_PATH.name + '.tmp')
+    out.to_parquet(tmp_path, index=False)
+    os.replace(tmp_path, CACHE_PATH)
     META_PATH.write_text(json.dumps(
         {'months': months, 'rows': int(len(out)),
          'date_min': str(pd.to_datetime(out['date']).min().date()),
@@ -266,17 +329,11 @@ def _load_cache() -> pd.DataFrame | None:
             _WARNED = True
         return None
     try:
-        months = [f.parent.name for f in _month_files()]
-        need_build = not CACHE_PATH.exists()
-        if not need_build and META_PATH.exists():
-            try:
-                meta = json.loads(META_PATH.read_text(encoding='utf-8'))
-                need_build = meta.get('months') != months
-            except Exception:
-                need_build = True
-        if need_build:
-            print(f"intraday: 构建日频聚合缓存（{len(months)} 个月）…", flush=True)
-            build_cache(force=True)
+        if not _cache_is_current():
+            months = [f.parent.name for f in _month_files()]
+            print(f"intraday: 构建日频聚合缓存（{len(months)} 个月，flock 互斥）…",
+                  flush=True)
+            _build_with_lock()
         df = pd.read_parquet(CACHE_PATH)
         df['date'] = pd.to_datetime(df['date'])
         idx = pd.MultiIndex.from_arrays(
@@ -340,9 +397,39 @@ def id_updown_vol_ratio(frame: pd.DataFrame, ev) -> np.ndarray:
 
 @register_py_factor(
     factor_id='id_dd_recovery', axis='intraday',
-    description='日内最大回撤修复度：(日终close-回撤谷底)/(回撤峰-谷底)；无回撤=1.0')
+    description='日内最大回撤修复度：(日终close-回撤谷底)/(回撤峰-谷底)；无有效回撤(<0.5%)=1.0；截断[0,1]')
 def id_dd_recovery(frame: pd.DataFrame, ev) -> np.ndarray:
     return _lookup(frame, 'dd_recovery')
+
+
+# ---- 3日滚动均值平滑变体（降单日脉冲噪声与换手；原版6个保持裸值对照） ----
+
+@register_py_factor(
+    factor_id='id_hi_amt_share20_s3', axis='intraday',
+    description='高位成交占比 3日均（降单日脉冲，换手更低）')
+def id_hi_amt_share20_s3(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'hi_amt_share20_s3')
+
+
+@register_py_factor(
+    factor_id='id_hi_shadow_dump_s3', axis='intraday',
+    description='高位派发强度 3日均（铁血出货稳健版）')
+def id_hi_shadow_dump_s3(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'hi_shadow_dump_s3')
+
+
+@register_py_factor(
+    factor_id='id_updown_vol_ratio_s3', axis='intraday',
+    description='日内上下行波动比 3日均（波动不对称稳健版）')
+def id_updown_vol_ratio_s3(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'updown_vol_ratio_s3')
+
+
+@register_py_factor(
+    factor_id='id_dd_recovery_s3', axis='intraday',
+    description='日内回撤修复度 3日均（修复行为稳健版）')
+def id_dd_recovery_s3(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'dd_recovery_s3')
 
 
 if __name__ == '__main__':
