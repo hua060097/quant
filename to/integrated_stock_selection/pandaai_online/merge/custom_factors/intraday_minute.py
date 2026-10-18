@@ -65,15 +65,20 @@ def _resolve_min_dir() -> Path:
     """分钟数据目录解析：优先 to/local_data/minute（**不复权**，2020-01 起
     覆盖最全；日内比值因子对复权不变，见模块 docstring），次选
     integrated_stock_selection/local_data/minute；再兜底 minute_adj（复权版）。
-    以"含至少一个月度 minute_data.parquet"为准。"""
+    目录有效性 = "含至少一个月度 minute_data.parquet" **或** "含已构建的
+    daily_features_cache.parquet"（cache-only 部署：服务器免传 7GB 原始分钟，
+    仅上传缓存+meta 即可供因子求值）。"""
     for cand in (_TO / 'local_data' / 'minute',
                  ROOT / 'local_data' / 'minute',
                  _TO / 'local_data' / 'minute_adj',
                  ROOT / 'local_data' / 'minute_adj'):
         try:
-            if cand.exists() and any(
-                    d.is_dir() and (d / 'minute_data.parquet').exists()
-                    for d in cand.iterdir()):
+            if not cand.exists():
+                continue
+            if (cand / 'daily_features_cache.parquet').exists():
+                return cand
+            if any(d.is_dir() and (d / 'minute_data.parquet').exists()
+                   for d in cand.iterdir()):
                 return cand
         except Exception:
             continue
@@ -226,12 +231,17 @@ def _finalize(agg: pd.DataFrame) -> pd.DataFrame:
 
 
 def _cache_is_current() -> bool:
-    """缓存是否与当前月份集一致（双检锁内复用）。"""
+    """缓存是否与当前月份集一致（双检锁内复用）。
+    cache-only 部署（无月度原始文件）：cache+meta 存在即视为最新（不触发
+    需要原始数据的重建）。"""
     if not CACHE_PATH.exists() or not META_PATH.exists():
         return False
     try:
         meta = json.loads(META_PATH.read_text(encoding='utf-8'))
-        return meta.get('months') == [f.parent.name for f in _month_files()]
+        months_now = [f.parent.name for f in _month_files()]
+        if not months_now:
+            return bool(meta.get('months'))
+        return meta.get('months') == months_now
     except Exception:
         return False
 

@@ -301,7 +301,9 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     }
 
 
-def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray, y_raw: np.ndarray) -> np.ndarray:
+def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
+                           y_raw: np.ndarray,
+                           dates: np.ndarray | None = None) -> np.ndarray:
     w = np.ones(len(y_raw), dtype=np.float32)
     if buf_pos.any():
         w[buf_pos] = BUF_POS_WEIGHT
@@ -311,6 +313,26 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray, y_raw: np.
         q95 = max(q95, R3_CORE_MIN + 0.02)
         g = np.clip((y_raw - R3_CORE_MIN) / (q95 - R3_CORE_MIN), 0.0, 1.0)
         w[core_pos] = (1.0 + TAIL_WEIGHT_ALPHA * g[core_pos]).astype(np.float32)
+    # 极端普涨海啸日软封顶（V5.1）：2024-09-24~30 等单日数千正样本的极值日会在
+    # 损失函数里绑架整折正类梯度。纪律：绝不改 y=1 标签（改标签=特征认知错乱），
+    # 只对"单日正样本数 > max(300, P95)"的极少数海啸日，把当日**正样本**权重乘
+    # sqrt(N_cap/N_pos)；其余 95% 的正常交易日乘数=1.0 零改动。
+    if dates is not None:
+        _pos = core_pos | buf_pos
+        if _pos.any():
+            day_codes, _ = pd.factorize(dates, sort=True)
+            nd = int(day_codes.max()) + 1 if len(day_codes) else 0
+            if nd > 20:
+                npos = np.bincount(day_codes[_pos], minlength=nd).astype(float)
+                _v = npos[npos > 0]
+                if len(_v) > 20:
+                    cap = max(300.0, float(np.percentile(_v, 95)))
+                    over = npos > cap
+                    if over.any():
+                        scale = np.ones(nd, dtype=np.float32)
+                        scale[over] = np.sqrt(cap / npos[over]).astype(np.float32)
+                        _sc = scale[day_codes]
+                        w[_pos] = (w[_pos] * _sc[_pos]).astype(np.float32)
     return w
 
 
@@ -491,6 +513,21 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
             return
 
     logger.info(f"[MINUTE-BT] 组装行情骨架并启动 5 分钟级状态机回测 ({test_start} ~ {test_end}) ...")
+    # 与 CV 选参同口径：同 (date, 申万二级行业) 仅保留 pred 最高者，其余置 -inf
+    # （CV 评估用 drop_duplicates(keep=first) 的行业去重；回测若无此步则两口径不一致）。
+    try:
+        _swm = load_sw2_map()
+        if _swm and len(pred_df):
+            pred_df = pred_df.copy()
+            pred_df["_sec"] = pred_df["stock_code"].map(_swm).fillna("__NA__")
+            pred_df = pred_df.sort_values(["date", "predicted_return"],
+                                          ascending=[True, False], kind="stable")
+            _dup = pred_df.duplicated(subset=["date", "_sec"], keep="first")
+            pred_df.loc[_dup, "predicted_return"] = -np.inf
+            pred_df = pred_df.drop(columns=["_sec"])
+            logger.info(f"[MINUTE-BT] 行业去重：{int(_dup.sum())} 个行业非头名候选置 -inf")
+    except Exception as _e:
+        logger.warning(f"[MINUTE-BT] 行业去重失败（{str(_e)[:100]}），保持原排序")
     sf = pd.read_parquet(price_path)
     sf["date"] = pd.to_datetime(sf["date"]).dt.normalize()
     sf["stock_code"] = sf["stock_code"].astype(str)
@@ -543,7 +580,7 @@ def _cv_worker(task) -> tuple:
     if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
         return t_i, hp["pid"], fold["fold_id"], 0, []
     w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
-                                  c["y_raw"][tr_m])
+                                  c["y_raw"][tr_m], dates[tr_m])
     preds_by_cp = train_predict_fold(
         c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
         hp, CHECKPOINTS, c["seeds"], c["engines"], c["num_threads"])
@@ -665,7 +702,8 @@ def main():
         logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
         logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
 
-        w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m])
+        w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m],
+                                      dates[tr_m])
         preds_by_cp = train_predict_fold(
             X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
             hp, [args.cp], seeds, engines, args.num_threads
