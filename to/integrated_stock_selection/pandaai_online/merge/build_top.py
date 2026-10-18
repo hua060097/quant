@@ -896,8 +896,12 @@ def _habitat_expand(vwap_df, val_store: dict, store_vals: dict, ev,
     hab_vals: dict = dict(val_store)
     _extra_all: list = []
     try:
+        # 扩面优先族：store/机制家族 + custom（用户策划的自定义因子——日内降频/
+        # 板块身位等本就是为强势股栖息地设计的，不优先则会被 other 挤过 [:150]
+        # 截断、永不进栖息地席位/股性池评估；仅影响候选排序，入选仍须过
+        # hot5_q80 |t|>=2.5 或 jsd/反差门槛）。
         _HAB_FAMS = ('context', 'ctx', 'vol', 'M7', 'M14', 'M16', 'M17',
-                     'shape', 'skew', 'M3', 'store')
+                     'shape', 'skew', 'M3', 'store', 'custom')
         _extra0, _extra1, _extra2 = [], [], []
         for _pos in range(len(vwap_df)):
             _r = vwap_df.iloc[_pos]

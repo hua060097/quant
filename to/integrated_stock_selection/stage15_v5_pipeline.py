@@ -526,6 +526,33 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
                 )
 
 
+# ==================== CV 折级并行（fork 继承大数组，串行/并行同一 worker） ====================
+_CV_CTX: dict | None = None
+
+
+def _cv_worker(task) -> tuple:
+    """CV 单 (超参, 折) 任务：训练+评估（串行/并行共用，零漂移）。
+    返回 (任务序号, pid, fold_id, 评估行数, rows)。样本不足返回空 rows。"""
+    t_i, hp, fold = task
+    c = _CV_CTX
+    dates, valid_mask = c["dates"], c["valid_mask"]
+    tr_m = ((dates >= np.datetime64(fold["train_start"]))
+            & (dates <= np.datetime64(fold["train_end"])) & valid_mask)
+    te_m = ((dates >= np.datetime64(fold["test_start"]))
+            & (dates <= np.datetime64(fold["test_end"])) & valid_mask)
+    if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
+        return t_i, hp["pid"], fold["fold_id"], 0, []
+    w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
+                                  c["y_raw"][tr_m])
+    preds_by_cp = train_predict_fold(
+        c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
+        hp, CHECKPOINTS, c["seeds"], c["engines"], c["num_threads"])
+    rows = evaluate_predictions(
+        preds_by_cp, dates[te_m], c["codes"][te_m], c["sectors"][te_m],
+        c["y_raw"][te_m], fold["fold_id"], hp["pid"])
+    return t_i, hp["pid"], fold["fold_id"], len(rows), rows
+
+
 # ==================== 主流程入口 ====================
 def main():
     p = argparse.ArgumentParser(description="Stage15 V5.1 独立训练、CV选参与 2026 OOS 回测管线")
@@ -539,6 +566,10 @@ def main():
     p.add_argument("--engines", default="lgb,catboost", help="模型核: lgb,catboost 或 lgb,xgboost 或 lgb")
     p.add_argument("--enable_buffer_pos", action="store_true", default=True)
     p.add_argument("--num_threads", type=int, default=4)
+    p.add_argument("--jobs", type=int, default=1,
+                   help="CV 折级并行进程数（每 worker 内部再用 --num_threads 线程；"
+                        "建议 jobs×num_threads≤核数，12核如 jobs 4 × threads 3；"
+                        "结果与串行逐值一致，非 posix 平台自动退化串行）")
     p.add_argument("--test_start", default="2026-01-05", help="oos_2026 模式的测试起点")
     p.add_argument("--test_end", default="2026-10-18", help="oos_2026 模式的测试终点")
     p.add_argument("--pid", default="H15", help="oos_2026 模式使用的超参 ID")
@@ -567,25 +598,42 @@ def main():
     if args.mode == "cv":
         folds = build_forward_folds(uniq_days, train_months=args.train_months, test_months=args.test_months,
                                     embargo_days=EMBARGO_DAYS, cv_end=args.cv_end, logger=logger)
-        all_rows = []
+        # 折级并行（fork 继承 X 等大数组；串行路径直调同一 worker，逐值一致）
+        global _CV_CTX
+        _CV_CTX = {"X": X, "y": y, "y_raw": y_raw, "core_pos": core_pos,
+                   "buf_pos": buf_pos, "valid_mask": valid_mask, "dates": dates,
+                   "codes": codes, "sectors": sectors, "seeds": seeds,
+                   "engines": engines, "num_threads": args.num_threads,
+                   "min_train": args.min_train_rows, "min_test": args.min_test_rows}
+        tasks = []
         for hp in HP_GRID:
             for fold in folds:
-                tr_m = (dates >= np.datetime64(fold["train_start"])) & (dates <= np.datetime64(fold["train_end"])) & valid_mask
-                te_m = (dates >= np.datetime64(fold["test_start"])) & (dates <= np.datetime64(fold["test_end"])) & valid_mask
-                if tr_m.sum() < args.min_train_rows or te_m.sum() < args.min_test_rows:
-                    continue
-                w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m])
-                t_f = time.time()
-                preds_by_cp = train_predict_fold(
-                    X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
-                    hp, CHECKPOINTS, seeds, engines, args.num_threads
-                )
-                f_rows = evaluate_predictions(
-                    preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
-                    y_raw[te_m], fold["fold_id"], hp["pid"]
-                )
-                all_rows.extend(f_rows)
-                logger.info(f"[CV] {hp['pid']} Fold{fold['fold_id']:02d} ({fold['test_start']}~{fold['test_end']}) 完成 {time.time()-t_f:.0f}s")
+                tasks.append((len(tasks), hp, fold))
+        _nj = max(1, int(args.jobs or 1))
+        if _nj > 1 and os.name != "posix":
+            logger.warning("[CV] 非 posix 平台，--jobs 退化为串行")
+            _nj = 1
+        _nj = max(1, min(_nj, len(tasks)))
+        all_rows = []
+        _t0 = time.time()
+        _done = 0
+        if _nj <= 1:
+            for task in tasks:
+                _ti, _pid, _fid, _nrows, _rows = _cv_worker(task)
+                all_rows.extend(_rows)
+                _done += 1
+                logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
+                            f"{time.time()-_t0:.0f}s")
+        else:
+            import concurrent.futures as _cf
+            logger.info(f"[CV] 并行：{len(tasks)} 个(超参×折)任务 × {_nj} 进程 "
+                        f"(每进程 {args.num_threads} 线程) …")
+            with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+                for _ti, _pid, _fid, _nrows, _rows in _ex.map(_cv_worker, tasks):
+                    all_rows.extend(_rows)
+                    _done += 1
+                    logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
+                                f"[{_done}/{len(tasks)}] {time.time()-_t0:.0f}s")
 
         pd.DataFrame(all_rows).to_csv(out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
         if not all_rows:
