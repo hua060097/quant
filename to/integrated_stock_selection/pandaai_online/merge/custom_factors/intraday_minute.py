@@ -3,14 +3,19 @@
 
 数据源
 ------
-`local_data/minute_adj/<YYYYMM>/minute_data.parquet`
+`local_data/minute/<YYYYMM>/minute_data.parquet`（**不复权**；2020-01~2026-09，
+81 个月；`minute_adj` 复权版仅作兜底）。
   列：stock_code("000001.SZ")/datetime/open/high/low/close/volume/amount。
-  已复权 OHLC + 原始成交额；5分钟 bar（标签=区间终点：09:35~11:30 + 13:05~15:00，
-  48 根/交易日）。
+  5分钟 bar（标签=区间终点：09:35~11:30 + 13:05~15:00，48 根/交易日）。
+
+为何用不复权数据：本族 6 个因子全部是**日内同日内比值**（区间位置/同日收益/
+同日成交占比/同日波动比/同日回撤），对"整日复权常数"不变——复权因子只在
+日界变化（除权发生在日间开盘前），故日内口径下复权与否逐值等价；用不复权
+可多吃 2.9 年覆盖（2020-01 起 vs 复权版 2023-06 起）。
 
 日频聚合缓存
 ------------
-`local_data/minute_adj/daily_features_cache.parquet`（首次求值自动构建；
+`local_data/minute/daily_features_cache.parquet`（首次求值自动构建；
 `python -m custom_factors.intraday_minute --build [--force]` 手动重建）。
 新月份数据出现时自动检测并重建（meta 记录已并入月份清单）。
 
@@ -51,10 +56,13 @@ _TO = ROOT.parent                  # .../to（local_data 的正式位置，gates
 
 
 def _resolve_min_dir() -> Path:
-    """分钟数据目录解析：优先 to/local_data/minute_adj（正式），
-    次选 integrated_stock_selection/local_data/minute_adj（历史子集）。
+    """分钟数据目录解析：优先 to/local_data/minute（**不复权**，2020-01 起
+    覆盖最全；日内比值因子对复权不变，见模块 docstring），次选
+    integrated_stock_selection/local_data/minute；再兜底 minute_adj（复权版）。
     以"含至少一个月度 minute_data.parquet"为准。"""
-    for cand in (_TO / 'local_data' / 'minute_adj',
+    for cand in (_TO / 'local_data' / 'minute',
+                 ROOT / 'local_data' / 'minute',
+                 _TO / 'local_data' / 'minute_adj',
                  ROOT / 'local_data' / 'minute_adj'):
         try:
             if cand.exists() and any(
@@ -63,7 +71,7 @@ def _resolve_min_dir() -> Path:
                 return cand
         except Exception:
             continue
-    return _TO / 'local_data' / 'minute_adj'
+    return _TO / 'local_data' / 'minute'
 
 
 MIN_DIR = _resolve_min_dir()
