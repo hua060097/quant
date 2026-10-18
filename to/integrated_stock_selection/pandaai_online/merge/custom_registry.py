@@ -9,6 +9,12 @@
      可直接访问 OPEN/HIGH/LOW/CLOSE/VWAP/VOLUME/AMOUNT/TURNOVER/MARKET_CAP/
      MKT_RET/IND_RET/IND_EXCESS/DISP/BETA20/BETA60/IVOL20 等全部列。
 
+外部数据源型因子（同方式2注册）：因子函数可自备数据加载与缓存，按
+(stock_code, date) 对齐到 frame 返回（例：custom_factors/intraday_minute.py
+从 local_data/minute_adj 的 5 分钟 K 线聚合 6 个日内降频特征）。
+约定：数据源缺失时返回全 NaN（优雅降级，不抛错）；加载器自管缓存与增量重建；
+只用 ≤ 信号日收盘时刻的数据（与日线特征同口径，无前视）。
+
 安全约束：Python函数禁`shift(-n)`前视（由调用方`audit_cut_paths`抽查）；
 返回必须与frame等长，有限值外一律NaN；`competition_uploadable`仅公式型经
 `executor.competition_status`判定，Python型一律False（只走本地VWAP）。
