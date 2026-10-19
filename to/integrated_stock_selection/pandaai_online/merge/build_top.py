@@ -30,7 +30,7 @@ import pandas as pd
 import _paths  # noqa: F401
 import windows as W
 from cache_utils import find_stock_features
-from decorrelate_top import load_all_specs, month_end_spearman_matrix
+from decorrelate_top import factor_full_values, load_all_specs, month_end_spearman_matrix
 from evaluator import Evaluator, load_panel
 from fitness import DataContext, build_label_series, sia_of, tier1
 from grammar import expression_hash
@@ -66,6 +66,151 @@ def _par_jobs(n) -> int:
         print("  [warn] 非 posix 平台，--jobs 退化为串行", flush=True)
         return 1
     return nj
+
+
+def _auto_jobs_build_top() -> int:
+    """--jobs auto：按核数+可用内存自动定并行进程数。
+    fork 共享面板，每 worker 工作集约 3GB（值计算/打分）；
+    取 min(核数-2, 0.7×可用内存/3GB)，下限 1。"""
+    import os
+    cores = os.cpu_count() or 4
+    mem_gb = None
+    try:
+        with open('/proc/meminfo', 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    mem_gb = int(line.split()[1]) / 1048576.0
+                    break
+    except Exception:
+        pass
+    if mem_gb is None:
+        try:
+            import psutil
+            mem_gb = psutil.virtual_memory().available / 1073741824.0
+        except Exception:
+            mem_gb = 8.0
+    cpu_cap = max(1, cores - 2)
+    mem_cap = max(1, int(0.7 * mem_gb / 3.0))
+    nj = max(1, min(cpu_cap, mem_cap))
+    print(f'[AUTO] 核数={cores} 可用内存={mem_gb:.1f}GB -> jobs={nj} '
+          f'(cpu限={cpu_cap} 内存限={mem_cap})', flush=True)
+    return nj
+
+
+#: 非线性诊断(MI/JSD)并行共享（fork 继承 cols/y/日分组，免 pickling 大数组）
+_NL_CTX = None
+
+
+def _nl_worker(j: int):
+    """非线性诊断工作进程：单候选 MI/JSD（纯函数，串并逐值一致）。"""
+    c = _NL_CTX
+    try:
+        _d = mi_monthly(c["cols"][j], c["yv"], c["day_group"])
+        _d["jsd"] = jsd_tails(c["cols"][j], c["yv"])
+        return j, _d
+    except Exception:
+        return j, None
+
+
+def _nl_backfill(cols: list, idxs: list, labels: list, yv,
+                 day_group, jobs: int = 1) -> dict:
+    """MI/JSD 回填（串并同一 worker；_ex.map 保序 → nl_map 插入顺序与串行一致）。
+
+    cols: 已求值候选数组列表；idxs: 对应的 df 行号；labels: list(df.index)。
+    """
+    nl_map: dict = {}
+    _nj = _par_jobs(jobs)
+    if _nj > 1 and len(cols) > 1:
+        global _NL_CTX
+        _NL_CTX = {"cols": cols, "yv": yv, "day_group": day_group}
+        import concurrent.futures as _cf
+        _nw = min(_nj, len(cols))
+        print(f'非线性诊断并行：{len(cols)} 个候选 × {_nw} 进程 …', flush=True)
+        try:
+            with _cf.ProcessPoolExecutor(max_workers=_nw) as _ex:
+                for _j, _d in _ex.map(_nl_worker, range(len(cols))):
+                    if _d is not None:
+                        nl_map[labels[idxs[_j]]] = _d
+        finally:
+            _NL_CTX = None
+    else:
+        for _j, _v in enumerate(cols):
+            try:
+                _d = mi_monthly(_v, yv, day_group)
+                _d['jsd'] = jsd_tails(_v, yv)
+                nl_map[labels[idxs[_j]]] = _d
+            except Exception:
+                continue
+    return nl_map
+
+
+#: 条件 RankIC 并行共享（fork 继承 frame/ctx/prep，免 pickling 大对象）
+_COND_CTX = None
+
+
+def _cond_worker(task):
+    """条件 RankIC 工作进程：单候选（串并同一份求值代码，逐值一致）。
+
+    task = (lib, fid, formula_raw, formula_str, family)：formula_raw 原样回填
+    输出字段（与串行 r['formula_cn'] 恒等），formula_str 供求值解析。
+    """
+    lib, fid, formula_raw, formula_str, family = task
+    c = _COND_CTX
+    try:
+        f_full = factor_full_values(lib, fid, formula_str, c["frame"], c["ev"],
+                                    c["builder"], c["specs"], c["store_full"])
+        if f_full is None:
+            return None
+        per = {}
+        for lab, ctx in c["ctxs"].items():
+            per[lab] = c["cond_ic_metrics"](ctx, f_full[ctx._pos], c["cond_prep"],
+                                            name=fid)
+        return {'name': f"{fid} ({family})", 'formula': formula_raw,
+                'lib': lib, 'per': per}
+    except Exception:
+        return None
+
+
+#: dom 诊断并行共享（fork 继承 val_store/frame/字段值，免 pickling）
+_DOM_CTX = None
+
+
+def _quick_dom_core(v: np.ndarray, fields_vals: dict):
+    """单候选单字段支配度（与串行 _quick_dom 逐字同口径）。"""
+    from scipy.stats import spearmanr as _sp
+    out = {}
+    for f, fv in fields_vals.items():
+        ok = np.isfinite(v) & np.isfinite(fv)
+        if ok.sum() < 30:
+            out[f] = np.nan
+            continue
+        rho, _ = _sp(v[ok], fv[ok])
+        out[f] = abs(rho)
+    mf = max(out, key=lambda k: out[k] if np.isfinite(out[k]) else -1.0)
+    if not np.isfinite(out[mf]):
+        return None
+    return mf, out[mf]
+
+
+def _dom_worker(task):
+    """dom 诊断工作进程：单候选（串并同一份求值代码，逐值一致）。"""
+    _key, lib, fid, fcn = task
+    c = _DOM_CTX
+    try:
+        _v = c["val_store"].get(_key)
+        if _v is None:
+            if lib == 'store' and c["store_vals"] and fid in c["store_vals"]:
+                _v = c["store_vals"][fid]
+            else:
+                _full = factor_full_values(lib, fid, fcn, c["frame"], c["ev"],
+                                           c["builder"], c["specs"], None)
+                if _full is None:
+                    return _key, None
+                _v = np.asarray(_full, dtype=float)[c["pos_me"]]
+        _dd = _quick_dom_core(np.asarray(_v, dtype=float), c["fields_vals"])
+        return _key, _dd
+    except Exception:
+        return _key, None
 
 
 def _ref_spec_key(spec: dict) -> str:
@@ -277,18 +422,11 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
         if val_store is not None and _key is not None:
             val_store[(_rr['lib'], str(_rr['factor_id']))] = _vv
     # 非线性诊断（2026-09-26）：只对 vwap 扫描候选算 MI/JSD（c2c 不动）；
-    # 用已求值（cols），不新增因子求值。
+    # 用已求值（cols），不新增因子求值。2026-10-19 并行化（_nl_backfill）。
     nl_map: dict = {}
     if label == 'vwap' and y_me is not None:
-        _yv = np.asarray(y_me, dtype=float)
-        _labels = list(df_vwap.index)
-        for _j, _v in enumerate(cols):
-            try:
-                _d = mi_monthly(_v, _yv, day_group)
-                _d['jsd'] = jsd_tails(_v, _yv)
-                nl_map[_labels[idxs[_j]]] = _d
-            except Exception:
-                continue
+        nl_map = _nl_backfill(cols, idxs, list(df_vwap.index),
+                              np.asarray(y_me, dtype=float), day_group, jobs)
     if not cols:
         return [], {}, nl_map
     corr = month_end_spearman_matrix(np.column_stack(cols), day_group)
@@ -1025,16 +1163,64 @@ def _hab_score_worker(args) -> tuple:
         return idx, (None, None)
 
 
+def _new_pair_cache(v: np.ndarray) -> list:
+    """候选/池成员秩缓存单元 [有限掩码, 掩码内有限数, 秩或None]（惰性填秩）。"""
+    A = np.isfinite(v)
+    return [A, int(A.sum()), None]
+
+
+def _pair_rho(a: np.ndarray, b: np.ndarray, day: np.ndarray, nd: int,
+              cache_a: list | None = None, cache_b: list | None = None,
+              min_n: int = 30) -> float:
+    """单对逐日截面 Spearman 均值；与 _xsec_spearman 逐位一致。
+
+    P3 加速（2026-10-19，位级等价）：pair 掩码 m=A&B；若 A⊆B（na==|m|，
+    预热 NaN 场景恒成立）则 pair 掩码即 A → 复用该列在自身掩码下的秩缓存，
+    免去每对重复 blockwise_rank（1.5~5s → ~0.1-0.3s）；不嵌套时回退逐对现算。
+    """
+    import eval_v2 as E
+    import fastranks as FR
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    A = cache_a[0] if cache_a is not None else np.isfinite(a)
+    B = cache_b[0] if cache_b is not None else np.isfinite(b)
+    m = A & B
+    nm = int(m.sum())
+    if nm < min_n:
+        return float('nan')
+    if cache_a is not None and cache_a[1] == nm:
+        if cache_a[2] is None:
+            cache_a[2] = FR.blockwise_rank(np.where(A, a, np.nan), day) \
+                if cache_a[1] else None
+        ra = cache_a[2]
+    else:
+        ra = FR.blockwise_rank(np.where(m, a, np.nan), day)
+    if cache_b is not None and cache_b[1] == nm:
+        if cache_b[2] is None:
+            cache_b[2] = FR.blockwise_rank(np.where(B, b, np.nan), day) \
+                if cache_b[1] else None
+        rb = cache_b[2]
+    else:
+        rb = FR.blockwise_rank(np.where(m, b, np.nan), day)
+    ic = E._daily_corr(ra, rb, day, nd)
+    ic = ic[np.isfinite(ic)]
+    return float(ic.mean()) if len(ic) else float('nan')
+
+
 def _pair_vs_pool(v_s: np.ndarray, pool_s: list, day_s: np.ndarray,
-                  nd: int, threshold: float) -> bool:
+                  nd: int, threshold: float,
+                  cache: list | None = None,
+                  pool_caches: list | None = None) -> bool:
     """候选（已按 day_s 重排）与池的正交否决（返回 True=拒绝）。
     串行 early-break：首个 |ρ|>threshold 即 return True。大多数落选候选
-    在前 1~3 对即淘汰（仅 1.5~5 秒），远快于全量 map 后 any（80 对必满）。
-    刻意不用线程/进程池：blockwise_rank 内层是 Python for 循环，
-    GIL 下多线程加速有限，而全量计算丢掉 early-break 反而放大算量 20~40 倍。
+    在前 1~3 对即淘汰，远快于全量 map 后 any（80 对必满）。
+    刻意不用线程/进程池：early-break 语义下全量并行会放大算量 20~40 倍。
+    P3（2026-10-19）：pair 计算走 _pair_rho 秩缓存（掩码嵌套时位级等价复用），
+    cache/pool_caches 由调用方持有（_new_pair_cache 构造）。
     输入须行序一致（day_s 单调 + 数组同序重排），否则结果无意义。"""
-    for _pv in pool_s:
-        _c = _xsec_spearman(v_s, _pv, day_s, nd)
+    for _j, _pv in enumerate(pool_s):
+        _cb = pool_caches[_j] if pool_caches is not None else None
+        _c = _pair_rho(v_s, _pv, day_s, nd, cache_a=cache, cache_b=_cb)
         if np.isfinite(_c) and abs(float(_c)) > threshold:
             return True
     return False
@@ -1119,12 +1305,15 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
     _order_me = np.argsort(np.asarray(day_codes), kind="stable")
     _day_s = np.asarray(day_codes)[_order_me]
     pool_s = []
+    pool_caches = []
     for _kp in (vwap_order or []):
         try:
             _r = vwap_df.iloc[_kp]
             _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
             if _vv is not None:
-                pool_s.append(np.asarray(_vv, dtype=float)[_order_me])
+                _vv_s = np.asarray(_vv, dtype=float)[_order_me]
+                pool_s.append(_vv_s)
+                pool_caches.append(_new_pair_cache(_vv_s))
         except Exception:
             continue
     seats, detail = [], []
@@ -1133,10 +1322,13 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
             break
         _v_s = np.asarray(val_store[(r['lib'], str(r['factor_id']))],
                           dtype=float)[_order_me]
-        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold):
+        _cache_s = _new_pair_cache(_v_s)
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
+                         cache=_cache_s, pool_caches=pool_caches):
             continue
         seats.append(_pos)
         pool_s.append(_v_s)
+        pool_caches.append(_cache_s)
         detail.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
                        'hot5_q80_t': round(float(t), 3)})
     return seats, detail
@@ -1187,12 +1379,15 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
     _order_me = np.argsort(np.asarray(day_codes), kind="stable")
     _day_s = np.asarray(day_codes)[_order_me]
     pool_s = []
+    pool_caches = []
     for _kp in (vwap_order or []):
         try:
             _r = vwap_df.iloc[_kp]
             _vv = val_store.get((_r['lib'], str(_r['factor_id'])))
             if _vv is not None:
-                pool_s.append(np.asarray(_vv, dtype=float)[_order_me])
+                _vv_s = np.asarray(_vv, dtype=float)[_order_me]
+                pool_s.append(_vv_s)
+                pool_caches.append(_new_pair_cache(_vv_s))
         except Exception:
             continue
     scored = []
@@ -1226,9 +1421,12 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         if len(out) >= top_n:
             break
         _v_s = np.asarray(val_store[_key], dtype=float)[_order_me]
-        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold):
+        _cache_s = _new_pair_cache(_v_s)
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
+                         cache=_cache_s, pool_caches=pool_caches):
             continue
         pool_s.append(_v_s)
+        pool_caches.append(_cache_s)
         out.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
                     'family': str(r.get('family', '')),
                     'formula_cn': str(r.get('formula_cn', '')),
@@ -1284,7 +1482,8 @@ def pct(x) -> str:
 def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                   builder: FactorBuilder, specs_by_id: dict,
                   vwap_order: list[int] | None, vwap_df: pd.DataFrame,
-                  prep: dict | None = None, end: str | None = None) -> list[dict]:
+                  prep: dict | None = None, end: str | None = None,
+                  jobs: int = 1) -> list[dict]:
     """双榜入选者的条件 RankIC（2026-09-25）：栖息地（hot5/hot2）+ 市场状态族，
     与主管线 COND-IC 同口径。c2c 榜 top20 + 榜2 正交入选者并集，逐候选×逐标签。"""
     from cond_ic import build_cond_prep, cond_ic_metrics
@@ -1314,7 +1513,7 @@ def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
     except Exception:
         pass
     seen = set()
-    out = []
+    _tasks = []
     for _sel in (c2c_sel, vwap_sel):
         for _, r in _sel.iterrows():
             key = (r['lib'], str(r['factor_id']))
@@ -1322,19 +1521,37 @@ def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                 continue
             seen.add(key)
             try:
-                f_full = factor_full_values(
-                    str(r['lib']), str(r['factor_id']), str(r.get('formula_cn', '')),
-                    frame, ev, builder, specs_by_id, _store_full)
-                if f_full is None:
-                    continue
-                per = {}
-                for lab, ctx in _ctxs.items():
-                    per[lab] = cond_ic_metrics(ctx, f_full[ctx._pos], cond_prep,
-                                               name=str(r['factor_id']))
-                out.append({'name': f"{r['factor_id']} ({r['family']})",
-                            'formula': r['formula_cn'], 'lib': r['lib'], 'per': per})
+                _fr_raw = r['formula_cn']
+                _fam = r['family']
             except Exception:
                 continue
+            _tasks.append((str(r['lib']), str(r['factor_id']),
+                           _fr_raw, str(r.get('formula_cn', '')), _fam))
+    # 2026-10-19 并行化：逐候选独立（串并同一 worker，_ex.map 保序 → out 顺序恒等）
+    global _COND_CTX
+    _COND_CTX = {"frame": frame, "ev": ev, "builder": builder,
+                 "specs": specs_by_id, "store_full": _store_full,
+                 "ctxs": _ctxs, "cond_prep": cond_prep,
+                 "cond_ic_metrics": cond_ic_metrics}
+    out = []
+    _nj = _par_jobs(jobs)
+    if _nj > 1 and len(_tasks) > 1:
+        import concurrent.futures as _cf
+        _nw = min(_nj, len(_tasks))
+        print(f'条件 RankIC 并行：{len(_tasks)} 个候选 × {_nw} 进程 …', flush=True)
+        try:
+            with _cf.ProcessPoolExecutor(max_workers=_nw) as _ex:
+                for _res in _ex.map(_cond_worker, _tasks):
+                    if _res is not None:
+                        out.append(_res)
+        finally:
+            _COND_CTX = None
+    else:
+        for _task in _tasks:
+            _res = _cond_worker(_task)
+            if _res is not None:
+                out.append(_res)
+        _COND_CTX = None
     return out
 
 
@@ -1453,10 +1670,16 @@ def main() -> int:
     ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT,
                     help='数据截止日铁律（默认 2025-12-31）：load_panel/DataContext/'
                          'pos_me/B.read_factors 全链路钳制，严禁触及 2026 数据（PLAN §20.6.2）')
-    ap.add_argument('--jobs', type=int, default=1,
-                    help='eval_mined 慢路径并行进程数（按候选分片；12 核建议 8；'
+    ap.add_argument('--jobs', default='1',
+                    help='并行进程数：整数或 auto（按核数+可用内存自动定，'
+                         '用于 eval_mined/评估/扩面/席位池打分等；'
                          '结果与串行逐值一致，非 posix 平台自动退化串行）')
     args = ap.parse_args()
+    _jobs_raw = str(args.jobs).strip().lower()
+    if _jobs_raw in ('auto', '0', '-1'):
+        args.jobs = _auto_jobs_build_top()
+    else:
+        args.jobs = max(1, int(args.jobs or 1))
 
     t0 = time.time()
     if args.from_flat:
@@ -1624,7 +1847,7 @@ def main() -> int:
     cond_table = None
     try:
         cond_table = cond_ic_table(df, frame, ev, builder, _specs,
-                                   vwap_order, vwap_df)
+                                   vwap_order, vwap_df, jobs=args.jobs)
         payload['cond_table_n'] = len(cond_table)
         print(f'条件 RankIC：双榜入选者 {len(cond_table)} 个完成', flush=True)
     except Exception as exc:
@@ -1668,57 +1891,56 @@ def main() -> int:
     payload['habitat_pool_n'] = len(hab_pool)
 
     # dom 诊断（2026-09-25）：双榜入选者的单字段支配度（快速 Spearman @ pos_me）
-    from scipy.stats import spearmanr as _sp
-
-    def _quick_dom(values_me, frame):
-        # 2026-09-26：传入已是 pos_me 切片的因子值（来自 val_store 或现算），
-        # frame/pos_me 取自闭包。
-        v = np.asarray(values_me, dtype=float)
-        out = {}
-        for f in ('CLOSE', 'VOLUME', 'AMOUNT', 'MARKET_CAP', 'TURNOVER'):
-            fv = pd.to_numeric(frame[f].iloc[pos_me], errors='coerce').to_numpy(dtype=float)
-            ok = np.isfinite(v) & np.isfinite(fv)
-            if ok.sum() < 30:
-                out[f] = np.nan
-                continue
-            rho, _ = _sp(v[ok], fv[ok])
-            out[f] = abs(rho)
-        mf = max(out, key=lambda k: out[k] if np.isfinite(out[k]) else -1.0)
-        if not np.isfinite(out[mf]):
-            return None
-        return mf, out[mf]
-
+    # 2026-10-19 并行化：逐候选独立（串并同一 worker，map 保序 → _dom_info 顺序恒等）
+    _DOM_FIELDS = ('CLOSE', 'VOLUME', 'AMOUNT', 'MARKET_CAP', 'TURNOVER')
     _dom_info: dict = {}
-    for _tag, _sel_df, _order in (('c2c', c2c_df, c2c_order), ('vwap', vwap_df, vwap_order)):
-        if _order is None:
-            continue
-        for _idx in _order:
-            _r = _sel_df.iloc[_idx]
-            _key = (_r['lib'], str(_r['factor_id']))
-            if _key in _dom_info:
+    if all(f in frame.columns for f in _DOM_FIELDS):
+        _dom_tasks = []
+        _dom_seen = set()
+        for _tag, _sel_df, _order in (('c2c', c2c_df, c2c_order),
+                                      ('vwap', vwap_df, vwap_order)):
+            if _order is None:
                 continue
-            try:
-                _v = val_store.get(_key)
-                if _v is None:
-                    if str(_r['lib']) == 'store' and store_vals \
-                            and str(_r['factor_id']) in store_vals:
-                        # store_vals 本就是 pos_me 切片，直接取。
-                        _v = store_vals[str(_r['factor_id'])]
-                    else:
-                        from decorrelate_top import factor_full_values as _ffv
-                        _full = _ffv(str(_r['lib']), str(_r['factor_id']),
-                                     str(_r.get('formula_cn', '')), frame, ev,
-                                     builder, _specs, None)
-                        if _full is None:
-                            continue
-                        _v = np.asarray(_full, dtype=float)[pos_me]
-                _dd = _quick_dom(_v, frame)
-                if _dd is None:
+            for _idx in _order:
+                _r = _sel_df.iloc[_idx]
+                _key = (_r['lib'], str(_r['factor_id']))
+                if _key in _dom_seen:
                     continue
-                _mf, _mv = _dd
-                _dom_info[_key] = {'max': round(_mv, 2), 'field': _mf}
-            except Exception:
-                pass
+                _dom_seen.add(_key)
+                try:
+                    _fcn = str(_r.get('formula_cn', ''))
+                except Exception:
+                    continue
+                _dom_tasks.append((_key, str(_r['lib']),
+                                   str(_r['factor_id']), _fcn))
+        global _DOM_CTX
+        _DOM_CTX = {"val_store": val_store, "store_vals": store_vals or {},
+                    "frame": frame, "ev": ev, "builder": builder,
+                    "specs": _specs, "pos_me": pos_me,
+                    "fields_vals": {f: pd.to_numeric(frame[f].iloc[pos_me],
+                                                     errors='coerce')
+                                    .to_numpy(dtype=float)
+                                    for f in _DOM_FIELDS}}
+        _nj_dom = _par_jobs(args.jobs)
+        try:
+            if _nj_dom > 1 and len(_dom_tasks) > 1:
+                import concurrent.futures as _cf
+                _nw = min(_nj_dom, len(_dom_tasks))
+                print(f'dom 诊断并行：{len(_dom_tasks)} 个候选 × {_nw} 进程 …',
+                      flush=True)
+                with _cf.ProcessPoolExecutor(max_workers=_nw) as _ex:
+                    for _key, _dd in _ex.map(_dom_worker, _dom_tasks):
+                        if _dd is not None:
+                            _dom_info[_key] = {'max': round(_dd[1], 2),
+                                               'field': _dd[0]}
+            else:
+                for _t in _dom_tasks:
+                    _key, _dd = _dom_worker(_t)
+                    if _dd is not None:
+                        _dom_info[_key] = {'max': round(_dd[1], 2),
+                                           'field': _dd[0]}
+        finally:
+            _DOM_CTX = None
     payload['dom_info'] = {f'{k[0]}_{k[1]}': v for k, v in _dom_info.items()}
 
     md = build_md(df, payload, vwap_order=vwap_order, vwap_rho=vwap_rho,
