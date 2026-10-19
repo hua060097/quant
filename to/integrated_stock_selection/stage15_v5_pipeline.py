@@ -500,6 +500,116 @@ def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> p
     return sum_df.sort_values("plateau_score", ascending=False).reset_index(drop=True)
 
 
+def pick_backtest_min_dir(test_start: str, test_end: str,
+                          logger: logging.Logger) -> Path:
+    """回测行情目录：**前复权（minute_adj）优先**——不复权价格在除权除息日存在
+    假跳空，会污染买入价/收益/涨跌停判断；因子缓存用不复权无碍（日内比值对复权
+    不变，见 intraday_minute 模块），但回测价格必须前复权。按测试窗口月份覆盖
+    选择候选，无前复权覆盖时退回不复权并显式告警。"""
+    try:
+        months_need = set(pd.period_range(test_start, test_end,
+                                          freq="M").strftime("%Y%m"))
+    except Exception:
+        months_need = set()
+    cands = [_HERE.parent / "local_data" / "minute_adj",
+             _HERE / "local_data" / "minute_adj",
+             _HERE.parent / "local_data" / "minute",
+             _HERE / "local_data" / "minute"]
+    fallback = None
+    for cand in cands:
+        if not cand.exists():
+            continue
+        if fallback is None:
+            fallback = cand
+        try:
+            have = {d.name for d in cand.iterdir()
+                    if d.is_dir() and (d / "minute_data.parquet").exists()}
+        except Exception:
+            continue
+        if months_need and not (have & months_need):
+            continue
+        if "minute_adj" in cand.name:
+            logger.info(f"[MINUTE-BT] 回测行情: {cand}（前复权，覆盖 "
+                        f"{len(have & months_need)}/{len(months_need)} 月）")
+        else:
+            logger.warning(f"[MINUTE-BT] 回测行情: {cand}（**不复权**！无前复权数据"
+                           f"覆盖测试窗口，除权跳空风险）")
+        return cand
+    logger.warning("[MINUTE-BT] 未找到覆盖测试窗口的分钟行情，使用兜底目录（可能无数据）")
+    return fallback or (_HERE.parent / "local_data" / "minute")
+
+
+def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
+                             feature_cols: list[str], codes_te: np.ndarray,
+                             dates_te: np.ndarray, y_raw_te: np.ndarray,
+                             price_path: Path, rules_path: str,
+                             logger: logging.Logger) -> np.ndarray:
+    """OOS 分钟回测前应用风控级联否决：被否候选 predicted_return 置 -inf，
+    回测引擎按 pred 降序取第一个未被否者（Rank1 被否→顺延→全否空仓）。
+    特征组装与 risk_veto_train 训练期完全一致（矩阵 + 行情派生 + 日内降频缓存
+    + score_z_in_day），规则引用特征缺失时严格报错（防静默失效）。"""
+    rules = json.loads(Path(rules_path).read_text(encoding="utf-8")).get("rules", [])
+    if not rules:
+        logger.warning(f"[VETO] {rules_path} 中无规则，跳过否决")
+        return preds
+    from risk_veto_train import apply_veto, derive_price_features
+    fdf = pd.DataFrame(np.asarray(X_te), columns=feature_cols)
+    fdf["stock_code"] = codes_te
+    fdf["date"] = pd.to_datetime(dates_te)
+    # score_z_in_day：与 evaluate_predictions 同日同公式（med / 1.4826*MAD）
+    _t = pd.DataFrame({"date": fdf["date"], "pred": preds})
+    _g = _t.groupby("date")["pred"]
+    med = _g.transform("median").to_numpy(dtype=float)
+    mad = _g.transform(lambda s: np.median(np.abs(s - np.median(s)))).to_numpy(dtype=float)
+    std = _g.transform("std").to_numpy(dtype=float)
+    scale = np.where(mad > 1e-12, 1.4826 * mad, std + 1e-9)
+    fdf["score_z_in_day"] = (np.asarray(preds, dtype=float) - med) / scale
+    need = {f for r in rules for f in r.get("features", []) if f}
+    need |= {r.get("fa") for r in rules if r.get("fa")}
+    need |= {r.get("fb") for r in rules if r.get("fb")}
+    if need - set(fdf.columns):
+        try:
+            pder = derive_price_features(Path(price_path), fdf["date"].min(),
+                                         fdf["date"].max())
+            fdf = fdf.merge(pder, on=["stock_code", "date"], how="left")
+        except Exception as e:
+            logger.warning(f"[VETO] 行情派生特征失败: {str(e)[:120]}")
+    if need - set(fdf.columns):
+        try:
+            from risk_veto_train import find_intraday_cache
+            ip = find_intraday_cache()
+            if ip is not None and Path(ip).exists():
+                idf = pd.read_parquet(ip)
+                idf["date"] = pd.to_datetime(idf["date"])
+                idf["stock_code"] = idf["stock_code"].astype(str)
+                icols = [c for c in idf.columns if c in need]
+                if icols:
+                    fdf = fdf.merge(idf[["stock_code", "date"] + icols],
+                                    on=["stock_code", "date"], how="left")
+        except Exception as e:
+            logger.warning(f"[VETO] 日内降频缓存 join 失败: {str(e)[:120]}")
+    missing = sorted(need - set(fdf.columns))
+    if missing:
+        raise SystemExit(f"[VETO] 规则引用特征缺失: {missing}（先并入对应数据源再回测）")
+    veto = apply_veto(rules, fdf)
+    # 排雷统计（级联口径与回测一致：每日按 pred 降序取第一个未被否者）
+    _t2 = pd.DataFrame({"date": fdf["date"], "pred": np.asarray(preds, dtype=float),
+                        "ret": np.asarray(y_raw_te, dtype=float), "veto": veto})
+    _t2 = _t2.sort_values(["date", "pred"], ascending=[True, False], kind="stable")
+    first = _t2.groupby("date").first()
+    kept = _t2[~_t2["veto"]].groupby("date").first()
+    delta = (kept["ret"] - first["ret"]).dropna()
+    _r1v = first[first["veto"]]
+    logger.info(
+        f"[VETO] 规则 {len(rules)} 条 | 否决候选 {int(veto.sum())}/{len(preds)} | "
+        f"Rank1 被否 {len(_r1v)}/{len(first)} 天"
+        f"（被否 Rank1 实际收益均值 {(_r1v['ret'].mean() if len(_r1v) else 0.0):.4f}）"
+        f" | 级联净增 Δ均值 {delta.mean():.4f}（{len(delta)} 天）")
+    out = np.asarray(preds, dtype=float).copy()
+    out[veto] = -np.inf
+    return out
+
+
 def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start: str,
                             test_end: str, out_dir: Path, logger: logging.Logger):
     """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（Rank 1 & Rank 2）。"""
@@ -536,10 +646,8 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
     bt_df = sf.merge(pred_df[["date", "stock_code", "predicted_return"]], on=["date", "stock_code"], how="left")
     bt_df["predicted_return"] = bt_df["predicted_return"].fillna(-np.inf)
 
-    # 自动定位 5 分钟数据目录
-    min_dir = _HERE.parent / "local_data" / "minute"
-    if not min_dir.exists():
-        min_dir = _HERE / "local_data" / "minute"
+    # 自动定位 5 分钟数据目录（前复权优先，见 pick_backtest_min_dir）
+    min_dir = pick_backtest_min_dir(test_start, test_end, logger)
 
     res = run_optimized_backtest(
         prediction_data=bt_df,
@@ -612,6 +720,9 @@ def main():
     p.add_argument("--pid", default="H15", help="oos_2026 模式使用的超参 ID")
     p.add_argument("--cp", type=int, default=350, help="oos_2026 模式使用的 Checkpoint")
     p.add_argument("--with_minute_backtest", action="store_true", help="开启 5 分钟级状态机真实回测")
+    p.add_argument("--veto_rules", default="",
+                   help="risk_veto_rules.json 路径；提供后对 oos_2026 分钟回测候选"
+                        "应用风控级联否决（Rank1 被否→顺延；需配合 --with_minute_backtest）")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
@@ -720,11 +831,19 @@ def main():
         logger.info("\n===== 2026 OOS 日频 Rank1 & 同行业去重 Top2 终验结果 =====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
+        if args.veto_rules and not args.with_minute_backtest:
+            logger.warning("[VETO] --veto_rules 已提供但未开 --with_minute_backtest，否决未生效")
         if args.with_minute_backtest:
+            _preds_oos = preds_by_cp[args.cp]
+            if args.veto_rules:
+                _preds_oos = apply_risk_veto_to_preds(
+                    _preds_oos, X[te_m], bundle["feature_cols"], codes[te_m],
+                    dates[te_m], y_raw[te_m], bundle["price_path"],
+                    args.veto_rules, logger)
             pred_df = pd.DataFrame({
                 "date": pd.to_datetime(dates[te_m]),
                 "stock_code": codes[te_m],
-                "predicted_return": preds_by_cp[args.cp],
+                "predicted_return": _preds_oos,
             })
             run_minute_backtest_oos(pred_df, bundle["price_path"], args.test_start, args.test_end, out_dir, logger)
 

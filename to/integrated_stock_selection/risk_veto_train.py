@@ -25,8 +25,10 @@
 1. **特征白名单**：仅 5 类具"派发/衰竭/失速"物理含义的特征（RISK_FEATURE_POOL），
    禁全特征搜索（Top 池样本少，全搜=多重比较自由度爆炸，必出巧合噪音）。
 2. **Walk-forward**：第 k 折只用 1..k-1 折样本挖规则（严格过去时）。
-3. **规则形式**：`[Fa>qa ∧ Fb<qb]` / `[Fa<qa ∧ Fb>qb]`；阈值取训练前缀样本的
-   全局分位 {0.10, 0.20, 0.80, 0.90}；支持度（命中样本数）≥ `--min-support`。
+3. **规则形式**：depth-1 单特征绝对门槛（`Fa<qa` / `Fa>qa`，如
+   `score_z_in_day < q10`）+ depth-2 双特征组合（覆盖 双高/双低/一高一低 全部
+   4 种方向，如 高位透支∧高换手、低流动∧低身位）；阈值取训练前缀样本的全局
+   分位 {0.10, 0.20, 0.80, 0.90}；支持度（命中样本数）≥ `--min-support`。
 4. **验收**：全历史 拦截大亏(y=r3≤-5%)数/误杀大涨(y=r3≥+7%)数 ≥ `--ratio-min`(3.5)
    且 >`--fold-pos-frac`(70%) 的历史折上"级联净收益增量"为正。
 5. 输出按 (拦截精确率=命中大亏/否决行数, 拦截大亏数, 比例) 排序去重（同一特征
@@ -184,7 +186,10 @@ def load_candidates(args, logger) -> tuple[pd.DataFrame, list[str], list[str]]:
 
 def mine_rules(train: pd.DataFrame, pool: list[str],
                min_support: int = 20, ratio_min: float = 3.5) -> list[dict]:
-    """在训练前缀上挖 depth-2 阈值规则（阈值=训练样本全局分位）。"""
+    """在训练前缀上挖 depth-1/2 阈值规则（阈值=训练样本全局分位）。
+    depth-1：单特征绝对门槛（如 score_z_in_day < q10 一类"一票否决"）；
+    depth-2：双特征组合，覆盖 双高/双低/一高一低 全部 4 种方向
+    （如 高位透支+高换手、低流动+低身位、高换手+低置信度）。"""
     qv = {}
     for f in pool:
         v = pd.to_numeric(train[f], errors="coerce")
@@ -192,36 +197,46 @@ def mine_rules(train: pd.DataFrame, pool: list[str],
             continue
         qv[f] = {q: float(v.quantile(q)) for q in QS}
     feats = sorted(qv.keys())
+    vals = {f: pd.to_numeric(train[f], errors="coerce").to_numpy(dtype=float)
+            for f in feats}
     ret = train["return"].to_numpy(dtype=float)
     crash = ret <= CRASH_TH
     boom = ret >= BOOM_TH
     rules = []
+
+    def _emit(fa: str, qa: float, da: int,
+              fb: str | None = None, qb: float | None = None,
+              db: int | None = None) -> None:
+        ma = vals[fa] > qv[fa][qa] if da > 0 else vals[fa] < qv[fa][qa]
+        veto = np.nan_to_num(ma, nan=False).astype(bool)
+        if fb is not None:
+            mb = vals[fb] > qv[fb][qb] if db > 0 else vals[fb] < qv[fb][qb]
+            veto = veto & np.nan_to_num(mb, nan=False).astype(bool)
+        sup = int(veto.sum())
+        if sup < min_support:
+            return
+        c = int((veto & crash).sum())
+        b = int((veto & boom).sum())
+        ratio = c / max(b, 1)
+        if c < 5 or ratio < ratio_min:
+            return
+        rules.append({
+            "fa": fa, "fb": fb, "qa": qa, "qb": qb,
+            "dir_a": da, "dir_b": db,
+            "th_a": qv[fa][qa], "th_b": (qv[fb][qb] if fb is not None else None),
+            "train": {"support": sup, "crash_caught": c, "boom_killed": b,
+                      "ratio": round(ratio, 3), "precision": round(c / sup, 4)},
+        })
+
+    for fa in feats:
+        for qa in QS:
+            for da in (1, -1):
+                _emit(fa, qa, da)
     for fa, fb in itertools.combinations(feats, 2):
-        va = pd.to_numeric(train[fa], errors="coerce").to_numpy(dtype=float)
-        vb = pd.to_numeric(train[fb], errors="coerce").to_numpy(dtype=float)
         for qa in QS:
             for qb in QS:
-                for da, db in ((1, -1), (-1, 1)):
-                    ma = va > qv[fa][qa] if da > 0 else va < qv[fa][qa]
-                    mb = vb > qv[fb][qb] if db > 0 else vb < qv[fb][qb]
-                    veto = np.nan_to_num(ma, nan=False).astype(bool) \
-                        & np.nan_to_num(mb, nan=False).astype(bool)
-                    sup = int(veto.sum())
-                    if sup < min_support:
-                        continue
-                    c = int((veto & crash).sum())
-                    b = int((veto & boom).sum())
-                    ratio = c / max(b, 1)
-                    if c < 5 or ratio < ratio_min:
-                        continue
-                    rules.append({
-                        "fa": fa, "fb": fb, "qa": qa, "qb": qb,
-                        "dir_a": da, "dir_b": db,
-                        "th_a": qv[fa][qa], "th_b": qv[fb][qb],
-                        "train": {"support": sup, "crash_caught": c,
-                                  "boom_killed": b, "ratio": round(ratio, 3),
-                                  "precision": round(c / sup, 4)},
-                    })
+                for da, db in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    _emit(fa, qa, da, fb, qb, db)
     # 同一特征对保留最优（按拦截精确率=命中大亏/否决行数；防止"大网"规则
     # 靠多拦随机大亏刷 crash_caught 而实际否决半个股票池）
     best: dict = {}
@@ -240,17 +255,26 @@ def mine_rules(train: pd.DataFrame, pool: list[str],
     return out
 
 
+def _rule_feats(rule: dict) -> list[str]:
+    """规则特征列表：内部挖掘 dict（fa/fb，fb 可为 None）或 JSON（features）。"""
+    if "fa" in rule:
+        return [f for f in (rule["fa"], rule.get("fb")) if f is not None]
+    return [f for f in rule.get("features", []) if f is not None]
+
+
 def apply_veto_mask(df: pd.DataFrame, rule: dict) -> np.ndarray:
     """单规则触发掩码（NaN 比较=False，即缺值不否决）。
-    兼容两种规则形态：内部挖掘 dict（fa/fb）与 risk_veto_rules.json（features）。"""
-    fa = rule["fa"] if "fa" in rule else rule["features"][0]
-    fb = rule["fb"] if "fb" in rule else rule["features"][1]
-    va = pd.to_numeric(df[fa], errors="coerce").to_numpy(dtype=float)
-    vb = pd.to_numeric(df[fb], errors="coerce").to_numpy(dtype=float)
+    支持 depth-1（单特征）与 depth-2（双特征）规则；兼容内部挖掘 dict 与
+    risk_veto_rules.json 两种形态。"""
+    feats = _rule_feats(rule)
+    va = pd.to_numeric(df[feats[0]], errors="coerce").to_numpy(dtype=float)
     ma = va > rule["th_a"] if rule["dir_a"] > 0 else va < rule["th_a"]
-    mb = vb > rule["th_b"] if rule["dir_b"] > 0 else vb < rule["th_b"]
-    return np.nan_to_num(ma, nan=False).astype(bool) \
-        & np.nan_to_num(mb, nan=False).astype(bool)
+    m = np.nan_to_num(ma, nan=False).astype(bool)
+    if len(feats) > 1:
+        vb = pd.to_numeric(df[feats[1]], errors="coerce").to_numpy(dtype=float)
+        mb = vb > rule["th_b"] if rule["dir_b"] > 0 else vb < rule["th_b"]
+        m &= np.nan_to_num(mb, nan=False).astype(bool)
+    return m
 
 
 def apply_veto(rules: list[dict], df: pd.DataFrame,
@@ -258,8 +282,7 @@ def apply_veto(rules: list[dict], df: pd.DataFrame,
     """任一规则触发 → True（供回测/实盘级联否决消费）。
     严格模式（默认）：规则引用的特征列缺失时报错（防静默漏特征导致风控失效）；
     skip_missing=True 时跳过引用了缺失列的规则。"""
-    missing = sorted({f for r in rules
-                      for f in ((r["fa"], r["fb"]) if "fa" in r else r["features"])
+    missing = sorted({f for r in rules for f in _rule_feats(r)
                       if f not in df.columns})
     if missing and not skip_missing:
         raise ValueError(
@@ -267,9 +290,7 @@ def apply_veto(rules: list[dict], df: pd.DataFrame,
             "（lgb_features / 行情派生 / 日内降频缓存）")
     m = np.zeros(len(df), dtype=bool)
     for r in rules:
-        fa = r["fa"] if "fa" in r else r["features"][0]
-        fb = r["fb"] if "fb" in r else r["features"][1]
-        if skip_missing and (fa not in df.columns or fb not in df.columns):
+        if skip_missing and any(f not in df.columns for f in _rule_feats(r)):
             continue
         m |= apply_veto_mask(df, r)
     return m
@@ -377,10 +398,14 @@ def main() -> int:
     rules_out = []
     for i, r in enumerate(accepted, 1):
         da = ">" if r["dir_a"] > 0 else "<"
-        db = ">" if r["dir_b"] > 0 else "<"
-        expr = (f"{r['fa']} {da} {r['th_a']:.6g} AND {r['fb']} {db} {r['th_b']:.6g}")
+        expr = f"{r['fa']} {da} {r['th_a']:.6g}"
+        feats_out = [r["fa"]]
+        if r["fb"] is not None:
+            db = ">" if r["dir_b"] > 0 else "<"
+            expr += f" AND {r['fb']} {db} {r['th_b']:.6g}"
+            feats_out.append(r["fb"])
         rules_out.append({
-            "id": i, "expr": expr, "features": [r["fa"], r["fb"]],
+            "id": i, "expr": expr, "features": feats_out,
             "dir_a": r["dir_a"], "dir_b": r["dir_b"],
             "th_a": r["th_a"], "th_b": r["th_b"],
             "train": r["train"], "history": r["history"],
