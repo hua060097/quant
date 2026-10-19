@@ -1213,20 +1213,95 @@ def _pair_rho(a: np.ndarray, b: np.ndarray, day: np.ndarray, nd: int,
 def _pair_vs_pool(v_s: np.ndarray, pool_s: list, day_s: np.ndarray,
                   nd: int, threshold: float,
                   cache: list | None = None,
-                  pool_caches: list | None = None) -> bool:
+                  pool_caches: list | None = None,
+                  spec_S: np.ndarray | None = None, spec_i: int = 0,
+                  spec_k: int = 0) -> bool:
     """候选（已按 day_s 重排）与池的正交否决（返回 True=拒绝）。
+
     串行 early-break：首个 |ρ|>threshold 即 return True。大多数落选候选
     在前 1~3 对即淘汰，远快于全量 map 后 any（80 对必满）。
-    刻意不用线程/进程池：early-break 语义下全量并行会放大算量 20~40 倍。
     P3（2026-10-19）：pair 计算走 _pair_rho 秩缓存（掩码嵌套时位级等价复用），
     cache/pool_caches 由调用方持有（_new_pair_cache 构造）。
+    P4（2026-10-19，Owner 批准）：spec_S/spec_i/spec_k 为"投机前缀矩阵"——
+    与池内**前 spec_k 个成员**的相关系数已由进程池批量预计算（成员固定、
+    纯函数逐位一致），此处直接查表；第 spec_k 对之后按原 early-break 串行。
+    语义与纯串行完全等价（仅省掉重复计算）。
     输入须行序一致（day_s 单调 + 数组同序重排），否则结果无意义。"""
     for _j, _pv in enumerate(pool_s):
-        _cb = pool_caches[_j] if pool_caches is not None else None
-        _c = _pair_rho(v_s, _pv, day_s, nd, cache_a=cache, cache_b=_cb)
+        if spec_S is not None and _j < spec_k:
+            _c = float(spec_S[spec_i, _j])
+        else:
+            _cb = pool_caches[_j] if pool_caches is not None else None
+            _c = _pair_rho(v_s, _pv, day_s, nd, cache_a=cache, cache_b=_cb)
         if np.isfinite(_c) and abs(float(_c)) > threshold:
             return True
     return False
+
+
+#: 投机前缀配对并行共享（fork 继承 val_store/池数组，免 pickling 大数组）
+_SPEC_CTX = None
+
+
+def _spec_pair_worker(task):
+    """投机前缀工作进程：单 (候选, 池成员) 的逐日截面 Spearman。
+
+    与串行 _pair_rho 同一份代码（纯函数）→ 逐位一致；候选数组在子进程内
+    按 val_store[key] 现取并同序重排（与串行循环表达式逐字相同），
+    避免父进程同时持有数百个 float64 副本。
+    """
+    _j, _key, _mi = task
+    c = _SPEC_CTX
+    try:
+        if c["arrays"] is not None:
+            _v = c["arrays"][_key]
+        else:
+            _v = np.asarray(c["vals"][_key], dtype=float)[c["order_me"]]
+        _rho = _pair_rho(_v, c["pool"][_mi], c["day"], c["nd"],
+                         cache_a=None,
+                         cache_b=(c["pool_caches"][_mi]
+                                  if c["pool_caches"] is not None else None))
+        return _j, float(_rho)
+    except Exception:
+        return _j, float("nan")
+
+
+def _spec_prefix_matrix(vals: dict, keys: list, order_me: np.ndarray,
+                        pool: list, pool_caches: list | None,
+                        day: np.ndarray, nd: int, k_max: int,
+                        jobs: int, arrays: dict | None = None):
+    """投机计算"候选 × 池内前 K 成员"相关系数矩阵（P4，语义等价加速）。
+
+    初始池（vwap_order 成员）在选池/选席过程中只增不改 → 前 K 个成员固定，
+    预先批量算好即可；返回 (S, K_eff)，S[i, k]=rho（不可得为 NaN）。
+    非 posix 平台退化为串行（同一 worker）。
+    """
+    k_eff = min(int(k_max), len(pool))
+    if k_eff <= 0 or not keys:
+        return None, 0
+    S = np.full((len(keys), k_eff), np.nan, dtype=np.float64)
+    tasks = [(len(keys) * m + i, keys[i], m)
+             for i in range(len(keys)) for m in range(k_eff)]
+    _nj = _par_jobs(jobs)
+    global _SPEC_CTX
+    _SPEC_CTX = {"vals": vals, "order_me": order_me, "pool": pool,
+                 "pool_caches": pool_caches, "day": day, "nd": nd,
+                 "arrays": arrays}
+    try:
+        if _nj > 1 and len(tasks) > 1:
+            import concurrent.futures as _cf
+            _nw = min(_nj, len(tasks))
+            print(f'  投机前缀并行：{len(keys)} 候选 × 前 {k_eff} 成员 = '
+                  f'{len(tasks)} 对 × {_nw} 进程 …', flush=True)
+            with _cf.ProcessPoolExecutor(max_workers=_nw) as _ex:
+                for _j, _rho in _ex.map(_spec_pair_worker, tasks):
+                    S[_j % len(keys), _j // len(keys)] = _rho
+        else:
+            for _t in tasks:
+                _j, _rho = _spec_pair_worker(_t)
+                S[_j % len(keys), _j // len(keys)] = _rho
+    finally:
+        _SPEC_CTX = None
+    return S, k_eff
 
 
 def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
@@ -1319,15 +1394,20 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                 pool_caches.append(_new_pair_cache(_vv_s))
         except Exception:
             continue
+    _spec_keys = [(str(r['lib']), str(r['factor_id'])) for _p, r, _t in scored]
+    _spec_S, _spec_k = _spec_prefix_matrix(
+        val_store, _spec_keys, _order_me, pool_s, pool_caches,
+        _day_s, nd_me, k_max=3, jobs=jobs)
     seats, detail = [], []
-    for _pos, r, t in scored:
+    for _i, (_pos, r, t) in enumerate(scored):
         if len(seats) >= n_seats:
             break
         _v_s = np.asarray(val_store[(r['lib'], str(r['factor_id']))],
                           dtype=float)[_order_me]
         _cache_s = _new_pair_cache(_v_s)
         if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
-                         cache=_cache_s, pool_caches=pool_caches):
+                         cache=_cache_s, pool_caches=pool_caches,
+                         spec_S=_spec_S, spec_i=_i, spec_k=_spec_k):
             continue
         seats.append(_pos)
         pool_s.append(_v_s)
@@ -1411,14 +1491,27 @@ def fast_trigger_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
                 pool_caches.append(_new_pair_cache(_vv_s))
         except Exception:
             continue
-    fast, detail = [], []
+    _spec_arrays = {}
     for _pos, _r, _key in cands:
+        try:
+            _spec_arrays[_key] = np.asarray(_val_of(_r, _key),
+                                            dtype=float)[_order_me]
+        except Exception:
+            pass
+    _spec_S, _spec_k = _spec_prefix_matrix(
+        {}, [k for _p, _r, k in cands], _order_me, pool_s, pool_caches,
+        _day_s, nd_me, k_max=3, jobs=jobs, arrays=_spec_arrays)
+    fast, detail = [], []
+    for _i, (_pos, _r, _key) in enumerate(cands):
         if len(fast) >= n_fast:
             break
-        _v_s = np.asarray(_val_of(_r, _key), dtype=float)[_order_me]
+        _v_s = _spec_arrays.get(_key)
+        if _v_s is None:
+            _v_s = np.asarray(_val_of(_r, _key), dtype=float)[_order_me]
         _cache_s = _new_pair_cache(_v_s)
         if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
-                         cache=_cache_s, pool_caches=pool_caches):
+                         cache=_cache_s, pool_caches=pool_caches,
+                         spec_S=_spec_S, spec_i=_i, spec_k=_spec_k):
             continue
         fast.append(_pos)
         pool_s.append(_v_s)
@@ -1518,14 +1611,19 @@ def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         except Exception:
             continue
     scored.sort(key=lambda x: -x[2])
+    _spec_keys = [k for k, _r, *_ in scored]
+    _spec_S, _spec_k = _spec_prefix_matrix(
+        val_store, _spec_keys, _order_me, pool_s, pool_caches,
+        _day_s, nd_me, k_max=3, jobs=jobs)
     out = []
-    for _key, r, _sc, _j, _con in scored:
+    for _i, (_key, r, _sc, _j, _con) in enumerate(scored):
         if len(out) >= top_n:
             break
         _v_s = np.asarray(val_store[_key], dtype=float)[_order_me]
         _cache_s = _new_pair_cache(_v_s)
         if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
-                         cache=_cache_s, pool_caches=pool_caches):
+                         cache=_cache_s, pool_caches=pool_caches,
+                         spec_S=_spec_S, spec_i=_i, spec_k=_spec_k):
             continue
         pool_s.append(_v_s)
         pool_caches.append(_cache_s)
