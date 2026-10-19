@@ -4,11 +4,16 @@
 Stage15 V5.1 终极独立训练、CV选参与 2026 OOS 分钟级回测一体管线
 ===================================================================
 本次升级重点：
-1. 标签升级：
-   - 采用收盘加权真实均价 TP_real = 0.15*O + 0.15*H + 0.20*L + 0.50*C（防早盘瞬间冲高回落骗线）；
-   - 新增 T+2（可卖首日）盈利硬底线：要求 T+2 当日收益 >= +1.0% 且收盘水上（对齐 T+2 收盘保本止损）；
-   - 升级 R5 持续性条件：R5 >= R3 - 3.0% 或 R5 >= +10.0%（防误杀 3 日暴涨 +18% 后正常休整的真龙）。
-2. 完整支持 3 种模式：
+1. 标签口径（2026-10-19 定版）：
+   - 默认**经典 multihorizon_35**：等权 TP=(O+H+L+C)/4，core = r3>=7% & (r5>=r3-3% 或 NaN)
+     & dd3>=-5%；无 T+2 硬底线、无缓冲正样本（正类率~2%，匹配 scale_pos_weight 30~38）。
+   - `--label_v51` 可恢复 V5.1 口径（TP_real 收盘加权 + T+2 硬底线 + r5 绝对涨幅豁免），
+     仅用于与上一轮结果对拍；两种口径的 r1_mean 不可直接比较。
+2. 预测与选参（2026-10-19 定版）：
+   - 主评估 = 纯 LightGBM（多 seed 在 logit 空间平均）；CatBoost/XGBoost 仅作
+     aux/blend 平行对照表输出（cv_summary_<scheme>.csv），不再混入主预测；
+   - CHECKPOINTS 加密至 12 档（150~800），提升平台平滑分辨率；HP_GRID 增补 H23（23叶）。
+3. 完整支持 3 种模式：
    - `--mode cv`       : 2021-06 ~ 2025-12 全量 11 个季度折滚动 CV 选参（双核 + 3 Seeds + 三邻域平滑）；
    - `--mode oos_2026` : 用 <=2025-12 数据训练 8-Seed 终极模型，在 2026 年纯 OOS 上跑日频 & 5分钟级状态机回测！
 
@@ -60,14 +65,19 @@ BUF_POS_WEIGHT = 0.50              # 缓冲正样本赋予 0.5 倍半权
 TAIL_WEIGHT_ALPHA = 0.50           # 核心正样本尾部加权系数 (1.0 ~ 1.5x，从 R0=7% 起算)
 
 DRIFT_NORM_COLS = ("LOG_MV", "AMIHUD20")
-CHECKPOINTS = [200, 300, 350, 400, 450, 500, 600]
+# 2026-10-19 加密定版（Owner 批准）：H15S 在 200~400 达峰、H14 在 600 仍上升，
+# 稀疏点分辨率不足；predict 各 cp 为纯内存操作，加密近零成本。
+CHECKPOINTS = [150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800]
 
 HP_GRID = [
-    {"pid": "H15S", "num_leaves": 15,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 35.0},
-    {"pid": "H12",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 10.0, "scale_pos_weight": 25.0},
-    {"pid": "H15",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 38.0},
-    {"pid": "H63",  "num_leaves": 63,  "max_depth": 7, "min_data_in_leaf": 1200, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 15.0, "reg_lambda": 25.0, "scale_pos_weight": 38.0},
-    {"pid": "H14",  "num_leaves": 127, "max_depth": 7, "min_data_in_leaf": 1800, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 20.0, "reg_lambda": 35.0, "scale_pos_weight": 38.0},
+    # 2026-10-19 diag_labels 定版：L0 经典标签下 spw=20 → 有效正类占比 41.5%
+    #（目标区间 35%~42%）；spw=25/30/38 分别为 47.0%/51.6%/57.4%（过高）。
+    {"pid": "H15S", "num_leaves": 15,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0},
+    {"pid": "H23",  "num_leaves": 23,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 12.0, "scale_pos_weight": 20.0},
+    {"pid": "H12",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 10.0, "scale_pos_weight": 20.0},
+    {"pid": "H15",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0},
+    {"pid": "H63",  "num_leaves": 63,  "max_depth": 7, "min_data_in_leaf": 1200, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 15.0, "reg_lambda": 25.0, "scale_pos_weight": 20.0},
+    {"pid": "H14",  "num_leaves": 127, "max_depth": 7, "min_data_in_leaf": 1800, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 20.0, "reg_lambda": 35.0, "scale_pos_weight": 20.0},
 ]
 
 
@@ -215,8 +225,13 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     is_susp = (pdf["volume"].fillna(0) <= 0) | (pdf["amount"].fillna(0) <= 0)
     recent_susp = is_susp.astype(float).groupby(pdf["stock_code"], sort=False).rolling(10, min_periods=1).max().reset_index(level=0, drop=True) > 0
 
-    # V5.1 升级：收盘加权真实可实现均价 TP_real = 0.15*O + 0.15*H + 0.20*L + 0.50*C
-    tp_real = 0.15 * pdf["open"] + 0.15 * pdf["high"] + 0.20 * pdf["low"] + 0.50 * pdf["close"]
+    # 标签口径（2026-10-19 定版）：默认**经典 multihorizon_35**（等权 TP，与历史
+    # 基准同尺可比）；`--label-v51` 恢复 V5.1 口径（收盘加权 TP_real，压低最高价
+    # 权重改变量尺，r1_mean 与经典不可直接比）。
+    if args.label_v51:
+        tp_real = 0.15 * pdf["open"] + 0.15 * pdf["high"] + 0.20 * pdf["low"] + 0.50 * pdf["close"]
+    else:
+        tp_real = (pdf["open"] + pdf["high"] + pdf["low"] + pdf["close"]) / 4.0
     buy_p = g_code["open"].shift(-1)
     can_buy_t1 = g_code["is_can_buy"].shift(-1).fillna(1) if "is_can_buy" in pdf.columns else 1
 
@@ -270,16 +285,21 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     r5 = merged["r5"].to_numpy(dtype=np.float64)
     dd3 = merged["dd3"].to_numpy(dtype=np.float64)
 
-    # V5.1 持续性与 T+2 可卖首日硬底线：
-    # 1. r5_ok: 第4~5天回吐不超过 3%，或第5天仍保有 >=10% 收益；
-    # 2. t2_ok: 可卖首日(T+2) TP_real 收益 >= +1.0% 且收盘在水上 (>0)！
-    r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE)) | (r5 >= 0.10)
-    t2_ok = (ret_t2 >= T2_FLOOR_MIN) & (close_t2_ret > 0.0)
-
-    core_pos = (r3 >= R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_CORE_MIN)
-    if args.enable_buffer_pos:
-        buf_pos = (~core_pos) & (r3 >= R3_BUF_MIN) & (r3 < R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_BUF_MIN)
+    # 正样本口径（2026-10-19 定版，Owner 批准）：
+    # 默认经典 multihorizon_35：core = r3>=7% & (r5>=r3-3% 或 NaN) & dd3>=-5%，
+    #   无 T+2 硬底线（不误杀 T+2 缩量洗盘、T+3 反包的真牛股）、无缓冲正样本；
+    # --label-v51：附加 r5>=+10% 豁免、T+2 硬底线、可选缓冲正样本。
+    if args.label_v51:
+        r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE)) | (r5 >= 0.10)
+        t2_ok = (ret_t2 >= T2_FLOOR_MIN) & (close_t2_ret > 0.0)
+        core_pos = (r3 >= R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_CORE_MIN)
+        if args.enable_buffer_pos:
+            buf_pos = (~core_pos) & (r3 >= R3_BUF_MIN) & (r3 < R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_BUF_MIN)
+        else:
+            buf_pos = np.zeros_like(core_pos, dtype=bool)
     else:
+        r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE))
+        core_pos = (r3 >= R3_CORE_MIN) & r5_ok & (dd3 >= DD3_CORE_MIN)
         buf_pos = np.zeros_like(core_pos, dtype=bool)
 
     y_bin = np.where(core_pos | buf_pos, 1.0, 0.0).astype(np.float32)
@@ -337,19 +357,31 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
 
 
 # ==================== 双核异构多 Seed 训练器 ====================
+def _logit(p: np.ndarray) -> np.ndarray:
+    """概率→对数几率（clip 防爆）。多 seed 在 logit 空间平均，避免
+    `0.5*rank_pct+0.5*p` 量纲污染 score_z_in_day（rank_pct 有界均匀分布会
+    锁死 z 分母，使 z>1.5 门控只剩原始概率畸高的高危断板股）。"""
+    p = np.clip(np.asarray(p, dtype=np.float64), 1e-6, 1.0 - 1e-6)
+    return np.log(p / (1.0 - p))
+
+
 def train_predict_fold(
     X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
     X_te: np.ndarray, dates_te: np.ndarray,
     hp: dict, checkpoints: list[int], seeds: list[int],
     engines: list[str], num_threads: int
-) -> dict[int, np.ndarray]:
+) -> dict:
+    """训练并返回三套独立预测（2026-10-19 定版，Owner 批准）：
+
+    {"lgb": {cp: logit 分数}, "aux": {cp: logit 分数} | None,
+     "aux_name": "catboost"/"xgboost"/None, "blend": {cp: 0.65*lgb+0.35*aux} | None}
+
+    主评估 = 纯 LightGBM（多 seed 在 logit 空间平均）；CatBoost/XGBoost 仅作
+    平行对照（单 seed，logit；旧版固定 450 轮 aux 以 0.35 权重混入所有 cp，
+    稀释轮数差异并污染 z 门控——已剔除出主预测）。
+    """
     import lightgbm as lgb
-    day_codes_te, _ = pd.factorize(dates_te, sort=True)
-
-    def _daily_rank_pct(arr: np.ndarray) -> np.ndarray:
-        return pd.Series(arr).groupby(day_codes_te, sort=False).rank(pct=True).to_numpy(dtype=np.float64)
-
-    lgb_preds_by_cp = {cp: np.zeros(len(X_te), dtype=np.float64) for cp in checkpoints}
+    lgb_by_cp = {cp: np.zeros(len(X_te), dtype=np.float64) for cp in checkpoints}
     dtr = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params={"feature_pre_filter": False})
     max_cp = max(checkpoints)
 
@@ -367,14 +399,15 @@ def train_predict_fold(
         bst = lgb.train(params, dtr, num_boost_round=max_cp, callbacks=[lgb.log_evaluation(period=0)])
         for cp in checkpoints:
             p = bst.predict(X_te, num_iteration=cp)
-            lgb_preds_by_cp[cp] += (0.5 * _daily_rank_pct(p) + 0.5 * p) / len(seeds)
+            lgb_by_cp[cp] += _logit(p) / len(seeds)
         del bst
     try:
         dtr._handle = None  # 尽早释放数据集句柄（lightgbm 版本差异时静默跳过）
     except Exception:
         pass
 
-    aux_pred_rank = None
+    aux_by_cp = None
+    aux_name = None
     if "catboost" in engines:
         try:
             from catboost import CatBoostClassifier
@@ -387,7 +420,8 @@ def train_predict_fold(
             )
             cb.fit(X_tr, y_tr, sample_weight=cb_w)
             p_cb = cb.predict_proba(X_te)[:, 1]
-            aux_pred_rank = 0.5 * _daily_rank_pct(p_cb) + 0.5 * p_cb
+            aux_by_cp = {cp: _logit(p_cb) for cp in checkpoints}
+            aux_name = "catboost"
         except ImportError:
             pass
     elif "xgboost" in engines:
@@ -405,15 +439,18 @@ def train_predict_fold(
             }
             xbst = xgb.train(x_params, dtr_x, num_boost_round=350, verbose_eval=False)
             p_xb = xbst.predict(dte_x)
-            aux_pred_rank = 0.5 * _daily_rank_pct(p_xb) + 0.5 * p_xb
+            aux_by_cp = {cp: _logit(p_xb) for cp in checkpoints}
+            aux_name = "xgboost"
         except ImportError:
             pass
 
-    if aux_pred_rank is not None:
-        for cp in checkpoints:
-            lgb_preds_by_cp[cp] = 0.65 * lgb_preds_by_cp[cp] + 0.35 * aux_pred_rank
+    blend_by_cp = None
+    if aux_by_cp is not None:
+        blend_by_cp = {cp: 0.65 * lgb_by_cp[cp] + 0.35 * aux_by_cp[cp]
+                       for cp in checkpoints}
 
-    return lgb_preds_by_cp
+    return {"lgb": lgb_by_cp, "aux": aux_by_cp, "aux_name": aux_name,
+            "blend": blend_by_cp}
 
 
 # ==================== 评估、同行业去重与分钟级回测对接 ====================
@@ -747,12 +784,28 @@ def _cv_worker(task) -> tuple:
         return t_i, hp["pid"], fold["fold_id"], 0, []
     w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
                                   c["y_raw"][tr_m], dates[tr_m])
-    preds_by_cp = train_predict_fold(
+    res = train_predict_fold(
         c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
         hp, CHECKPOINTS, c["seeds"], c["engines"], c["num_threads"])
     rows = evaluate_predictions(
-        preds_by_cp, dates[te_m], c["codes"][te_m], c["sectors"][te_m],
+        res["lgb"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
         c["y_raw"][te_m], fold["fold_id"], hp["pid"])
+    for r in rows:
+        r["scheme"] = "lgb"
+    if res["aux"] is not None:
+        _ar = evaluate_predictions(
+            res["aux"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
+            c["y_raw"][te_m], fold["fold_id"], hp["pid"])
+        for r in _ar:
+            r["scheme"] = res["aux_name"]
+        rows += _ar
+    if res["blend"] is not None:
+        _br = evaluate_predictions(
+            res["blend"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
+            c["y_raw"][te_m], fold["fold_id"], hp["pid"])
+        for r in _br:
+            r["scheme"] = "blend"
+        rows += _br
     return t_i, hp["pid"], fold["fold_id"], len(rows), rows
 
 
@@ -792,10 +845,258 @@ def auto_cv_jobs(X: np.ndarray, engines: list[str], num_threads: int,
     return jobs
 
 
+# ==================== 标签与权重全景诊断（--mode diag_labels） ====================
+def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
+    """标签与权重全景诊断（2026-10-19 定版，无模型训练）。
+
+    在全量可交易样本（data_start ~ cv_end，特征∩行情同域）上输出：
+      A. L0~L4 五种标签组合漏斗：正样本数/率、真实等权 r3/r5/dd3 均值与中位数；
+      B. 各标签每日正样本数分布、Top10 海啸日、P95 软封顶前后海啸日权重占比；
+      C. spw ∈ {15,20,25,30,38} 有效正类梯度质量占比（目标区间 35%~42%）。
+    """
+    t0 = time.time()
+    # ---- [1] 特征键（与训练样本严格同域：特征∩行情、剔除 BJ、限 sw2 映射）----
+    feat_path = Path(args.features_parquet)
+    if not feat_path.is_absolute():
+        feat_path = _HERE / feat_path
+    logger.info(f"[diag] 特征矩阵键: {feat_path}")
+    fkeys = pd.read_parquet(feat_path, columns=["stock_code", "date"])
+    fkeys["date"] = pd.to_datetime(fkeys["date"]).dt.normalize()
+    fkeys["stock_code"] = fkeys["stock_code"].astype(str)
+    fkeys = fkeys[fkeys["date"] >= pd.Timestamp(args.data_start)]
+    sw_map = load_sw2_map()
+    if not sw_map:
+        raise SystemExit("sw2 行业映射为空，诊断与训练口径不一致，终止")
+    fkeys = fkeys.loc[~fkeys["stock_code"].str.endswith((".BJ", ".bj"), na=False)]
+    fkeys = fkeys[fkeys["stock_code"].isin(set(sw_map.keys()))]
+    fkeys = fkeys.drop_duplicates(["stock_code", "date"])
+
+    # ---- [2] 行情 + 标签原语（与 load_dataset_and_labels 逐行同口径）----
+    price_path = find_best_price_cache(args.data_start)
+    logger.info(f"[diag] 行情缓存: {price_path.name}")
+    want_cols = ["stock_code", "date", "open", "high", "low", "close", "volume",
+                 "amount", "is_st", "is_limit_up", "is_limit_down", "is_zhaban",
+                 "is_can_buy"]
+    import pyarrow.parquet as pq
+    avail_pcols = [c for c in want_cols if c in set(pq.read_schema(price_path).names)]
+    pdf = pd.read_parquet(price_path, columns=avail_pcols)
+    pdf["date"] = pd.to_datetime(pdf["date"]).dt.normalize()
+    pdf["stock_code"] = pdf["stock_code"].astype(str)
+    pdf = pdf.sort_values(["stock_code", "date"]).drop_duplicates(
+        ["stock_code", "date"], keep="last").reset_index(drop=True)
+    g_code = pdf.groupby("stock_code", sort=False)
+    pdf["listed_days"] = g_code.cumcount() + 1
+    is_susp = (pdf["volume"].fillna(0) <= 0) | (pdf["amount"].fillna(0) <= 0)
+    recent_susp = is_susp.astype(float).groupby(
+        pdf["stock_code"], sort=False).rolling(10, min_periods=1).max() \
+        .reset_index(level=0, drop=True) > 0
+
+    tp_eq = (pdf["open"] + pdf["high"] + pdf["low"] + pdf["close"]) / 4.0
+    tp_real = 0.15 * pdf["open"] + 0.15 * pdf["high"] + 0.20 * pdf["low"] + 0.50 * pdf["close"]
+    buy_p = g_code["open"].shift(-1)
+    can_buy_t1 = g_code["is_can_buy"].shift(-1).fillna(1) if "is_can_buy" in pdf.columns else 1
+
+    def _sell(tp):
+        _g = tp.groupby(pdf["stock_code"], sort=False)
+        _s3 = 0.70 * _g.shift(-2) + 0.30 * _g.shift(-3)
+        _s5 = 0.70 * _g.shift(-4) + 0.30 * _g.shift(-5)
+        return _s3, _s5, _g.shift(-2)
+
+    sell3_eq, sell5_eq, _ = _sell(tp_eq)
+    sell3_r, sell5_r, tp2_r = _sell(tp_real)
+    close_t2 = g_code["close"].shift(-2)
+    min_low_23 = np.minimum(g_code["low"].shift(-2), g_code["low"].shift(-3))
+    valid_buy = (buy_p > 1e-6) & (can_buy_t1 == 1)
+
+    def _ret(sell):
+        return np.where(valid_buy, (sell - buy_p) / buy_p, np.nan)
+
+    r3_eq, r5_eq = _ret(sell3_eq), _ret(sell5_eq)
+    r3_r, r5_r = _ret(sell3_r), _ret(sell5_r)
+    dd3 = np.where(valid_buy, (min_low_23 - buy_p) / buy_p, np.nan)
+    ret_t2_r = np.where(valid_buy, (tp2_r - buy_p) / buy_p, np.nan)
+    close_t2_ret = np.where(valid_buy, (close_t2 - buy_p) / buy_p, np.nan)
+
+    tradable = (
+        (pdf.get("is_st", pd.Series(0, index=pdf.index)).fillna(0) == 0)
+        & (pdf["listed_days"] >= NEW_STOCK_MIN_DAYS)
+        & (~recent_susp)
+        & (pdf.get("is_limit_up", pd.Series(0, index=pdf.index)).fillna(0) == 0)
+        & (pdf.get("is_limit_down", pd.Series(0, index=pdf.index)).fillna(0) == 0)
+        & (pdf.get("is_zhaban", pd.Series(0, index=pdf.index)).fillna(0) == 0)
+        & (pdf["amount"].fillna(0) >= MIN_DAILY_AMOUNT)
+        & valid_buy
+    )
+    pdf_sub = pd.DataFrame({
+        "stock_code": pdf["stock_code"].to_numpy(), "date": pdf["date"].to_numpy(),
+        "tradable": tradable.to_numpy(), "r3_eq": r3_eq, "r5_eq": r5_eq,
+        "r3_r": r3_r, "r5_r": r5_r, "dd3": dd3,
+        "ret_t2_r": ret_t2_r, "close_t2_ret": close_t2_ret})
+    merged = fkeys.merge(pdf_sub, on=["stock_code", "date"], how="inner")
+    merged = merged[merged["date"] <= pd.Timestamp(args.cv_end)]
+
+    _r3 = merged["r3_eq"].to_numpy(dtype=float)
+    _r5 = merged["r5_eq"].to_numpy(dtype=float)
+    _r3r = merged["r3_r"].to_numpy(dtype=float)
+    _r5r = merged["r5_r"].to_numpy(dtype=float)
+    _dd = merged["dd3"].to_numpy(dtype=float)
+    _t2 = merged["ret_t2_r"].to_numpy(dtype=float)
+    _c2 = merged["close_t2_ret"].to_numpy(dtype=float)
+    _dates = merged["date"].to_numpy()
+    base = (merged["tradable"].to_numpy(dtype=bool)
+            & np.isfinite(_r3) & np.isfinite(_dd))
+    n_valid = int(base.sum())
+    day_codes, uniq_days = pd.factorize(_dates[base], sort=True)
+    nd = len(uniq_days)
+    logger.info(f"[diag] 样本: 可交易有效行={n_valid:,} | 交易日={nd} | "
+                f"{pd.Timestamp(uniq_days[0]).date()}~{pd.Timestamp(uniq_days[-1]).date()}")
+    if not n_valid:
+        raise SystemExit("[diag] 无有效样本，检查 --data_start/--cv_end/缓存覆盖")
+
+    r5_ok = np.isnan(_r5) | (_r5 >= (_r3 - R5_TOLERANCE))
+    r5_strict = np.isnan(_r5) | (_r5 >= _r3)
+    r5_ok_r = np.isnan(_r5r) | (_r5r >= (_r3r - R5_TOLERANCE))
+    t2_ok = (_t2 >= T2_FLOOR_MIN) & (_c2 > 0.0)
+    dd_ok = _dd >= DD3_CORE_MIN
+    core0 = base & (_r3 >= R3_CORE_MIN) & r5_ok & dd_ok
+    core1 = base & (_r3 >= R3_CORE_MIN) & r5_strict & dd_ok
+    core2 = base & (_r3r >= R3_CORE_MIN) & r5_ok_r & dd_ok
+    core3 = core0 & t2_ok
+    buf4 = base & (~core0) & (_r3 >= R3_BUF_MIN) & (_r3 < R3_CORE_MIN) \
+        & t2_ok & r5_ok & (_dd >= DD3_BUF_MIN)
+
+    _md: list[str] = []
+
+    def _emit(line: str = ""):
+        logger.info(line)
+        _md.append(line)
+
+    def _stat(x, pos):
+        v = x[pos]
+        v = v[np.isfinite(v)]
+        if not len(v):
+            return "n/a"
+        return f"{np.mean(v):+.4f} / {np.median(v):+.4f}"
+
+    # ---- A. 标签变体漏斗对照 ----
+    _emit("\n## A. 标签变体漏斗对照（L0~L4；收益统计=等权 TP 真实前向）")
+    _emit("| 变体 | 正样本数 | 正类率 | r3_eq 均值/中位 | r5_eq 均值/中位 | dd3 均值/中位 |")
+    _emit("|---|---|---|---|---|---|")
+    _rows = [
+        ("L0 经典基准", core0),
+        ("L1 严格 r5>=r3", core1),
+        ("L2 TP_real", core2),
+        ("L3 L0+t2_ok", core3),
+        ("L4 L0+buf4.5~7%", core0 | buf4),
+    ]
+    for _name, _pos in _rows:
+        _np_ = int(_pos.sum())
+        _emit(f"| {_name} | {_np_:,} | {_np_ / n_valid:.2%} | {_stat(_r3, _pos)} | "
+              f"{_stat(_r5, _pos)} | {_stat(_dd, _pos)} |")
+    _n0 = int(core0.sum())
+    _emit(f"\n- L1 相对 L0 减少 {_n0 - int(core1.sum()):,} 行（r5 容差 -3% 的贡献）")
+    _emit(f"- L2 相对 L0 减少 {_n0 - int(core2.sum()):,} 行；L2 自身 r3_real 均值/中位 = "
+          f"{_stat(_r3r, core2)}（量尺变化）")
+    _emit(f"- L3 相对 L0 被杀 {_n0 - int(core3.sum()):,} 行"
+          f"（{( _n0 - int(core3.sum())) / max(_n0, 1):.1%} of L0）")
+    _killed = core0 & (~t2_ok)
+    if _killed.any():
+        _kr3 = _r3[_killed]
+        _kr5 = _r5[_killed]
+        _kr3f = _kr3[np.isfinite(_kr3)]
+        _kr5f = _kr5[np.isfinite(_kr5)]
+        _emit(f"  - 被杀样本 r3_eq: 均值 {_kr3f.mean():+.4f} / 中位 {np.median(_kr3f):+.4f} / "
+              f"P25 {np.percentile(_kr3f, 25):+.4f} / P75 {np.percentile(_kr3f, 75):+.4f}")
+        _emit(f"  - 被杀样本 r5_eq: 均值 {_kr5f.mean():+.4f} / 中位 {np.median(_kr5f):+.4f}；"
+              f"其中 r5>=r3（T+3 反包力度）占比 "
+              f"{float(np.mean(_kr5 >= _kr3)):.1%}，r5>=r3+5% 占比 "
+              f"{float(np.mean(_kr5 >= _kr3 + 0.05)):.1%}")
+    _n_buf = int(buf4.sum())
+    _wt = int(core0.sum()) + BUF_POS_WEIGHT * _n_buf
+    _emit(f"- L4 缓冲膨胀：核心 {_n0:,} + 缓冲 {_n_buf:,} = {_n0 + _n_buf:,} 行"
+          f"（计数 ×{(_n0 + _n_buf) / max(_n0, 1):.2f}；半权质量 ×{_wt / max(_n0, 1):.2f}）")
+
+    # ---- B. 每日正样本分布 / Top10 海啸日 / P95 封顶前后权重占比 ----
+    _emit("\n## B. 每日正样本数分布与海啸日（P95 软封顶 = max(300, P95)）")
+    _emit("| 变体 | min | P10 | P25 | P50 | P75 | P90 | P95 | P99 | max | 零正样本日占比 |")
+    _emit("|---|---|---|---|---|---|---|---|---|---|---|")
+    _specs = []
+    for _name, _pos, _w in (
+            ("L0", core0, np.ones(len(_pos), dtype=float)),
+            ("L1", core1, np.ones(len(_pos), dtype=float)),
+            ("L2", core2, np.ones(len(_pos), dtype=float)),
+            ("L3", core3, np.ones(len(_pos), dtype=float)),
+            ("L4", core0 | buf4,
+             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0)))):
+        _pos_b = _pos[base]  # _pos 为全行掩码；day_codes 是 valid 行域 → 取子集
+        _cnt = np.bincount(day_codes[_pos_b], minlength=nd).astype(float)
+        _q = np.percentile(_cnt, [10, 25, 50, 75, 90, 95, 99])
+        _emit(f"| {_name} | {_cnt.min():.0f} | " + " | ".join(f"{v:.1f}" for v in _q)
+              + f" | {_cnt.max():.0f} | {float((_cnt == 0).mean()):.1%} |")
+        _specs.append((_name, _pos, _w, _cnt))
+    _emit("\n### Top10 海啸日（以 L0 计数排序；缩放系数 = sqrt(cap/n)）")
+    _emit("| 日期 | 当日正样本数 | cap | 缩放系数 |")
+    _emit("|---|---|---|---|")
+    _c0 = _specs[0][3]
+    _pos_cnt = _c0[_c0 > 0]
+    _cap0 = max(300.0, float(np.percentile(_pos_cnt, 95))) if len(_pos_cnt) else 300.0
+    for _i in np.argsort(-_c0)[:10]:
+        _n = _c0[_i]
+        _sc = (float(np.sqrt(_cap0 / _n)) if _n > _cap0 else 1.0)
+        _emit(f"| {pd.Timestamp(uniq_days[_i]).date()} | {_n:.0f} | {_cap0:.0f} | {_sc:.4f} |")
+    _emit("\n### 海啸日（n>cap）占全库正样本权重比例：封顶前 → 封顶后")
+    for _name, _pos, _w, _cnt in _specs:
+        _pos_b = _pos[base]
+        _pv = _cnt[_cnt > 0]
+        _cap = max(300.0, float(np.percentile(_pv, 95))) if len(_pv) else 300.0
+        _over = _cnt > _cap
+        _scale = np.ones(nd, dtype=float)
+        _scale[_over] = np.sqrt(_cap / _cnt[_over])
+        _wd = np.bincount(day_codes[_pos_b], weights=_w[_pos], minlength=nd)
+        _tot = float(_wd.sum())
+        _before = float(_wd[_over].sum() / _tot) if _tot > 0 else 0.0
+        _after_num = float((_wd[_over] * _scale[_over]).sum())
+        _after_den = _after_num + float(_wd[~_over].sum())
+        _after = _after_num / _after_den if _after_den > 0 else 0.0
+        _emit(f"- {_name}: 封顶前 {_before:.2%} → 封顶后 {_after:.2%}"
+              f"（超限日 {int(_over.sum())} 天）")
+
+    # ---- C. 有效正类梯度质量占比（spw 选择） ----
+    _emit("\n## C. 有效正类梯度质量占比（L0 / L4 标签，目标区间 35%~42%）")
+    for _name, _pos, _w in (
+            ("L0", core0, np.ones(len(core0), dtype=float)),
+            ("L4", core0 | buf4,
+             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0)))):
+        _r = _r3[_pos]
+        _q95 = float(np.percentile(_r, 95)) if len(_r) > 10 else 0.20
+        _q95 = max(_q95, R3_CORE_MIN + 0.02)
+        _g = np.clip((_r - R3_CORE_MIN) / (_q95 - R3_CORE_MIN), 0.0, 1.0)
+        _wpos = _w[_pos] * (1.0 + TAIL_WEIGHT_ALPHA * _g)
+        _n_neg = n_valid - int(_pos.sum())
+        _lines = []
+        for _spw in (15, 20, 25, 30, 38):
+            _pm = float(_wpos.sum()) * _spw
+            _share = _pm / (_pm + _n_neg) if (_pm + _n_neg) > 0 else 0.0
+            _mark = " ✓" if 0.35 <= _share <= 0.42 else ""
+            _lines.append(f"spw={_spw}: {_share:.1%}{_mark}")
+        _emit(f"- {_name}（q95={_q95:.4f}, n_pos={int(_pos.sum()):,}, n_neg={_n_neg:,}）："
+              + " | ".join(_lines))
+    _emit(f"\n[diag] 完成 {time.time() - t0:.0f}s")
+
+    # 落盘 markdown
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _md_path = out_dir / "label_diagnostics.md"
+        _md_path.write_text("\n".join(_md), encoding="utf-8")
+        logger.info(f"[diag] 报告已写入 {_md_path}")
+    except Exception as e:
+        logger.warning(f"[diag] markdown 落盘失败（忽略）: {str(e)[:100]}")
+
+
 # ==================== 主流程入口 ====================
 def main():
     p = argparse.ArgumentParser(description="Stage15 V5.1 独立训练、CV选参与 2026 OOS 回测管线")
-    p.add_argument("--mode", choices=["cv", "oos_2026"], default="cv")
+    p.add_argument("--mode", choices=["cv", "oos_2026", "diag_labels"], default="cv")
     p.add_argument("--features_parquet", default="results/merge_v2/lgb_ready/lgb_features.parquet")
     p.add_argument("--data_start", default=DATA_START)
     p.add_argument("--cv_end", default=CV_END)
@@ -803,7 +1104,12 @@ def main():
     p.add_argument("--test_months", type=int, default=TEST_MONTHS)
     p.add_argument("--seeds", default="42,2024,777", help="CV默认3种子；oos_2026建议传8种子")
     p.add_argument("--engines", default="lgb,catboost", help="模型核: lgb,catboost 或 lgb,xgboost 或 lgb")
-    p.add_argument("--enable_buffer_pos", action="store_true", default=True)
+    p.add_argument("--enable_buffer_pos", action="store_true", default=False,
+                   help="缓冲稳健正样本 4.5%%<=R3<7%%（仅 --label-v51 生效；"
+                        "2026-10-19 定版默认关闭：正类率~2%%与 scale_pos_weight 30~38 匹配）")
+    p.add_argument("--label_v51", action="store_true", default=False,
+                   help="V5.1 标签口径（TP_real 收盘加权 + T+2 硬底线 + r5 绝对涨幅豁免）；"
+                        "默认关闭 = 经典 multihorizon_35（等权 TP、r3>=7%%、r5>=r3-3%%、dd3>=-5%%）")
     p.add_argument("--num_threads", type=int, default=4)
     p.add_argument("--jobs", default="1",
                    help="CV 折级并行进程数：整数或 auto（按服务器核数+可用内存自动定，"
@@ -830,6 +1136,10 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else (RESULTS_ROOT / f"stage15_v5_{args.mode}_{ts}")
     logger = setup_logger(out_dir / "run.log")
+
+    if args.mode == "diag_labels":
+        run_label_diagnostics(args, out_dir, logger)
+        return 0
 
     seeds = [int(x.strip()) for x in args.seeds.split(",") if x.strip()]
     engines = [x.strip().lower() for x in args.engines.split(",") if x.strip()]
@@ -865,7 +1175,10 @@ def main():
                  "train_months": args.train_months, "test_months": args.test_months,
                  "embargo_days": EMBARGO_DAYS, "seeds": seeds, "engines": engines,
                  "min_train_rows": args.min_train_rows,
-                 "min_test_rows": args.min_test_rows}
+                 "min_test_rows": args.min_test_rows,
+                 "label_v51": bool(args.label_v51),
+                 "enable_buffer_pos": bool(args.enable_buffer_pos),
+                 "checkpoints": list(CHECKPOINTS)}
         _meta_path = _tasks_dir / "run_meta.json"
         if _meta_path.exists():
             try:
@@ -946,18 +1259,28 @@ def main():
             logger.error(f"[CV] 汇总缺失/损坏任务文件 {len(_miss_files)} 个"
                          f"（{_miss_files[:5]}…），重跑同一命令补齐后再汇总")
             return 1
-        pd.DataFrame(all_rows).to_csv(out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
         if not all_rows:
             logger.error("[CV] 无任何有效折样本产出（检查 --data_start/--cv_end/--train_months/"
                          "--min-train-rows/--min-test-rows），终止。")
             return
-        summary = summarize_and_pick_champion(all_rows)
+        pd.DataFrame(all_rows).to_csv(out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
+        # 主榜 = 纯 LightGBM（多 seed logit 均值）；aux/blend 为平行对照（2026-10-19 定版）
+        main_rows = [r for r in all_rows if r.get("scheme", "lgb") == "lgb"]
+        summary = summarize_and_pick_champion(main_rows)
         summary.to_csv(out_dir / "cv_summary.csv", index=False, encoding="utf-8-sig")
-        logger.info("\n===== Stage15 V5.1 跨折平台平滑排行榜 (11折) =====")
-        logger.info("\n" + summary.head(15).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+        logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 加密 checkpoint =====")
+        logger.info("\n" + summary.head(20).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
         champ = summary.iloc[0].to_dict()
         (out_dir / "champion.json").write_text(json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} | plateau_score={champ['plateau_score']:.4f}")
+        for _scheme in sorted({r.get("scheme") for r in all_rows} - {"lgb", None}):
+            _sub = [r for r in all_rows if r.get("scheme") == _scheme]
+            if not _sub:
+                continue
+            _sm = summarize_and_pick_champion(_sub)
+            _sm.to_csv(out_dir / f"cv_summary_{_scheme}.csv", index=False, encoding="utf-8-sig")
+            logger.info(f"\n===== 对照榜：{_scheme} =====")
+            logger.info("\n" + _sm.head(8).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     else:
         # oos_2026 模式：在 test_start 前倒推训练窗（严格 <= 2025-12），评估 2026 OOS + 分钟回测
@@ -978,10 +1301,11 @@ def main():
 
         w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m],
                                       dates[tr_m])
-        preds_by_cp = train_predict_fold(
+        _res = train_predict_fold(
             X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
             hp, [args.cp], seeds, engines, args.num_threads
         )
+        preds_by_cp = _res["lgb"]  # 主评估 = 纯 LGB（多 seed logit 均值）
         d_rows = evaluate_predictions(
             preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
             y_raw[te_m], fold_id=99, pid=hp["pid"]
