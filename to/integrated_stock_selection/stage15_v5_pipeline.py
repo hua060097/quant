@@ -698,6 +698,42 @@ def _cv_worker(task) -> tuple:
     return t_i, hp["pid"], fold["fold_id"], len(rows), rows
 
 
+def auto_cv_jobs(X: np.ndarray, engines: list[str], num_threads: int,
+                 n_tasks: int, logger: logging.Logger) -> int:
+    """按服务器 CPU/内存自动定折级并行数（--jobs auto）。
+    规则（防 OOM 的保守估算，Linux fork 共享只读 X，主份额=折切片+引擎副本）：
+      cpu_jobs = floor(0.9×核数 / num_threads)
+      单worker ≈ 1.0GB + 1.2×X.nbytes + (1.5GB if catboost else 0.3GB)
+      mem_jobs = floor(0.7×可用内存 / 单worker)
+      jobs = clamp(min(cpu_jobs, mem_jobs), 1, 任务数)"""
+    cores = os.cpu_count() or 4
+    cpu_jobs = max(1, int(cores * 0.9) // max(1, num_threads))
+    mem_gb = None
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_gb = int(line.split()[1]) / 1048576.0
+                    break
+    except Exception:
+        pass
+    if mem_gb is None:
+        try:
+            import psutil
+            mem_gb = psutil.virtual_memory().available / 1073741824.0
+        except Exception:
+            mem_gb = 8.0
+            logger.warning("[AUTO] 无法读取可用内存（无 /proc/meminfo 且无 psutil），按保守 8GB 估算")
+    x_gb = float(X.nbytes) / 1073741824.0
+    per_worker = 1.0 + 1.2 * x_gb + (1.5 if "catboost" in engines else 0.3)
+    mem_jobs = max(1, int(mem_gb * 0.7 / per_worker))
+    jobs = max(1, min(cpu_jobs, mem_jobs, max(1, n_tasks)))
+    logger.info(f"[AUTO] 核数={cores} 可用内存={mem_gb:.1f}GB X={x_gb:.2f}GB "
+                f"引擎={engines} 单worker估≈{per_worker:.1f}GB -> jobs={jobs} "
+                f"(cpu限={cpu_jobs} 内存限={mem_jobs} 任务={n_tasks})")
+    return jobs
+
+
 # ==================== 主流程入口 ====================
 def main():
     p = argparse.ArgumentParser(description="Stage15 V5.1 独立训练、CV选参与 2026 OOS 回测管线")
@@ -711,10 +747,10 @@ def main():
     p.add_argument("--engines", default="lgb,catboost", help="模型核: lgb,catboost 或 lgb,xgboost 或 lgb")
     p.add_argument("--enable_buffer_pos", action="store_true", default=True)
     p.add_argument("--num_threads", type=int, default=4)
-    p.add_argument("--jobs", type=int, default=1,
-                   help="CV 折级并行进程数（每 worker 内部再用 --num_threads 线程；"
-                        "建议 jobs×num_threads≤核数，12核如 jobs 4 × threads 3；"
-                        "结果与串行逐值一致，非 posix 平台自动退化串行）")
+    p.add_argument("--jobs", default="1",
+                   help="CV 折级并行进程数：整数或 auto（按服务器核数+可用内存自动定，"
+                        "防 OOM 保守估算；每 worker 内部再用 --num_threads 线程，"
+                        "jobs×num_threads≤核数；结果与串行逐值一致，非 posix 平台自动退化串行）")
     p.add_argument("--test_start", default="2026-01-05", help="oos_2026 模式的测试起点")
     p.add_argument("--test_end", default="2026-10-18", help="oos_2026 模式的测试终点")
     p.add_argument("--pid", default="H15", help="oos_2026 模式使用的超参 ID")
@@ -757,7 +793,11 @@ def main():
         for hp in HP_GRID:
             for fold in folds:
                 tasks.append((len(tasks), hp, fold))
-        _nj = max(1, int(args.jobs or 1))
+        _nj_raw = str(args.jobs).strip().lower()
+        if _nj_raw in ("auto", "0", "-1"):
+            _nj = auto_cv_jobs(X, engines, args.num_threads, len(tasks), logger)
+        else:
+            _nj = max(1, int(args.jobs or 1))
         if _nj > 1 and os.name != "posix":
             logger.warning("[CV] 非 posix 平台，--jobs 退化为串行")
             _nj = 1
