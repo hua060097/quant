@@ -65,19 +65,33 @@ BUF_POS_WEIGHT = 0.50              # 缓冲正样本赋予 0.5 倍半权
 TAIL_WEIGHT_ALPHA = 0.50           # 核心正样本尾部加权系数 (1.0 ~ 1.5x，从 R0=7% 起算)
 
 DRIFT_NORM_COLS = ("LOG_MV", "AMIHUD20")
-# 2026-10-19 加密定版（Owner 批准）：H15S 在 200~400 达峰、H14 在 600 仍上升，
-# 稀疏点分辨率不足；predict 各 cp 为纯内存操作，加密近零成本。
-CHECKPOINTS = [150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800]
+# 每超参容量专属加密 checkpoints（2026-10-19 定版，Owner 批准）：
+# lightgbm 各 cp predict 为纯内存操作，加密近零成本；浅树低轮区加密、
+# 深树延伸至 1000 轮防截断。
+CHECKPOINTS_SHALLOW = [80, 110, 140, 170, 200, 230, 260, 290, 320, 360, 400, 450, 500, 550]
+CHECKPOINTS_MEDIUM = [120, 160, 200, 240, 280, 320, 360, 400, 450, 500, 550, 600, 650, 700]
+CHECKPOINTS_DEEP = [200, 280, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1000]
+CHECKPOINTS = sorted(set(CHECKPOINTS_SHALLOW + CHECKPOINTS_MEDIUM + CHECKPOINTS_DEEP))
+# CatBoost 独立对称树网格（2026-10-19 定版）：深度 4/5/6 + 强正则深度6；
+# Bernoulli 子采样 0.80；单次训至 1000 轮，RawFormulaVal + ntree_end 切片全套 cp。
+CB_CHECKPOINTS = [150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000]
+CB_HP_GRID = [
+    {"pid": "CB_D4",   "depth": 4, "l2_leaf_reg": 10.0},
+    {"pid": "CB_D5",   "depth": 5, "l2_leaf_reg": 15.0},
+    {"pid": "CB_D6",   "depth": 6, "l2_leaf_reg": 25.0},
+    {"pid": "CB_D6_R", "depth": 6, "l2_leaf_reg": 40.0},
+]
+_CB_SCALE_POS_WEIGHT = 20.0
 
 HP_GRID = [
     # 2026-10-19 diag_labels 定版：L0 经典标签下 spw=20 → 有效正类占比 41.5%
     #（目标区间 35%~42%）；spw=25/30/38 分别为 47.0%/51.6%/57.4%（过高）。
-    {"pid": "H15S", "num_leaves": 15,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0},
-    {"pid": "H23",  "num_leaves": 23,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 12.0, "scale_pos_weight": 20.0},
-    {"pid": "H12",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 10.0, "scale_pos_weight": 20.0},
-    {"pid": "H15",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0},
-    {"pid": "H63",  "num_leaves": 63,  "max_depth": 7, "min_data_in_leaf": 1200, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 15.0, "reg_lambda": 25.0, "scale_pos_weight": 20.0},
-    {"pid": "H14",  "num_leaves": 127, "max_depth": 7, "min_data_in_leaf": 1800, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 20.0, "reg_lambda": 35.0, "scale_pos_weight": 20.0},
+    {"pid": "H15S", "num_leaves": 15,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_SHALLOW},
+    {"pid": "H23",  "num_leaves": 23,  "max_depth": 5, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 12.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_SHALLOW},
+    {"pid": "H12",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 10.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_MEDIUM},
+    {"pid": "H15",  "num_leaves": 31,  "max_depth": 6, "min_data_in_leaf": 1000, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 10.0, "reg_lambda": 15.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_MEDIUM},
+    {"pid": "H63",  "num_leaves": 63,  "max_depth": 7, "min_data_in_leaf": 1200, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 15.0, "reg_lambda": 25.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_DEEP},
+    {"pid": "H14",  "num_leaves": 127, "max_depth": 7, "min_data_in_leaf": 1800, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 20.0, "reg_lambda": 35.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_DEEP},
 ]
 
 
@@ -350,7 +364,11 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
                     over = npos > cap
                     if over.any():
                         scale = np.ones(nd, dtype=np.float32)
-                        scale[over] = np.sqrt(cap / npos[over]).astype(np.float32)
+                        # 2026-10-19 定版（Owner 批准）：线性硬封顶——海啸日全市场
+                        # 正样本总质量硬封顶于 cap=max(300,P95)；sqrt 软封顶后海啸日
+                        # 仍占 19.1% 正类权（2024-09-25 缩放后仍≈1106 个正样本），
+                        # 线性封顶将其压至 ~11%。
+                        scale[over] = (cap / npos[over]).astype(np.float32)
                         _sc = scale[day_codes]
                         w[_pos] = (w[_pos] * _sc[_pos]).astype(np.float32)
     return w
@@ -453,37 +471,85 @@ def train_predict_fold(
             "blend": blend_by_cp}
 
 
+def train_predict_cb(
+    X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
+    X_te: np.ndarray, hp: dict, seeds: list[int], num_threads: int
+) -> dict:
+    """CatBoost 独立对称树训练（2026-10-19 定版，Owner 批准）。
+
+    单次训至 CB_CHECKPOINTS 最大轮，`RawFormulaVal + ntree_end=cp` 切片输出
+    全套 Checkpoint 预测（零额外重训）——不再固定 450 轮硬混入 LGB。
+    hp: {"pid", "depth", "l2_leaf_reg"}；正类权重经 sample_weight 模拟 spw=20
+    （与 LGB 侧同一有效正类占比口径）。
+    """
+    from catboost import CatBoostClassifier
+    cb_w = w_tr * np.where(y_tr > 0.5, _CB_SCALE_POS_WEIGHT, 1.0)
+    cb = CatBoostClassifier(
+        iterations=max(CB_CHECKPOINTS), learning_rate=0.03,
+        depth=int(hp["depth"]), l2_leaf_reg=float(hp["l2_leaf_reg"]),
+        bootstrap_type="Bernoulli", subsample=0.80,
+        loss_function="Logloss", random_seed=int(seeds[0]),
+        thread_count=int(num_threads), verbose=0)
+    cb.fit(X_tr, y_tr, sample_weight=cb_w)
+    out = {}
+    for cp in CB_CHECKPOINTS:
+        out[int(cp)] = np.asarray(
+            cb.predict(X_te, prediction_type="RawFormulaVal",
+                       ntree_end=int(cp)), dtype=np.float64)
+    return out
+
+
 # ==================== 评估、同行业去重与分钟级回测对接 ====================
 def evaluate_predictions(
     preds_by_cp: dict[int, np.ndarray], dates_te: np.ndarray, codes_te: np.ndarray,
-    sectors_te: np.ndarray, y_raw_te: np.ndarray, fold_id: int, pid: str
+    sectors_te: np.ndarray, y_raw_te: np.ndarray, fold_id: int, pid: str,
+    topk: int = 30
 ) -> list[dict]:
+    """逐 cp 评估：向量化横截面 z + 同行业去重 + 每日 topk（2026-10-19 重构）。
+
+    与旧逐日循环逐值同口径：
+      - z = (pred - 当日中位) / (1.4826*MAD，MAD≈0 时退化为 std)，统计取当日全部行；
+      - 当日行数 < 30 的天跳过；
+      - 按 pred 降序 → 同 sector 仅保留第 1 名 → 当日 topk（rank=1..topk）。
+    topk 默认 30：供 fuse_champions 离线融合（top5 不足以做秩融合/共振级联）。
+    """
+    _base = pd.DataFrame({
+        "date": pd.to_datetime(dates_te),
+        "code": codes_te, "sector": sectors_te,
+        "ret": np.asarray(y_raw_te, dtype=float),
+    })
     rows = []
     for cp, pred in preds_by_cp.items():
-        df = pd.DataFrame({
-            "date": dates_te, "code": codes_te, "sector": sectors_te,
-            "pred": pred, "ret": y_raw_te
-        })
-        for d, g in df.groupby("date", sort=True):
-            if len(g) < 30:
-                continue
-            p_arr = g["pred"].to_numpy(dtype=float)
-            med = float(np.median(p_arr))
-            mad = float(np.median(np.abs(p_arr - med)))
-            scale = 1.4826 * mad if mad > 1e-12 else float(np.std(p_arr) + 1e-9)
-
-            g_sorted = g.sort_values("pred", ascending=False)
-            # 同申万二级行业去重：每个行业当天最多只取排名第 1 的龙头股
-            g_dedup = g_sorted.drop_duplicates(subset=["sector"], keep="first").head(5)
-            for rk_idx, r in enumerate(g_dedup.itertuples(index=False), 1):
-                z_in_day = (float(r.pred) - med) / scale
-                rows.append({
-                    "param": pid, "fold_id": fold_id, "cp": cp,
-                    "date": str(pd.Timestamp(d).date()), "rank": rk_idx,
-                    "stock_code": r.code, "sector": r.sector,
-                    "pred": float(r.pred), "score_z_in_day": z_in_day,
-                    "return": float(r.ret),
-                })
+        df = _base.copy()
+        df["pred"] = np.asarray(pred, dtype=float)
+        g = df.groupby("date", sort=False)["pred"]
+        day_n = g.transform("size")
+        med = g.transform("median")
+        dev = (df["pred"] - med).abs()
+        mad = dev.groupby(df["date"], sort=False).transform("median")
+        std = g.transform("std")
+        scale = np.where(mad.to_numpy(dtype=float) > 1e-12,
+                         1.4826 * mad.to_numpy(dtype=float),
+                         std.to_numpy(dtype=float) + 1e-9)
+        df["score_z_in_day"] = (df["pred"].to_numpy(dtype=float)
+                                - med.to_numpy(dtype=float)) / scale
+        df = df[day_n.to_numpy(dtype=float) >= 30]
+        if not len(df):
+            continue
+        df = df.sort_values(["date", "pred"], ascending=[True, False],
+                            kind="stable")
+        # 同申万二级行业去重（每行业当日只留第 1 名）
+        df = df.drop_duplicates(subset=["date", "sector"], keep="first")
+        df = df.groupby("date", sort=True, group_keys=False).head(topk).copy()
+        df["rank"] = df.groupby("date", sort=False).cumcount() + 1
+        df["param"] = str(pid)
+        df["fold_id"] = int(fold_id)
+        df["cp"] = int(cp)
+        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+        df = df.rename(columns={"code": "stock_code", "ret": "return"})
+        cols = ["param", "fold_id", "cp", "date", "rank", "stock_code",
+                "sector", "pred", "score_z_in_day", "return"]
+        rows.extend(df[cols].to_dict("records"))
     return rows
 
 
@@ -771,9 +837,13 @@ _CV_CTX: dict | None = None
 
 
 def _cv_worker(task) -> tuple:
-    """CV 单 (超参, 折) 任务：训练+评估（串行/并行共用，零漂移）。
-    返回 (任务序号, pid, fold_id, 评估行数, rows)。样本不足返回空 rows。"""
-    t_i, hp, fold = task
+    """CV 单 (side, 超参, 折) 任务：训练+评估（串行/并行共用，零漂移）。
+
+    side ∈ {"lgb", "catboost"}；返回 (任务序号, side, pid, fold_id, 评估行数, rows)。
+    2026-10-19 定版：两侧彻底解耦——LGB 用每超参专属 checkpoints（3 seeds logit
+    均值）；CatBoost 独立对称树网格（RawFormulaVal + ntree_end 全套切片）。
+    """
+    t_i, side, hp, fold = task
     c = _CV_CTX
     dates, valid_mask = c["dates"], c["valid_mask"]
     tr_m = ((dates >= np.datetime64(fold["train_start"]))
@@ -781,32 +851,24 @@ def _cv_worker(task) -> tuple:
     te_m = ((dates >= np.datetime64(fold["test_start"]))
             & (dates <= np.datetime64(fold["test_end"])) & valid_mask)
     if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
-        return t_i, hp["pid"], fold["fold_id"], 0, []
+        return t_i, side, hp["pid"], fold["fold_id"], 0, []
     w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
                                   c["y_raw"][tr_m], dates[tr_m])
-    res = train_predict_fold(
-        c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
-        hp, CHECKPOINTS, c["seeds"], c["engines"], c["num_threads"])
+    if side == "lgb":
+        _cps = hp.get("checkpoints", CHECKPOINTS)
+        preds = train_predict_fold(
+            c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
+            hp, _cps, c["seeds"], ["lgb"], c["num_threads"])["lgb"]
+    else:
+        preds = train_predict_cb(
+            c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m],
+            hp, c["seeds"], c["num_threads"])
     rows = evaluate_predictions(
-        res["lgb"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
+        preds, dates[te_m], c["codes"][te_m], c["sectors"][te_m],
         c["y_raw"][te_m], fold["fold_id"], hp["pid"])
     for r in rows:
-        r["scheme"] = "lgb"
-    if res["aux"] is not None:
-        _ar = evaluate_predictions(
-            res["aux"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
-            c["y_raw"][te_m], fold["fold_id"], hp["pid"])
-        for r in _ar:
-            r["scheme"] = res["aux_name"]
-        rows += _ar
-    if res["blend"] is not None:
-        _br = evaluate_predictions(
-            res["blend"], dates[te_m], c["codes"][te_m], c["sectors"][te_m],
-            c["y_raw"][te_m], fold["fold_id"], hp["pid"])
-        for r in _br:
-            r["scheme"] = "blend"
-        rows += _br
-    return t_i, hp["pid"], fold["fold_id"], len(rows), rows
+        r["scheme"] = side
+    return t_i, side, hp["pid"], fold["fold_id"], len(rows), rows
 
 
 def auto_cv_jobs(X: np.ndarray, engines: list[str], num_threads: int,
@@ -1093,10 +1155,117 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         logger.warning(f"[diag] markdown 落盘失败（忽略）: {str(e)[:100]}")
 
 
+# ==================== 离线融合寻优（--mode fuse_champions） ====================
+def run_fuse_champions(args, out_dir: Path, logger: logging.Logger) -> None:
+    """离线融合寻优（2026-10-19 定版，Owner 批准）：读取 CV 任务明细 parquet，
+    无需重训（秒级），在同一 11 折 OOS 候选上对比 5 类策略：
+
+      ① 纯 LGB 冠军（rank1 口径）；
+      ② 纯 CB 冠军；
+      ③ logit z-score 加权 w∈{0.1..0.9}（两侧当日横截面 z 线性加权）；
+      ④ 秩平均（两侧当日名次均值，越小越好）；
+      ⑤ 双核共振过滤（按 LGB 排序，要求候选进入 CB 当日头名 top-K，否则顺延；
+         全部不满足则当天空仓）。
+    """
+    t0 = time.time()
+    cv_dir = Path(args.cv_dir) if str(args.cv_dir).strip() else out_dir
+    _lgb_p = cv_dir / "champion.json"
+    _cb_p = cv_dir / "champion_cb.json"
+    if not _lgb_p.exists() or not _cb_p.exists():
+        raise SystemExit(f"[FUSE] 缺少 {_lgb_p} 或 {_cb_p}（需先跑含 lgb+catboost 的 CV）")
+    lgb_ch = json.loads(_lgb_p.read_text(encoding="utf-8"))
+    cb_ch = json.loads(_cb_p.read_text(encoding="utf-8"))
+    _parts = [pd.read_parquet(p) for p in
+              sorted((cv_dir / "cv_tasks").glob("*_rows.parquet"))]
+    if not _parts:
+        raise SystemExit(f"[FUSE] {cv_dir}/cv_tasks 下无任务明细")
+    all_df = pd.concat(_parts, ignore_index=True)
+    _lgb = all_df[(all_df["scheme"] == "lgb")
+                  & (all_df["param"] == lgb_ch["param"])
+                  & (all_df["cp"] == int(lgb_ch["cp"]))].copy()
+    _cb = all_df[(all_df["scheme"] == "catboost")
+                 & (all_df["param"] == cb_ch["param"])
+                 & (all_df["cp"] == int(cb_ch["cp"]))].copy()
+    if not len(_lgb) or not len(_cb):
+        raise SystemExit("[FUSE] 冠军明细为空，检查 champion 文件与任务明细")
+    logger.info(f"[FUSE] LGB 冠军 {lgb_ch['param']}@{int(lgb_ch['cp'])} "
+                f"({len(_lgb):,} 行) | CB 冠军 {cb_ch['param']}@{int(cb_ch['cp'])} "
+                f"({len(_cb):,} 行)")
+
+    _l = _lgb[["fold_id", "date", "stock_code", "sector", "rank",
+               "pred", "score_z_in_day", "return"]].rename(columns={
+        "rank": "rank_lgb", "pred": "pred_lgb",
+        "score_z_in_day": "z_lgb", "return": "ret"})
+    _c = _cb[["fold_id", "date", "stock_code", "rank",
+              "pred", "score_z_in_day", "return"]].rename(columns={
+        "rank": "rank_cb", "pred": "pred_cb", "score_z_in_day": "z_cb",
+        "return": "ret_cb"})
+    m = _l.merge(_c, on=["fold_id", "date", "stock_code"], how="outer")
+    m["sector"] = m["sector"].fillna("__NA__")
+    m["ret"] = m["ret"].fillna(m["ret_cb"])
+    for _cc in ("rank_lgb", "rank_cb"):
+        m[_cc] = m[_cc].fillna(9999.0)
+    for _cc in ("z_lgb", "z_cb"):
+        m[_cc] = m[_cc].fillna(-99.0)
+    for _cc in ("pred_lgb", "pred_cb"):
+        m[_cc] = m[_cc].fillna(-1e18)
+
+    def _eval(strategy: str, score, keep_mask=None) -> dict:
+        d = pd.DataFrame({
+            "date": m["date"].to_numpy(), "fold_id": m["fold_id"].to_numpy(),
+            "sector": m["sector"].to_numpy(), "code": m["stock_code"].to_numpy(),
+            "ret": m["ret"].to_numpy(), "score": np.asarray(score, dtype=float)})
+        if keep_mask is not None:
+            d = d[np.asarray(keep_mask, dtype=bool)]
+        if not len(d):
+            return {"strategy": strategy, "n_days": 0, "r1_mean": float("nan")}
+        d = d.sort_values(["date", "score"], ascending=[True, False],
+                          kind="stable")
+        d = d.drop_duplicates(subset=["date", "sector"], keep="first")
+        d["rk"] = d.groupby("date", sort=False).cumcount() + 1
+        r1 = d[d["rk"] == 1]
+        r12 = d[d["rk"] <= 2].groupby("date", sort=False)["ret"].mean()
+        ret = r1["ret"].to_numpy(dtype=float)
+        _fi = r1.groupby("fold_id")["ret"].mean()
+        return {"strategy": strategy, "n_days": int(len(r1)),
+                "r1_mean": float(np.mean(ret)),
+                "r1_median": float(np.median(ret)),
+                "r1_win": float((ret > 0).mean()),
+                "r1_q10": float(np.quantile(ret, 0.10)),
+                "pos_folds": int((_fi > 0).sum()), "n_folds": int(len(_fi)),
+                "min_fold_mean": float(_fi.min()),
+                "top2_mean": float(r12.mean())}
+
+    _rows = [_eval("lgb_only", m["pred_lgb"].to_numpy()),
+             _eval("cb_only", m["pred_cb"].to_numpy())]
+    for w in np.round(np.arange(0.1, 1.0, 0.1), 2):
+        _rows.append(_eval(
+            f"z_blend_w{w:.1f}",
+            w * m["z_lgb"].to_numpy() + (1.0 - w) * m["z_cb"].to_numpy()))
+    _rows.append(_eval("rank_avg",
+                       -(m["rank_lgb"].to_numpy() + m["rank_cb"].to_numpy())))
+    for K in (2, 3, 5, 10):
+        _rows.append(_eval(f"resonance_K{K}", m["pred_lgb"].to_numpy(),
+                           keep_mask=(m["rank_cb"].to_numpy() <= K)))
+    _res = pd.DataFrame(_rows)
+    _res.to_csv(out_dir / "fuse_comparison.csv", index=False,
+                encoding="utf-8-sig")
+    logger.info("\n===== 融合寻优对比（同一 11 折 OOS 候选，rank1 口径） =====")
+    logger.info("\n" + _res.to_string(index=False,
+                float_format=lambda x: f"{x:.4f}"))
+    _ok = _res.dropna(subset=["r1_mean"])
+    if len(_ok):
+        _best = _ok.sort_values("r1_mean", ascending=False).iloc[0]
+        logger.info(f"[FUSE] 最优策略: {_best['strategy']} | "
+                    f"r1_mean={_best['r1_mean']:.4f} | "
+                    f"pos_folds={int(_best['pos_folds'])}/{int(_best['n_folds'])}")
+    logger.info(f"[FUSE] 完成 {time.time() - t0:.1f}s")
+
+
 # ==================== 主流程入口 ====================
 def main():
     p = argparse.ArgumentParser(description="Stage15 V5.1 独立训练、CV选参与 2026 OOS 回测管线")
-    p.add_argument("--mode", choices=["cv", "oos_2026", "diag_labels"], default="cv")
+    p.add_argument("--mode", choices=["cv", "oos_2026", "diag_labels", "fuse_champions"], default="cv")
     p.add_argument("--features_parquet", default="results/merge_v2/lgb_ready/lgb_features.parquet")
     p.add_argument("--data_start", default=DATA_START)
     p.add_argument("--cv_end", default=CV_END)
@@ -1131,6 +1300,8 @@ def main():
     p.add_argument("--out_dir", default="",
                    help="输出目录；断点续跑：用同一 out_dir 重跑自动跳过已完成任务"
                         "（任务级结果存 out_dir/cv_tasks/，配置指纹不符则拒绝续跑）")
+    p.add_argument("--cv_dir", default="",
+                   help="fuse_champions 模式读取的 CV 输出目录（默认同 --out_dir）")
     args = p.parse_args()
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1139,6 +1310,9 @@ def main():
 
     if args.mode == "diag_labels":
         run_label_diagnostics(args, out_dir, logger)
+        return 0
+    if args.mode == "fuse_champions":
+        run_fuse_champions(args, out_dir, logger)
         return 0
 
     seeds = [int(x.strip()) for x in args.seeds.split(",") if x.strip()]
@@ -1160,13 +1334,18 @@ def main():
                    "codes": codes, "sectors": sectors, "seeds": seeds,
                    "engines": engines, "num_threads": args.num_threads,
                    "min_train": args.min_train_rows, "min_test": args.min_test_rows}
+        # 任务：LGB 6 组 × 11 折 +（可选）CB 4 组 × 11 折（2026-10-19 双引擎解耦）
         tasks = []
         for hp in HP_GRID:
             for fold in folds:
-                tasks.append((len(tasks), hp, fold))
-        # 断点续跑（2026-10-19）：任务级结果落盘 out_dir/cv_tasks/{pid}_Fold{id}.json，
-        # 进程被杀/实例被抢占后用同一 --out_dir 重跑即自动跳过已完成任务；
-        # run_meta 配置指纹不一致则拒绝续跑（防串配置污染）。
+                tasks.append((len(tasks), "lgb", hp, fold))
+        if "catboost" in engines:
+            for hp in CB_HP_GRID:
+                for fold in folds:
+                    tasks.append((len(tasks), "catboost", hp, fold))
+        # 断点续跑（2026-10-19）：任务级明细落盘 out_dir/cv_tasks/{side}_{pid}_Fold{id}
+        # （_rows.parquet 全量 top30 + .json 标记），进程被杀/实例被抢占后同 --out_dir
+        # 重跑自动跳过已完成任务；run_meta 配置指纹不一致则拒绝续跑。
         _tasks_dir = out_dir / "cv_tasks"
         _tasks_dir.mkdir(parents=True, exist_ok=True)
         _meta = {"features_parquet": str(args.features_parquet),
@@ -1178,7 +1357,11 @@ def main():
                  "min_test_rows": args.min_test_rows,
                  "label_v51": bool(args.label_v51),
                  "enable_buffer_pos": bool(args.enable_buffer_pos),
-                 "checkpoints": list(CHECKPOINTS)}
+                 "lgb_checkpoints": {hp["pid"]: list(hp.get("checkpoints", CHECKPOINTS))
+                                     for hp in HP_GRID},
+                 "cb_checkpoints": list(CB_CHECKPOINTS),
+                 "cb_grid": [hp["pid"] for hp in CB_HP_GRID],
+                 "topk": 30, "grid_rev": "2026-10-19b"}
         _meta_path = _tasks_dir / "run_meta.json"
         if _meta_path.exists():
             try:
@@ -1193,24 +1376,49 @@ def main():
             _meta_path.write_text(json.dumps(_meta, ensure_ascii=False, indent=1),
                                   encoding="utf-8")
 
-        def _task_key(hp, fold):
-            return f"{hp['pid']}_Fold{int(fold['fold_id']):02d}"
+        def _task_key(side, hp, fold):
+            return f"{side}_{hp['pid']}_Fold{int(fold['fold_id']):02d}"
 
-        def _task_path(hp, fold):
-            return _tasks_dir / (_task_key(hp, fold) + ".json")
+        def _task_path(side, hp, fold):
+            return _tasks_dir / (_task_key(side, hp, fold) + ".json")
 
-        def _persist_task(pid, fid, rows):
-            _f = _tasks_dir / f"{pid}_Fold{int(fid):02d}.json"
-            _tmp = _f.with_name(_f.name + ".tmp")
-            _tmp.write_text(json.dumps({"pid": pid, "fold_id": int(fid),
-                                        "nrows": len(rows), "rows": rows},
-                                       ensure_ascii=False, default=float),
-                            encoding="utf-8")
-            _tmp.replace(_f)
+        def _rows_path(side, hp, fold):
+            return _tasks_dir / (_task_key(side, hp, fold) + "_rows.parquet")
 
-        _done_keys = {_task_key(t[1], t[2]) for t in tasks
-                      if _task_path(t[1], t[2]).exists()}
-        todo = [t for t in tasks if _task_key(t[1], t[2]) not in _done_keys]
+        _ROWS_COLS = ["param", "fold_id", "cp", "date", "rank", "stock_code",
+                      "sector", "pred", "score_z_in_day", "return", "scheme"]
+
+        def _persist_task(side, pid, fid, rows):
+            _df = pd.DataFrame(rows)
+            if not len(_df):
+                _df = pd.DataFrame({
+                    "param": pd.Series(dtype="object"),
+                    "fold_id": pd.Series(dtype="int64"),
+                    "cp": pd.Series(dtype="int64"),
+                    "date": pd.Series(dtype="object"),
+                    "rank": pd.Series(dtype="int64"),
+                    "stock_code": pd.Series(dtype="object"),
+                    "sector": pd.Series(dtype="object"),
+                    "pred": pd.Series(dtype="float64"),
+                    "score_z_in_day": pd.Series(dtype="float64"),
+                    "return": pd.Series(dtype="float64"),
+                    "scheme": pd.Series(dtype="object")})
+            _df = _df.reindex(columns=_ROWS_COLS)
+            _f = _tasks_dir / f"{side}_{pid}_Fold{int(fid):02d}_rows.parquet"
+            _df.to_parquet(_f, index=False)
+            _mark = _tasks_dir / f"{side}_{pid}_Fold{int(fid):02d}.json"
+            _tmp = _mark.with_name(_mark.name + ".tmp")
+            _tmp.write_text(json.dumps({"side": side, "pid": pid,
+                                        "fold_id": int(fid),
+                                        "nrows": int(len(rows))},
+                                       ensure_ascii=False), encoding="utf-8")
+            _tmp.replace(_mark)
+
+        _done_keys = {_task_key(t[1], t[2], t[3]) for t in tasks
+                      if _task_path(t[1], t[2], t[3]).exists()
+                      and _rows_path(t[1], t[2], t[3]).exists()}
+        todo = [t for t in tasks
+                if _task_key(t[1], t[2], t[3]) not in _done_keys]
         logger.info(f"[CV] 断点续跑：已完成 {len(_done_keys)}/{len(tasks)} 任务，"
                     f"本次待跑 {len(todo)}")
         _nj_raw = str(args.jobs).strip().lower()
@@ -1227,60 +1435,74 @@ def main():
         if todo:
             if _nj <= 1:
                 for task in todo:
-                    _ti, _pid, _fid, _nrows, _rows = _cv_worker(task)
-                    _persist_task(_pid, _fid, _rows)
+                    _ti, _side, _pid, _fid, _nrows, _rows = _cv_worker(task)
+                    _persist_task(_side, _pid, _fid, _rows)
                     _done += 1
-                    logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
+                    logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
                                 f"{time.time()-_t0:.0f}s")
             else:
                 import concurrent.futures as _cf
-                logger.info(f"[CV] 并行：{len(todo)} 个(超参×折)任务 × {_nj} 进程 "
+                logger.info(f"[CV] 并行：{len(todo)} 个(side×超参×折)任务 × {_nj} 进程 "
                             f"(每进程 {args.num_threads} 线程) …")
                 with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
-                    for _ti, _pid, _fid, _nrows, _rows in _ex.map(_cv_worker, todo):
-                        _persist_task(_pid, _fid, _rows)
+                    for _ti, _side, _pid, _fid, _nrows, _rows in _ex.map(
+                            _cv_worker, todo):
+                        _persist_task(_side, _pid, _fid, _rows)
                         _done += 1
-                        logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
-                                    f"[{_done}/{len(todo)}] {time.time()-_t0:.0f}s")
+                        logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 "
+                                    f"rows={_nrows} [{_done}/{len(todo)}] "
+                                    f"{time.time()-_t0:.0f}s")
 
         # 汇总以任务文件为准（含续跑前完成的），保证任意中断后重跑结果一致
-        all_rows = []
+        _parts = []
         _miss_files = []
         for t in tasks:
-            _p = _task_path(t[1], t[2])
+            _p = _rows_path(t[1], t[2], t[3])
             if not _p.exists():
-                _miss_files.append(_task_key(t[1], t[2]))
+                _miss_files.append(_task_key(t[1], t[2], t[3]))
                 continue
             try:
-                all_rows.extend(json.loads(_p.read_text(encoding="utf-8")).get("rows", []))
+                _parts.append(pd.read_parquet(_p))
             except Exception:
-                _miss_files.append(_task_key(t[1], t[2]))
+                _miss_files.append(_task_key(t[1], t[2], t[3]))
         if _miss_files:
             logger.error(f"[CV] 汇总缺失/损坏任务文件 {len(_miss_files)} 个"
                          f"（{_miss_files[:5]}…），重跑同一命令补齐后再汇总")
             return 1
-        if not all_rows:
-            logger.error("[CV] 无任何有效折样本产出（检查 --data_start/--cv_end/--train_months/"
-                         "--min-train-rows/--min-test-rows），终止。")
+        if not _parts:
+            logger.error("[CV] 无任何有效折样本产出（检查 --data_start/--cv_end/"
+                         "--train_months/--min-train-rows/--min-test-rows），终止。")
             return
-        pd.DataFrame(all_rows).to_csv(out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
-        # 主榜 = 纯 LightGBM（多 seed logit 均值）；aux/blend 为平行对照（2026-10-19 定版）
-        main_rows = [r for r in all_rows if r.get("scheme", "lgb") == "lgb"]
-        summary = summarize_and_pick_champion(main_rows)
+        all_df = pd.concat(_parts, ignore_index=True)
+        all_df[all_df["rank"] <= 5].to_csv(  # 兼容旧消费方（risk_veto_train 等）
+            out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
+        # 主榜 = 纯 LightGBM（多 seed logit 均值）；CatBoost 独立榜（2026-10-19 定版）
+        main = all_df[all_df["scheme"] == "lgb"]
+        summary = summarize_and_pick_champion(main.to_dict("records"))
         summary.to_csv(out_dir / "cv_summary.csv", index=False, encoding="utf-8-sig")
-        logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 加密 checkpoint =====")
-        logger.info("\n" + summary.head(20).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+        logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 专属加密 checkpoint =====")
+        logger.info("\n" + summary.head(25).to_string(index=False,
+                    float_format=lambda x: f"{x:.4f}"))
         champ = summary.iloc[0].to_dict()
-        (out_dir / "champion.json").write_text(json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} | plateau_score={champ['plateau_score']:.4f}")
-        for _scheme in sorted({r.get("scheme") for r in all_rows} - {"lgb", None}):
-            _sub = [r for r in all_rows if r.get("scheme") == _scheme]
-            if not _sub:
-                continue
-            _sm = summarize_and_pick_champion(_sub)
-            _sm.to_csv(out_dir / f"cv_summary_{_scheme}.csv", index=False, encoding="utf-8-sig")
-            logger.info(f"\n===== 对照榜：{_scheme} =====")
-            logger.info("\n" + _sm.head(8).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+        (out_dir / "champion.json").write_text(
+            json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} "
+                    f"| plateau_score={champ['plateau_score']:.4f}")
+        _cb = all_df[all_df["scheme"] == "catboost"]
+        if len(_cb):
+            _sm = summarize_and_pick_champion(_cb.to_dict("records"))
+            _sm.to_csv(out_dir / "cv_summary_catboost.csv", index=False,
+                       encoding="utf-8-sig")
+            logger.info("\n===== 对照榜：CatBoost 独立对称树网格 =====")
+            logger.info("\n" + _sm.head(15).to_string(
+                index=False, float_format=lambda x: f"{x:.4f}"))
+            _champ_cb = _sm.iloc[0].to_dict()
+            (out_dir / "champion_cb.json").write_text(
+                json.dumps(_champ_cb, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            logger.info(f"[CHAMPION-CB] 胜出配置: {_champ_cb['param']} @ "
+                        f"cp={int(_champ_cb['cp'])} | "
+                        f"plateau_score={_champ_cb['plateau_score']:.4f}")
 
     else:
         # oos_2026 模式：在 test_start 前倒推训练窗（严格 <= 2025-12），评估 2026 OOS + 分钟回测
@@ -1303,8 +1525,7 @@ def main():
                                       dates[tr_m])
         _res = train_predict_fold(
             X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
-            hp, [args.cp], seeds, engines, args.num_threads
-        )
+            hp, [args.cp], seeds, ["lgb"], args.num_threads)
         preds_by_cp = _res["lgb"]  # 主评估 = 纯 LGB（多 seed logit 均值）
         d_rows = evaluate_predictions(
             preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
