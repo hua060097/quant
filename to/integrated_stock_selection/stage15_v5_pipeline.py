@@ -702,12 +702,12 @@ def auto_cv_jobs(X: np.ndarray, engines: list[str], num_threads: int,
                  n_tasks: int, logger: logging.Logger) -> int:
     """按服务器 CPU/内存自动定折级并行数（--jobs auto）。
     规则（防 OOM 的保守估算，Linux fork 共享只读 X，主份额=折切片+引擎副本）：
-      cpu_jobs = floor(0.9×核数 / num_threads)
+      cpu_jobs = floor(核数 / num_threads)   ← 满载（专用服务器，去 0.9 折扣）
       单worker ≈ 1.0GB + 1.2×X.nbytes + (1.5GB if catboost else 0.3GB)
       mem_jobs = floor(0.7×可用内存 / 单worker)
       jobs = clamp(min(cpu_jobs, mem_jobs), 1, 任务数)"""
     cores = os.cpu_count() or 4
-    cpu_jobs = max(1, int(cores * 0.9) // max(1, num_threads))
+    cpu_jobs = max(1, cores // max(1, num_threads))
     mem_gb = None
     try:
         with open("/proc/meminfo", "r", encoding="utf-8") as f:
@@ -763,7 +763,9 @@ def main():
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
                    help="单折测试样本下限（默认5000；小样本调试可调低）")
-    p.add_argument("--out_dir", default="")
+    p.add_argument("--out_dir", default="",
+                   help="输出目录；断点续跑：用同一 out_dir 重跑自动跳过已完成任务"
+                        "（任务级结果存 out_dir/cv_tasks/，配置指纹不符则拒绝续跑）")
     args = p.parse_args()
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -793,36 +795,98 @@ def main():
         for hp in HP_GRID:
             for fold in folds:
                 tasks.append((len(tasks), hp, fold))
+        # 断点续跑（2026-10-19）：任务级结果落盘 out_dir/cv_tasks/{pid}_Fold{id}.json，
+        # 进程被杀/实例被抢占后用同一 --out_dir 重跑即自动跳过已完成任务；
+        # run_meta 配置指纹不一致则拒绝续跑（防串配置污染）。
+        _tasks_dir = out_dir / "cv_tasks"
+        _tasks_dir.mkdir(parents=True, exist_ok=True)
+        _meta = {"features_parquet": str(args.features_parquet),
+                 "n_features": len(bundle["feature_cols"]),
+                 "data_start": args.data_start, "cv_end": args.cv_end,
+                 "train_months": args.train_months, "test_months": args.test_months,
+                 "embargo_days": EMBARGO_DAYS, "seeds": seeds, "engines": engines,
+                 "min_train_rows": args.min_train_rows,
+                 "min_test_rows": args.min_test_rows}
+        _meta_path = _tasks_dir / "run_meta.json"
+        if _meta_path.exists():
+            try:
+                _old_meta = json.loads(_meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                _old_meta = None
+            if _old_meta != _meta:
+                logger.error(f"[CV] 断点目录 {_tasks_dir} 的 run_meta 与本次配置不一致，"
+                             "拒绝续跑（换 --out_dir 或删除该目录以全新开跑）")
+                return 1
+        else:
+            _meta_path.write_text(json.dumps(_meta, ensure_ascii=False, indent=1),
+                                  encoding="utf-8")
+
+        def _task_key(hp, fold):
+            return f"{hp['pid']}_Fold{int(fold['fold_id']):02d}"
+
+        def _task_path(hp, fold):
+            return _tasks_dir / (_task_key(hp, fold) + ".json")
+
+        def _persist_task(pid, fid, rows):
+            _f = _tasks_dir / f"{pid}_Fold{int(fid):02d}.json"
+            _tmp = _f.with_name(_f.name + ".tmp")
+            _tmp.write_text(json.dumps({"pid": pid, "fold_id": int(fid),
+                                        "nrows": len(rows), "rows": rows},
+                                       ensure_ascii=False, default=float),
+                            encoding="utf-8")
+            _tmp.replace(_f)
+
+        _done_keys = {_task_key(t[1], t[2]) for t in tasks
+                      if _task_path(t[1], t[2]).exists()}
+        todo = [t for t in tasks if _task_key(t[1], t[2]) not in _done_keys]
+        logger.info(f"[CV] 断点续跑：已完成 {len(_done_keys)}/{len(tasks)} 任务，"
+                    f"本次待跑 {len(todo)}")
         _nj_raw = str(args.jobs).strip().lower()
         if _nj_raw in ("auto", "0", "-1"):
-            _nj = auto_cv_jobs(X, engines, args.num_threads, len(tasks), logger)
+            _nj = auto_cv_jobs(X, engines, args.num_threads, max(1, len(todo)), logger)
         else:
             _nj = max(1, int(args.jobs or 1))
         if _nj > 1 and os.name != "posix":
             logger.warning("[CV] 非 posix 平台，--jobs 退化为串行")
             _nj = 1
-        _nj = max(1, min(_nj, len(tasks)))
-        all_rows = []
+        _nj = max(1, min(_nj, max(1, len(todo))))
         _t0 = time.time()
         _done = 0
-        if _nj <= 1:
-            for task in tasks:
-                _ti, _pid, _fid, _nrows, _rows = _cv_worker(task)
-                all_rows.extend(_rows)
-                _done += 1
-                logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
-                            f"{time.time()-_t0:.0f}s")
-        else:
-            import concurrent.futures as _cf
-            logger.info(f"[CV] 并行：{len(tasks)} 个(超参×折)任务 × {_nj} 进程 "
-                        f"(每进程 {args.num_threads} 线程) …")
-            with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
-                for _ti, _pid, _fid, _nrows, _rows in _ex.map(_cv_worker, tasks):
-                    all_rows.extend(_rows)
+        if todo:
+            if _nj <= 1:
+                for task in todo:
+                    _ti, _pid, _fid, _nrows, _rows = _cv_worker(task)
+                    _persist_task(_pid, _fid, _rows)
                     _done += 1
                     logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
-                                f"[{_done}/{len(tasks)}] {time.time()-_t0:.0f}s")
+                                f"{time.time()-_t0:.0f}s")
+            else:
+                import concurrent.futures as _cf
+                logger.info(f"[CV] 并行：{len(todo)} 个(超参×折)任务 × {_nj} 进程 "
+                            f"(每进程 {args.num_threads} 线程) …")
+                with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
+                    for _ti, _pid, _fid, _nrows, _rows in _ex.map(_cv_worker, todo):
+                        _persist_task(_pid, _fid, _rows)
+                        _done += 1
+                        logger.info(f"[CV] {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
+                                    f"[{_done}/{len(todo)}] {time.time()-_t0:.0f}s")
 
+        # 汇总以任务文件为准（含续跑前完成的），保证任意中断后重跑结果一致
+        all_rows = []
+        _miss_files = []
+        for t in tasks:
+            _p = _task_path(t[1], t[2])
+            if not _p.exists():
+                _miss_files.append(_task_key(t[1], t[2]))
+                continue
+            try:
+                all_rows.extend(json.loads(_p.read_text(encoding="utf-8")).get("rows", []))
+            except Exception:
+                _miss_files.append(_task_key(t[1], t[2]))
+        if _miss_files:
+            logger.error(f"[CV] 汇总缺失/损坏任务文件 {len(_miss_files)} 个"
+                         f"（{_miss_files[:5]}…），重跑同一命令补齐后再汇总")
+            return 1
         pd.DataFrame(all_rows).to_csv(out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
         if not all_rows:
             logger.error("[CV] 无任何有效折样本产出（检查 --data_start/--cv_end/--train_months/"
