@@ -598,16 +598,15 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
             logger.warning(f"[VETO] 行情派生特征失败: {str(e)[:120]}")
     if need - set(fdf.columns):
         try:
-            from risk_veto_train import find_intraday_cache
+            from risk_veto_train import find_intraday_cache, load_intraday_cache
             ip = find_intraday_cache()
             if ip is not None and Path(ip).exists():
-                idf = pd.read_parquet(ip)
-                idf["date"] = pd.to_datetime(idf["date"])
-                idf["stock_code"] = idf["stock_code"].astype(str)
-                icols = [c for c in idf.columns if c in need]
-                if icols:
-                    fdf = fdf.merge(idf[["stock_code", "date"] + icols],
-                                    on=["stock_code", "date"], how="left")
+                idf = load_intraday_cache(ip)  # 裸列名→id_* 注册名（2026-10-19 修复）
+                if idf is not None:
+                    icols = [c for c in idf.columns if c in need]
+                    if icols:
+                        fdf = fdf.merge(idf[["stock_code", "date"] + icols],
+                                        on=["stock_code", "date"], how="left")
         except Exception as e:
             logger.warning(f"[VETO] 日内降频缓存 join 失败: {str(e)[:120]}")
     missing = sorted(need - set(fdf.columns))

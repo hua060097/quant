@@ -97,6 +97,42 @@ def find_intraday_cache() -> Path | None:
     return None
 
 
+#: 日内降频缓存列名（无 id_ 前缀，intraday_minute.FACTOR_COLS）→ 注册因子 ID。
+#: 2026-10-19 修复：此前按 id_* 名直接 join 缓存，列名不匹配导致 6 个日内
+#: 派发/衰竭特征静默缺失（风控规则挖掘失去核心特征）。
+_INTRADAY_CACHE_MAP = {
+    'hi_amt_share20': 'id_hi_amt_share20',
+    'hi_shadow_dump': 'id_hi_shadow_dump',
+    'late30_ret': 'id_late30_ret',
+    'late30_amt_share': 'id_late30_amt_share',
+    'updown_vol_ratio': 'id_updown_vol_ratio',
+    'dd_recovery': 'id_dd_recovery',
+    'hi_amt_share20_s3': 'id_hi_amt_share20_s3',
+    'hi_shadow_dump_s3': 'id_hi_shadow_dump_s3',
+    'updown_vol_ratio_s3': 'id_updown_vol_ratio_s3',
+    'dd_recovery_s3': 'id_dd_recovery_s3',
+}
+
+
+def load_intraday_cache(path) -> pd.DataFrame | None:
+    """读取日内降频缓存并把裸列名重命名为注册因子 ID（id_*）；失败返回 None。"""
+    try:
+        idf = pd.read_parquet(path)
+        idf["date"] = pd.to_datetime(idf["date"])
+        idf["stock_code"] = idf["stock_code"].astype(str)
+        ren = {}
+        for c in idf.columns:
+            if c in ("stock_code", "date", "n_bars"):
+                continue
+            if c in _INTRADAY_CACHE_MAP:
+                ren[c] = _INTRADAY_CACHE_MAP[c]
+            elif ("id_" + str(c)) in RISK_FEATURE_POOL:
+                ren[c] = "id_" + str(c)
+        return idf.rename(columns=ren)
+    except Exception:
+        return None
+
+
 def derive_price_features(price_path: Path, dates_lo, dates_hi) -> pd.DataFrame:
     """行情派生：bias5/bias10/ret5/up_shadow/amt_ratio（全回溯窗，PIT 安全）。"""
     cols = ["stock_code", "date", "high", "low", "close", "amount"]
@@ -157,20 +193,18 @@ def load_candidates(args, logger) -> tuple[pd.DataFrame, list[str], list[str]]:
     else:
         logger.warning("[风控] 行情缓存缺失，bias/ret5/up_shadow/amt_ratio 不可用")
 
-    # 日内降频缓存 join
+    # 日内降频缓存 join（列名经 load_intraday_cache 重命名为 id_* 注册名）
     ip = Path(args.intraday_cache) if args.intraday_cache else find_intraday_cache()
     if ip and ip.exists():
-        try:
-            idf = pd.read_parquet(ip)
-            idf["date"] = pd.to_datetime(idf["date"])
-            idf["stock_code"] = idf["stock_code"].astype(str)
+        idf = load_intraday_cache(ip)
+        if idf is not None:
             icols = [c for c in idf.columns if c in RISK_FEATURE_POOL
                      and c not in ("score_z_in_day",)]
             if icols:
                 d = d.merge(idf[["stock_code", "date"] + icols],
                             on=["stock_code", "date"], how="left")
-        except Exception as e:
-            logger.warning(f"[风控] 日内缓存 join 失败 {str(e)[:120]}")
+        else:
+            logger.warning("[风控] 日内缓存读取失败（id_* 特征跳过）")
     else:
         logger.info("[风控] 日内降频缓存不存在（id_* 特征跳过）")
 
