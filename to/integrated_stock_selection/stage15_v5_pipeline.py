@@ -546,12 +546,34 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
                              logger: logging.Logger) -> np.ndarray:
     """OOS 分钟回测前应用风控级联否决：被否候选 predicted_return 置 -inf，
     回测引擎按 pred 降序取第一个未被否者（Rank1 被否→顺延→全否空仓）。
+
+    顺序铁律（2026-10-19 修复）：**先同申万二级行业去重（非头名置 -inf），
+    后应用风控否决**——与 CV 选参口径一致；否则被否行业真龙头会让同行业
+    第 2 名浮上来被买（跟风股顶替龙头）。
     特征组装与 risk_veto_train 训练期完全一致（矩阵 + 行情派生 + 日内降频缓存
     + score_z_in_day），规则引用特征缺失时严格报错（防静默失效）。"""
     rules = json.loads(Path(rules_path).read_text(encoding="utf-8")).get("rules", [])
     if not rules:
         logger.warning(f"[VETO] {rules_path} 中无规则，跳过否决")
         return preds
+    preds = np.asarray(preds, dtype=float).copy()
+    # 行业去重先行：每行业仅头名参与否决与顺延（与 CV/分钟回测口径一致）
+    try:
+        _swm = load_sw2_map()
+        if _swm:
+            _sec = np.array([_swm.get(str(c), "__NA__") for c in codes_te],
+                            dtype=object)
+            _t = pd.DataFrame({"i": np.arange(len(preds)),
+                               "date": pd.to_datetime(dates_te),
+                               "pred": preds, "sec": _sec})
+            _t = _t.sort_values(["date", "pred"], ascending=[True, False],
+                                kind="stable")
+            _dup = _t.duplicated(subset=["date", "sec"], keep="first").to_numpy()
+            _dup_idx = _t["i"].to_numpy()[_dup]
+            preds[_dup_idx] = -np.inf
+            logger.info(f"[VETO] 行业去重先行：{len(_dup_idx)} 个非头名候选置 -inf")
+    except Exception as _e:
+        logger.warning(f"[VETO] 行业去重失败（{str(_e)[:100]}），按原顺序处理")
     from risk_veto_train import apply_veto, derive_price_features
     fdf = pd.DataFrame(np.asarray(X_te), columns=feature_cols)
     fdf["stock_code"] = codes_te
@@ -592,8 +614,8 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
     if missing:
         raise SystemExit(f"[VETO] 规则引用特征缺失: {missing}（先并入对应数据源再回测）")
     veto = apply_veto(rules, fdf)
-    # 排雷统计（级联口径与回测一致：每日按 pred 降序取第一个未被否者）
-    _t2 = pd.DataFrame({"date": fdf["date"], "pred": np.asarray(preds, dtype=float),
+    # 排雷统计（级联口径：每日按 pred 降序取第一个未被否者；preds 已含行业去重）
+    _t2 = pd.DataFrame({"date": fdf["date"], "pred": preds,
                         "ret": np.asarray(y_raw_te, dtype=float), "veto": veto})
     _t2 = _t2.sort_values(["date", "pred"], ascending=[True, False], kind="stable")
     first = _t2.groupby("date").first()
@@ -602,12 +624,49 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
     _r1v = first[first["veto"]]
     logger.info(
         f"[VETO] 规则 {len(rules)} 条 | 否决候选 {int(veto.sum())}/{len(preds)} | "
-        f"Rank1 被否 {len(_r1v)}/{len(first)} 天"
-        f"（被否 Rank1 实际收益均值 {(_r1v['ret'].mean() if len(_r1v) else 0.0):.4f}）"
+        f"行业头名被否 {len(_r1v)}/{len(first)} 天"
+        f"（被否头名实际收益均值 {(_r1v['ret'].mean() if len(_r1v) else 0.0):.4f}）"
         f" | 级联净增 Δ均值 {delta.mean():.4f}（{len(delta)} 天）")
-    out = np.asarray(preds, dtype=float).copy()
+    out = preds
     out[veto] = -np.inf
     return out
+
+
+def veto_daily_cascade(preds: np.ndarray, dates_te: np.ndarray,
+                       codes_te: np.ndarray, sectors_te: np.ndarray,
+                       y_raw_te: np.ndarray, pid: str, cp: int,
+                       topk: int = 5) -> list[dict]:
+    """[VETO-OOS] 日频级联终验明细（2026-10-19，Owner 批准）：
+
+    preds 已含行业去重（非头名 -inf）与风控否决（被否 -inf）→ 每日存活行业头名
+    按 pred 降序顺延 rank1..topk；返回与 evaluate_predictions 同构的 rows
+    （供 summarize_and_pick_champion 直接出表）。"""
+    _t = pd.DataFrame({"date": pd.to_datetime(dates_te), "code": codes_te,
+                       "sector": sectors_te,
+                       "pred": np.asarray(preds, dtype=float),
+                       "ret": np.asarray(y_raw_te, dtype=float)})
+    rows = []
+    for d, g in _t.groupby("date", sort=True):
+        if len(g) < 30:
+            continue
+        _alive = g[g["pred"] > -np.inf].sort_values(
+            "pred", ascending=False, kind="stable").head(topk)
+        _pf = g["pred"].to_numpy(dtype=float)
+        _pf = _pf[np.isfinite(_pf)]
+        if len(_pf):
+            med = float(np.median(_pf))
+            mad = float(np.median(np.abs(_pf - med)))
+            scale = 1.4826 * mad if mad > 1e-12 else float(np.std(_pf) + 1e-9)
+        else:
+            med, scale = 0.0, 1.0
+        for rk, (_, r) in enumerate(_alive.iterrows(), 1):
+            rows.append({"param": pid, "fold_id": 99, "cp": cp,
+                         "date": str(pd.Timestamp(d).date()), "rank": rk,
+                         "stock_code": r["code"], "sector": r["sector"],
+                         "pred": float(r["pred"]),
+                         "score_z_in_day": (float(r["pred"]) - med) / scale,
+                         "return": float(r["ret"])})
+    return rows
 
 
 def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start: str,
@@ -757,8 +816,9 @@ def main():
     p.add_argument("--cp", type=int, default=350, help="oos_2026 模式使用的 Checkpoint")
     p.add_argument("--with_minute_backtest", action="store_true", help="开启 5 分钟级状态机真实回测")
     p.add_argument("--veto_rules", default="",
-                   help="risk_veto_rules.json 路径；提供后对 oos_2026 分钟回测候选"
-                        "应用风控级联否决（Rank1 被否→顺延；需配合 --with_minute_backtest）")
+                   help="risk_veto_rules.json 路径；提供后对 oos_2026 候选应用"
+                        "行业去重先行+风控级联否决（Rank1 被否→顺延），输出 "
+                        "[VETO-OOS] 日频级联对照表；分钟回测同步使用否决后候选")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
@@ -935,15 +995,29 @@ def main():
         logger.info("\n===== 2026 OOS 日频 Rank1 & 同行业去重 Top2 终验结果 =====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
-        if args.veto_rules and not args.with_minute_backtest:
-            logger.warning("[VETO] --veto_rules 已提供但未开 --with_minute_backtest，否决未生效")
+        _preds_oos = preds_by_cp[args.cp]
+        if args.veto_rules:
+            _preds_oos = apply_risk_veto_to_preds(
+                _preds_oos, X[te_m], bundle["feature_cols"], codes[te_m],
+                dates[te_m], y_raw[te_m], bundle["price_path"],
+                args.veto_rules, logger)
+            # [VETO-OOS] 风控排雷后日频级联终验（独立于分钟回测；与 CV 选参
+            # 同口径：行业头名顺延，被否头名剔除后取存活者 rank1..5）
+            _rows_v = veto_daily_cascade(_preds_oos, dates[te_m], codes[te_m],
+                                         sectors[te_m], y_raw[te_m],
+                                         hp["pid"], args.cp)
+            if _rows_v:
+                _sum_v = summarize_and_pick_champion(_rows_v)
+                logger.info("\n===== [VETO-OOS] 风控排雷后日频级联终验"
+                            "（基准=上方无否决表；rank 为存活行业头名顺延） =====")
+                logger.info("\n" + _sum_v.to_string(
+                    index=False, float_format=lambda x: f"{x:.4f}"))
+                pd.DataFrame(_rows_v).to_csv(
+                    out_dir / "oos2026_veto_cascade_details.csv",
+                    index=False, encoding="utf-8-sig")
+            else:
+                logger.warning("[VETO] 级联终验无有效样本产出")
         if args.with_minute_backtest:
-            _preds_oos = preds_by_cp[args.cp]
-            if args.veto_rules:
-                _preds_oos = apply_risk_veto_to_preds(
-                    _preds_oos, X[te_m], bundle["feature_cols"], codes[te_m],
-                    dates[te_m], y_raw[te_m], bundle["price_path"],
-                    args.veto_rules, logger)
             pred_df = pd.DataFrame({
                 "date": pd.to_datetime(dates[te_m]),
                 "stock_code": codes[te_m],

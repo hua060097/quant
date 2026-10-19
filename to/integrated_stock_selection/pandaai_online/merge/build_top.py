@@ -1047,7 +1047,10 @@ def _habitat_expand(vwap_df, val_store: dict, store_vals: dict, ev,
             if _key in hab_vals:
                 continue
             _fam = str(_r.get('family', ''))
-            if bool(_r.get('habitat_pick', False)):
+            # 2026-10-19（Owner 批准）：custom 全量进第一优先队列——_extra1 内
+            # store/M* 家族按 LGB 降序数百个，custom 无条件 LGB 排名靠后会被
+            # [:150] 截断，实际从未进入 hab_vals 考场（seats/pool 均无法评估）。
+            if bool(_r.get('habitat_pick', False)) or _r['lib'] == 'custom':
                 _extra0.append((_pos, _r))
             elif _r['lib'] == 'store' or any(k in _fam for k in _HAB_FAMS):
                 _extra1.append((_pos, _r))
@@ -1332,6 +1335,105 @@ def habitat_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
         detail.append({'factor_id': str(r['factor_id']), 'lib': str(r['lib']),
                        'hot5_q80_t': round(float(t), 3)})
     return seats, detail
+
+
+def fast_trigger_seats(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
+                       seat_order: list[int] | None, vals: dict,
+                       frame: pd.DataFrame, ev: Evaluator, builder: FactorBuilder,
+                       specs_by_id: dict, store_vals: dict | None,
+                       pos_me: np.ndarray, day_group: np.ndarray,
+                       day_codes: np.ndarray, nd_me: int,
+                       n_fast: int = 6, scan_n: int = 30,
+                       threshold: float = 0.7,
+                       jobs: int = 1) -> tuple[list[int], list[dict]]:
+    """快频触发通道（2026-10-19，Owner 批准）：纯预测力（A_official =
+    |RankIC|×|ICIR|×胜率）前 scan_n 名中、因 LGB 换手惩罚未入 vwap_order 的
+    候选，与池内（vwap_order + 席位）|ρ|<=threshold 正交去重后保留前 n_fast 入面板。
+
+    动机：Stage15 策略每 2~3 天 100% 换仓，高换手脉冲因子（如 id_late30_ret
+    尾盘抢筹，A 口径 7/1249 但 LGB 396）不增加实盘换手成本，提供 T 日扣扳机时机。
+    值来源：vals（val_store/hab_vals 命中优先）→ store_vals → 现算
+    factor_full_values（本地 overlay，不回写 vals 防污染池扫描域）。
+    与 habitat_seats 同管线：_order_me 一次重排 + _pair_vs_pool 秩缓存 early-break。
+    """
+    _excl = set(vwap_order or []) | set(seat_order or [])
+    _a = pd.to_numeric(vwap_df['A_official'], errors='coerce').to_numpy(dtype=float)
+    _ord = np.argsort(-np.nan_to_num(_a, nan=-1e18), kind='stable')
+    _overlay: dict = {}
+
+    def _val_of(_r, _key):
+        _v = vals.get(_key)
+        if _v is not None:
+            return _v
+        if _key in _overlay:
+            return _overlay[_key]
+        _vv = None
+        try:
+            if str(_r['lib']) == 'store' and store_vals \
+                    and str(_r['factor_id']) in store_vals:
+                _vv = np.asarray(store_vals[str(_r['factor_id'])], dtype=float)
+            else:
+                _full = factor_full_values(str(_r['lib']), str(_r['factor_id']),
+                                           str(_r.get('formula_cn', '')),
+                                           frame, ev, builder, specs_by_id, None)
+                if _full is not None:
+                    _vv = np.asarray(_full, dtype=float)[pos_me]
+        except Exception:
+            _vv = None
+        _overlay[_key] = _vv
+        return _vv
+
+    cands = []
+    for _pos in _ord:
+        if len(cands) >= scan_n:
+            break
+        _pos = int(_pos)
+        if _pos in _excl:
+            continue
+        _r = vwap_df.iloc[_pos]
+        _key = (_r['lib'], str(_r['factor_id']))
+        if _val_of(_r, _key) is None:
+            continue
+        cands.append((_pos, _r, _key))
+    if not cands:
+        return [], []
+    _order_me = np.argsort(np.asarray(day_codes), kind="stable")
+    _day_s = np.asarray(day_codes)[_order_me]
+    pool_s = []
+    pool_caches = []
+    for _kp in list(vwap_order or []) + list(seat_order or []):
+        try:
+            _r = vwap_df.iloc[_kp]
+            _vv = _val_of(_r, (_r['lib'], str(_r['factor_id'])))
+            if _vv is not None:
+                _vv_s = np.asarray(_vv, dtype=float)[_order_me]
+                pool_s.append(_vv_s)
+                pool_caches.append(_new_pair_cache(_vv_s))
+        except Exception:
+            continue
+    fast, detail = [], []
+    for _pos, _r, _key in cands:
+        if len(fast) >= n_fast:
+            break
+        _v_s = np.asarray(_val_of(_r, _key), dtype=float)[_order_me]
+        _cache_s = _new_pair_cache(_v_s)
+        if _pair_vs_pool(_v_s, pool_s, _day_s, nd_me, threshold,
+                         cache=_cache_s, pool_caches=pool_caches):
+            continue
+        fast.append(_pos)
+        pool_s.append(_v_s)
+        pool_caches.append(_cache_s)
+        _av = float(_a[_pos]) if np.isfinite(_a[_pos]) else None
+        try:
+            _lv = float(pd.to_numeric(pd.Series([_r.get('LGB')]),
+                                      errors='coerce').iloc[0])
+        except Exception:
+            _lv = float('nan')
+        detail.append({'factor_id': str(_r['factor_id']), 'lib': str(_r['lib']),
+                       'family': str(_r.get('family', '')),
+                       'A_official': None if _av is None else round(_av, 5),
+                       'LGB': None if not np.isfinite(_lv) else round(_lv, 5)})
+    return fast, detail
 
 
 def habitat_pool(vwap_df: pd.DataFrame, vwap_order: list[int] | None,
@@ -1857,6 +1959,8 @@ def main() -> int:
     # V4.3c 栖息地席位 + Class2 股性榜单（窗内 cond 口径，与 LGB 选择同窗）。
     seat_order: list[int] = []
     seat_detail: list[dict] = []
+    fast_seats: list[int] = []
+    fast_detail: list[dict] = []
     hab_pool: list[dict] = []
     _day_codes, _ = pd.factorize(day_group, sort=True)
     _day_codes = np.asarray(_day_codes)
@@ -1879,6 +1983,16 @@ def main() -> int:
                 jobs=args.jobs)
             print(f'栖息地席位：{len(seat_order)} 个 '
                   f'{[d["factor_id"] for d in seat_detail]}', flush=True)
+        # 快频触发通道（2026-10-19，Owner 批准）：A 口径前 30 中因换手惩罚
+        # 未入 vwap_order 的纯预测力候选，与池内正交去重后保留前 6 入面板。
+        if len(val_store):
+            fast_seats, fast_detail = fast_trigger_seats(
+                vwap_df, vwap_order, seat_order, hab_vals,
+                frame, ev, builder, _specs, store_vals, pos_me,
+                day_group, _day_codes, _nd_me,
+                n_fast=6, scan_n=30, threshold=0.7, jobs=args.jobs)
+            print(f'快频触发席位：{len(fast_seats)} 个 '
+                  f'{[d["factor_id"] for d in fast_detail]}', flush=True)
         if args.habitat_pool > 0 and len(val_store):
             hab_pool = habitat_pool(
                 vwap_df, vwap_order, hab_vals, pos_me, day_group,
@@ -1888,6 +2002,7 @@ def main() -> int:
     except Exception as exc:
         print(f'warning: 栖息地席位/股性榜单失败 {str(exc)[:150]}', flush=True)
     payload['habitat_seats'] = seat_detail
+    payload['fast_trigger_seats'] = fast_detail
     payload['habitat_pool_n'] = len(hab_pool)
 
     # dom 诊断（2026-09-25）：双榜入选者的单字段支配度（快速 Spearman @ pos_me）
@@ -1969,7 +2084,8 @@ def main() -> int:
         _pool_rows = [r for _, r in _pool_rows]
         _seen_panel = set()
         _panel_rows = []
-        for _r in _picked + _pool_rows + [vwap_df.iloc[_sp] for _sp in seat_order]:
+        for _r in _picked + _pool_rows + [vwap_df.iloc[_sp] for _sp in seat_order] \
+                + [vwap_df.iloc[_fp] for _fp in fast_seats]:
             _fid = str(_r.get('factor_id'))
             if _fid in _seen_panel:
                 continue
@@ -1997,6 +2113,16 @@ def main() -> int:
         for _e in _top20:
             if _e['factor'] in _seat_ids:
                 _e['habitat_seat'] = True
+        # 快频触发席位标记（2026-10-19）：供审计与 export 识别
+        _fast_ids = set()
+        try:
+            for _fp in fast_seats:
+                _fast_ids.add(str(vwap_df.iloc[_fp].get('factor_id')))
+        except Exception:
+            pass
+        for _e in _top20:
+            if _e['factor'] in _fast_ids:
+                _e['fast_trigger_seat'] = True
         _base_dir = HERE.parent.parent / 'results' / 'merge_v2'
         _base_dir.mkdir(parents=True, exist_ok=True)
         (_base_dir / 'vwap_top20.json').write_text(
