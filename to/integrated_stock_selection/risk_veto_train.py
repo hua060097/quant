@@ -29,8 +29,11 @@
    `score_z_in_day < q10`）+ depth-2 双特征组合（覆盖 双高/双低/一高一低 全部
    4 种方向，如 高位透支∧高换手、低流动∧低身位）；阈值取训练前缀样本的全局
    分位 {0.10, 0.20, 0.80, 0.90}；支持度（命中样本数）≥ `--min-support`。
-4. **验收**：全历史 拦截大亏(y=r3≤-5%)数/误杀大涨(y=r3≥+7%)数 ≥ `--ratio-min`(3.5)
-   且 >`--fold-pos-frac`(70%) 的历史折上"级联净收益增量"为正。
+4. **验收（2026-10-20 P1 定版，修复抽屉原理）**：全历史 拦截大亏(y=r3≤-5%)
+   数/误杀大涨(y=r3≥+7%)数 ≥ `--ratio-min`(3.5)；**有效触发折**（真实否决过
+   Rank1 的折）≥ `--min-active-folds`(3)；触发折内"级联净收益增量"为正的占比
+   ≥ `--fold-pos-frac`(70%)；全折中显著恶化（Δ均值 < -0.1%）的折 ≤ 1 个。
+   未触发的折不计成败（旧的"全折>70%为正"会把 delta==0 的未触发折判失败）。
 5. 输出按 (拦截精确率=命中大亏/否决行数, 拦截大亏数, 比例) 排序去重（同一特征
    对保留最优）取 Top `--max-rules`；精确率优先防止"大网"规则否决半个股票池。
 """
@@ -64,17 +67,20 @@ RISK_FEATURE_POOL = (
     "id_hi_shadow_dump_s3", "id_hi_shadow_dump",
     "id_hi_amt_share20_s3", "id_hi_amt_share20",
     "id_dd_recovery", "id_updown_vol_ratio_s3",
-    # ② 主力资金流背离（factors.parquet 存量，若入矩阵）
+    # ② 主力资金流背离（2026-10-20 P1 实测：factors.parquet 世代中无
+    #    flow_* 三列，实际可用的是下列同族列——加入池子由数据决定去留）
     "flow_price_divergence_10d", "flow_momentum_decay_5d_is",
     "flow_main_net_rate_is",
+    "money_flow_pressure", "money_flow_pressure_pct",
+    "momentum_decay", "flow_large_participation_is",
     # ③ 短期涨幅透支/波动/派发（矩阵 + 行情派生）
     "IVOL20", "TURNOVER", "bias5", "bias10", "ret5", "up_shadow", "amt_ratio",
     "mi_post_high_drawdown",
     # ④ 板块失速/身位
     "GS_sec_nh60_ratio_level", "GS_sec_xs_disp_level",
     "is_ret3_rank", "is_leader_gap5", "is_turn_rank",
-    # ⑤ 当日横截面置信度（cv 明细自带）
-    "score_z_in_day",
+    # ⑤ 当日横截面置信度（cv 明细自带）+ 内生突出度（2026-10-20 P1 新增）
+    "score_z_in_day", "gap12", "z_in_top5",
 )
 
 
@@ -92,6 +98,40 @@ def find_intraday_cache() -> Path | None:
     for cand in (_HERE.parent / "local_data" / "minute",
                  _HERE / "local_data" / "minute"):
         p = cand / "daily_features_cache.parquet"
+        if p.exists():
+            return p
+    return None
+
+
+def _load_sw2_map() -> dict:
+    """申万二级行业映射（stock→sector）：config pkl 优先、local_data json 兜底。"""
+    import pickle
+    pkl = _HERE / "config" / "sw2_industry_encoding.pkl"
+    if pkl.exists():
+        try:
+            with open(pkl, "rb") as f:
+                obj = pickle.load(f)
+            mp = obj.get("mappings", {}).get("stock_to_industry", {})
+            if mp:
+                return {str(k): str(v) for k, v in mp.items()}
+        except Exception:
+            pass
+    js = _HERE.parent / "local_data" / "sw_sector2" / "sw_sector.json"
+    try:
+        if js.exists():
+            return {str(k): str(v) for k, v in
+                    json.loads(js.read_text(encoding="utf-8")).items()}
+    except Exception:
+        pass
+    return {}
+
+
+def find_sector_gates() -> Path | None:
+    """板块门控序列（gate_search_sector.parquet）自动定位。"""
+    for cand in (_HERE / "results" / "merge_v2" / "gates_search",
+                 _HERE.parent / "integrated_stock_selection" / "results"
+                 / "merge_v2" / "gates_search"):
+        p = Path(cand) / "gate_search_sector.parquet"
         if p.exists():
             return p
     return None
@@ -207,6 +247,131 @@ def load_candidates(args, logger) -> tuple[pd.DataFrame, list[str], list[str]]:
             logger.warning("[风控] 日内缓存读取失败（id_* 特征跳过）")
     else:
         logger.info("[风控] 日内降频缓存不存在（id_* 特征跳过）")
+
+    # ===== 2026-10-20 P1：补齐缺失核心特征 + 内生置信度（23→25 池） =====
+    _merge_dir = str(_HERE / "pandaai_online" / "merge")
+    # ① flow_* 与 mi_post_high_drawdown（factors.parquet 存量列）
+    _need_fac = [c for c in ("flow_price_divergence_10d",
+                             "flow_momentum_decay_5d_is",
+                             "flow_main_net_rate_is",
+                             "mi_post_high_drawdown",
+                             "money_flow_pressure",
+                             "money_flow_pressure_pct",
+                             "momentum_decay",
+                             "flow_large_participation_is")
+                 if c not in d.columns]
+    if _need_fac:
+        try:
+            import pyarrow.parquet as _pq_f
+            _fp = _HERE / "factor_lab_data" / "factors.parquet"
+            _have = set(_pq_f.read_schema(_fp).names) if _fp.exists() else set()
+            _req = [c for c in _need_fac if c in _have]
+            _absent = [c for c in _need_fac if c not in _have]
+            if _absent:
+                logger.warning(f"[风控] factors.parquet 无列（跳过）: {_absent}")
+            if _req:
+                if _merge_dir not in sys.path:
+                    sys.path.insert(0, _merge_dir)
+                from boundary import read_factors
+                _fac = read_factors(_req, data_max=str(d["date"].max().date()),
+                                    label="risk-veto")
+                if _fac is not None and len(_fac):
+                    _fac["date"] = pd.to_datetime(_fac["date"])
+                    _fac["stock_code"] = _fac["stock_code"].astype(str)
+                    _fc = [c for c in _req if c in _fac.columns]
+                    if _fc:
+                        d = d.merge(_fac[["stock_code", "date"] + _fc],
+                                    on=["stock_code", "date"], how="left")
+                        logger.info(f"[风控] 因子库补齐 {_fc}")
+        except Exception as e:
+            logger.warning(f"[风控] 因子库 join 失败: {str(e)[:120]}")
+
+    # ② 板块门控 GS_sec_*（gate_search_sector.parquet；长表→宽表→按(date,sector)对齐）
+    _need_sec = [c for c in ("GS_sec_xs_disp_level", "GS_sec_nh60_ratio_level")
+                 if c not in d.columns]
+    if _need_sec:
+        try:
+            _gp = find_sector_gates()
+            if _gp is not None:
+                _g = pd.read_parquet(_gp)
+                _g = _g[_g["gate_id"].isin(_need_sec)]
+                if len(_g):
+                    _g["date"] = pd.to_datetime(_g["date"])
+                    _piv = _g.pivot_table(index=["date", "sector"],
+                                          columns="gate_id", values="p",
+                                          aggfunc="mean").reset_index()
+                    d = d.merge(_piv, on=["date", "sector"], how="left")
+                    logger.info(f"[风控] 板块门控补齐 {_need_sec}")
+            else:
+                logger.warning("[风控] 未找到 gate_search_sector.parquet（GS_sec_* 跳过）")
+        except Exception as e:
+            logger.warning(f"[风控] 板块门控 join 失败: {str(e)[:120]}")
+
+    # ③ 板块身位 is_*（intra_sector_rank 现算；merge 面板复用）
+    _need_is = [c for c in ("is_ret3_rank", "is_leader_gap5",
+                            "is_amt_surge_rank", "is_turn_rank")
+                if c not in d.columns]
+    if _need_is:
+        try:
+            if _merge_dir not in sys.path:
+                sys.path.insert(0, _merge_dir)
+            from custom_registry import (evaluate_custom_factor,
+                                         load_all_custom_specs)
+            from evaluator import load_panel
+            _specs = load_all_custom_specs()
+            _frame = load_panel(data_cut=str(d["date"].max().date()))
+            _frame["stock_code"] = _frame["stock_code"].astype(str)
+            _frame["date"] = pd.to_datetime(_frame["date"])
+            _fd = _frame[["stock_code", "date"]].copy()
+            _got = []
+            for _c in _need_is:
+                _sp = _specs.get(_c)
+                if _sp is None:
+                    continue
+                _fd[_c] = np.asarray(evaluate_custom_factor(_sp, _frame),
+                                     dtype=float)
+                _got.append(_c)
+            if _got:
+                d = d.merge(_fd, on=["stock_code", "date"], how="left")
+                logger.info(f"[风控] 板块身位补齐 {_got}")
+        except Exception as e:
+            logger.warning(f"[风控] 板块身位计算失败（is_* 跳过）: {str(e)[:120]}")
+
+    # ④ TURNOVER 兜底（行情缓存 turnover_rate；与矩阵 TURNOVER 同源）
+    if "TURNOVER" not in d.columns:
+        try:
+            _pc = Path(args.price_cache) if args.price_cache else find_price_cache()
+            if _pc and _pc.exists():
+                import pyarrow.parquet as _pq
+                if "turnover_rate" in set(_pq.read_schema(_pc).names):
+                    _tr = pd.read_parquet(_pc, columns=["stock_code", "date",
+                                                        "turnover_rate"])
+                    _tr["date"] = pd.to_datetime(_tr["date"])
+                    _tr["stock_code"] = _tr["stock_code"].astype(str)
+                    d = d.merge(_tr.rename(columns={"turnover_rate": "TURNOVER"}),
+                                on=["stock_code", "date"], how="left")
+                    logger.info("[风控] TURNOVER 由行情缓存 turnover_rate 补齐")
+        except Exception as e:
+            logger.warning(f"[风控] TURNOVER 兜底失败: {str(e)[:120]}")
+
+    # ⑤ 内生置信度：gap12=榜首榜眼分差；z_in_top5=榜首相对 Top2~5 分部的突出度
+    try:
+        _piv = d.pivot_table(index="date", columns="rank", values="pred",
+                             aggfunc="first")
+        if 1 in _piv.columns:
+            _p1 = _piv[1]
+            _p2 = _piv[2] if 2 in _piv.columns else pd.Series(np.nan, index=_piv.index)
+            _rest = _piv[[c for c in _piv.columns if c >= 2]]
+            _med = _rest.median(axis=1)
+            _mad = _rest.sub(_med, axis=0).abs().median(axis=1)
+            _conf = pd.DataFrame({
+                "date": _piv.index,
+                "gap12": (_p1 - _p2).to_numpy(dtype=float),
+                "z_in_top5": ((_p1 - _med) /
+                              (1.4826 * _mad + 1e-9)).to_numpy(dtype=float)})
+            d = d.merge(_conf, on="date", how="left")
+    except Exception as e:
+        logger.warning(f"[风控] 内生置信度派生失败: {str(e)[:120]}")
 
     pool = [c for c in RISK_FEATURE_POOL if c in d.columns]
     missing = [c for c in RISK_FEATURE_POOL if c not in d.columns]
@@ -332,18 +497,27 @@ def apply_veto(rules: list[dict], df: pd.DataFrame,
 
 def cascade_by_fold(df: pd.DataFrame, veto: np.ndarray) -> pd.DataFrame:
     """按 (date, rank) 级联：每日取第一个未否决候选的 return；全否决=0。
-    返回 {date, fold_id, base_ret(rank1), veto_ret} 逐日表。"""
+    返回 {date, fold_id, base_ret(rank1), veto_ret, r1_vetoed} 逐日表。"""
     g = df.assign(_veto=veto).sort_values(["date", "rank"], kind="stable")
     base = g.groupby("date", sort=True)["return"].first()
     keep = g[~g["_veto"]].groupby("date", sort=True)["return"].first()
     fold = g.groupby("date", sort=True)["fold_id"].first()
-    out = pd.DataFrame({"base_ret": base, "veto_ret": keep, "fold_id": fold})
+    r1v = g[g["rank"] == 1].groupby("date", sort=True)["_veto"].first()
+    out = pd.DataFrame({"base_ret": base, "veto_ret": keep, "fold_id": fold,
+                        "r1_vetoed": r1v})
     out["veto_ret"] = out["veto_ret"].fillna(0.0)
     return out.reset_index()
 
 
 def evaluate_rule(df: pd.DataFrame, rule: dict) -> dict:
-    """全历史统计 + 逐折净增量。"""
+    """全历史统计 + 逐折净增量 + **有效触发折**统计（2026-10-20 P1 修复）。
+
+    抽屉原理：10% 分位交集规则在 669 天 Rank1 上只触发 6~8 次、散落 5~6 折，
+    其余未触发折 delta==0 被旧逻辑（>70% 折 delta>0）判为失败折。现改为：
+      - active_folds = 真实否决过 Rank1 的折（r1_vetoed 任一为真）；
+      - 验收：active_folds>=3、触发折内正增量占比>=阈值、全折显著恶化
+        (delta<-0.001) 的折数<=1；未触发折不计成败。
+    """
     veto = apply_veto_mask(df, rule)
     ret = df["return"].to_numpy(dtype=float)
     c = int((veto & (ret <= CRASH_TH)).sum())
@@ -351,12 +525,21 @@ def evaluate_rule(df: pd.DataFrame, rule: dict) -> dict:
     casc = cascade_by_fold(df, veto)
     casc["delta"] = casc["veto_ret"] - casc["base_ret"]
     folds = casc.groupby("fold_id")["delta"].agg(["mean", "count"])
+    act = casc.groupby("fold_id")["r1_vetoed"].any()
+    active_folds = [int(k) for k, v in act.items() if bool(v)]
+    _act_delta = folds.loc[active_folds, "mean"] if active_folds \
+        else pd.Series(dtype=float)
+    pos_active = int((_act_delta > 0).sum())
+    bad_folds = int((folds["mean"] < -0.001).sum())
     pos = int((folds["mean"] > 0).sum())
     return {
         "support": int(veto.sum()), "crash_caught": c, "boom_killed": b,
         "ratio": round(c / max(b, 1), 3),
         "folds_total": int(len(folds)), "folds_positive": pos,
         "folds_positive_frac": round(pos / max(len(folds), 1), 3),
+        "active_folds": active_folds, "active_folds_n": len(active_folds),
+        "active_positive_frac": round(pos_active / max(len(active_folds), 1), 3),
+        "bad_folds": bad_folds,
         "mean_delta": round(float(casc["delta"].mean()), 6),
         "fold_deltas": {str(int(k)): round(float(v), 6)
                         for k, v in folds["mean"].items()},
@@ -378,6 +561,8 @@ def main() -> int:
     ap.add_argument("--min-support", type=int, default=20)
     ap.add_argument("--ratio-min", type=float, default=3.5)
     ap.add_argument("--fold-pos-frac", type=float, default=0.70)
+    ap.add_argument("--min-active-folds", type=int, default=3,
+                    help="有效触发折（真实否决过 Rank1 的折）下限")
     ap.add_argument("--out-dir", default="")
     args = ap.parse_args()
 
@@ -418,13 +603,16 @@ def main() -> int:
     final_rules = mine_rules(df[df["fold_id"].isin(fold_ids[:-1])], pool,
                              args.min_support, args.ratio_min)
 
-    # 验收：全历史 ratio + 逐折正占比（严格按预注册阈值）
+    # 验收（2026-10-20 P1 修复抽屉原理）：触发折>=min_active、触发折内正增量占比
+    # >=fold_pos_frac、全折显著恶化(bad_folds)<=1、ratio 门槛不变；未触发折不判成败。
     accepted = []
     for r in final_rules:
         ev = evaluate_rule(df, r)
         r["history"] = ev
         if (ev["ratio"] >= args.ratio_min
-                and ev["folds_positive_frac"] > args.fold_pos_frac):
+                and ev["active_folds_n"] >= args.min_active_folds
+                and ev["active_positive_frac"] >= args.fold_pos_frac
+                and ev["bad_folds"] <= 1):
             accepted.append(r)
     accepted = accepted[:max(0, args.max_rules)]
     logger.info(f"[风控] 最终候选 {len(final_rules)} 条 -> 验收通过 {len(accepted)} 条")
@@ -447,13 +635,18 @@ def main() -> int:
         logger.info(f"[规则{i}] {expr} | 拦亏={r['history']['crash_caught']} "
                     f"误杀={r['history']['boom_killed']} "
                     f"ratio={r['history']['ratio']} "
-                    f"折正={r['history']['folds_positive']}/{r['history']['folds_total']} "
+                    f"触发折={r['history']['active_folds_n']}/"
+                    f"{r['history']['folds_total']} "
+                    f"触发折正={r['history']['active_positive_frac']:.0%} "
+                    f"坏折={r['history']['bad_folds']} "
                     f"Δ均值={r['history']['mean_delta']}")
 
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "method": "walk-forward depth-2 veto (预注册: 白名单特征/分位阈值/ratio>=%.1f/"
-                  "折正占比>%.0f%%)" % (args.ratio_min, args.fold_pos_frac * 100),
+        "method": ("walk-forward depth-2 veto (预注册: 白名单特征/分位阈值/"
+                   "ratio>=%.1f/触发折>=%d/触发折正>=%.0f%%/坏折<=1)"
+                   % (args.ratio_min, args.min_active_folds,
+                      args.fold_pos_frac * 100)),
         "pid": args.pid, "cp": int(args.cp),
         "n_candidates": int(len(df)),
         "feature_pool": pool, "features_missing": missing,

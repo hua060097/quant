@@ -65,6 +65,10 @@ BUF_POS_WEIGHT = 0.50              # 缓冲正样本赋予 0.5 倍半权
 TAIL_WEIGHT_ALPHA = 0.50           # 核心正样本尾部加权系数 (1.0 ~ 1.5x，从 R0=7% 起算)
 
 DRIFT_NORM_COLS = ("LOG_MV", "AMIHUD20")
+# 槽位净值模拟参数（2026-10-20 P0-2 定版）：3 槽轮动、每日投入 1/SLOT 资金、
+# 双边成本 0.16%；mdd/净值一律按此口径，禁止对 3 日持有收益做 100% 满仓 cumprod。
+COST_PER_TRADE = 0.0016
+SLOT_CAPITAL = 3.0
 # 每超参容量专属加密 checkpoints（2026-10-19 定版，Owner 批准）：
 # lightgbm 各 cp predict 为纯内存操作，加密近零成本；浅树低轮区加密、
 # 深树延伸至 1000 轮防截断。
@@ -475,27 +479,27 @@ def train_predict_cb(
     X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
     X_te: np.ndarray, hp: dict, seeds: list[int], num_threads: int
 ) -> dict:
-    """CatBoost 独立对称树训练（2026-10-19 定版，Owner 批准）。
+    """CatBoost 独立对称树训练（2026-10-20 P2 定版，与 LGB 完全对称）：
 
-    单次训至 CB_CHECKPOINTS 最大轮，`RawFormulaVal + ntree_end=cp` 切片输出
-    全套 Checkpoint 预测（零额外重训）——不再固定 450 轮硬混入 LGB。
-    hp: {"pid", "depth", "l2_leaf_reg"}；正类权重经 sample_weight 模拟 spw=20
-    （与 LGB 侧同一有效正类占比口径）。
+    - 多 Seed 遍历，RawFormulaVal 逐 seed 求平均（与 LGB 的 logit 均值同口径）；
+    - rsm=0.75 列采样（对齐 LGB feature_fraction=0.75）；
+    - Bernoulli 子采样 0.80；单次训至 CB 最大轮，ntree_end 切片全套 cp。
     """
     from catboost import CatBoostClassifier
     cb_w = w_tr * np.where(y_tr > 0.5, _CB_SCALE_POS_WEIGHT, 1.0)
-    cb = CatBoostClassifier(
-        iterations=max(CB_CHECKPOINTS), learning_rate=0.03,
-        depth=int(hp["depth"]), l2_leaf_reg=float(hp["l2_leaf_reg"]),
-        bootstrap_type="Bernoulli", subsample=0.80,
-        loss_function="Logloss", random_seed=int(seeds[0]),
-        thread_count=int(num_threads), verbose=0)
-    cb.fit(X_tr, y_tr, sample_weight=cb_w)
-    out = {}
-    for cp in CB_CHECKPOINTS:
-        out[int(cp)] = np.asarray(
-            cb.predict(X_te, prediction_type="RawFormulaVal",
-                       ntree_end=int(cp)), dtype=np.float64)
+    out = {int(cp): np.zeros(len(X_te), dtype=np.float64) for cp in CB_CHECKPOINTS}
+    for _sd in seeds:
+        cb = CatBoostClassifier(
+            iterations=max(CB_CHECKPOINTS), learning_rate=0.03,
+            depth=int(hp["depth"]), l2_leaf_reg=float(hp["l2_leaf_reg"]),
+            bootstrap_type="Bernoulli", subsample=0.80, rsm=0.75,
+            loss_function="Logloss", random_seed=int(_sd),
+            thread_count=int(num_threads), verbose=0)
+        cb.fit(X_tr, y_tr, sample_weight=cb_w)
+        for cp in CB_CHECKPOINTS:
+            out[int(cp)] += np.asarray(
+                cb.predict(X_te, prediction_type="RawFormulaVal",
+                           ntree_end=int(cp)), dtype=np.float64) / len(seeds)
     return out
 
 
@@ -503,15 +507,16 @@ def train_predict_cb(
 def evaluate_predictions(
     preds_by_cp: dict[int, np.ndarray], dates_te: np.ndarray, codes_te: np.ndarray,
     sectors_te: np.ndarray, y_raw_te: np.ndarray, fold_id: int, pid: str,
-    topk: int = 30
+    topk: int = 30, universes: tuple = ("raw", "dedup")
 ) -> list[dict]:
-    """逐 cp 评估：向量化横截面 z + 同行业去重 + 每日 topk（2026-10-19 重构）。
+    """逐 cp 评估：向量化横截面 z + 每日 topk，**同时输出 raw 与 dedup 两套**。
 
-    与旧逐日循环逐值同口径：
-      - z = (pred - 当日中位) / (1.4826*MAD，MAD≈0 时退化为 std)，统计取当日全部行；
-      - 当日行数 < 30 的天跳过；
-      - 按 pred 降序 → 同 sector 仅保留第 1 名 → 当日 topk（rank=1..topk）。
-    topk 默认 30：供 fuse_champions 离线融合（top5 不足以做秩融合/共振级联）。
+    2026-10-20（Owner 批准，P0-1）：旧版只留"同行业去重"一套，无法回答
+    "不去重买 Raw Top1~2"是否更好。现在对同一天的候选分别输出：
+      - universe="raw"  ：纯按 pred 降序的 topk（允许同行业多席）；
+      - universe="dedup"：同申万二级行业仅留第 1 名后的 topk。
+    两套共享同一 score_z_in_day（当日全量行统计），供离线槽位/去重对照。
+    topk 默认 30：供 fuse_champions 融合与槽位研究（top5 不够）。
     """
     _base = pd.DataFrame({
         "date": pd.to_datetime(dates_te),
@@ -538,23 +543,37 @@ def evaluate_predictions(
             continue
         df = df.sort_values(["date", "pred"], ascending=[True, False],
                             kind="stable")
-        # 同申万二级行业去重（每行业当日只留第 1 名）
-        df = df.drop_duplicates(subset=["date", "sector"], keep="first")
-        df = df.groupby("date", sort=True, group_keys=False).head(topk).copy()
-        df["rank"] = df.groupby("date", sort=False).cumcount() + 1
-        df["param"] = str(pid)
-        df["fold_id"] = int(fold_id)
-        df["cp"] = int(cp)
-        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-        df = df.rename(columns={"code": "stock_code", "ret": "return"})
-        cols = ["param", "fold_id", "cp", "date", "rank", "stock_code",
-                "sector", "pred", "score_z_in_day", "return"]
-        rows.extend(df[cols].to_dict("records"))
+        for _uni in universes:
+            if _uni == "dedup":
+                sub = df.drop_duplicates(subset=["date", "sector"], keep="first")
+            else:
+                sub = df
+            sub = sub.groupby("date", sort=True, group_keys=False).head(topk).copy()
+            if not len(sub):
+                continue
+            sub["rank"] = sub.groupby("date", sort=False).cumcount() + 1
+            sub["param"] = str(pid)
+            sub["fold_id"] = int(fold_id)
+            sub["cp"] = int(cp)
+            sub["universe"] = str(_uni)
+            sub["date"] = sub["date"].dt.strftime("%Y-%m-%d")
+            sub = sub.rename(columns={"code": "stock_code", "ret": "return"})
+            cols = ["param", "fold_id", "cp", "date", "rank", "stock_code",
+                    "sector", "pred", "score_z_in_day", "return", "universe"]
+            rows.extend(sub[cols].to_dict("records"))
     return rows
 
 
 def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> pd.DataFrame:
+    """跨折平台平滑排行（仅 dedup 口径；mdd 修正如 2026-10-20 Owner 批准）。
+
+    mdd_min 修正：旧版对 rank1 的 3 日持有收益按每日 100% 满仓 cumprod（300%
+    重叠杠杆，单折微亏 -0.49% 会算出 -74% 假回撤）。现改为 **3 槽轮动**：
+    每日投入 1/3 资金、双边成本 0.16%，eq = cumprod(1 + (ret-0.0016)/3)。
+    """
     df = pd.DataFrame(all_rows)
+    if "universe" in df.columns:
+        df = df[df["universe"] == "dedup"]
     r1 = df[df["rank"] == 1].copy()
     r12 = df[df["rank"].isin([1, 2])].groupby(["param", "fold_id", "cp", "date"])["return"].mean().reset_index()
 
@@ -570,7 +589,8 @@ def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> p
 
         mdds = []
         for _, fg in sub.groupby("fold_id"):
-            eq = np.cumprod(1.0 + fg.sort_values("date")["return"].to_numpy(dtype=float))
+            _r = fg.sort_values("date")["return"].to_numpy(dtype=float)
+            eq = np.cumprod(1.0 + (_r - COST_PER_TRADE) / SLOT_CAPITAL)
             mdds.append(float((eq / np.maximum.accumulate(eq) - 1.0).min()))
 
         active_sub = sub[sub["score_z_in_day"] > z_gate]["return"]
@@ -1196,17 +1216,20 @@ def run_fuse_champions(args, out_dir: Path, logger: logging.Logger) -> None:
                "pred", "score_z_in_day", "return"]].rename(columns={
         "rank": "rank_lgb", "pred": "pred_lgb",
         "score_z_in_day": "z_lgb", "return": "ret"})
-    _c = _cb[["fold_id", "date", "stock_code", "rank",
+    _c = _cb[["fold_id", "date", "stock_code", "sector", "rank",
               "pred", "score_z_in_day", "return"]].rename(columns={
         "rank": "rank_cb", "pred": "pred_cb", "score_z_in_day": "z_cb",
-        "return": "ret_cb"})
+        "return": "ret_cb", "sector": "sector_cb"})
     m = _l.merge(_c, on=["fold_id", "date", "stock_code"], how="outer")
-    m["sector"] = m["sector"].fillna("__NA__")
+    # 2026-10-20 P2-2 修复：CB 独有候选的 sector 先取 CB 的（旧版漏取导致全 __NA__）
+    m["sector"] = m["sector"].fillna(m["sector_cb"]).fillna("__NA__")
     m["ret"] = m["ret"].fillna(m["ret_cb"])
     for _cc in ("rank_lgb", "rank_cb"):
         m[_cc] = m[_cc].fillna(9999.0)
+    # 2026-10-20 P2-2 修复：缺失一侧的 z 用中性 0.0（旧版 -99.0 会把 LGB 榜首
+    # 好票在 w=0.9 加权下腰斩淘汰——单侧缺失应视为"无意见"，而非极端反对）
     for _cc in ("z_lgb", "z_cb"):
-        m[_cc] = m[_cc].fillna(-99.0)
+        m[_cc] = m[_cc].fillna(0.0)
     for _cc in ("pred_lgb", "pred_cb"):
         m[_cc] = m[_cc].fillna(-1e18)
 
@@ -1293,6 +1316,9 @@ def main():
                    help="risk_veto_rules.json 路径；提供后对 oos_2026 候选应用"
                         "行业去重先行+风控级联否决（Rank1 被否→顺延），输出 "
                         "[VETO-OOS] 日频级联对照表；分钟回测同步使用否决后候选")
+    p.add_argument("--pids", default="",
+                   help="仅跑指定超参（逗号分隔，LGB/CB 网格通用；空=全部）；"
+                        "用于开机后对 H23@170/260 做 raw vs dedup 定向对拍")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
@@ -1335,14 +1361,21 @@ def main():
                    "engines": engines, "num_threads": args.num_threads,
                    "min_train": args.min_train_rows, "min_test": args.min_test_rows}
         # 任务：LGB 6 组 × 11 折 +（可选）CB 4 组 × 11 折（2026-10-19 双引擎解耦）
+        _only = {x.strip() for x in str(args.pids).split(",") if x.strip()}
         tasks = []
         for hp in HP_GRID:
+            if _only and hp["pid"] not in _only:
+                continue
             for fold in folds:
                 tasks.append((len(tasks), "lgb", hp, fold))
         if "catboost" in engines:
             for hp in CB_HP_GRID:
+                if _only and hp["pid"] not in _only:
+                    continue
                 for fold in folds:
                     tasks.append((len(tasks), "catboost", hp, fold))
+        if not tasks:
+            raise SystemExit(f"[CV] --pids={args.pids} 未匹配任何超参")
         # 断点续跑（2026-10-19）：任务级明细落盘 out_dir/cv_tasks/{side}_{pid}_Fold{id}
         # （_rows.parquet 全量 top30 + .json 标记），进程被杀/实例被抢占后同 --out_dir
         # 重跑自动跳过已完成任务；run_meta 配置指纹不一致则拒绝续跑。
@@ -1361,7 +1394,8 @@ def main():
                                      for hp in HP_GRID},
                  "cb_checkpoints": list(CB_CHECKPOINTS),
                  "cb_grid": [hp["pid"] for hp in CB_HP_GRID],
-                 "topk": 30, "grid_rev": "2026-10-19b"}
+                 "topk": 30, "grid_rev": "2026-10-20",
+                 "pids": sorted(_only)}
         _meta_path = _tasks_dir / "run_meta.json"
         if _meta_path.exists():
             try:
