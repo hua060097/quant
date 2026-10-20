@@ -883,6 +883,12 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
     try:
         from rqalpha_minute_datasource.strategy_backtest_top1_gate_ma5_binary import run_optimized_backtest
     except ImportError:
+        # 2026-10-20：服务器无 rqalpha（包级导入会因引擎内部 `import rqalpha`
+        # 失败），回退到把引擎目录加入 sys.path 的顶层导入（引擎同时支持两种）。
+        import sys as _sys
+        _md = str(_HERE / "rqalpha_minute_datasource")
+        if _md not in _sys.path:
+            _sys.path.insert(0, _md)
         try:
             from strategy_backtest_top1_gate_ma5_binary import run_optimized_backtest
         except ImportError as e:
