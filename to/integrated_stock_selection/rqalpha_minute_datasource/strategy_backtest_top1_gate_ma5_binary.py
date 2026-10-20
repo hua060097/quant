@@ -3431,17 +3431,34 @@ class BacktestStrategy:
             stock_data = self.get_stock_data(position.stock_code, sell_date)
             if stock_data.empty:
                 # [FIX 2026-10-20] 缺失 5 分钟数据时禁止按 buy_price*0.98 假结算
-                # （旧版把 688146.SH 在 2026-06-23 的大牛股按 -2% 强平）；
-                # 优先回退到当日日线收盘价（与日频口径一致），无日线才兜底 -2%。
+                # （旧版把 688146.SH 在 2026-06-23 的大牛股按 -2% 强平）。
+                # 停牌日（不复权源为 0 成交量占位、前复权源直接剔除）按"停牌前
+                # 最后收盘价"估值：优先当日日线 → 当日之前最近日线 → 最近有效
+                # 标记价；三者皆无才兜底 -2%。
+                _dc = None
                 _bar = self.daily_bar_lookup.get(
                     (sell_date, str(position.stock_code)), {})
-                _dc = _bar.get('close')
+                if _bar:
+                    _dc = _bar.get('close')
+                if _dc is None or not np.isfinite(_dc) or _dc <= 0:
+                    _hist = self.stock_daily_history.get(
+                        str(position.stock_code), {})
+                    _hd, _hc = _hist.get('dates', []), _hist.get('closes', [])
+                    if len(_hd) and len(_hd) == len(_hc):
+                        _i = bisect.bisect_right(_hd, sell_date) - 1
+                        if _i >= 0:
+                            _v = _hc[_i]
+                            if _v is not None and np.isfinite(_v) and _v > 0:
+                                _dc = float(_v)
+                if (_dc is None or not np.isfinite(_dc) or _dc <= 0) and \
+                        getattr(position, 'last_valid_mark_price', 0) > 0:
+                    _dc = float(position.last_valid_mark_price)
                 if _dc is not None and np.isfinite(_dc) and _dc > 0:
                     exit_price = float(_dc)
                     sell_datetime = datetime.combine(sell_date, datetime.min.time())
                     logger.warning(
-                        f"⚠️ {position.stock_code} 无5分钟卖出数据，"
-                        f"回退日线收盘价结算: {exit_price:.4f}")
+                        f"⚠️ {position.stock_code} 无5分钟卖出数据（停牌/缺源），"
+                        f"按最近有效价格结算: {exit_price:.4f}")
                 else:
                     # 使用买入价止损卖出
                     exit_price = position.buy_price * 0.98  # 假设2%止损
