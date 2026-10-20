@@ -572,8 +572,34 @@ def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> p
     每日投入 1/3 资金、双边成本 0.16%，eq = cumprod(1 + (ret-0.0016)/3)。
     """
     df = pd.DataFrame(all_rows)
+    df_raw = df[df["universe"] == "raw"].copy() if "universe" in df.columns \
+        else pd.DataFrame()
     if "universe" in df.columns:
         df = df[df["universe"] == "dedup"]
+    # P0-1（2026-10-20）：raw 口径同指标（不去重买 Raw Top1~2 的对照）
+    _raw_stats: dict = {}
+    if len(df_raw):
+        rr1 = df_raw[df_raw["rank"] == 1]
+        rr12 = (df_raw[df_raw["rank"].isin([1, 2])]
+                .groupby(["param", "fold_id", "cp", "date"])["return"].mean()
+                .reset_index())
+        for (pid, cp), sub in rr1.groupby(["param", "cp"], sort=False):
+            ret = sub["return"].dropna().to_numpy(dtype=float)
+            if len(ret) == 0:
+                continue
+            mdds = []
+            for _, fg in sub.groupby("fold_id"):
+                _r = fg.sort_values("date")["return"].to_numpy(dtype=float)
+                eq = np.cumprod(1.0 + (_r - COST_PER_TRADE) / SLOT_CAPITAL)
+                mdds.append(float((eq / np.maximum.accumulate(eq) - 1.0).min()))
+            s12 = rr12[(rr12["param"] == pid) & (rr12["cp"] == cp)]["return"].dropna()
+            _raw_stats[(pid, int(cp))] = {
+                "r1_raw_mean": float(ret.mean()),
+                "r1_raw_win": float((ret > 0).mean()),
+                "r1_raw_q10": float(np.quantile(ret, 0.10)),
+                "mdd_raw_min": float(min(mdds)),
+                "top2_raw_mean": float(s12.mean()) if len(s12) else np.nan,
+            }
     r1 = df[df["rank"] == 1].copy()
     r12 = df[df["rank"].isin([1, 2])].groupby(["param", "fold_id", "cp", "date"])["return"].mean().reset_index()
 
@@ -597,7 +623,7 @@ def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> p
         sub12 = r12[(r12["param"] == pid) & (r12["cp"] == cp)]["return"].dropna()
 
         raw_score = 0.50 * tail_pen_ret + 0.30 * min_fold_mean + 0.20 * float(sub12.mean())
-        records.append({
+        rec = {
             "param": pid, "cp": int(cp), "n_days": len(ret), "n_folds": len(fold_means),
             "r1_mean": float(ret.mean()), "r1_median": float(np.median(ret)),
             "r1_win": float((ret > 0).mean()), "r1_q10": float(np.quantile(ret, 0.10)),
@@ -606,7 +632,9 @@ def summarize_and_pick_champion(all_rows: list[dict], z_gate: float = 1.50) -> p
             "z_gated_mean": float(active_sub.mean()) if len(active_sub) else 0.0,
             "z_gated_active_rate": float((sub["score_z_in_day"] > z_gate).mean()),
             "raw_score": raw_score,
-        })
+        }
+        rec.update(_raw_stats.get((pid, int(cp)), {}))
+        records.append(rec)
 
     sum_df = pd.DataFrame(records).sort_values(["param", "cp"]).reset_index(drop=True)
     smooth_scores = []
@@ -1377,6 +1405,9 @@ def main():
     p.add_argument("--pids", default="",
                    help="仅跑指定超参（逗号分隔，LGB/CB 网格通用；空=全部）；"
                         "用于开机后对 H23@170/260 做 raw vs dedup 定向对拍")
+    p.add_argument("--cps", default="",
+                   help="仅评估指定 checkpoint（逗号分隔，与每超参专属网格取交集；"
+                        "空=全部）。定向对拍示例：--pids H23 --cps 170,260")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
@@ -1401,6 +1432,17 @@ def main():
 
     seeds = [int(x.strip()) for x in args.seeds.split(",") if x.strip()]
     engines = [x.strip().lower() for x in args.engines.split(",") if x.strip()]
+    # 2026-10-20: --cps 定向 checkpoint 过滤（raw-vs-dedup 对拍只重训 170/260 等）
+    _cps = {int(x) for x in str(getattr(args, "cps", "") or "").split(",") if x.strip()}
+    if _cps:
+        for _hp in HP_GRID:
+            _hp["checkpoints"] = [c for c in _hp.get("checkpoints", CHECKPOINTS)
+                                  if c in _cps]
+        HP_GRID[:] = [h for h in HP_GRID if h.get("checkpoints")]
+        if "catboost" in engines:
+            CB_CHECKPOINTS[:] = [c for c in CB_CHECKPOINTS if c in _cps]
+            if not CB_CHECKPOINTS:
+                engines = [e for e in engines if e != "catboost"]
     bundle = load_dataset_and_labels(args, logger)
 
     X, y, y_raw = bundle["X"], bundle["y"], bundle["y_raw"]
@@ -1453,6 +1495,7 @@ def main():
                  "cb_checkpoints": list(CB_CHECKPOINTS),
                  "cb_grid": [hp["pid"] for hp in CB_HP_GRID],
                  "topk": 30, "grid_rev": "2026-10-20",
+                 "universes": ["raw", "dedup"], "task_cols_rev": 2,
                  "pids": sorted(_only)}
         _meta_path = _tasks_dir / "run_meta.json"
         if _meta_path.exists():
@@ -1478,7 +1521,8 @@ def main():
             return _tasks_dir / (_task_key(side, hp, fold) + "_rows.parquet")
 
         _ROWS_COLS = ["param", "fold_id", "cp", "date", "rank", "stock_code",
-                      "sector", "pred", "score_z_in_day", "return", "scheme"]
+                      "sector", "pred", "score_z_in_day", "return", "scheme",
+                      "universe"]
 
         def _persist_task(side, pid, fid, rows):
             _df = pd.DataFrame(rows)
@@ -1494,7 +1538,8 @@ def main():
                     "pred": pd.Series(dtype="float64"),
                     "score_z_in_day": pd.Series(dtype="float64"),
                     "return": pd.Series(dtype="float64"),
-                    "scheme": pd.Series(dtype="object")})
+                    "scheme": pd.Series(dtype="object"),
+                    "universe": pd.Series(dtype="object")})
             _df = _df.reindex(columns=_ROWS_COLS)
             _f = _tasks_dir / f"{side}_{pid}_Fold{int(fid):02d}_rows.parquet"
             _df.to_parquet(_f, index=False)
@@ -1566,7 +1611,10 @@ def main():
                          "--train_months/--min-train-rows/--min-test-rows），终止。")
             return
         all_df = pd.concat(_parts, ignore_index=True)
-        all_df[all_df["rank"] <= 5].to_csv(  # 兼容旧消费方（risk_veto_train 等）
+        _top5 = all_df[all_df["rank"] <= 5]
+        if "universe" in _top5.columns:  # 旧消费方（risk_veto_train）只吃去重口径
+            _top5 = _top5[_top5["universe"] == "dedup"]
+        _top5.to_csv(  # 兼容旧消费方（risk_veto_train 等）
             out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
         # 主榜 = 纯 LightGBM（多 seed logit 均值）；CatBoost 独立榜（2026-10-19 定版）
         main = all_df[all_df["scheme"] == "lgb"]
