@@ -732,6 +732,64 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
                                         on=["stock_code", "date"], how="left")
         except Exception as e:
             logger.warning(f"[VETO] 日内降频缓存 join 失败: {str(e)[:120]}")
+
+    # ===== 2026-10-20 P1→P0-3 衔接：同步组装新风控特征（与 risk_veto_train 同口径）
+    # ② 板块门控 GS_sec_*（gate_search_sector.parquet 长表→按(date,sector)宽表）
+    _need_sec = [c for c in need if str(c).startswith("GS_sec_")
+                 and c not in fdf.columns]
+    if _need_sec:
+        try:
+            from risk_veto_train import find_sector_gates
+            _gp = find_sector_gates()
+            if _gp is not None:
+                _g = pd.read_parquet(_gp)
+                _g = _g[_g["gate_id"].isin(_need_sec)]
+                if len(_g):
+                    _g["date"] = pd.to_datetime(_g["date"])
+                    _piv = _g.pivot_table(index=["date", "sector"],
+                                          columns="gate_id", values="p",
+                                          aggfunc="mean").reset_index()
+                    _swm2 = load_sw2_map() or {}
+                    fdf["sector"] = fdf["stock_code"].map(_swm2).fillna("__NA__")
+                    fdf = fdf.merge(_piv, on=["date", "sector"], how="left")
+                    fdf = fdf.drop(columns=["sector"])
+        except Exception as e:
+            logger.warning(f"[VETO] 板块门控 join 失败: {str(e)[:120]}")
+    # ③ 因子库列（flow_* / money_flow_* / momentum_decay / mi_* 等，schema 过滤）
+    if need - set(fdf.columns):
+        try:
+            from risk_veto_train import load_factor_lab_columns
+            fdf, _got = load_factor_lab_columns(
+                fdf, sorted(need - {"gap12", "z_in_top5", "score_z_in_day"}), logger)
+            if _got:
+                logger.info(f"[VETO] 因子库补齐 {_got}")
+        except Exception as e:
+            logger.warning(f"[VETO] 因子库 join 失败: {str(e)[:120]}")
+    # ④ 内生置信度 gap12 / z_in_top5（当日去重头名 Top5 预测分派生，按日广播）
+    if {"gap12", "z_in_top5"} & need:
+        try:
+            _t3 = pd.DataFrame({"date": fdf["date"],
+                                "pred": np.asarray(preds, dtype=float)})
+            _t3 = _t3[np.isfinite(_t3["pred"])].sort_values(
+                ["date", "pred"], ascending=[True, False], kind="stable")
+            _top5 = _t3.groupby("date", sort=False, group_keys=False).head(5)
+            _rows = []
+            for _d, _s in _top5.groupby("date", sort=True)["pred"]:
+                _a = _s.to_numpy(dtype=float)
+                _p1 = float(_a[0])
+                _p2 = float(_a[1]) if len(_a) > 1 else float("nan")
+                _rest = _a[1:]
+                if len(_rest):
+                    _med = float(np.median(_rest))
+                    _mad = float(np.median(np.abs(_rest - _med)))
+                    _z = (_p1 - _med) / (1.4826 * _mad + 1e-9)
+                else:
+                    _z = float("nan")
+                _rows.append({"date": _d, "gap12": _p1 - _p2, "z_in_top5": _z})
+            fdf = fdf.merge(pd.DataFrame(_rows), on="date", how="left")
+            logger.info("[VETO] 内生置信度补齐 gap12/z_in_top5")
+        except Exception as e:
+            logger.warning(f"[VETO] 内生置信度派生失败: {str(e)[:120]}")
     missing = sorted(need - set(fdf.columns))
     if missing:
         raise SystemExit(f"[VETO] 规则引用特征缺失: {missing}（先并入对应数据源再回测）")

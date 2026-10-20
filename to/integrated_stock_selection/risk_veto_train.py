@@ -137,6 +137,47 @@ def find_sector_gates() -> Path | None:
     return None
 
 
+def load_factor_lab_columns(d: pd.DataFrame, wanted: list[str],
+                            logger=None) -> tuple[pd.DataFrame, list[str]]:
+    """按需 join factors.parquet 列（schema 存在性过滤；缺列跳过）。
+
+    供 risk_veto_train 与 stage15.apply_risk_veto_to_preds 共用，保证训练期与
+    部署期特征口径一致。d 需含 stock_code/date；返回 (合并后帧, 实际补齐列)。
+    """
+    need = [c for c in wanted if c not in d.columns]
+    if not need:
+        return d, []
+    try:
+        import pyarrow.parquet as _pq
+        fp = _HERE / "factor_lab_data" / "factors.parquet"
+        have = set(_pq.read_schema(fp).names) if fp.exists() else set()
+        req = [c for c in need if c in have]
+        absent = [c for c in need if c not in have]
+        if absent and logger is not None:
+            logger.warning(f"[因子库] factors.parquet 无列（跳过）: {absent}")
+        if not req:
+            return d, []
+        merge_dir = str(_HERE / "pandaai_online" / "merge")
+        if merge_dir not in sys.path:
+            sys.path.insert(0, merge_dir)
+        from boundary import read_factors
+        fac = read_factors(req, data_max=str(
+            pd.to_datetime(d["date"]).max().date()), label="risk-feat")
+        if fac is None or not len(fac):
+            return d, []
+        fac["date"] = pd.to_datetime(fac["date"])
+        fac["stock_code"] = fac["stock_code"].astype(str)
+        got = [c for c in req if c in fac.columns]
+        if got:
+            d = d.merge(fac[["stock_code", "date"] + got],
+                        on=["stock_code", "date"], how="left")
+        return d, got
+    except Exception as e:
+        if logger is not None:
+            logger.warning(f"[因子库] join 失败: {str(e)[:120]}")
+        return d, []
+
+
 #: 日内降频缓存列名（无 id_ 前缀，intraday_minute.FACTOR_COLS）→ 注册因子 ID。
 #: 2026-10-19 修复：此前按 id_* 名直接 join 缓存，列名不匹配导致 6 个日内
 #: 派发/衰竭特征静默缺失（风控规则挖掘失去核心特征）。
@@ -617,6 +658,41 @@ def main() -> int:
     accepted = accepted[:max(0, args.max_rules)]
     logger.info(f"[风控] 最终候选 {len(final_rules)} 条 -> 验收通过 {len(accepted)} 条")
 
+    # 2026-10-20 P1 追加：全部通过规则**联合并集**（ALL_RULES_UNION）整体效果
+    union = None
+    if accepted:
+        try:
+            _u = apply_veto(accepted, df)
+            _ur = df["return"].to_numpy(dtype=float)
+            _uc = int((_u & (_ur <= CRASH_TH)).sum())
+            _ub = int((_u & (_ur >= BOOM_TH)).sum())
+            _casc = cascade_by_fold(df, _u)
+            _casc["delta"] = _casc["veto_ret"] - _casc["base_ret"]
+            _n_r1v = int(_casc["r1_vetoed"].sum())
+
+            def _eq3(_r):
+                _e = np.cumprod(1.0 + (np.asarray(_r, dtype=float) - 0.0016) / 3.0)
+                return (float(_e[-1] - 1.0),
+                        float((_e / np.maximum.accumulate(_e) - 1.0).min()))
+
+            _tb, _mb = _eq3(_casc["base_ret"])
+            _tv, _mv = _eq3(_casc["veto_ret"])
+            union = {"n_rules": len(accepted), "n_days": int(len(_casc)),
+                     "n_r1_vetoed_days": _n_r1v,
+                     "crash_caught": _uc, "boom_killed": _ub,
+                     "ratio": round(_uc / max(_ub, 1), 3),
+                     "equity3_base": round(_tb, 6),
+                     "equity3_union": round(_tv, 6),
+                     "mdd3_base": round(_mb, 6),
+                     "mdd3_union": round(_mv, 6)}
+            logger.info(
+                f"[风控] ALL_RULES_UNION: {len(accepted)} 条规则并集 | "
+                f"Rank1 被否 {_n_r1v}/{len(_casc)} 天 | 拦亏={_uc} 误杀={_ub} "
+                f"ratio={union['ratio']} | 3槽净值 {_tb:+.2%} -> {_tv:+.2%} | "
+                f"3槽mdd {_mb:+.2%} -> {_mv:+.2%}")
+        except Exception as e:
+            logger.warning(f"[风控] 并集统计失败: {str(e)[:120]}")
+
     rules_out = []
     for i, r in enumerate(accepted, 1):
         da = ">" if r["dir_a"] > 0 else "<"
@@ -651,7 +727,7 @@ def main() -> int:
         "n_candidates": int(len(df)),
         "feature_pool": pool, "features_missing": missing,
         "walk_forward_prefix": prefix_rules,
-        "rules": rules_out,
+        "rules": rules_out, "union": union,
         "note": "级联消费: Rank1 被否 -> 顺延 Rank2 -> ... -> 空仓 (apply_veto)",
     }
     (out_dir / "risk_veto_rules.json").write_text(
@@ -659,8 +735,18 @@ def main() -> int:
 
     rep = [f"# 风控否决规则报告（{ts}）", "",
            f"- 冠军: {args.pid}@cp{args.cp} | 候选样本 {len(df)} | 特征池 {len(pool)}",
-           f"- 验收标准: ratio≥{args.ratio_min} 且 折正占比>{args.fold_pos_frac:.0%}",
+           f"- 验收标准: ratio≥{args.ratio_min} 且 触发折≥{args.min_active_folds} "
+           f"且 触发折正占比≥{args.fold_pos_frac:.0%} 且 坏折≤1",
            f"- 通过规则: {len(rules_out)} 条", ""]
+    if union:
+        rep.append(f"## [ALL_RULES_UNION] 并集：{union['n_rules']} 条规则同时生效")
+        rep.append(f"- Rank1 被否 {union['n_r1_vetoed_days']}/{union['n_days']} 天")
+        rep.append(f"- 拦亏 {union['crash_caught']} / 误杀大涨 {union['boom_killed']} "
+                   f"/ ratio {union['ratio']}")
+        rep.append(f"- 3 槽净值 {union['equity3_base']:+.2%} -> "
+                   f"{union['equity3_union']:+.2%}；mdd {union['mdd3_base']:+.2%} -> "
+                   f"{union['mdd3_union']:+.2%}")
+        rep.append("")
     for r in rules_out:
         rep.append(f"## 规则{r['id']}: `{r['expr']}`")
         rep.append(f"- 全历史: 拦亏 {r['history']['crash_caught']} / "
