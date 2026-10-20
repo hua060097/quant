@@ -98,6 +98,43 @@ HP_GRID = [
     {"pid": "H14",  "num_leaves": 127, "max_depth": 7, "min_data_in_leaf": 1800, "feature_fraction": 0.75, "bagging_fraction": 0.80, "reg_alpha": 20.0, "reg_lambda": 35.0, "scale_pos_weight": 20.0, "checkpoints": CHECKPOINTS_DEEP},
 ]
 
+# 2026-10-20 P0：OOS 分钟回测必须与旧主脚本生产配置同构。
+# 旧主脚本（main_alpha_binary_v17_1...）通过 minute_strategy_overrides 显式开启
+# Top1 状态机与 T+2 10:00 软止损；stage15 早前漏传 → 引擎默认
+# enable_top1_state_machine_risk=False / enable_t2_1000_soft_stop=False。
+# 下列取值逐项抄自旧主脚本常量（v17_1: 277-306/493/509 行），勿擅改。
+OOS_MINUTE_OVERRIDES = {
+    "entry_risk_down_threshold_non_top1": -0.03,
+    "entry_risk_down_threshold": -0.06,
+    "entry_risk_up_threshold": 0.05,
+    "entry_risk_control_strategy": "gap_based",
+    "entry_risk_ma5_down_threshold": 0.00,
+    "entry_risk_ma5_up_threshold": 0.05,
+    "delayed_entry_mode": "disabled",
+    "stop_loss_threshold": -0.05,
+    "profit_bearish_required_count": 3,
+    "enable_t2_0935_hard_stop": True,
+    "t2_0935_hard_stop_threshold": -0.04,
+    "enable_gate_hit_strict_mode": False,
+    "gate_hit_entry_gap_up_threshold": 0.02,
+    "enable_t2_1000_soft_stop": True,
+    "t2_1000_soft_stop_threshold": -0.02,
+    "enable_second_layer_time_stop": True,
+    "t2_close_breakeven_stop_threshold": 0.00,
+    "t3_0935_breakeven_stop_threshold": 0.00,
+    "enable_small_profit_failure_exit": True,
+    "small_profit_activation_return": 0.04,
+    "small_profit_retrace_return": -0.005,
+    "small_profit_trailing_drawdown": -0.04,
+    "small_profit_bearish_required_count": 2,
+    "small_profit_watch_window_bars": 3,
+    "enable_profit_threshold_for_bearish_exit": True,
+    "profit_bearish_activation_return": 0.05,
+    "enable_top1_state_machine_risk": True,
+    "enable_dynamic_rank_switch": False,
+    "enable_exhaustion_filter": False,
+}
+
 
 # ==================== 基础工具函数 ====================
 def setup_logger(log_path: Path) -> logging.Logger:
@@ -196,6 +233,46 @@ def build_forward_folds(unique_days, train_months=TRAIN_MONTHS, test_months=TEST
         logger.info(f"[CV] 构建 {len(folds)} 个滚动折 (train={train_months}M, test={test_months}M, embargo={embargo_days}d):")
         for f_ in folds:
             logger.info(f"  Fold{f_['fold_id']:02d}: Train {f_['train_start']}~{f_['train_end']} | Test {f_['test_start']}~{f_['test_end']}")
+    return folds
+
+
+def build_oos_rolling_folds(unique_days, test_start, test_end, train_months=TRAIN_MONTHS,
+                            embargo_days=EMBARGO_DAYS, logger=None):
+    """OOS 滚动重训折：按自然季度切测试窗，训练窗 = 前 train_months 个月，5 日隔离。
+
+    2026-10-20 P0：与 CV 完全同构（静态单模型硬扛 9 个月会老化衰减）。
+    测试窗 [test_start, test_end] 内按月历季度切分（末段不足一季度按实际截止日）。
+    """
+    uniq = np.asarray(unique_days)
+    ts, te = pd.Timestamp(test_start), pd.Timestamp(test_end)
+    bounds, cur = [], pd.Timestamp(year=ts.year, month=((ts.month - 1) // 3) * 3 + 1,
+                                   day=1)
+    while cur <= te:
+        nxt = cur + pd.DateOffset(months=3)
+        s_ = max(cur, ts)
+        e_ = min(nxt - pd.Timedelta(days=1), te)
+        if s_ <= e_:
+            bounds.append((s_, e_))
+        cur = nxt
+    folds = []
+    for k, (s_, e_) in enumerate(bounds):
+        idx_s = int(np.searchsorted(uniq, np.datetime64(s_)))
+        tr_end_i = idx_s - 1 - int(embargo_days)
+        if tr_end_i < 6 * 21:
+            continue
+        tr_start_i = max(0, tr_end_i - int(round(train_months * 21)) + 1)
+        folds.append(dict(
+            fold_id=100 + k,
+            train_start=str(pd.Timestamp(uniq[tr_start_i]).date()),
+            train_end=str(pd.Timestamp(uniq[tr_end_i]).date()),
+            test_start=str(s_.date()), test_end=str(e_.date()),
+        ))
+    if logger:
+        logger.info(f"[OOS-ROLL] 构建 {len(folds)} 个季度滚动折 "
+                    f"(train={train_months}M, embargo={embargo_days}d):")
+        for f_ in folds:
+            logger.info(f"  Fold{f_['fold_id']}: Train {f_['train_start']}~{f_['train_end']} "
+                        f"| Test {f_['test_start']}~{f_['test_end']}")
     return folds
 
 
@@ -690,6 +767,33 @@ def pick_backtest_min_dir(test_start: str, test_end: str,
     return fallback or (_HERE.parent / "local_data" / "minute")
 
 
+def dedup_sector_preds(preds: np.ndarray, codes_te: np.ndarray,
+                       dates_te: np.ndarray, logger: logging.Logger,
+                       tag: str = "DEDUP") -> np.ndarray:
+    """同申万二级行业仅保留 pred 最高者，其余置 -inf（CV/分钟回测/风控同口径）。
+
+    2026-10-20 抽公共函数：OOS 无否决分钟回测也必须先去重（旧版只在 veto
+    函数内部去重，导致无否决回测原样喂原始分数，口径不一致）。"""
+    out = np.asarray(preds, dtype=float).copy()
+    try:
+        _swm = load_sw2_map()
+        if _swm:
+            _sec = np.array([_swm.get(str(c), "__NA__") for c in codes_te],
+                            dtype=object)
+            _t = pd.DataFrame({"i": np.arange(len(out)),
+                               "date": pd.to_datetime(dates_te),
+                               "pred": out, "sec": _sec})
+            _t = _t.sort_values(["date", "pred"], ascending=[True, False],
+                                kind="stable")
+            _dup = _t.duplicated(subset=["date", "sec"], keep="first").to_numpy()
+            _dup_idx = _t["i"].to_numpy()[_dup]
+            out[_dup_idx] = -np.inf
+            logger.info(f"[{tag}] 行业去重：{len(_dup_idx)} 个非头名候选置 -inf")
+    except Exception as _e:
+        logger.warning(f"[{tag}] 行业去重失败（{str(_e)[:100]}），按原顺序处理")
+    return out
+
+
 def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
                              feature_cols: list[str], codes_te: np.ndarray,
                              dates_te: np.ndarray, y_raw_te: np.ndarray,
@@ -709,34 +813,28 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
         return preds
     preds = np.asarray(preds, dtype=float).copy()
     # 行业去重先行：每行业仅头名参与否决与顺延（与 CV/分钟回测口径一致）
-    try:
-        _swm = load_sw2_map()
-        if _swm:
-            _sec = np.array([_swm.get(str(c), "__NA__") for c in codes_te],
-                            dtype=object)
-            _t = pd.DataFrame({"i": np.arange(len(preds)),
-                               "date": pd.to_datetime(dates_te),
-                               "pred": preds, "sec": _sec})
-            _t = _t.sort_values(["date", "pred"], ascending=[True, False],
-                                kind="stable")
-            _dup = _t.duplicated(subset=["date", "sec"], keep="first").to_numpy()
-            _dup_idx = _t["i"].to_numpy()[_dup]
-            preds[_dup_idx] = -np.inf
-            logger.info(f"[VETO] 行业去重先行：{len(_dup_idx)} 个非头名候选置 -inf")
-    except Exception as _e:
-        logger.warning(f"[VETO] 行业去重失败（{str(_e)[:100]}），按原顺序处理")
+    preds = dedup_sector_preds(preds, codes_te, dates_te, logger, tag="VETO")
     from risk_veto_train import apply_veto, derive_price_features
     fdf = pd.DataFrame(np.asarray(X_te), columns=feature_cols)
     fdf["stock_code"] = codes_te
     fdf["date"] = pd.to_datetime(dates_te)
-    # score_z_in_day：与 evaluate_predictions 同日同公式（med / 1.4826*MAD）
+    # score_z_in_day：与 evaluate_predictions 同日同公式（med / 1.4826*MAD）。
+    # 2026-10-20 修复：行业去重后非头名是 -inf，若混入截面统计 med=-inf →
+    # (-inf)-(-inf)=NaN（RuntimeWarning）；统计只在**有限 pred** 上计算，
+    # 非有限行 score_z 置 NaN（风控规则不消费这些行）。
     _t = pd.DataFrame({"date": fdf["date"], "pred": preds})
-    _g = _t.groupby("date")["pred"]
-    med = _g.transform("median").to_numpy(dtype=float)
-    mad = _g.transform(lambda s: np.median(np.abs(s - np.median(s)))).to_numpy(dtype=float)
-    std = _g.transform("std").to_numpy(dtype=float)
-    scale = np.where(mad > 1e-12, 1.4826 * mad, std + 1e-9)
-    fdf["score_z_in_day"] = (np.asarray(preds, dtype=float) - med) / scale
+    _fin = _t[np.isfinite(_t["pred"].to_numpy(dtype=float))].copy()
+    _z = np.full(len(_t), np.nan, dtype=float)
+    if len(_fin):
+        _g = _fin.groupby("date")["pred"]
+        med = _g.transform("median").to_numpy(dtype=float)
+        mad = (_fin["pred"].to_numpy(dtype=float) - med)
+        mad = pd.Series(np.abs(mad)).groupby(_fin["date"], sort=False) \
+            .transform("median").to_numpy(dtype=float)
+        std = _g.transform("std").to_numpy(dtype=float)
+        scale = np.where(mad > 1e-12, 1.4826 * mad, std + 1e-9)
+        _z[_fin.index.to_numpy()] = (_fin["pred"].to_numpy(dtype=float) - med) / scale
+    fdf["score_z_in_day"] = _z
     need = {f for r in rules for f in r.get("features", []) if f}
     need |= {r.get("fa") for r in rules if r.get("fa")}
     need |= {r.get("fb") for r in rules if r.get("fb")}
@@ -878,8 +976,15 @@ def veto_daily_cascade(preds: np.ndarray, dates_te: np.ndarray,
 
 
 def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start: str,
-                            test_end: str, out_dir: Path, logger: logging.Logger):
-    """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（Rank 1 & Rank 2）。"""
+                            test_end: str, out_dir: Path, logger: logging.Logger,
+                            strategy_overrides: dict | None = None,
+                            out_name: str = "minute_backtest_oos.pkl"):
+    """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（Rank 1 & Rank 2）。
+
+    2026-10-20 P0 修复：必须显式传 strategy_config_overrides（与旧主脚本生产
+    配置同构，见 OOS_MINUTE_OVERRIDES）——否则引擎默认
+    enable_top1_state_machine_risk=False / enable_t2_1000_soft_stop=False，
+    Top1 状态机静默失效。"""
     try:
         from rqalpha_minute_datasource.strategy_backtest_top1_gate_ma5_binary import run_optimized_backtest
     except ImportError:
@@ -931,9 +1036,12 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
         max_concurrent_positions=2,
         fixed_position_pct=0.5,
         position_schedule=[0.5, 0.5],
+        strategy_config_overrides=(strategy_overrides
+                                   if strategy_overrides is not None
+                                   else OOS_MINUTE_OVERRIDES),
     )
     if res:
-        pd.to_pickle(res, out_dir / "minute_backtest_oos.pkl")
+        pd.to_pickle(res, out_dir / out_name)
         for k, v in res.items():
             if isinstance(v, dict):
                 logger.info(
@@ -1292,6 +1400,10 @@ def run_fuse_champions(args, out_dir: Path, logger: logging.Logger) -> None:
     if not _parts:
         raise SystemExit(f"[FUSE] {cv_dir}/cv_tasks 下无任务明细")
     all_df = pd.concat(_parts, ignore_index=True)
+    # 2026-10-20 P0-1 修复：任务明细同时含 raw+dedup 两套，融合必须只用 dedup
+    # （旧版未过滤 → 同一 (fold,date,stock) 两行、merge 后行膨胀，融合成绩失真）。
+    if "universe" in all_df.columns:
+        all_df = all_df[all_df["universe"] == "dedup"].copy()
     _lgb = all_df[(all_df["scheme"] == "lgb")
                   & (all_df["param"] == lgb_ch["param"])
                   & (all_df["cp"] == int(lgb_ch["cp"]))].copy()
@@ -1404,6 +1516,12 @@ def main():
     p.add_argument("--pid", default="H15", help="oos_2026 模式使用的超参 ID")
     p.add_argument("--cp", type=int, default=350, help="oos_2026 模式使用的 Checkpoint")
     p.add_argument("--with_minute_backtest", action="store_true", help="开启 5 分钟级状态机真实回测")
+    p.add_argument("--oos_rolling", action="store_true", default=False,
+                   help="OOS 改为与 CV 同构的季度滚动重训（3 个月一折，21 个月训练+5 日隔离）；"
+                        "默认静态单模型（旧行为）")
+    p.add_argument("--veto_minute_bt", action="store_true", default=False,
+                   help="分钟回测基准默认用无否决去重 preds（防 -inf 污染）；"
+                        "加此开关额外跑一份风控否决版（minute_backtest_oos_veto.pkl）")
     p.add_argument("--veto_rules", default="",
                    help="risk_veto_rules.json 路径；提供后对 oos_2026 候选应用"
                         "行业去重先行+风控级联否决（Rank1 被否→顺延），输出 "
@@ -1654,32 +1772,88 @@ def main():
                         f"plateau_score={_champ_cb['plateau_score']:.4f}")
 
     else:
-        # oos_2026 模式：在 test_start 前倒推训练窗（严格 <= 2025-12），评估 2026 OOS + 分钟回测
+        # oos_2026 模式：静态单模型 或 --oos_rolling 季度滚动重训（与 CV 同构）
         hp = next(h for h in HP_GRID if h["pid"] == args.pid)
-        idx_s = int(np.searchsorted(uniq_days, np.datetime64(pd.Timestamp(args.test_start))))
-        tr_end_idx = idx_s - 1 - EMBARGO_DAYS
-        if tr_end_idx < 6 * 21:
-            raise SystemExit(
-                f"[OOS] 训练窗不足：test_start={args.test_start} 之前仅 {max(tr_end_idx, 0)} "
-                f"个交易日（<126），检查 --data_start/--test_start")
-        tr_start_idx = max(0, tr_end_idx - args.train_months * 21 + 1)
-        tr_start, tr_end = uniq_days[tr_start_idx], uniq_days[tr_end_idx]
+        if len(seeds) != 3:
+            logger.warning(
+                f"[OOS] seeds={len(seeds)} 与 CV 标定口径(3 seeds)不一致：多 seed "
+                "平均会压缩预测方差，gap12/z_in_top5 等风控阈值尺度会漂移")
+        if args.oos_rolling:
+            folds_oos = build_oos_rolling_folds(
+                uniq_days, args.test_start, args.test_end, args.train_months,
+                EMBARGO_DAYS, logger)
+            if not folds_oos:
+                raise SystemExit("[OOS-ROLL] 无有效滚动折（检查 --test_start/--data_start）")
+            _ra, _pl, _dl, _cl, _yl, _xl, _sl = [], [], [], [], [], [], []
+            for fo in folds_oos:
+                tr_m = ((dates >= np.datetime64(fo["train_start"]))
+                        & (dates <= np.datetime64(fo["train_end"])) & valid_mask)
+                te_m = ((dates >= np.datetime64(fo["test_start"]))
+                        & (dates <= np.datetime64(fo["test_end"])) & valid_mask)
+                logger.info(
+                    f"[OOS-ROLL] Fold{fo['fold_id']}: Train {fo['train_start']}~"
+                    f"{fo['train_end']} (样本={int(tr_m.sum()):,}) | Test "
+                    f"{fo['test_start']}~{fo['test_end']} (样本={int(te_m.sum()):,})")
+                if (tr_m.sum() < args.min_train_rows
+                        or te_m.sum() < args.min_test_rows):
+                    logger.warning(f"[OOS-ROLL] Fold{fo['fold_id']} 样本不足，跳过")
+                    continue
+                w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m],
+                                              y_raw[tr_m], dates[tr_m])
+                _r = train_predict_fold(X[tr_m], y[tr_m], w_tr, X[te_m],
+                                        dates[te_m], hp, [args.cp], seeds,
+                                        ["lgb"], args.num_threads)
+                _p = _r["lgb"][args.cp]
+                _ra.extend(evaluate_predictions(
+                    {args.cp: _p}, dates[te_m], codes[te_m], sectors[te_m],
+                    y_raw[te_m], fold_id=fo["fold_id"], pid=hp["pid"]))
+                _pl.append(_p)
+                _dl.append(dates[te_m])
+                _cl.append(codes[te_m])
+                _yl.append(y_raw[te_m])
+                _xl.append(X[te_m])
+                _sl.append(sectors[te_m])
+            if not _ra:
+                logger.error("[OOS-ROLL] 无有效样本产出，终止。")
+                return
+            d_rows = _ra
+            _preds_oos = np.concatenate(_pl)
+            _dates_oos = np.concatenate(_dl)
+            _codes_oos = np.concatenate(_cl)
+            _y_oos = np.concatenate(_yl)
+            _X_oos = np.concatenate(_xl)
+            _sectors_oos = np.concatenate(_sl)
+        else:
+            idx_s = int(np.searchsorted(uniq_days, np.datetime64(pd.Timestamp(args.test_start))))
+            tr_end_idx = idx_s - 1 - EMBARGO_DAYS
+            if tr_end_idx < 6 * 21:
+                raise SystemExit(
+                    f"[OOS] 训练窗不足：test_start={args.test_start} 之前仅 {max(tr_end_idx, 0)} "
+                    f"个交易日（<126），检查 --data_start/--test_start")
+            tr_start_idx = max(0, tr_end_idx - args.train_months * 21 + 1)
+            tr_start, tr_end = uniq_days[tr_start_idx], uniq_days[tr_end_idx]
 
-        tr_m = (dates >= tr_start) & (dates <= tr_end) & valid_mask
-        te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & valid_mask
-        logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
-        logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
+            tr_m = (dates >= tr_start) & (dates <= tr_end) & valid_mask
+            te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & valid_mask
+            logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
+            logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
 
-        w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m],
-                                      dates[tr_m])
-        _res = train_predict_fold(
-            X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
-            hp, [args.cp], seeds, ["lgb"], args.num_threads)
-        preds_by_cp = _res["lgb"]  # 主评估 = 纯 LGB（多 seed logit 均值）
-        d_rows = evaluate_predictions(
-            preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
-            y_raw[te_m], fold_id=99, pid=hp["pid"]
-        )
+            w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m],
+                                          dates[tr_m])
+            _res = train_predict_fold(
+                X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
+                hp, [args.cp], seeds, ["lgb"], args.num_threads)
+            preds_by_cp = _res["lgb"]  # 主评估 = 纯 LGB（多 seed logit 均值）
+            d_rows = evaluate_predictions(
+                preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
+                y_raw[te_m], fold_id=99, pid=hp["pid"]
+            )
+            _preds_oos = preds_by_cp[args.cp]
+            _dates_oos = dates[te_m]
+            _codes_oos = codes[te_m]
+            _y_oos = y_raw[te_m]
+            _X_oos = X[te_m]
+            _sectors_oos = sectors[te_m]
         pd.DataFrame(d_rows).to_csv(out_dir / "oos2026_top5_details.csv", index=False, encoding="utf-8-sig")
         if not d_rows:
             logger.error("[OOS] 测试窗无有效样本产出，终止。")
@@ -1688,16 +1862,20 @@ def main():
         logger.info("\n===== 2026 OOS 日频 Rank1 & 同行业去重 Top2 终验结果 =====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
-        _preds_oos = preds_by_cp[args.cp]
+        # 分钟回测基准 = 纯模型（行业去重，**无风控否决**）；否决仅用于日频对照，
+        # 需要时用 --veto_minute_bt 另跑一份（2026-10-20 P0：防止 -inf 污染）。
+        _preds_bt = dedup_sector_preds(_preds_oos, _codes_oos, _dates_oos,
+                                       logger, tag="MINUTE-BT")
+        _preds_veto = None
         if args.veto_rules:
-            _preds_oos = apply_risk_veto_to_preds(
-                _preds_oos, X[te_m], bundle["feature_cols"], codes[te_m],
-                dates[te_m], y_raw[te_m], bundle["price_path"],
+            _preds_veto = apply_risk_veto_to_preds(
+                _preds_oos, _X_oos, bundle["feature_cols"], _codes_oos,
+                _dates_oos, _y_oos, bundle["price_path"],
                 args.veto_rules, logger)
             # [VETO-OOS] 风控排雷后日频级联终验（独立于分钟回测；与 CV 选参
             # 同口径：行业头名顺延，被否头名剔除后取存活者 rank1..5）
-            _rows_v = veto_daily_cascade(_preds_oos, dates[te_m], codes[te_m],
-                                         sectors[te_m], y_raw[te_m],
+            _rows_v = veto_daily_cascade(_preds_veto, _dates_oos, _codes_oos,
+                                         _sectors_oos, _y_oos,
                                          hp["pid"], args.cp)
             if _rows_v:
                 _sum_v = summarize_and_pick_champion(_rows_v)
@@ -1712,11 +1890,25 @@ def main():
                 logger.warning("[VETO] 级联终验无有效样本产出")
         if args.with_minute_backtest:
             pred_df = pd.DataFrame({
-                "date": pd.to_datetime(dates[te_m]),
-                "stock_code": codes[te_m],
-                "predicted_return": _preds_oos,
+                "date": pd.to_datetime(_dates_oos),
+                "stock_code": _codes_oos,
+                "predicted_return": _preds_bt,
             })
-            run_minute_backtest_oos(pred_df, bundle["price_path"], args.test_start, args.test_end, out_dir, logger)
+            run_minute_backtest_oos(pred_df, bundle["price_path"],
+                                    args.test_start, args.test_end, out_dir,
+                                    logger,
+                                    strategy_overrides=OOS_MINUTE_OVERRIDES)
+            if _preds_veto is not None and args.veto_minute_bt:
+                pred_df_v = pd.DataFrame({
+                    "date": pd.to_datetime(_dates_oos),
+                    "stock_code": _codes_oos,
+                    "predicted_return": _preds_veto,
+                })
+                run_minute_backtest_oos(pred_df_v, bundle["price_path"],
+                                        args.test_start, args.test_end, out_dir,
+                                        logger,
+                                        strategy_overrides=OOS_MINUTE_OVERRIDES,
+                                        out_name="minute_backtest_oos_veto.pkl")
 
 
 if __name__ == "__main__":

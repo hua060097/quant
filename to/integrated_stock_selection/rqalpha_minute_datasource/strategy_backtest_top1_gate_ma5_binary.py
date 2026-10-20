@@ -78,12 +78,15 @@ class StrategyConfig:
     """策略配置类"""
     strategy_type: StrategyType
     stock_count: int
+    cap_quantiles: Optional[tuple] = None  # [FIX 2026-09-12] 市值分位硬过滤：如(3,4)只在Q3/Q4选；None=关闭（生产默认）。口径=逐日ex-ST circ_mv分位，与deploy --cap_quantiles一致
     enable_dynamic_rank_switch: bool = True
     holding_days: int = 3
     initial_capital: float = 1000000.0
     max_concurrent_positions: int = 2
     fixed_position_pct: float = 0.5
     position_schedule: Optional[List[float]] = None
+    allow_duplicate_position: bool = False   # 允许对已持仓股票重复开仓
+    duplicate_position_scale: float = 0.5    # 重复开仓的仓位减半系数
 
     # 持仓卖出止损阈值（用于T+2、T+3及以后的持仓风控）
     # 说明：
@@ -242,6 +245,80 @@ class Position:
     failed_cont_watch_day_offset: int = -1
     strict_risk_mode: bool = False
 
+def _has_real_minute_trading(df) -> bool:
+    """[FIX 2026-09-07] 整天零量=停牌幻影bar（如分钟源forward-fill），视同无数据。
+    调用方已有无数据分支（告警+跳过），本函数只做判定：异常时返回True（保持原行为）。"""
+    try:
+        if df is None or len(df) == 0:
+            return False
+        if "volume" not in df.columns:
+            return True
+        return bool(pd.to_numeric(df["volume"], errors="coerce").fillna(0).sum() > 0)
+    except Exception:
+        return True
+
+# ---- [K-ALIGN 2026-09-08] 分钟经验对齐（替代已删的factor缩放方案） ----
+# k(t,stock) = 日线open(前复权可信源) / 当日分钟首bar open，全天OHLC同乘，volume不动。
+# factor日期语义混杂（登记/除权/增发±数天）使逐日精确缩放不可行；经验对齐不消费factor日期，
+# 日内收益率数学不变，只消日间断崖。停牌先guard拦（顺序不变），缺失fail-open裸数据+计数。
+_K_ALIGNED_DAYS = 0
+_K_MISSING_DAYS = 0
+_K_MISSING_WARNED = 0
+_K_JUMP_DAYS = 0  # |k-1|>5% 的天数（机械断崖候选，供质检）
+
+
+def compute_cap_quintile_bounds(df):
+    """逐日流通市值分位边界（ex-ST），供市值分位硬过滤。
+
+    口径（与 deploy --cap_quantiles / 2026-09-12 Q3Q4离线验证一致）：
+    每天对非ST行取 circ_mv 的 log10 分位 q20/q40/q60/q80。
+    返回 {date: (q20,q40,q60,q80)}；缺circ_mv列/空/全NaN时返回{}。
+    """
+    try:
+        if df is None or len(df) == 0 or "circ_mv" not in df.columns:
+            return {}
+        cols = ["date", "circ_mv"] + (["is_st"] if "is_st" in df.columns else [])
+        w = df[cols].copy()
+        w["circ_mv"] = pd.to_numeric(w["circ_mv"], errors="coerce")
+        if "is_st" in w.columns:
+            w = w[pd.to_numeric(w["is_st"], errors="coerce").fillna(0) != 1]
+        w = w[w["circ_mv"].notna() & (w["circ_mv"] > 0)]
+        if w.empty:
+            return {}
+        w["logmv"] = np.log10(w["circ_mv"].to_numpy(dtype=float))
+        out = {}
+        for d, g in w.groupby("date", sort=False):
+            q = g["logmv"].quantile([0.2, 0.4, 0.6, 0.8]).to_numpy()
+            out[d] = tuple(float(x) for x in q)
+        return out
+    except Exception:
+        return {}
+
+
+def classify_cap_quintile(circ_mv, bounds, date):
+    """circ_mv归属分位1..5；无法分类（缺数/缺边界/非正）返回0。"""
+    try:
+        import math as _math
+        v = float(circ_mv)
+        if not _math.isfinite(v) or v <= 0:
+            return 0
+        b = bounds.get(date)
+        if b is None:
+            return 0
+        lv = _math.log10(v)
+        if lv <= b[0]:
+            return 1
+        if lv <= b[1]:
+            return 2
+        if lv <= b[2]:
+            return 3
+        if lv <= b[3]:
+            return 4
+        return 5
+    except (ValueError, TypeError):
+        return 0
+
+
 class BacktestStrategy:
     """单个策略的回测类 - 完全独立，避免状态干扰"""
 
@@ -265,7 +342,7 @@ class BacktestStrategy:
         self.daily_bar_lookup: Dict[tuple, Dict[str, float]] = {}
         self.stock_daily_history: Dict[str, Dict[str, list]] = {}
         if {'stock_code', 'date'}.issubset(self.prediction_data.columns):
-            history_cols = [col for col in ['stock_code', 'date', 'close', 'low'] if col in self.prediction_data.columns]
+            history_cols = [col for col in ['stock_code', 'date', 'open', 'close', 'low'] if col in self.prediction_data.columns]
             daily_history_df = (
                 self.prediction_data[history_cols]
                 .drop_duplicates(subset=['stock_code', 'date'], keep='first')
@@ -275,6 +352,7 @@ class BacktestStrategy:
             for row in daily_history_df.itertuples(index=False):
                 key = (row.date, row.stock_code)
                 self.daily_bar_lookup[key] = {
+                    'open': float(getattr(row, 'open', np.nan)) if pd.notna(getattr(row, 'open', np.nan)) else np.nan,
                     'close': float(getattr(row, 'close', np.nan)) if pd.notna(getattr(row, 'close', np.nan)) else np.nan,
                     'low': float(getattr(row, 'low', np.nan)) if pd.notna(getattr(row, 'low', np.nan)) else np.nan,
                 }
@@ -288,7 +366,7 @@ class BacktestStrategy:
         # 策略状态 - 独立管理
         self.positions: List[Position] = []
         self.cash: float = config.initial_capital
-        self.current_holdings: Dict[str, Position] = {}
+        self.current_holdings: List[Position] = []
 
         # 添加买入周期状态跟踪
         self.last_buy_date: Optional[datetime.date] = None
@@ -634,25 +712,45 @@ class BacktestStrategy:
                 'is_can_buy_filtered': 0,
                 'exchange_filtered': 0,
                 'st_filtered': 0,
+                'cap_filtered': 0,
                 'price_filtered': 0,
                 'liquidity_filtered': 0,
                 'limit_filtered': 0,
                 'zhaban_filtered': 0,
                 'passed': 0
             }
+            # [FIX 2026-09-12] 市值分位边界逐日现算（ex-ST；与deploy --cap_quantiles同口径）；
+            # 开关关闭时为None，零开销、零行为变化
+            _allowed_qs = tuple(sorted(set(self.config.cap_quantiles or ())))
+            _cap_bounds = compute_cap_quintile_bounds(daily_predictions) if _allowed_qs else {}
 
             for _, stock in daily_predictions.iterrows():
                 stock_code = stock['stock_code']
 
+                # [FIX 2026-09-12] ST剔除改吃is_st标志（与is_can_buy同源，均由
+                # generate_daily_features_simple生成；上游valid_mask已剔ST，
+                # 这里是纵深防御）。旧code子串判定('ST' in stock_code)对
+                # 000004.SZ这类代码永不命中，已删除。ST放首位，保证归因正确
+                # （原来is_can_buy在前会吞掉ST计数）。
+                try:
+                    _is_st = int(stock.get('is_st', 0)) == 1
+                except (ValueError, TypeError):
+                    _is_st = False
+                if _is_st:
+                    filtering_stats['st_filtered'] += 1
+                    continue
+                # [FIX 2026-09-12] 市值分位硬过滤（--cap_quantiles，如只留Q3/Q4）；
+                # 无法分类（缺circ_mv/缺边界）按剔除计fail-closed
+                if _allowed_qs and classify_cap_quintile(
+                        stock.get('circ_mv', float('nan')), _cap_bounds, date) not in _allowed_qs:
+                    filtering_stats['cap_filtered'] += 1
+                    continue
                 # 修复流动性过滤逻辑
                 if stock['is_can_buy'] != 1:
                     filtering_stats['is_can_buy_filtered'] += 1
                     continue
                 if stock_code.startswith(('8', '4')):  # 北交所
                     filtering_stats['exchange_filtered'] += 1
-                    continue
-                if any(x in stock_code for x in ['ST', 'st', '*ST', '*st']):
-                    filtering_stats['st_filtered'] += 1
                     continue
                 if stock['close'] <= 1.0 or stock['close'] >= 10000:
                     filtering_stats['price_filtered'] += 1
@@ -672,6 +770,17 @@ class BacktestStrategy:
                 if stock['is_zhaban'] == 1:
                     filtering_stats['zhaban_filtered'] += 1
                     continue
+                # [FIX 2026-10-20] 非有限预测分（-inf=风控否决/行业去重、NaN=缺分）
+                # 不是可买候选。旧版全为 -inf 的日期按代码顺序稳定排序，
+                # 会误买 000001.SZ/000002.SZ（2026 OOS 实证 14 笔假成交）。
+                try:
+                    _pr = float(stock.get('predicted_return', np.nan))
+                except (TypeError, ValueError):
+                    _pr = np.nan
+                if not np.isfinite(_pr):
+                    filtering_stats['pred_filtered'] = (
+                        filtering_stats.get('pred_filtered', 0) + 1)
+                    continue
 
                 # 转为dict，避免重复列索引的Series在DataFrame重建时触发 InvalidIndexError
                 filtered_stocks.append(stock.to_dict())
@@ -686,6 +795,7 @@ class BacktestStrategy:
             logger.info(f"   可买入过滤: {filtering_stats['is_can_buy_filtered']}只")
             logger.info(f"   交易所过滤: {filtering_stats['exchange_filtered']}只")
             logger.info(f"   ST股过滤: {filtering_stats['st_filtered']}只")
+            logger.info(f"   市值分位过滤: {filtering_stats['cap_filtered']}只")
             logger.info(f"   价格过滤: {filtering_stats['price_filtered']}只")
             logger.info(f"   流动性过滤: {filtering_stats['liquidity_filtered']}只")
             logger.info(f"   涨跌停过滤: {filtering_stats['limit_filtered']}只")
@@ -721,16 +831,41 @@ class BacktestStrategy:
         logger.info(f"   分析日期数: {total_dates}天")
         logger.info(f"   Top-K候选总数: {total_top_stocks}只")
 
-        # 检查关键日期和股票
-        for check_date, check_code in [('2025-07-11', '002809.SZ')]:
-            if check_date in self.required_stocks_by_date:
-                if check_code in self.required_stocks_by_date[check_date]:
-                    logger.info(f"✅ {check_code} 已包含在{check_date}的Top-K候选股票中")
-                else:
-                    logger.warning(f"❌ {check_code} 未包含在{check_date}的Top-K候选股票中")
-                    logger.info(f"   {check_date}候选股票: {self.required_stocks_by_date[check_date]}")
-            else:
-                logger.warning(f"❌ 未找到{check_date}的候选股票数据")
+        # 注：历史遗留的硬编码日期调试检查已移除（会在非对应测试期打印误导性警告）
+
+    def _apply_k_alignment(self, df: pd.DataFrame, stock_code: str, date_key) -> pd.DataFrame:
+        """[K-ALIGN 2026-09-08] 经验对齐：k(t)=日线open/分钟首bar open，全天OHLC同乘。
+        日内收益率数学不变，只消日间断崖。缺失fail-open裸数据+计数；停牌先guard拦(调用方保证顺序)。"""
+        global _K_ALIGNED_DAYS, _K_MISSING_DAYS, _K_MISSING_WARNED, _K_JUMP_DAYS
+        try:
+            if df is None or df.empty or "datetime" not in df.columns:
+                return df
+            _dk = date_key
+            if isinstance(_dk, str):
+                _dk = datetime.strptime(_dk[:10], "%Y-%m-%d").date()
+            _t = df.sort_values("datetime")
+            _mo = pd.to_numeric(_t.iloc[0].get("open"), errors="coerce")
+            _ref = self.daily_bar_lookup.get((_dk, str(stock_code)), {}).get("open", np.nan)
+            _do = pd.to_numeric(_ref, errors="coerce")
+            if not np.isfinite(_mo) or not np.isfinite(_do) or _mo == 0:
+                _K_MISSING_DAYS += 1
+                if _K_MISSING_WARNED < 5:
+                    _K_MISSING_WARNED += 1
+                    logger.warning(f"   ⚠️ k对齐缺数({stock_code} {date_key})，该日裸数据(前5次告警后静默计数)")
+                return df
+            _k = float(_do) / float(_mo)
+            if not np.isfinite(_k) or _k <= 0 or abs(_k - 1.0) < 1e-9:
+                return df
+            if abs(_k - 1.0) > 0.05:
+                _K_JUMP_DAYS += 1
+            out = _t.copy()
+            for _c in ("open", "high", "low", "close"):
+                if _c in out.columns:
+                    out[_c] = pd.to_numeric(out[_c], errors="coerce") * _k
+            _K_ALIGNED_DAYS += 1
+            return out
+        except Exception:
+            return df
 
     def load_minute_data_on_demand(self, date_str: str, target_stocks: List[str] = None) -> Dict[str, pd.DataFrame]:
         """
@@ -818,9 +953,12 @@ class BacktestStrategy:
             if not df.empty and 'stock_code' in df.columns:
                 for stock_code in target_stocks:
                     stock_data = df[df['stock_code'] == stock_code].sort_values('datetime')
-                    if not stock_data.empty:
-                        stock_mapping[stock_code] = stock_data
+                    if not stock_data.empty and _has_real_minute_trading(stock_data):
+                        stock_mapping[stock_code] = self._apply_k_alignment(
+                            stock_data, stock_code, date_str)
                         logger.debug(f"   ✓ {stock_code}: {len(stock_data)}条5分钟数据")
+                    elif not stock_data.empty:
+                        logger.warning(f"   ⚠️ {stock_code}: 整天零量疑似停牌幻影bar，视同无数据")
                     else:
                         logger.warning(f"   ⚠️ {stock_code}: 无数据")
 
@@ -858,8 +996,13 @@ class BacktestStrategy:
                 df = table.to_pandas()
 
                 if not df.empty:
-                    stock_mapping[stock_code] = df.sort_values('datetime')
-                    logger.debug(f"   ✓ {stock_code}: {len(df)}条数据")
+                    if _has_real_minute_trading(df):
+                        _sorted = df.sort_values('datetime')
+                        stock_mapping[stock_code] = self._apply_k_alignment(
+                            _sorted, stock_code, date_str)
+                        logger.debug(f"   ✓ {stock_code}: {len(df)}条数据")
+                    else:
+                        logger.warning(f"   ⚠️ {stock_code}: 整天零量疑似停牌幻影bar，视同无数据")
                 else:
                     logger.warning(f"   ⚠️ {stock_code}: 无数据")
 
@@ -906,7 +1049,12 @@ class BacktestStrategy:
                 logger.info(f"🔄 按股票分组处理...")
                 for stock_code, stock_data in df.groupby('stock_code'):
                     stock_data_sorted = stock_data.sort_values('datetime')
-                    stock_mapping[stock_code] = stock_data_sorted
+                    if _has_real_minute_trading(stock_data_sorted):
+                        stock_mapping[stock_code] = self._apply_k_alignment(
+                            stock_data_sorted, stock_code, date_str)
+                    # 零量幻影bar静默丢弃（全量路径逐日加载，warning级会刷屏）
+                    else:
+                        logger.debug(f"   零量丢弃 {stock_code}（疑似停牌幻影bar）")
                 logger.info(f"✅ 成功分组{len(stock_mapping)}只股票")
 
             # 缓存结果
@@ -2317,7 +2465,7 @@ class BacktestStrategy:
         """返回当前固定槽位体系下的第一个空槽位。"""
         positions = self.current_holdings if positions is None else positions
         occupied = {
-            int(pos.slot_index) for pos in positions.values()
+            int(pos.slot_index) for pos in positions
             if hasattr(pos, 'slot_index') and pos.slot_index is not None
         }
         max_slots = int(max(1, self.config.max_concurrent_positions))
@@ -2385,9 +2533,17 @@ class BacktestStrategy:
         """执行买入操作"""
         logger.info(f"🛒 准备买入 {stock_code}, 预测收益: {predicted_return:.4f}")
 
-        if stock_code in self.current_holdings:
-            logger.warning(f"⚠️ {stock_code} 已在持仓中，跳过重复开仓，避免覆盖原持仓")
-            return None
+        _existing_same_stock = any(p.stock_code == stock_code for p in self.current_holdings)
+        if _existing_same_stock:
+            if not self.config.allow_duplicate_position:
+                logger.warning(f"⚠️ {stock_code} 已在持仓中，跳过重复开仓，避免覆盖原持仓")
+                return None
+            # [DUP] 允许重复开仓：仓位按 duplicate_position_scale 减半
+            position_pct = position_pct * float(self.config.duplicate_position_scale)
+            logger.info(
+                f"♻️ {stock_code} 已在持仓中，允许重复开仓（开关开启），"
+                f"仓位×{self.config.duplicate_position_scale:.2f} → {position_pct:.1%}"
+            )
 
         stock_data = self.get_stock_data(stock_code, buy_date)
         if stock_data.empty:
@@ -2427,7 +2583,7 @@ class BacktestStrategy:
         position_pct = float(position_pct)
         position_pct = max(0.0, min(1.0, position_pct))
         day_start_cash = float(self.cash if day_start_cash is None else day_start_cash)
-        holdings_cost = sum(p.buy_price * p.quantity for p in self.current_holdings.values())
+        holdings_cost = sum(p.buy_price * p.quantity for p in self.current_holdings)
         reference_equity = float(
             (self.cash + holdings_cost) if day_start_equity is None else day_start_equity
         )
@@ -2510,13 +2666,13 @@ class BacktestStrategy:
 
         self.cash -= buy_price * quantity
 
-        self.current_holdings[stock_code] = position
+        self.current_holdings.append(position)
 
         self.last_buy_date = buy_date
         self.current_buy_cycle_date = buy_date
         self.is_holding = bool(self.current_holdings)
         self.current_holding_end_date = max(
-            p.holding_end_date for p in self.current_holdings.values() if p.holding_end_date is not None
+            p.holding_end_date for p in self.current_holdings if p.holding_end_date is not None
         )
 
         logger.info(f"✅ 买入成功: {stock_code}, 价格: {buy_price:.4f}, 数量: {quantity}, 时间: {buy_datetime}, 剩余现金: {self.cash:.2f}")
@@ -3274,10 +3430,23 @@ class BacktestStrategy:
         elif exit_price is None:
             stock_data = self.get_stock_data(position.stock_code, sell_date)
             if stock_data.empty:
-                # 使用买入价止损卖出
-                exit_price = position.buy_price * 0.98  # 假设2%止损
-                sell_datetime = datetime.combine(sell_date, datetime.min.time())
-                logger.warning(f"⚠️ {position.stock_code} 无卖出数据，使用止损价: {exit_price:.4f}")
+                # [FIX 2026-10-20] 缺失 5 分钟数据时禁止按 buy_price*0.98 假结算
+                # （旧版把 688146.SH 在 2026-06-23 的大牛股按 -2% 强平）；
+                # 优先回退到当日日线收盘价（与日频口径一致），无日线才兜底 -2%。
+                _bar = self.daily_bar_lookup.get(
+                    (sell_date, str(position.stock_code)), {})
+                _dc = _bar.get('close')
+                if _dc is not None and np.isfinite(_dc) and _dc > 0:
+                    exit_price = float(_dc)
+                    sell_datetime = datetime.combine(sell_date, datetime.min.time())
+                    logger.warning(
+                        f"⚠️ {position.stock_code} 无5分钟卖出数据，"
+                        f"回退日线收盘价结算: {exit_price:.4f}")
+                else:
+                    # 使用买入价止损卖出
+                    exit_price = position.buy_price * 0.98  # 假设2%止损
+                    sell_datetime = datetime.combine(sell_date, datetime.min.time())
+                    logger.warning(f"⚠️ {position.stock_code} 无卖出数据，使用止损价: {exit_price:.4f}")
             else:
                 exit_price = stock_data.iloc[-1]['close']
                 raw_sell_datetime = stock_data.iloc[-1]['datetime']
@@ -3334,7 +3503,10 @@ class BacktestStrategy:
         }
 
         self.trades.append(trade_record)
-        del self.current_holdings[position.stock_code]
+        if position in self.current_holdings:
+            self.current_holdings.remove(position)
+        else:
+            self.current_holdings = [p for p in self.current_holdings if p is not position]
 
         if not self.current_holdings:
             logger.info("🔄 所有持仓已清空，重置买入周期状态")
@@ -3344,7 +3516,7 @@ class BacktestStrategy:
         else:
             self.is_holding = True
             self.current_holding_end_date = max(
-                p.holding_end_date for p in self.current_holdings.values() if p.holding_end_date is not None
+                p.holding_end_date for p in self.current_holdings if p.holding_end_date is not None
             )
 
         logger.info(f"💰 卖出: {position.stock_code}, 价格: {exit_price:.4f}, "
@@ -3375,13 +3547,13 @@ class BacktestStrategy:
         for i, trade_date in enumerate(trading_dates):
             # 保存交易日期，用于后续绘图
             self.trading_dates_list.append(trade_date)
-            day_start_positions = dict(self.current_holdings)
+            day_start_positions = list(self.current_holdings)
             day_start_holdings_count = len(self.current_holdings)
             day_start_open_slots = max(0, int(self.config.max_concurrent_positions) - day_start_holdings_count)
             day_start_free_slot_index = self._get_first_free_slot_index(day_start_positions)
             day_start_cash = float(self.cash)
             day_start_holdings_cost = sum(
-                p.buy_price * p.quantity for p in self.current_holdings.values()
+                p.buy_price * p.quantity for p in self.current_holdings
             )
             day_start_equity = day_start_cash + day_start_holdings_cost
 
@@ -3973,7 +4145,7 @@ class BacktestStrategy:
             risk_exited_positions = []
             positions_to_remove = []
 
-            for stock_code, position in list(self.current_holdings.items()):
+            for position in list(self.current_holdings):
                 # 使用交易日期列表进行精确的风控检查
                 logger.debug(f"🔍 检查{position.stock_code}在{trade_date}的风控状态 (买入日: {position.buy_date})")
                 risk_check = self.check_position_risk(position, trade_date, trading_dates)
@@ -3988,12 +4160,12 @@ class BacktestStrategy:
                     )
                     if trade:
                         risk_exited_positions.append(trade)
-                        positions_to_remove.append(stock_code)
+                        positions_to_remove.append(position)
 
             # 检查持仓到期（在风控检查之后执行）
             expired_positions = []
-            for stock_code, position in self.current_holdings.items():
-                if stock_code not in positions_to_remove and position.holding_end_date and trade_date >= position.holding_end_date:
+            for position in self.current_holdings:
+                if position not in positions_to_remove and position.holding_end_date and trade_date >= position.holding_end_date:
                     expired_positions.append(position)
 
             # 到期卖出
@@ -4007,7 +4179,7 @@ class BacktestStrategy:
                              if trade['sell_datetime'].date() == trade_date])
             current_value = self.cash + sum([
                 pos.quantity * self._get_safe_mark_price(pos, trade_date)
-                for pos in self.current_holdings.values()
+                for pos in self.current_holdings
             ])
 
             portfolio_value = current_value
@@ -4056,7 +4228,7 @@ class BacktestStrategy:
             'trading_dates': self.trading_dates_list,  # 添加交易日期列表
             'skipped_buy_attempts': self.skipped_buy_attempts,  # 添加被跳过的买入尝试
             'shadow_skipped_opportunity_trades': self.shadow_skipped_opportunity_trades,
-            'final_positions': list(self.current_holdings.values()),
+            'final_positions': list(self.current_holdings),
             'summary_stats': summary_stats  # 🆕 添加风控统计
         }
 
