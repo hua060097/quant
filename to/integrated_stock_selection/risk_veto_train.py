@@ -9,6 +9,7 @@
 ----
 - `cv_top5_details.csv`：stage15 `--mode cv` 冠军超参的 11 折样本外 Top5 明细
   （列含 date/rank/stock_code/return(=r3)/score_z_in_day/fold_id/param/cp）。
+  **只取 rank==1**（2026-10-20 Owner 决策：回测只买当日 Rank1）。
 - 特征矩阵 `lgb_features.parquet`（join 风险特征，缺列自动跳过）。
 - 行情缓存 `cache/stock_features_*.parquet`（派生 乖离/上影/量比；可缺省）。
 - 日内降频缓存 `local_data/minute/daily_features_cache.parquet`（可选）。
@@ -16,8 +17,8 @@
 输出
 ----
 - `risk_veto_rules.json`：Top N 条稳健规则（depth-2 阈值组合）+ 历史/walk-forward
-  统计；`apply_veto(rules, df)` 供回测/实盘级联否决（Rank1 被否 → 顺延 Rank2 →
-  … → 空仓）复用。
+  统计；`apply_veto(rules, df)` 供回测/实盘复用。**Rank1-only：Rank1 被否 →
+  当日空仓（不顺延 Rank2）。**
 - `risk_veto_report.md`：逐折明细。
 
 预注册方法论（防过拟合纪律，禁改）
@@ -248,8 +249,14 @@ def load_candidates(args, logger) -> tuple[pd.DataFrame, list[str], list[str]]:
         raise SystemExit(f"cv-details 中无 param={args.pid} cp={args.cp} 的样本")
     d["date"] = pd.to_datetime(d["date"])
     d["stock_code"] = d["stock_code"].astype(str)
-    d = d.sort_values(["date", "rank"], kind="stable").reset_index(drop=True)
-    logger.info(f"[风控] 候选样本 {len(d)} 行 | {d['date'].min().date()}~{d['date'].max().date()} "
+    # 2026-10-20 Owner 决策：**Rank1-only**。回测只买当日 Rank1，Rank1 被风控
+    # 否决则当日空仓（不顺延 Rank2）；因此规则挖掘/验收也只在 Rank1 样本上做，
+    # 避免用 rank2~5 的收益稀释拦截精度、并把日级特征广播给非交易行。
+    n_all = len(d)
+    d = d[d["rank"] == 1].copy()
+    d = d.sort_values(["date"], kind="stable").reset_index(drop=True)
+    logger.info(f"[风控] Rank1-only 样本 {len(d)} 行（原 top5 {n_all} 行）"
+                f" | {d['date'].min().date()}~{d['date'].max().date()} "
                 f"| 折数 {d['fold_id'].nunique()}")
 
     # 特征矩阵 join
@@ -537,16 +544,17 @@ def apply_veto(rules: list[dict], df: pd.DataFrame,
 
 
 def cascade_by_fold(df: pd.DataFrame, veto: np.ndarray) -> pd.DataFrame:
-    """按 (date, rank) 级联：每日取第一个未否决候选的 return；全否决=0。
-    返回 {date, fold_id, base_ret(rank1), veto_ret, r1_vetoed} 逐日表。"""
-    g = df.assign(_veto=veto).sort_values(["date", "rank"], kind="stable")
-    base = g.groupby("date", sort=True)["return"].first()
-    keep = g[~g["_veto"]].groupby("date", sort=True)["return"].first()
-    fold = g.groupby("date", sort=True)["fold_id"].first()
-    r1v = g[g["rank"] == 1].groupby("date", sort=True)["_veto"].first()
-    out = pd.DataFrame({"base_ret": base, "veto_ret": keep, "fold_id": fold,
-                        "r1_vetoed": r1v})
-    out["veto_ret"] = out["veto_ret"].fillna(0.0)
+    """Rank1-only（2026-10-20 Owner 决策）：Rank1 被否 → 当日空仓（0 收益），
+    不顺延 Rank2。df 已是每日一行的 Rank1 样本。
+    返回 {date, fold_id, base_ret, veto_ret, r1_vetoed} 逐日表。"""
+    g = df.assign(_veto=veto).sort_values(["date"], kind="stable")
+    out = pd.DataFrame({
+        "base_ret": g.groupby("date", sort=True)["return"].first(),
+        "fold_id": g.groupby("date", sort=True)["fold_id"].first(),
+        "r1_vetoed": g.groupby("date", sort=True)["_veto"].first(),
+    })
+    out["veto_ret"] = np.where(out["r1_vetoed"].to_numpy(dtype=bool), 0.0,
+                               out["base_ret"].to_numpy(dtype=float))
     return out.reset_index()
 
 
@@ -670,13 +678,18 @@ def main() -> int:
             _casc["delta"] = _casc["veto_ret"] - _casc["base_ret"]
             _n_r1v = int(_casc["r1_vetoed"].sum())
 
-            def _eq3(_r):
-                _e = np.cumprod(1.0 + (np.asarray(_r, dtype=float) - 0.0016) / 3.0)
+            def _eq3(_r, _traded=None):
+                _rr = np.asarray(_r, dtype=float)
+                _cost = np.full(len(_rr), 0.0016)
+                if _traded is not None:
+                    _cost = np.where(np.asarray(_traded, dtype=bool), 0.0016, 0.0)
+                _e = np.cumprod(1.0 + (_rr - _cost) / 3.0)
                 return (float(_e[-1] - 1.0),
                         float((_e / np.maximum.accumulate(_e) - 1.0).min()))
 
             _tb, _mb = _eq3(_casc["base_ret"])
-            _tv, _mv = _eq3(_casc["veto_ret"])
+            _tv, _mv = _eq3(_casc["veto_ret"],
+                            ~_casc["r1_vetoed"].to_numpy(dtype=bool))
             union = {"n_rules": len(accepted), "n_days": int(len(_casc)),
                      "n_r1_vetoed_days": _n_r1v,
                      "crash_caught": _uc, "boom_killed": _ub,
@@ -719,7 +732,7 @@ def main() -> int:
 
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "method": ("walk-forward depth-2 veto (预注册: 白名单特征/分位阈值/"
+        "method": ("walk-forward depth-2 veto, Rank1-only (预注册: 白名单特征/分位阈值/"
                    "ratio>=%.1f/触发折>=%d/触发折正>=%.0f%%/坏折<=1)"
                    % (args.ratio_min, args.min_active_folds,
                       args.fold_pos_frac * 100)),
@@ -728,7 +741,7 @@ def main() -> int:
         "feature_pool": pool, "features_missing": missing,
         "walk_forward_prefix": prefix_rules,
         "rules": rules_out, "union": union,
-        "note": "级联消费: Rank1 被否 -> 顺延 Rank2 -> ... -> 空仓 (apply_veto)",
+        "note": "Rank1-only: Rank1 被否 -> 当日空仓（不顺延 Rank2），2026-10-20 Owner 决策",
     }
     (out_dir / "risk_veto_rules.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")

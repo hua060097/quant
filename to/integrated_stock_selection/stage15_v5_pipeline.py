@@ -196,6 +196,28 @@ def load_sw2_map() -> dict[str, str]:
     return {}
 
 
+def forward_window_ok(dates, codes, horizon: int = 5) -> np.ndarray:
+    """t+1..t+horizon 是否为连续市场交易日（该股无停牌/缺行）→ True。
+
+    2026-10-20 Owner 决策：停牌日不在面板中，价格 shift(-k) 会跨过停牌日改用
+    复牌价，形成"买在/卖在复牌日"的不可执行标签。对停牌日 s 之前的样本
+    t∈[s-horizon, s-1]（前向标签窗含 s），一律剔除出训练与评估。
+    """
+    d = pd.DataFrame({
+        "date": pd.to_datetime(pd.Series(dates)).to_numpy(),
+        "code": pd.Series(codes).astype(str).to_numpy(),
+    })
+    mkt = np.sort(pd.unique(d["date"]))
+    ii = np.searchsorted(mkt, d["date"].to_numpy()).astype(np.int64)
+    d["i"] = ii
+    g = d.groupby("code", sort=False)["i"]
+    ok = np.ones(len(d), dtype=bool)
+    for k in range(1, horizon + 1):
+        nxt = g.shift(-k).to_numpy(dtype=float)
+        ok &= np.isfinite(nxt) & (nxt == (ii + k))
+    return ok
+
+
 def build_forward_folds(unique_days, train_months=TRAIN_MONTHS, test_months=TEST_MONTHS,
                         embargo_days=EMBARGO_DAYS, cv_end=CV_END, logger=None):
     uniq = np.asarray(unique_days)
@@ -319,6 +341,13 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     pdf["listed_days"] = g_code.cumcount() + 1
     is_susp = (pdf["volume"].fillna(0) <= 0) | (pdf["amount"].fillna(0) <= 0)
     recent_susp = is_susp.astype(float).groupby(pdf["stock_code"], sort=False).rolling(10, min_periods=1).max().reset_index(level=0, drop=True) > 0
+    # 2026-10-20 Owner 决策：剔除"未来 5 个交易日内含停牌"的样本（标签前向窗
+    # t+1..t+5 必须连续，否则 shift(-k) 会跨停牌改用复牌价，标签不可执行）。
+    _fw_ok = forward_window_ok(pdf["date"].to_numpy(), pdf["stock_code"].to_numpy(),
+                               horizon=5)
+    pdf["forward_ok"] = _fw_ok
+    logger.info(f"[标签] 前向停牌窗剔除 {int((~_fw_ok).sum()):,} 行"
+                f"（占 {float((~_fw_ok).mean()):.2%}）")
 
     # 标签口径（2026-10-19 定版）：默认**经典 multihorizon_35**（等权 TP，与历史
     # 基准同尺可比）；`--label-v51` 恢复 V5.1 口径（收盘加权 TP_real，压低最高价
@@ -354,6 +383,7 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
         (pdf.get("is_st", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf["listed_days"] >= NEW_STOCK_MIN_DAYS)
         & (~recent_susp)
+        & pdf["forward_ok"]
         & (pdf.get("is_limit_up", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_limit_down", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_zhaban", pd.Series(0, index=pdf.index)).fillna(0) == 0)
@@ -919,22 +949,34 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
     missing = sorted(need - set(fdf.columns))
     if missing:
         raise SystemExit(f"[VETO] 规则引用特征缺失: {missing}（先并入对应数据源再回测）")
-    veto = apply_veto(rules, fdf)
-    # 排雷统计（级联口径：每日按 pred 降序取第一个未被否者；preds 已含行业去重）
-    _t2 = pd.DataFrame({"date": fdf["date"], "pred": preds,
-                        "ret": np.asarray(y_raw_te, dtype=float), "veto": veto})
-    _t2 = _t2.sort_values(["date", "pred"], ascending=[True, False], kind="stable")
-    first = _t2.groupby("date").first()
-    kept = _t2[~_t2["veto"]].groupby("date").first()
-    delta = (kept["ret"] - first["ret"]).dropna()
-    _r1v = first[first["veto"]]
+    # 2026-10-20 Owner 决策：**只对当日 Rank1 应用否决**；Rank1 被否 → 当日空仓，
+    # 不顺延 Rank2（11 折 CV 只有 Rank1 值得买，顺延等于买跟风股）。
+    out = preds.copy()
+    _idx_fin = np.where(np.isfinite(preds))[0]
+    _veto_days = 0
+    _r1v_ret = np.array([], dtype=float)
+    if len(_idx_fin):
+        _t2 = pd.DataFrame({"i": _idx_fin,
+                            "date": fdf["date"].to_numpy()[_idx_fin],
+                            "pred": preds[_idx_fin]})
+        _t2 = _t2.sort_values(["date", "pred"], ascending=[True, False],
+                              kind="stable")
+        _r1 = _t2.groupby("date", sort=True).head(1)
+        _r1_idx = _r1["i"].to_numpy()
+        _m = apply_veto(rules, fdf.iloc[_r1_idx])
+        _vdate = pd.to_datetime(fdf["date"].to_numpy()[_r1_idx][_m])
+        if len(_vdate):
+            _veto_days = int(len(np.unique(_vdate)))
+            _r1v_ret = np.asarray(y_raw_te, dtype=float)[_r1_idx][_m]
+            out[np.isin(fdf["date"].to_numpy(), _vdate.to_numpy())] = -np.inf
+    _n_days = int(pd.to_datetime(fdf["date"]).nunique())
     logger.info(
-        f"[VETO] 规则 {len(rules)} 条 | 否决候选 {int(veto.sum())}/{len(preds)} | "
-        f"行业头名被否 {len(_r1v)}/{len(first)} 天"
-        f"（被否头名实际收益均值 {(_r1v['ret'].mean() if len(_r1v) else 0.0):.4f}）"
-        f" | 级联净增 Δ均值 {delta.mean():.4f}（{len(delta)} 天）")
-    out = preds
-    out[veto] = -np.inf
+        f"[VETO] 规则 {len(rules)} 条（Rank1-only，不顺延）| 否决 Rank1 "
+        f"{_veto_days}/{_n_days} 天 → 当日空仓"
+        f"（被否 Rank1 实际收益均值 "
+        f"{(_r1v_ret.mean() if len(_r1v_ret) else 0.0):.4f}；"
+        f"空仓相对基准日收益差均值 "
+        f"{(-_r1v_ret.mean() if len(_r1v_ret) else 0.0):.4f}）")
     return out
 
 
@@ -942,16 +984,18 @@ def veto_daily_cascade(preds: np.ndarray, dates_te: np.ndarray,
                        codes_te: np.ndarray, sectors_te: np.ndarray,
                        y_raw_te: np.ndarray, pid: str, cp: int,
                        topk: int = 5) -> list[dict]:
-    """[VETO-OOS] 日频级联终验明细（2026-10-19，Owner 批准）：
+    """[VETO-OOS] 日频终验明细（2026-10-20 Owner 决策：Rank1-only）。
 
-    preds 已含行业去重（非头名 -inf）与风控否决（被否 -inf）→ 每日存活行业头名
-    按 pred 降序顺延 rank1..topk；返回与 evaluate_predictions 同构的 rows
-    （供 summarize_and_pick_champion 直接出表）。"""
+    preds 已含行业去重（非头名 -inf）与风控否决（被否日全 -inf）。
+    **只买当日 Rank1；Rank1 被否 → 当日空仓（CASH，return=0），不顺延 Rank2。**
+    返回与 evaluate_predictions 同构的 rows（供 summarize_and_pick_champion
+    出表；空仓日以 stock_code="CASH" 明确标记，避免与"无样本"混淆）。"""
     _t = pd.DataFrame({"date": pd.to_datetime(dates_te), "code": codes_te,
                        "sector": sectors_te,
                        "pred": np.asarray(preds, dtype=float),
                        "ret": np.asarray(y_raw_te, dtype=float)})
     rows = []
+    n_cash = 0
     for d, g in _t.groupby("date", sort=True):
         if len(g) < 30:
             continue
@@ -965,13 +1009,23 @@ def veto_daily_cascade(preds: np.ndarray, dates_te: np.ndarray,
             scale = 1.4826 * mad if mad > 1e-12 else float(np.std(_pf) + 1e-9)
         else:
             med, scale = 0.0, 1.0
-        for rk, (_, r) in enumerate(_alive.iterrows(), 1):
+        if not len(_alive):
+            n_cash += 1
             rows.append({"param": pid, "fold_id": 99, "cp": cp,
-                         "date": str(pd.Timestamp(d).date()), "rank": rk,
-                         "stock_code": r["code"], "sector": r["sector"],
-                         "pred": float(r["pred"]),
-                         "score_z_in_day": (float(r["pred"]) - med) / scale,
-                         "return": float(r["ret"])})
+                         "date": str(pd.Timestamp(d).date()), "rank": 1,
+                         "stock_code": "CASH", "sector": "__CASH__",
+                         "pred": 0.0, "score_z_in_day": 0.0, "return": 0.0})
+            continue
+        r = _alive.iloc[0]
+        rows.append({"param": pid, "fold_id": 99, "cp": cp,
+                     "date": str(pd.Timestamp(d).date()), "rank": 1,
+                     "stock_code": r["code"], "sector": r["sector"],
+                     "pred": float(r["pred"]),
+                     "score_z_in_day": (float(r["pred"]) - med) / scale,
+                     "return": float(r["ret"])})
+    if n_cash:
+        print(f"[VETO] Rank1 被否空仓 {n_cash} 天（按 0 收益计入日频表）",
+              flush=True)
     return rows
 
 
@@ -1172,6 +1226,9 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     recent_susp = is_susp.astype(float).groupby(
         pdf["stock_code"], sort=False).rolling(10, min_periods=1).max() \
         .reset_index(level=0, drop=True) > 0
+    # 与 load_dataset_and_labels 同口径：未来 5 个交易日含停牌的样本剔除
+    pdf["forward_ok"] = forward_window_ok(
+        pdf["date"].to_numpy(), pdf["stock_code"].to_numpy(), horizon=5)
 
     tp_eq = (pdf["open"] + pdf["high"] + pdf["low"] + pdf["close"]) / 4.0
     tp_real = 0.15 * pdf["open"] + 0.15 * pdf["high"] + 0.20 * pdf["low"] + 0.50 * pdf["close"]
@@ -1203,6 +1260,7 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         (pdf.get("is_st", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf["listed_days"] >= NEW_STOCK_MIN_DAYS)
         & (~recent_susp)
+        & pdf["forward_ok"]
         & (pdf.get("is_limit_up", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_limit_down", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_zhaban", pd.Series(0, index=pdf.index)).fillna(0) == 0)
