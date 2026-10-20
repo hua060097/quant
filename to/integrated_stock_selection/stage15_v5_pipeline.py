@@ -1624,16 +1624,19 @@ def main():
             out_dir / "cv_top5_details.csv", index=False, encoding="utf-8-sig")
         # 主榜 = 纯 LightGBM（多 seed logit 均值）；CatBoost 独立榜（2026-10-19 定版）
         main = all_df[all_df["scheme"] == "lgb"]
-        summary = summarize_and_pick_champion(main.to_dict("records"))
-        summary.to_csv(out_dir / "cv_summary.csv", index=False, encoding="utf-8-sig")
-        logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 专属加密 checkpoint =====")
-        logger.info("\n" + summary.head(25).to_string(index=False,
-                    float_format=lambda x: f"{x:.4f}"))
-        champ = summary.iloc[0].to_dict()
-        (out_dir / "champion.json").write_text(
-            json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} "
-                    f"| plateau_score={champ['plateau_score']:.4f}")
+        if len(main):
+            summary = summarize_and_pick_champion(main.to_dict("records"))
+            summary.to_csv(out_dir / "cv_summary.csv", index=False, encoding="utf-8-sig")
+            logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 专属加密 checkpoint =====")
+            logger.info("\n" + summary.head(25).to_string(index=False,
+                        float_format=lambda x: f"{x:.4f}"))
+            champ = summary.iloc[0].to_dict()
+            (out_dir / "champion.json").write_text(
+                json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} "
+                        f"| plateau_score={champ['plateau_score']:.4f}")
+        else:
+            logger.info("[CV] 本次无 LGB 任务（纯 CatBoost 运行），跳过 LGB 主榜")
         _cb = all_df[all_df["scheme"] == "catboost"]
         if len(_cb):
             _sm = summarize_and_pick_champion(_cb.to_dict("records"))
