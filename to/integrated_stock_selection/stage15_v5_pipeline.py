@@ -1033,12 +1033,15 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
                             test_end: str, out_dir: Path, logger: logging.Logger,
                             strategy_overrides: dict | None = None,
                             out_name: str = "minute_backtest_oos.pkl"):
-    """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（Rank 1 & Rank 2）。
+    """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（**仅 Rank1**）。
 
-    2026-10-20 P0 修复：必须显式传 strategy_config_overrides（与旧主脚本生产
-    配置同构，见 OOS_MINUTE_OVERRIDES）——否则引擎默认
-    enable_top1_state_machine_risk=False / enable_t2_1000_soft_stop=False，
-    Top1 状态机静默失效。"""
+    2026-10-20 Owner 决策：
+    - 只跑 Top-1 策略（当日 Rank1 单只）；Top-2=Rank2 单只的旧对照已删除。
+    - 仓位表改为旧产线 [0.8, 0.2]（两槽：首仓 80%、次仓 20%，持有 3 日）。
+    - 分钟回测必须显式传 strategy_config_overrides（与旧主脚本生产配置同构，
+      见 OOS_MINUTE_OVERRIDES）——否则引擎默认
+      enable_top1_state_machine_risk=False / enable_t2_1000_soft_stop=False，
+      Top1 状态机静默失效。"""
     try:
         from rqalpha_minute_datasource.strategy_backtest_top1_gate_ma5_binary import run_optimized_backtest
     except ImportError:
@@ -1083,13 +1086,13 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
 
     res = run_optimized_backtest(
         prediction_data=bt_df,
-        stock_counts=[1, 2],
+        stock_counts=[1],            # 2026-10-20 Owner：只买当日 Rank1（Top-2 已删除）
         minute_data_path=str(min_dir),
         holding_days=3,
         enable_dynamic_rank_switch=False,
         max_concurrent_positions=2,
         fixed_position_pct=0.5,
-        position_schedule=[0.5, 0.5],
+        position_schedule=[0.8, 0.2],  # 旧产线仓位表（首仓 80% / 次仓 20%）
         strategy_config_overrides=(strategy_overrides
                                    if strategy_overrides is not None
                                    else OOS_MINUTE_OVERRIDES),
@@ -1917,7 +1920,7 @@ def main():
             logger.error("[OOS] 测试窗无有效样本产出，终止。")
             return
         summary = summarize_and_pick_champion(d_rows)
-        logger.info("\n===== 2026 OOS 日频 Rank1 & 同行业去重 Top2 终验结果 =====")
+        logger.info("\n===== 2026 OOS 日频 Rank1 终验结果（Top2 列仅作诊断，不交易）=====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
         # 分钟回测基准 = 纯模型（行业去重，**无风控否决**）；否决仅用于日频对照，
