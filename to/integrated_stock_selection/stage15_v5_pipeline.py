@@ -446,8 +446,10 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     # 2026-10-21 A/B：old 复现旧版 valid_mask（含 forward_ok，训练/测试同口径）；
     # new 训练用 train_mask、测试用 trade_mask（恢复 2026 末段分钟回测日）。
     _old_mask = str(getattr(args, "mask_mode", "new")) == "old"
-    test_valid = train_valid if _old_mask else trade_valid
-    eval_valid = train_valid if _old_mask else y_valid
+    # 旧版 valid_mask = y_valid（标签可算 + trade 条件，不额外剔 forward_ok）；
+    # A 组复现旧 CV 必须用它同时训练/测试；new 维持 train_mask/trade_mask。
+    test_valid = y_valid if _old_mask else trade_valid
+    train_out = y_valid if _old_mask else train_valid
     # 2026-10-21 修复：掩码拆分时误删了 X/dates/codes/sectors 的构建，补回。
     X = np.ascontiguousarray(merged[feature_cols].to_numpy(dtype=np.float32))
     dates = merged["date"].to_numpy()
@@ -461,7 +463,7 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     )
     return {
         "X": X, "y": y_bin, "y_raw": r3, "core_pos": core_pos, "buf_pos": buf_pos,
-        "valid_mask": eval_valid, "train_mask": train_valid, "trade_mask": trade_valid,
+        "valid_mask": y_valid, "train_mask": train_out, "trade_mask": trade_valid,
         "test_mask": test_valid,
         "dates": dates, "codes": codes, "sectors": sectors,
         "feature_cols": feature_cols, "price_path": price_path,
