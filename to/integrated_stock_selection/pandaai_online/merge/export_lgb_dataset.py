@@ -42,7 +42,7 @@ def cs_rank_centered(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 #: 天然有界/离散技术指标（物理阈值，禁截面标准化）与条件门根节点。
 _BOUNDED_TECH_OPS = frozenset({
-    'RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'BOLL_WIDTH', 'MASS',
+    'RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'MASS',
     'COUNT', 'EVERY', 'EXIST', 'RANK', 'SCALE', 'ZSCORE', 'TS_RANK',
 })
 _GATE_ROOT_OPS = frozenset({'IF', 'GT', 'GE', 'LT', 'LE'})
@@ -51,8 +51,11 @@ _GATE_ROOT_OPS = frozenset({'IF', 'GT', 'GE', 'LT', 'LE'})
 def is_bounded_or_gated_formula(formula_str: str) -> bool:
     """公式是否天然有界/离散或条件门主导（是则保持原值入模）。
 
-    规则：根节点为条件门/计数/已标准化算子，或子树含 RSI/WR/PSY/KDJ/
-    BOLL_WIDTH 等有界技术指标。解析失败 → False（走标准化分支）。
+    规则：根节点为条件门/计数/已标准化算子，或子树含 RSI/WR/PSY/KDJ
+    等有界技术指标。解析失败 → False（走标准化分支）。
+    2026-10-21：移除 BOLL_WIDTH——其输入可能为绝对金额（如
+    BOLL_WIDTH(TS_MEAN(AMOUNT,60),5)），输出随价格量纲变化，并非天然有界，
+    必须走逐日截面 MAD 标准化（22f1b27a3fdf 的人民币量纲 Bug）。
     """
     try:
         from grammar import walk
@@ -64,8 +67,7 @@ def is_bounded_or_gated_formula(formula_str: str) -> bool:
         if node.op in _GATE_ROOT_OPS or node.op in _BOUNDED_TECH_OPS:
             return True
         for _, n in walk(node):
-            if n.op in ('RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J',
-                        'BOLL_WIDTH'):
+            if n.op in ('RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J'):
                 return True
     except Exception:
         return False
@@ -144,6 +146,19 @@ def main() -> int:
                          json.load(open(_seat_path, encoding='utf-8')).get('seats', [])]
         except Exception:
             seat_cols = []
+    # 2026-10-21：fast_trigger_seat=True 的因子也必须强制保护（此前只在
+    # vwap_top20.json 标记，未进 habitat_seats.json，重导出时可能掉出面板）。
+    _ft_path = RESULTS / 'vwap_top20.json'
+    if _ft_path.exists():
+        try:
+            for _it in json.load(open(_ft_path, encoding='utf-8')).get('base20', []):
+                # 两类席位都必须强制保护：栖息地席位 + 快频触发席位
+                if (bool(_it.get('habitat_seat', False))
+                        or bool(_it.get('fast_trigger_seat', False))):
+                    seat_cols.append(str(_it.get('factor')))
+        except Exception:
+            pass
+    seat_cols = list(dict.fromkeys(seat_cols))
     alpha_path = Path(args.alpha_panel)
     # 自适应标准化：有界/条件门公式保持原值（物理阈值），其余按 --cs-norm 处理。
     _fmap: dict = {}

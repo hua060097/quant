@@ -112,6 +112,15 @@ class StrategyConfig:
     entry_risk_down_threshold: float = EntryRiskControlConfig.GAP_MAX_DOWN_THRESHOLD  # MA5低开阈值
     entry_risk_down_threshold_non_top1: float = EntryRiskControlConfig.GAP_MAX_DOWN_THRESHOLD_NON_TOP1  # 非Top1低开阈值
     delayed_entry_mode: str = "disabled"
+    # 2026-10-21 实验：09:35 首根 5 分钟 K 线大阴线拒买（T+1 开盘后确认）
+    enable_first_bar_down_veto: bool = False
+    first_bar_down_threshold: float = -0.02
+    # 2026-10-21 实验：ATR 风险预算定仓（单笔风险占账户净值比例；仓位上下限）
+    enable_atr_risk_budget: bool = False
+    atr_risk_per_trade: float = 0.025
+    atr_window: int = 20
+    atr_position_floor: float = 0.20
+    atr_position_cap: float = 0.50
 
     # 🆕 高位回撤风控参数（用于MA5跌破策略）
     high_return_threshold: float = 0.04  # 最高浮盈阈值（4%），触发后开始监控回撤
@@ -342,7 +351,9 @@ class BacktestStrategy:
         self.daily_bar_lookup: Dict[tuple, Dict[str, float]] = {}
         self.stock_daily_history: Dict[str, Dict[str, list]] = {}
         if {'stock_code', 'date'}.issubset(self.prediction_data.columns):
-            history_cols = [col for col in ['stock_code', 'date', 'open', 'close', 'low'] if col in self.prediction_data.columns]
+            history_cols = [col for col in ['stock_code', 'date', 'open', 'close',
+                                            'high', 'low']
+                            if col in self.prediction_data.columns]
             daily_history_df = (
                 self.prediction_data[history_cols]
                 .drop_duplicates(subset=['stock_code', 'date'], keep='first')
@@ -355,12 +366,14 @@ class BacktestStrategy:
                     'open': float(getattr(row, 'open', np.nan)) if pd.notna(getattr(row, 'open', np.nan)) else np.nan,
                     'close': float(getattr(row, 'close', np.nan)) if pd.notna(getattr(row, 'close', np.nan)) else np.nan,
                     'low': float(getattr(row, 'low', np.nan)) if pd.notna(getattr(row, 'low', np.nan)) else np.nan,
+                    'high': float(getattr(row, 'high', np.nan)) if pd.notna(getattr(row, 'high', np.nan)) else np.nan,
                 }
             for stock_code, grp in daily_history_df.groupby('stock_code', sort=False):
                 self.stock_daily_history[str(stock_code)] = {
                     'dates': grp['date'].tolist(),
                     'closes': grp['close'].tolist() if 'close' in grp.columns else [],
                     'lows': grp['low'].tolist() if 'low' in grp.columns else [],
+                    'highs': grp['high'].tolist() if 'high' in grp.columns else [],
                 }
 
         # 策略状态 - 独立管理
@@ -1233,6 +1246,64 @@ class BacktestStrategy:
 
         return ma5
 
+    def _first_bar_down_veto(self, execution_day_data) -> bool:
+        """09:35 首根 5 分钟 K 线大阴线拒买（实验，默认关）。"""
+        if (not self.config.enable_first_bar_down_veto
+                or execution_day_data is None or execution_day_data.empty):
+            return False
+        try:
+            fb = execution_day_data.iloc[0]
+            o = float(fb['open'])
+            c = float(fb['close'])
+        except Exception:
+            return False
+        if not (np.isfinite(o) and np.isfinite(c)) or o <= 0:
+            return False
+        r = c / o - 1.0
+        if r <= float(self.config.first_bar_down_threshold):
+            logger.info(
+                f"🚫 首根5分钟大阴线拒买: 09:35 收益={r:.2%} <= "
+                f"{self.config.first_bar_down_threshold:.2%}")
+            return True
+        return False
+
+    def _atr_pct_at(self, stock_code: str, as_of: datetime.date):
+        """个股 T 日收盘时的 ATR(atr_window)/收盘价（实验，默认关）。"""
+        if not self.config.enable_atr_risk_budget:
+            return None
+        h = self.stock_daily_history.get(str(stock_code))
+        if not h:
+            return None
+        dates = h.get('dates', [])
+        highs = h.get('highs', [])
+        lows = h.get('lows', [])
+        closes = h.get('closes', [])
+        if not (len(dates) == len(highs) == len(lows) == len(closes)):
+            return None
+        if len(dates) < 3:
+            return None
+        import bisect as _bis
+        i = _bis.bisect_right(dates, as_of) - 1
+        if i < 1:
+            return None
+        w = int(self.config.atr_window)
+        start = max(1, i - w + 1)
+        if i - start + 1 < max(5, w // 2):
+            return None
+        trs = []
+        for j in range(start, i + 1):
+            pc, hi, lo = closes[j - 1], highs[j], lows[j]
+            if not (np.isfinite(pc) and np.isfinite(hi) and np.isfinite(lo)):
+                continue
+            trs.append(max(hi - lo, abs(hi - pc), abs(lo - pc)))
+        if not trs:
+            return None
+        atr = float(np.mean(trs))
+        c0 = float(closes[i])
+        if not np.isfinite(c0) or c0 <= 0 or atr <= 0:
+            return None
+        return atr / c0
+
     def check_entry_signal(self, stock_code: str, buy_date: datetime.date,
                           prev_close: Optional[float], buy_open: float,
                           target_rank: int = 1) -> Dict[str, Any]:
@@ -1641,19 +1712,11 @@ class BacktestStrategy:
                 elif hasattr(current_datetime, 'strftime'):
                     current_time_hm = current_datetime.strftime('%H:%M')
 
-                if self.config.enable_top1_state_machine_risk:
-                    state_machine_result = self._evaluate_top1_state_machine_risk(
-                        position=position,
-                        close_price=close_price,
-                        open_price=open_price,
-                        current_datetime=current_datetime,
-                        holding_day_offset=holding_day_offset,
-                        decline_ratio=decline_ratio,
-                        consecutive_bearish_in_profit=consecutive_bearish_in_profit,
-                    )
-                    if state_machine_result:
-                        return state_machine_result
-                else:
+                # 2026-10-21 修复：状态机只在本函数末尾的 T1 低点分支统一调用一次
+                # （旧版在这之前还调用了一次，同一根 K 线会重复推进
+                # failed_cont_watch 计数/状态，可能提前触发止损）。
+                # 此处仅保留"状态机关闭时的旧版平铺阈值"兜底。
+                if not self.config.enable_top1_state_machine_risk:
                     # 兼容旧版平铺阈值逻辑
                     if (
                         self.config.enable_t2_0935_hard_stop
@@ -2156,6 +2219,9 @@ class BacktestStrategy:
         if execution_day_data.empty:
             result['skip_reason'] = 'T+1无5分钟数据'
             result['missing_minute_data'] = True
+            return result
+        if self._first_bar_down_veto(execution_day_data):
+            result['skip_reason'] = '首根5分钟大阴线'
             return result
 
         buy_open = float(execution_day_data.iloc[0]['open'])
@@ -3743,6 +3809,8 @@ class BacktestStrategy:
                     if buy_data.empty:
                         logger.warning(f"⚠️ {stock_code} {trade_date}无5分钟数据，跳过买入")
                         raise _SkipBuyDay()
+                    if self._first_bar_down_veto(execution_day_data):
+                        raise _SkipBuyDay()
 
                     if target_rank == 1 and overlay_action == 'skip':
                         logger.info(f"🚫 {stock_code} 被Top1 Overlay跳过: {overlay_reason}")
@@ -4105,6 +4173,17 @@ class BacktestStrategy:
                         # ================================================================
                         if entry_check['can_buy']:
                             base_position_pct = self._resolve_position_pct(day_start_free_slot_index)
+                            if self.config.enable_atr_risk_budget:
+                                _ap = self._atr_pct_at(stock_code, prediction_date)
+                                if _ap is not None and _ap > 1e-4:
+                                    base_position_pct = float(np.clip(
+                                        self.config.atr_risk_per_trade / _ap,
+                                        self.config.atr_position_floor,
+                                        self.config.atr_position_cap))
+                                    logger.info(
+                                        f"🧮 ATR风险预算: {stock_code} ATR%={_ap:.2%} "
+                                        f"-> 仓位 {base_position_pct:.0%} "
+                                        f"(风险预算 {self.config.atr_risk_per_trade:.1%})")
                             regime_position_scale = self._resolve_position_scale(selected_stocks)
                             strict_risk_mode = False
                             if 'regime_strict_risk_mode' in selected_stocks.columns:

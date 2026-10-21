@@ -1855,8 +1855,11 @@ def main() -> int:
                     help='V4.1榜2正交通道保留数（默认20保持历史行为；SOP示例80）')
     ap.add_argument('--keep-base', type=int, default=20,
                     help='V4.1门控靶标面板机制均衡抽取数（默认20；每family最多4个）')
-    ap.add_argument('--include-custom', action='store_true', default=False,
-                    help='纳入custom_registry自定义因子与正交去重（默认关闭以保持历史可比）')
+    ap.add_argument('--include-custom', action='store_true', default=True,
+                    help='纳入custom_registry自定义因子与正交去重（2026-10-21 起默认开启；'
+                         '如需关闭用 --no-include-custom）')
+    ap.add_argument('--no-include-custom', action='store_false', dest='include_custom',
+                    help='关闭 custom 因子（回到旧默认）')
     ap.add_argument('--include-store', action='store_true', default=True,
                     help='纳入factors.parquet存量个股列为第四源store（V4.3c默认开）')
     ap.add_argument('--no-store', dest='include_store', action='store_false',

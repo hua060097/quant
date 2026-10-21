@@ -325,7 +325,8 @@ def main() -> int:
                         gate_cache[key] = np.array(
                             [gm.get(d, np.nan) for d in sp_dates], dtype=float)
                     gt = gate_cache[key]
-                    p = np.clip((gt + 1.0) / 2.0, 0.0, 1.0)
+                    # s 参与方向（s=-1 时 p 翻转；当前入选 switch 均 s=1）
+                    p = np.clip((float(s) * gt + 1.0) / 2.0, 0.0, 1.0)
                     p[~np.isfinite(gt)] = np.nan
                 else:
                     key = f"sector:{gate}"
@@ -345,6 +346,8 @@ def main() -> int:
                     okr = ci >= 0
                     p[okr] = prow.to_numpy(dtype=float)[di[okr], ci[okr]]
                     p = np.clip(p, 0.0, 1.0)
+                    if s < 0:
+                        p = 1.0 - p
                 icols[name] = H.build_switch_blend(p, u_off, u_def)
             else:
                 d = int(cc.get("d", dmap.get(base, int(r.get("d", 1)))))
