@@ -91,6 +91,7 @@ META_PATH = MIN_DIR / 'daily_features_cache.meta.json'
 
 FACTOR_COLS = ('hi_amt_share20', 'hi_shadow_dump', 'late30_ret',
                'late30_amt_share', 'updown_vol_ratio', 'dd_recovery',
+               'morning_keep', 'close_vwap_prem',
                'hi_amt_share20_s3', 'hi_shadow_dump_s3',
                'updown_vol_ratio_s3', 'dd_recovery_s3')
 #: 3日滚动均值平滑变体（降单日脉冲噪声/换手；覆盖月度边界，全量拼接后算）
@@ -112,7 +113,8 @@ def _month_files() -> list[Path]:
 
 def _agg_month(fp: Path) -> pd.DataFrame | None:
     """单月 5 分钟 → 日频聚合（向量化；列名=内部原始量，factor 化在总装阶段）。"""
-    cols = ['stock_code', 'datetime', 'high', 'low', 'close', 'amount']
+    cols = ['stock_code', 'datetime', 'open', 'high', 'low', 'close',
+            'volume', 'amount']
     df = pd.read_parquet(fp, columns=cols)
     if not len(df):
         return None
@@ -147,6 +149,10 @@ def _agg_month(fp: Path) -> pd.DataFrame | None:
     # 14:30 收盘（bar 标签 14:30 覆盖 14:25~14:30）与尾盘成交（14:35~15:00）
     df['_c1430'] = np.where(mins == 870, close, np.nan)
     df['_late_amt'] = np.where(mins > 870, amt, 0.0)
+    # 2026-10-21 新增：早盘脉冲（09:35~10:00）与收盘/VWAP
+    op = df['open'].to_numpy(dtype=float)
+    df['_m_open'] = np.where(mins <= 600, op, np.nan)
+    df['_m_close'] = np.where(mins <= 600, close, np.nan)
     # 当日区间与高位成交
     day_hi = df.groupby(gk, sort=False)['high'].transform('max').to_numpy(float)
     day_lo = df.groupby(gk, sort=False)['low'].transform('min').to_numpy(float)
@@ -160,6 +166,9 @@ def _agg_month(fp: Path) -> pd.DataFrame | None:
         late_amt=('_late_amt', 'sum'),
         close_last=('close', 'last'),
         close_1430=('_c1430', 'first'),
+        m_open=('_m_open', 'first'),
+        m_close=('_m_close', 'last'),
+        vol_day=('volume', 'sum'),
         day_hi=('high', 'max'),
         day_lo=('low', 'min'),
         up_std=('_r_up', 'std'),
@@ -221,10 +230,35 @@ def _finalize(agg: pd.DataFrame) -> pd.DataFrame:
     rec = np.where(np.isfinite(depth_rel) & (depth_rel >= 0.005),
                    np.clip(_rec, 0.0, 1.0),
                    np.where(np.isfinite(trough_c), 1.0, np.nan))
+    # 2026-10-21：早盘脉冲保持度 & 收盘/VWAP 溢价
+    m_open = agg['m_open'].to_numpy(dtype=float)
+    m_close = agg['m_close'].to_numpy(dtype=float)
+    vol_day = agg['vol_day'].to_numpy(dtype=float)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        m_imp = m_close / np.where(m_open > 0, m_open, np.nan) - 1.0
+        d_ret = close_last / np.where(m_open > 0, m_open, np.nan) - 1.0
+        keep = np.where(m_imp > 0.005, d_ret / np.where(m_imp > 0.005, m_imp, np.nan),
+                        np.nan)
+    # 2026-10-21：正常交易日但早盘无正脉冲（>0.5%）→ 填 0.0，避免 66% NaN
+    # 进入全池相关矩阵时把样本交集成片抽干；无分钟数据/停牌日仍保持 NaN。
+    _valid_day = (np.isfinite(m_open) & (m_open > 0) & np.isfinite(m_close)
+                  & np.isfinite(close_last))
+    keep = np.where(_valid_day & (m_imp > 0.005),
+                    np.where(m_imp > 0.005, d_ret / np.where(m_imp > 0.005, m_imp, np.nan), 0.0),
+                    np.where(_valid_day, 0.0, np.nan))
+    keep = np.clip(keep, -2.0, 3.0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        # 2026-10-21：分钟源 volume 单位为“手”（amount/(volume*close)≈100），
+        # VWAP = amount / (volume*100)，否则溢价会被系统性压到 -0.15 截断。
+        vwap_day = amt_day / np.where(vol_day > 0, vol_day * 100.0, np.nan)
+        c_vwap = close_last / np.where(vwap_day > 0, vwap_day, np.nan) - 1.0
+    c_vwap = np.clip(c_vwap, -0.15, 0.15)
+
     q = agg['n_bars'].to_numpy() >= _MIN_BARS
     for name, v in (('hi_amt_share20', hi_share), ('hi_shadow_dump', dump),
                     ('late30_ret', late_ret), ('late30_amt_share', late_share),
-                    ('updown_vol_ratio', updown), ('dd_recovery', rec)):
+                    ('updown_vol_ratio', updown), ('dd_recovery', rec),
+                    ('morning_keep', keep), ('close_vwap_prem', c_vwap)):
         out[name] = np.where(q, v, np.nan).astype(np.float64)
     out['n_bars'] = agg['n_bars'].to_numpy().astype(np.int16)
     return out
@@ -462,3 +496,17 @@ if __name__ == '__main__':
                 print(f"  {c}: finite={np.isfinite(v).mean():.3f} "
                       f"mean={v.mean():.5f} std={v.std():.5f} "
                       f"p1={v.quantile(0.01):.4f} p99={v.quantile(0.99):.4f}")
+
+
+@register_py_factor(
+    factor_id='id_morning_keep', axis='intraday',
+    description='早盘脉冲保持度：09:35~10:00 冲高后，收盘相对早盘脉冲的保持比例（无正脉冲日=0；无分钟数据=NaN）')
+def id_morning_keep(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'morning_keep')
+
+
+@register_py_factor(
+    factor_id='id_close_vwap_prem', axis='intraday',
+    description='收盘/VWAP溢价：close(15:00)/日内成交量加权均价-1（全天买盘浮盈锁仓度）')
+def id_close_vwap_prem(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _lookup(frame, 'close_vwap_prem')

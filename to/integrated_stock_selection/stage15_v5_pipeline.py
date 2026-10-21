@@ -304,6 +304,12 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     if not feat_path.is_absolute():
         # 相对路径按脚本所在目录解析（防 CWD 不同导致 FileNotFoundError）
         feat_path = _HERE / feat_path
+    # 2026-10-21：91 列 with_h3 变体在 84 列 A/B 中全面更差，已废弃；
+    # 禁止再用它训练/评估，防止误用历史产物。
+    if "with_h3" in feat_path.name:
+        raise SystemExit(
+            "[DEPRECATED] 91 列 with_h3 变体已废弃（84 列 A/B 全面更差）；"
+            "请使用 lgb_features.parquet（84 列）")
     if not feat_path.exists():
         raise FileNotFoundError(f"特征文件不存在: {feat_path}")
 
@@ -383,17 +389,16 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
         (pdf.get("is_st", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf["listed_days"] >= NEW_STOCK_MIN_DAYS)
         & (~recent_susp)
-        & pdf["forward_ok"]
         & (pdf.get("is_limit_up", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_limit_down", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf.get("is_zhaban", pd.Series(0, index=pdf.index)).fillna(0) == 0)
         & (pdf["amount"].fillna(0) >= MIN_DAILY_AMOUNT)
-        & valid_buy
     )
     pdf["tradable_mask"] = tradable
 
     merged = fdf.merge(
-        pdf[["stock_code", "date", "ret_t2", "close_t2_ret", "r3", "r5", "dd3", "tradable_mask"]],
+        pdf[["stock_code", "date", "ret_t2", "close_t2_ret", "r3", "r5", "dd3",
+             "tradable_mask", "forward_ok"]],
         on=["stock_code", "date"], how="inner"
     )
     merged = merged.sort_values(["date", "stock_code"]).reset_index(drop=True)
@@ -428,20 +433,26 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
         buf_pos = np.zeros_like(core_pos, dtype=bool)
 
     y_bin = np.where(core_pos | buf_pos, 1.0, 0.0).astype(np.float32)
-    y_valid = np.isfinite(r3) & np.isfinite(dd3) & merged["tradable_mask"].to_numpy(dtype=bool)
-
-    X = np.ascontiguousarray(merged[feature_cols].to_numpy(dtype=np.float32))
-    dates = merged["date"].to_numpy()
-    codes = merged["stock_code"].to_numpy()
-    sectors = np.array([sw_map.get(c, "__NA__") for c in codes], dtype=object)
-
+    # 2026-10-21 修复（Gemini/Owner）：把"评估/训练"与"交易"掩码拆开。
+    # - trade_mask：仅 T 日盘后可知条件（ST/新股/近停牌/涨跌停/炸板/成交额），
+    #   不含 valid_buy（T+1 才可知）、不含 r3/dd3（未来标签）、不含 forward_ok。
+    # -> 用于 OOS 预测与分钟回测，恢复末尾无标签交易日。
+    # - valid_mask：日频评估需要 r3/dd3 有限（标签可算），
+    #   否则该日无法计入 Rank1 收益统计。
+    # - train_mask：在 valid_mask 基础上再剔"未来 5 日含停牌"的不可执行标签。
+    trade_valid = merged["tradable_mask"].to_numpy(dtype=bool)
+    y_valid = np.isfinite(r3) & np.isfinite(dd3) & trade_valid
+    train_valid = y_valid & merged["forward_ok"].to_numpy(dtype=bool)
     logger.info(
-        f"[3/4] 数据准备就绪 ({time.time()-t0:.0f}s): 可交易有效行={int(y_valid.sum()):,}/{len(merged):,} "
+        f"[3/4] 数据准备就绪 ({time.time()-t0:.0f}s): 交易有效行={int(trade_valid.sum()):,}/{len(merged):,} "
+        f"| 评估有效行(标签可算)={int(y_valid.sum()):,} "
+        f"| 训练有效行(前向停牌窗剔除)={int(train_valid.sum()):,} "
         f"| 核心正类率={core_pos[y_valid].mean():.2%} 缓冲正类率={buf_pos[y_valid].mean():.2%}"
     )
     return {
         "X": X, "y": y_bin, "y_raw": r3, "core_pos": core_pos, "buf_pos": buf_pos,
-        "valid_mask": y_valid, "dates": dates, "codes": codes, "sectors": sectors,
+        "valid_mask": y_valid, "train_mask": train_valid, "trade_mask": trade_valid,
+        "dates": dates, "codes": codes, "sectors": sectors,
         "feature_cols": feature_cols, "price_path": price_path,
     }
 
@@ -494,11 +505,87 @@ def _logit(p: np.ndarray) -> np.ndarray:
     return np.log(p / (1.0 - p))
 
 
+# ==================== Leaf-Orthogonal Pick2（2026-10-21） ====================
+LEAF_PICK2_CPS = (170, 260)
+LEAF_PICK2_TOPN = 15
+LEAF_PICK2_OVERLAP_MAX = 0.25
+
+
+def _leaf_pick2_stats(X_te, dates_te, codes_te, sectors_te, y_raw_te,
+                      preds, bst_list, cp) -> dict:
+    """行业去重 Top15 内，Rank1 之后首个叶子重合率<=0.25 的候选（Pick2）。
+
+    叶子向量 = 3 seeds × cp 棵树的叶子编号拼接；重合率 = 同叶子树数占比。
+    只返回可跨折聚合的 sum/count，主流程负责求均值。
+    """
+    n = len(preds)
+    if n == 0 or not bst_list:
+        return {}
+    t = pd.DataFrame({
+        "i": np.arange(n, dtype=np.int64),
+        "date": pd.to_datetime(dates_te),
+        "sector": np.asarray(sectors_te, dtype=object),
+        "pred": np.asarray(preds, dtype=float),
+        "ret": np.asarray(y_raw_te, dtype=float),
+    })
+    t = t[np.isfinite(t["pred"].to_numpy(dtype=float))]
+    if len(t) == 0:
+        return {}
+    day_n = t.groupby("date", sort=False)["pred"].transform("size")
+    t = t[day_n.to_numpy() >= 30]
+    if len(t) == 0:
+        return {}
+    t = t.sort_values(["date", "pred"], ascending=[True, False], kind="stable")
+    t = t.drop_duplicates(subset=["date", "sector"], keep="first")
+    t = t.groupby("date", sort=True, group_keys=False).head(LEAF_PICK2_TOPN)
+    if len(t) == 0:
+        return {}
+    t = t.sort_values(["date", "pred"], ascending=[True, False],
+                      kind="stable").reset_index(drop=True)
+    idx = t["i"].to_numpy(dtype=np.int64)
+    leaves = [np.asarray(bst.predict(X_te[idx], num_iteration=int(cp),
+                                     pred_leaf=True), dtype=np.int32)
+              for bst in bst_list]
+    L = np.concatenate(leaves, axis=1)
+    rets_all = t["ret"].to_numpy(dtype=float)
+    pick2_sum = 0.0
+    pick2_n = 0
+    pick2_win = 0
+    top2_sum = 0.0
+    top2_n = 0
+    for _d, pos in t.groupby("date", sort=True).indices.items():
+        if len(pos) < 2:
+            continue
+        rets = rets_all[pos]
+        lv = L[pos]
+        r1 = lv[0]
+        ov = np.mean(lv == r1, axis=1)
+        pick = None
+        for r in range(1, len(pos)):
+            if ov[r] <= LEAF_PICK2_OVERLAP_MAX:
+                pick = r
+                break
+        if pick is None:
+            continue
+        r2 = rets[pick]
+        if not np.isfinite(r2):
+            continue
+        pick2_sum += r2
+        pick2_n += 1
+        pick2_win += int(r2 > 0)
+        if np.isfinite(rets[0]):
+            top2_sum += 0.5 * (rets[0] + r2)
+            top2_n += 1
+    return {"cp": int(cp), "pick2_sum": float(pick2_sum), "pick2_n": int(pick2_n),
+            "pick2_win": int(pick2_win), "top2_sum": float(top2_sum),
+            "top2_n": int(top2_n), "overlap_max": float(LEAF_PICK2_OVERLAP_MAX)}
+
+
 def train_predict_fold(
     X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
     X_te: np.ndarray, dates_te: np.ndarray,
     hp: dict, checkpoints: list[int], seeds: list[int],
-    engines: list[str], num_threads: int
+    engines: list[str], num_threads: int, leaf_ctx: dict | None = None
 ) -> dict:
     """训练并返回三套独立预测（2026-10-19 定版，Owner 批准）：
 
@@ -511,6 +598,7 @@ def train_predict_fold(
     """
     import lightgbm as lgb
     lgb_by_cp = {cp: np.zeros(len(X_te), dtype=np.float64) for cp in checkpoints}
+    bst_keep = []
     dtr = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params={"feature_pre_filter": False})
     max_cp = max(checkpoints)
 
@@ -529,7 +617,24 @@ def train_predict_fold(
         for cp in checkpoints:
             p = bst.predict(X_te, num_iteration=cp)
             lgb_by_cp[cp] += _logit(p) / len(seeds)
-        del bst
+        if leaf_ctx is not None and any(cp in checkpoints for cp in leaf_ctx.get("cps", ())):
+            bst_keep.append(bst)
+        else:
+            del bst
+    leaf_stats = {}
+    if leaf_ctx is not None and bst_keep:
+        for cp in leaf_ctx.get("cps", ()):
+            if cp not in checkpoints:
+                continue
+            try:
+                _st = _leaf_pick2_stats(
+                    X_te, dates_te, leaf_ctx.get("codes"), leaf_ctx.get("sectors"),
+                    leaf_ctx.get("y_raw"), lgb_by_cp[cp], bst_keep, cp)
+                if _st:
+                    leaf_stats[int(cp)] = _st
+            except Exception:
+                pass
+        del bst_keep
     try:
         dtr._handle = None  # 尽早释放数据集句柄（lightgbm 版本差异时静默跳过）
     except Exception:
@@ -579,7 +684,7 @@ def train_predict_fold(
                        for cp in checkpoints}
 
     return {"lgb": lgb_by_cp, "aux": aux_by_cp, "aux_name": aux_name,
-            "blend": blend_by_cp}
+            "blend": blend_by_cp, "leaf": leaf_stats}
 
 
 def train_predict_cb(
@@ -911,14 +1016,18 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
                     fdf = fdf.drop(columns=["sector"])
         except Exception as e:
             logger.warning(f"[VETO] 板块门控 join 失败: {str(e)[:120]}")
-    # ③ 因子库列（flow_* / money_flow_* / momentum_decay / mi_* 等，schema 过滤）
+    # ③ 因子库列（flow_* / 因子库任意列，schema 过滤）
     if need - set(fdf.columns):
         try:
             from risk_veto_train import load_factor_lab_columns
-            fdf, _got = load_factor_lab_columns(
-                fdf, sorted(need - {"gap12", "z_in_top5", "score_z_in_day"}), logger)
-            if _got:
-                logger.info(f"[VETO] 因子库补齐 {_got}")
+            _f_need = sorted(
+                c for c in (need - {"gap12", "z_in_top5", "score_z_in_day",
+                                    "ret3", "close_pos"})
+                if not str(c).startswith(("GM_", "id_")))
+            if _f_need:
+                fdf, _got = load_factor_lab_columns(fdf, _f_need, logger)
+                if _got:
+                    logger.info(f"[VETO] 因子库补齐 {_got}")
         except Exception as e:
             logger.warning(f"[VETO] 因子库 join 失败: {str(e)[:120]}")
     # ④ 内生置信度 gap12 / z_in_top5（当日去重头名 Top5 预测分派生，按日广播）
@@ -946,6 +1055,24 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
             logger.info("[VETO] 内生置信度补齐 gap12/z_in_top5")
         except Exception as e:
             logger.warning(f"[VETO] 内生置信度派生失败: {str(e)[:120]}")
+    # ⑤ 市场门控 GM_*（日级广播；v2 规则可能引用）
+    _gm_need = [c for c in need
+                if str(c).startswith("GM_") and c not in fdf.columns]
+    if _gm_need:
+        try:
+            _gp = (_HERE / "results" / "merge_v2" / "gates_search"
+                   / "market_gates_search.parquet")
+            if _gp.exists():
+                import pyarrow.parquet as _pqq
+                _have = set(_pqq.read_schema(_gp).names)
+                _use = [c for c in _gm_need if c in _have]
+                if _use:
+                    _gm = pd.read_parquet(_gp, columns=["date"] + _use)
+                    _gm["date"] = pd.to_datetime(_gm["date"])
+                    fdf = fdf.merge(_gm, on="date", how="left")
+                    logger.info(f"[VETO] 市场门控补齐 {_use}")
+        except Exception as e:
+            logger.warning(f"[VETO] 市场门控 join 失败: {str(e)[:120]}")
     missing = sorted(need - set(fdf.columns))
     if missing:
         raise SystemExit(f"[VETO] 规则引用特征缺失: {missing}（先并入对应数据源再回测）")
@@ -964,6 +1091,22 @@ def apply_risk_veto_to_preds(preds: np.ndarray, X_te: np.ndarray,
         _r1 = _t2.groupby("date", sort=True).head(1)
         _r1_idx = _r1["i"].to_numpy()
         _m = apply_veto(rules, fdf.iloc[_r1_idx])
+        # 逐规则 OOS 诊断（触发数/均值/大亏/大涨），便于判断哪条在起作用
+        try:
+            from risk_veto_train import apply_veto_mask as _avm
+            _r1_df = fdf.iloc[_r1_idx]
+            _r1_ret = np.asarray(y_raw_te, dtype=float)[_r1_idx]
+            for _r in rules:
+                _mr = _avm(_r1_df, _r)
+                if _mr.any():
+                    _rr = _r1_ret[_mr]
+                    logger.info(
+                        f"[VETO] 规则{_r.get('id')} | 触发 {int(_mr.sum())} | "
+                        f"均值 {float(_rr.mean()):+.4f} | "
+                        f"大亏 {int((_rr <= -0.05).sum())} | "
+                        f"大涨 {int((_rr >= 0.07).sum())}")
+        except Exception as _e:
+            logger.warning(f"[VETO] 逐规则诊断失败: {str(_e)[:100]}")
         _vdate = pd.to_datetime(fdf["date"].to_numpy()[_r1_idx][_m])
         if len(_vdate):
             _veto_days = int(len(np.unique(_vdate)))
@@ -1032,7 +1175,8 @@ def veto_daily_cascade(preds: np.ndarray, dates_te: np.ndarray,
 def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start: str,
                             test_end: str, out_dir: Path, logger: logging.Logger,
                             strategy_overrides: dict | None = None,
-                            out_name: str = "minute_backtest_oos.pkl"):
+                            out_name: str = "minute_backtest_oos.pkl",
+                            position_schedule: list | None = None):
     """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（**仅 Rank1**）。
 
     2026-10-20 Owner 决策：
@@ -1092,7 +1236,8 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
         enable_dynamic_rank_switch=False,
         max_concurrent_positions=2,
         fixed_position_pct=0.5,
-        position_schedule=[0.8, 0.2],  # 旧产线仓位表（首仓 80% / 次仓 20%）
+        position_schedule=([0.8, 0.2] if position_schedule is None
+                           else position_schedule),
         strategy_config_overrides=(strategy_overrides
                                    if strategy_overrides is not None
                                    else OOS_MINUTE_OVERRIDES),
@@ -1123,19 +1268,29 @@ def _cv_worker(task) -> tuple:
     t_i, side, hp, fold = task
     c = _CV_CTX
     dates, valid_mask = c["dates"], c["valid_mask"]
+    train_mask = c.get("train_mask", valid_mask)
+    trade_mask = c.get("trade_mask", valid_mask)
     tr_m = ((dates >= np.datetime64(fold["train_start"]))
-            & (dates <= np.datetime64(fold["train_end"])) & valid_mask)
+            & (dates <= np.datetime64(fold["train_end"])) & train_mask)
+    # 测试集只用 T 日盘后可知条件（trade_mask），不剔除无标签/未来停牌日
     te_m = ((dates >= np.datetime64(fold["test_start"]))
-            & (dates <= np.datetime64(fold["test_end"])) & valid_mask)
+            & (dates <= np.datetime64(fold["test_end"])) & trade_mask)
     if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
-        return t_i, side, hp["pid"], fold["fold_id"], 0, []
+        return t_i, side, hp["pid"], fold["fold_id"], 0, [], {}
     w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
                                   c["y_raw"][tr_m], dates[tr_m])
+    _leaf = {}
     if side == "lgb":
         _cps = hp.get("checkpoints", CHECKPOINTS)
-        preds = train_predict_fold(
+        _leaf_ctx = None
+        if c.get("collect_leaf"):
+            _leaf_ctx = {"codes": c["codes"][te_m], "sectors": c["sectors"][te_m],
+                         "y_raw": c["y_raw"][te_m], "cps": LEAF_PICK2_CPS}
+        _out = train_predict_fold(
             c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
-            hp, _cps, c["seeds"], ["lgb"], c["num_threads"])["lgb"]
+            hp, _cps, c["seeds"], ["lgb"], c["num_threads"], leaf_ctx=_leaf_ctx)
+        preds = _out["lgb"]
+        _leaf = _out.get("leaf", {})
     else:
         preds = train_predict_cb(
             c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m],
@@ -1145,7 +1300,7 @@ def _cv_worker(task) -> tuple:
         c["y_raw"][te_m], fold["fold_id"], hp["pid"])
     for r in rows:
         r["scheme"] = side
-    return t_i, side, hp["pid"], fold["fold_id"], len(rows), rows
+    return t_i, side, hp["pid"], fold["fold_id"], len(rows), rows, _leaf
 
 
 def auto_cv_jobs(X: np.ndarray, engines: list[str], num_threads: int,
@@ -1198,6 +1353,10 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     feat_path = Path(args.features_parquet)
     if not feat_path.is_absolute():
         feat_path = _HERE / feat_path
+    if "with_h3" in feat_path.name:
+        raise SystemExit(
+            "[DEPRECATED] 91 列 with_h3 变体已废弃（84 列 A/B 全面更差）；"
+            "请使用 lgb_features.parquet（84 列）")
     logger.info(f"[diag] 特征矩阵键: {feat_path}")
     fkeys = pd.read_parquet(feat_path, columns=["stock_code", "date"])
     fkeys["date"] = pd.to_datetime(fkeys["date"]).dt.normalize()
@@ -1633,7 +1792,9 @@ def main():
     X, y, y_raw = bundle["X"], bundle["y"], bundle["y_raw"]
     core_pos, buf_pos = bundle["core_pos"], bundle["buf_pos"]
     valid_mask, dates, codes, sectors = bundle["valid_mask"], bundle["dates"], bundle["codes"], bundle["sectors"]
-    uniq_days = np.unique(dates[valid_mask])
+    train_mask = bundle["train_mask"]
+    trade_mask = bundle.get("trade_mask", valid_mask)
+    uniq_days = np.unique(dates[trade_mask])
 
     if args.mode == "cv":
         folds = build_forward_folds(uniq_days, train_months=args.train_months, test_months=args.test_months,
@@ -1641,10 +1802,13 @@ def main():
         # 折级并行（fork 继承 X 等大数组；串行路径直调同一 worker，逐值一致）
         global _CV_CTX
         _CV_CTX = {"X": X, "y": y, "y_raw": y_raw, "core_pos": core_pos,
-                   "buf_pos": buf_pos, "valid_mask": valid_mask, "dates": dates,
+                   "buf_pos": buf_pos, "valid_mask": valid_mask,
+                   "train_mask": bundle["train_mask"],
+                   "trade_mask": bundle["trade_mask"], "dates": dates,
                    "codes": codes, "sectors": sectors, "seeds": seeds,
                    "engines": engines, "num_threads": args.num_threads,
-                   "min_train": args.min_train_rows, "min_test": args.min_test_rows}
+                   "min_train": args.min_train_rows, "min_test": args.min_test_rows,
+                   "collect_leaf": True}
         # 任务：LGB 6 组 × 11 折 +（可选）CB 4 组 × 11 折（2026-10-19 双引擎解耦）
         _only = {x.strip() for x in str(args.pids).split(",") if x.strip()}
         tasks = []
@@ -1709,7 +1873,7 @@ def main():
                       "sector", "pred", "score_z_in_day", "return", "scheme",
                       "universe"]
 
-        def _persist_task(side, pid, fid, rows):
+        def _persist_task(side, pid, fid, rows, leaf=None):
             _df = pd.DataFrame(rows)
             if not len(_df):
                 _df = pd.DataFrame({
@@ -1735,6 +1899,14 @@ def main():
                                         "nrows": int(len(rows))},
                                        ensure_ascii=False), encoding="utf-8")
             _tmp.replace(_mark)
+            if leaf:
+                _lf = _tasks_dir / f"{side}_{pid}_Fold{int(fid):02d}_leaf.json"
+                _lt = _lf.with_name(_lf.name + ".tmp")
+                _lt.write_text(json.dumps(
+                    {"side": side, "pid": pid, "fold_id": int(fid),
+                     "leaf": {str(k): v for k, v in leaf.items()}},
+                    ensure_ascii=False), encoding="utf-8")
+                _lt.replace(_lf)
 
         _done_keys = {_task_key(t[1], t[2], t[3]) for t in tasks
                       if _task_path(t[1], t[2], t[3]).exists()
@@ -1757,8 +1929,8 @@ def main():
         if todo:
             if _nj <= 1:
                 for task in todo:
-                    _ti, _side, _pid, _fid, _nrows, _rows = _cv_worker(task)
-                    _persist_task(_side, _pid, _fid, _rows)
+                    _ti, _side, _pid, _fid, _nrows, _rows, _leaf = _cv_worker(task)
+                    _persist_task(_side, _pid, _fid, _rows, _leaf)
                     _done += 1
                     logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
                                 f"{time.time()-_t0:.0f}s")
@@ -1767,9 +1939,9 @@ def main():
                 logger.info(f"[CV] 并行：{len(todo)} 个(side×超参×折)任务 × {_nj} 进程 "
                             f"(每进程 {args.num_threads} 线程) …")
                 with _cf.ProcessPoolExecutor(max_workers=_nj) as _ex:
-                    for _ti, _side, _pid, _fid, _nrows, _rows in _ex.map(
+                    for _ti, _side, _pid, _fid, _nrows, _rows, _leaf in _ex.map(
                             _cv_worker, todo):
-                        _persist_task(_side, _pid, _fid, _rows)
+                        _persist_task(_side, _pid, _fid, _rows, _leaf)
                         _done += 1
                         logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 "
                                     f"rows={_nrows} [{_done}/{len(todo)}] "
@@ -1805,6 +1977,32 @@ def main():
         main = all_df[all_df["scheme"] == "lgb"]
         if len(main):
             summary = summarize_and_pick_champion(main.to_dict("records"))
+            _leaf_acc = {}
+            for _lfp in sorted(_tasks_dir.glob("*_leaf.json")):
+                try:
+                    _lfd = json.loads(_lfp.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if _lfd.get("side") != "lgb":
+                    continue
+                for _cps_s, _st in (_lfd.get("leaf") or {}).items():
+                    _k = (_lfd.get("pid"), int(_cps_s))
+                    _a = _leaf_acc.setdefault(
+                        _k, {"sum": 0.0, "n": 0, "win": 0, "sum2": 0.0, "n2": 0})
+                    _a["sum"] += float(_st.get("pick2_sum", 0.0))
+                    _a["n"] += int(_st.get("pick2_n", 0))
+                    _a["win"] += int(_st.get("pick2_win", 0))
+                    _a["sum2"] += float(_st.get("top2_sum", 0.0))
+                    _a["n2"] += int(_st.get("top2_n", 0))
+            if _leaf_acc:
+                _ldf = pd.DataFrame([{
+                    "param": _k[0], "cp": int(_k[1]),
+                    "pick2_leaf_orth_mean": (_a["sum"] / _a["n"]) if _a["n"] else np.nan,
+                    "top2_leaf_orth_mean": (_a["sum2"] / _a["n2"]) if _a["n2"] else np.nan,
+                    "pick2_leaf_win": (_a["win"] / _a["n"]) if _a["n"] else np.nan,
+                    "pick2_leaf_days": int(_a["n"]),
+                } for _k, _a in _leaf_acc.items()])
+                summary = summary.merge(_ldf, on=["param", "cp"], how="left")
             summary.to_csv(out_dir / "cv_summary.csv", index=False, encoding="utf-8-sig")
             logger.info("\n===== Stage15 主榜：纯 LGB（logit 均值）× 专属加密 checkpoint =====")
             logger.info("\n" + summary.head(25).to_string(index=False,
@@ -1839,6 +2037,7 @@ def main():
             logger.warning(
                 f"[OOS] seeds={len(seeds)} 与 CV 标定口径(3 seeds)不一致：多 seed "
                 "平均会压缩预测方差，gap12/z_in_top5 等风控阈值尺度会漂移")
+        _leaf_folds = []
         if args.oos_rolling:
             folds_oos = build_oos_rolling_folds(
                 uniq_days, args.test_start, args.test_end, args.train_months,
@@ -1848,9 +2047,9 @@ def main():
             _ra, _pl, _dl, _cl, _yl, _xl, _sl = [], [], [], [], [], [], []
             for fo in folds_oos:
                 tr_m = ((dates >= np.datetime64(fo["train_start"]))
-                        & (dates <= np.datetime64(fo["train_end"])) & valid_mask)
+                        & (dates <= np.datetime64(fo["train_end"])) & train_mask)
                 te_m = ((dates >= np.datetime64(fo["test_start"]))
-                        & (dates <= np.datetime64(fo["test_end"])) & valid_mask)
+                        & (dates <= np.datetime64(fo["test_end"])) & trade_mask)
                 logger.info(
                     f"[OOS-ROLL] Fold{fo['fold_id']}: Train {fo['train_start']}~"
                     f"{fo['train_end']} (样本={int(tr_m.sum()):,}) | Test "
@@ -1861,9 +2060,12 @@ def main():
                     continue
                 w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m],
                                               y_raw[tr_m], dates[tr_m])
-                _r = train_predict_fold(X[tr_m], y[tr_m], w_tr, X[te_m],
-                                        dates[te_m], hp, [args.cp], seeds,
-                                        ["lgb"], args.num_threads)
+                _r = train_predict_fold(
+                    X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m], hp,
+                    [args.cp], seeds, ["lgb"], args.num_threads,
+                    leaf_ctx={"codes": codes[te_m], "sectors": sectors[te_m],
+                              "y_raw": y_raw[te_m], "cps": (args.cp,)})
+                _leaf_folds.append(_r.get("leaf", {}).get(int(args.cp), {}))
                 _p = _r["lgb"][args.cp]
                 _ra.extend(evaluate_predictions(
                     {args.cp: _p}, dates[te_m], codes[te_m], sectors[te_m],
@@ -1894,8 +2096,8 @@ def main():
             tr_start_idx = max(0, tr_end_idx - args.train_months * 21 + 1)
             tr_start, tr_end = uniq_days[tr_start_idx], uniq_days[tr_end_idx]
 
-            tr_m = (dates >= tr_start) & (dates <= tr_end) & valid_mask
-            te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & valid_mask
+            tr_m = (dates >= tr_start) & (dates <= tr_end) & train_mask
+            te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & trade_mask
             logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
             logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
 
@@ -1903,7 +2105,10 @@ def main():
                                           dates[tr_m])
             _res = train_predict_fold(
                 X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
-                hp, [args.cp], seeds, ["lgb"], args.num_threads)
+                hp, [args.cp], seeds, ["lgb"], args.num_threads,
+                leaf_ctx={"codes": codes[te_m], "sectors": sectors[te_m],
+                          "y_raw": y_raw[te_m], "cps": (args.cp,)})
+            _leaf_folds.append(_res.get("leaf", {}).get(int(args.cp), {}))
             preds_by_cp = _res["lgb"]  # 主评估 = 纯 LGB（多 seed logit 均值）
             d_rows = evaluate_predictions(
                 preds_by_cp, dates[te_m], codes[te_m], sectors[te_m],
@@ -1922,6 +2127,34 @@ def main():
         summary = summarize_and_pick_champion(d_rows)
         logger.info("\n===== 2026 OOS 日频 Rank1 终验结果（Top2 列仅作诊断，不交易）=====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+        _leaf_oos = {"sum": 0.0, "n": 0, "win": 0, "sum2": 0.0, "n2": 0}
+        for _st in _leaf_folds:
+            if not _st:
+                continue
+            _leaf_oos["sum"] += float(_st.get("pick2_sum", 0.0))
+            _leaf_oos["n"] += int(_st.get("pick2_n", 0))
+            _leaf_oos["win"] += int(_st.get("pick2_win", 0))
+            _leaf_oos["sum2"] += float(_st.get("top2_sum", 0.0))
+            _leaf_oos["n2"] += int(_st.get("top2_n", 0))
+        if _leaf_oos["n"]:
+            _leaf_pick2_mean = _leaf_oos["sum"] / _leaf_oos["n"]
+            _leaf_win = _leaf_oos["win"] / _leaf_oos["n"]
+            _leaf_top2_mean = (_leaf_oos["sum2"] / _leaf_oos["n2"]
+                               if _leaf_oos["n2"] else float("nan"))
+            logger.info(
+                f"[LEAF-PICK2] cp={args.cp} 叶子正交Pick2日均={_leaf_pick2_mean:.4f} "
+                f"胜率={_leaf_win:.1%} 天数={_leaf_oos['n']} | "
+                f"Top2正交组合日均={_leaf_top2_mean:.4f} "
+                f"(重合率<={LEAF_PICK2_OVERLAP_MAX:.0%})")
+            (out_dir / "oos2026_leaf_pick2.json").write_text(
+                json.dumps({"pid": hp["pid"], "cp": int(args.cp),
+                            "pick2_leaf_orth_mean": _leaf_pick2_mean,
+                            "top2_leaf_orth_mean": _leaf_top2_mean,
+                            "pick2_leaf_win": _leaf_win,
+                            "pick2_leaf_days": int(_leaf_oos["n"]),
+                            "overlap_max": LEAF_PICK2_OVERLAP_MAX},
+                           ensure_ascii=False, indent=2), encoding="utf-8")
 
         # 分钟回测基准 = 纯模型（行业去重，**无风控否决**）；否决仅用于日频对照，
         # 需要时用 --veto_minute_bt 另跑一份（2026-10-20 P0：防止 -inf 污染）。

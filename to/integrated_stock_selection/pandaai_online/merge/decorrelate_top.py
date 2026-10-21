@@ -105,16 +105,27 @@ def month_end_spearman_matrix(vals: np.ndarray, month_group: np.ndarray) -> np.n
     for g in np.unique(month_group):
         idx = np.flatnonzero(month_group == g)
         block = vals[idx].astype(np.float64)
-        ok = np.isfinite(block).all(axis=1)
-        block = block[ok]
-        if block.shape[0] < 50:
+        # 2026-10-21：去掉 `np.isfinite(block).all(axis=1)` 的全列连坐过滤
+        # （任一低覆盖因子（如 id_morning_keep）会把当日样本交集成片抽干，
+        # 多列同时稀疏时直接让相关矩阵变 None）。改为逐列独立处理：
+        # 有效样本<50 → good[j]=False；否则用当日该列有限值中位数填缺失，
+        # 中位数行在秩空间≈0.5（中性），既不放大也不删除该列。
+        n_rows = block.shape[0]
+        if n_rows < 50:
             continue
         ranks = np.empty_like(block, dtype=np.float64)
         good = np.ones(n_c, dtype=bool)
         for j in range(n_c):
             col = block[:, j]
-            ranks[:, j] = pd.Series(col).rank().to_numpy()
-            if len(np.unique(col)) <= 1:
+            fin = np.isfinite(col)
+            if int(fin.sum()) < 50:
+                good[j] = False
+                ranks[:, j] = 0.0
+                continue
+            med = float(np.median(col[fin]))
+            filled = np.where(fin, col, med)
+            ranks[:, j] = pd.Series(filled).rank().to_numpy()
+            if len(np.unique(filled)) <= 1:
                 good[j] = False
         ranks -= ranks.mean(axis=0)
         sd = ranks.std(axis=0)
@@ -122,7 +133,7 @@ def month_end_spearman_matrix(vals: np.ndarray, month_group: np.ndarray) -> np.n
         sd[sd == 0] = 1.0
         ranks /= sd
         pair_ok = good[:, None] & good[None, :]
-        contrib = ranks.T @ ranks / block.shape[0]
+        contrib = ranks.T @ ranks / n_rows
         acc += np.where(pair_ok, contrib, 0.0)
         valid += pair_ok.astype(np.int32)
         cnt += 1
