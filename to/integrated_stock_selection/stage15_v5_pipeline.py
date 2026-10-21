@@ -727,7 +727,8 @@ def train_predict_fold(
     X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
     X_te: np.ndarray, dates_te: np.ndarray,
     hp: dict, checkpoints: list[int], seeds: list[int],
-    engines: list[str], num_threads: int, leaf_ctx: dict | None = None
+    engines: list[str], num_threads: int, leaf_ctx: dict | None = None,
+    want_train: bool = False
 ) -> dict:
     """训练并返回三套独立预测（2026-10-19 定版，Owner 批准）：
 
@@ -740,6 +741,8 @@ def train_predict_fold(
     """
     import lightgbm as lgb
     lgb_by_cp = {cp: np.zeros(len(X_te), dtype=np.float64) for cp in checkpoints}
+    train_by_cp = ({cp: np.zeros(len(X_tr), dtype=np.float64) for cp in checkpoints}
+                   if want_train else None)
     bst_keep = []
     dtr = lgb.Dataset(X_tr, label=y_tr, weight=w_tr, params={"feature_pre_filter": False})
     max_cp = max(checkpoints)
@@ -759,6 +762,9 @@ def train_predict_fold(
         for cp in checkpoints:
             p = bst.predict(X_te, num_iteration=cp)
             lgb_by_cp[cp] += _logit(p) / len(seeds)
+            if want_train:
+                pt = bst.predict(X_tr, num_iteration=cp)
+                train_by_cp[cp] += _logit(pt) / len(seeds)
         if leaf_ctx is not None and any(cp in checkpoints for cp in leaf_ctx.get("cps", ())):
             bst_keep.append(bst)
         else:
@@ -826,7 +832,7 @@ def train_predict_fold(
                        for cp in checkpoints}
 
     return {"lgb": lgb_by_cp, "aux": aux_by_cp, "aux_name": aux_name,
-            "blend": blend_by_cp, "leaf": leaf_stats}
+            "blend": blend_by_cp, "leaf": leaf_stats, "train": train_by_cp}
 
 
 def train_predict_cb(
