@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -107,6 +108,35 @@ def perf_row(name: str, res: dict) -> dict:
     }
 
 
+def _child_logger(out: Path) -> logging.Logger:
+    lg = logging.getLogger(f"cv_exec_calib.{out}")
+    lg.setLevel(logging.INFO)
+    lg.handlers.clear()
+    fh = logging.FileHandler(out / "run.log", encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    lg.addHandler(fh)
+    return lg
+
+
+def _run_one(payload: dict) -> dict:
+    """子进程：跑单个执行配置，返回一行指标。"""
+    c = payload["config"]
+    lg = _child_logger(payload["out_dir"])
+    lg.info(f"[CV-EXEC] === {c['name']} schedule={c['schedule']} slots={c['slots']} ===")
+    res = run_minute_backtest_oos(
+        pred_df=payload["pred"].copy(), price_path=payload["price_path"],
+        test_start=payload["test_start"], test_end=payload["test_end"],
+        out_dir=payload["out_dir"], logger=lg,
+        strategy_overrides=c["overrides"],
+        out_name=f"minute_bt_{c['name']}.pkl",
+        position_schedule=c["schedule"],
+        max_concurrent_positions=c["slots"],
+    )
+    row = perf_row(c["name"], res or {})
+    lg.info(f"[CV-EXEC] {row}")
+    return row
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cv_top5", required=True)
@@ -117,6 +147,7 @@ def main() -> int:
     ap.add_argument("--test_end", default="2025-12-31")
     ap.add_argument("--price_path", default="")
     ap.add_argument("--only", default="", help="逗号分隔配置名；空=全部")
+    ap.add_argument("--jobs", type=int, default=1, help="并行配置数（每个引擎单线程；服务器可 6）")
     args = ap.parse_args()
 
     out = Path(args.out_dir)
@@ -137,21 +168,17 @@ def main() -> int:
     price_path = Path(args.price_path) if args.price_path else find_best_price_cache(args.test_start)
     logger.info(f"[CV-EXEC] price_path={price_path}")
 
-    rows = []
-    for c in build_configs(only):
-        logger.info(f"[CV-EXEC] === {c['name']} schedule={c['schedule']} slots={c['slots']} ===")
-        res = run_minute_backtest_oos(
-            pred_df=pred.copy(), price_path=price_path,
-            test_start=args.test_start, test_end=args.test_end,
-            out_dir=out, logger=logger,
-            strategy_overrides=c["overrides"],
-            out_name=f"minute_bt_{c['name']}.pkl",
-            position_schedule=c["schedule"],
-            max_concurrent_positions=c["slots"],
-        )
-        row = perf_row(c["name"], res or {})
-        rows.append(row)
-        logger.info(f"[CV-EXEC] {row}")
+    payloads = [{
+        "config": c, "pred": pred, "price_path": price_path,
+        "test_start": args.test_start, "test_end": args.test_end, "out_dir": out,
+    } for c in build_configs(only)]
+    _nj = max(1, min(int(args.jobs or 1), len(payloads)))
+    logger.info(f"[CV-EXEC] 并行配置数={_nj}/{len(payloads)}")
+    if _nj <= 1:
+        rows = [_run_one(p) for p in payloads]
+    else:
+        with ProcessPoolExecutor(max_workers=_nj) as ex:
+            rows = list(ex.map(_run_one, payloads))
     df = pd.DataFrame(rows)
     df.to_csv(out / "cv_exec_calib.csv", index=False, encoding="utf-8-sig")
     logger.info("\n" + df.to_string(index=False))
