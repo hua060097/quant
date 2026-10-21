@@ -443,6 +443,11 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     trade_valid = merged["tradable_mask"].to_numpy(dtype=bool)
     y_valid = np.isfinite(r3) & np.isfinite(dd3) & trade_valid
     train_valid = y_valid & merged["forward_ok"].to_numpy(dtype=bool)
+    # 2026-10-21 修复：掩码拆分时误删了 X/dates/codes/sectors 的构建，补回。
+    X = np.ascontiguousarray(merged[feature_cols].to_numpy(dtype=np.float32))
+    dates = merged["date"].to_numpy()
+    codes = merged["stock_code"].to_numpy()
+    sectors = np.array([sw_map.get(c, "__NA__") for c in codes], dtype=object)
     logger.info(
         f"[3/4] 数据准备就绪 ({time.time()-t0:.0f}s): 交易有效行={int(trade_valid.sum()):,}/{len(merged):,} "
         f"| 评估有效行(标签可算)={int(y_valid.sum()):,} "
