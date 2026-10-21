@@ -47,6 +47,10 @@ _BOUNDED_TECH_OPS = frozenset({
     'BOLL_WIDTH',
 })
 _GATE_ROOT_OPS = frozenset({'IF', 'GT', 'GE', 'LT', 'LE'})
+#: 2026-10-21 阶段4A：Python 时序量能水位因子，必须 raw 入模，禁止逐日截面归零。
+_RAW_CUSTOM_IDS = frozenset({
+    'ts_amt_exp_5_60_raw', 'ts_mkt_stock_amt_z60_raw',
+})
 
 
 def is_bounded_or_gated_formula(formula_str: str) -> bool:
@@ -177,7 +181,8 @@ def main() -> int:
 
     def _split_raw(cols: list[str]) -> tuple[list[str], list[str]]:
         # store 存量列与有界/条件门公式同列处理：保持原值（见 is_raw_formula）。
-        _raw = [c for c in cols if c in _fmap and is_raw_formula(_fmap[c])]
+        _raw = [c for c in cols if c in _RAW_CUSTOM_IDS
+                or (c in _fmap and is_raw_formula(_fmap[c]))]
         _norm = [c for c in cols if c not in _raw]
         return _raw, _norm
 

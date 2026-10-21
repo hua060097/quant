@@ -152,3 +152,51 @@ def cyc_profit_ratio_20(frame: pd.DataFrame, ev) -> np.ndarray:
     description="板块下跌日抗跌弹性：行业下跌日中个股低点回撤比行业中位少跌的均值（20日）")
 def sec_down_resilience_20(frame: pd.DataFrame, ev) -> np.ndarray:
     return _sec_down_resilience(frame)
+
+
+def _ts_amt_expansion_5_60(frame: pd.DataFrame) -> np.ndarray:
+    """个股 5 日均成交额 / 60 日均成交额 的对数扩张比（无量纲，PIT 安全）。"""
+    codes = frame["stock_code"].astype(str)
+    amt = pd.to_numeric(frame["AMOUNT"], errors="coerce")
+    ma5 = _roll(amt, codes, 5, 3, "mean")
+    ma60 = _roll(amt, codes, 60, 30, "mean")
+    ratio = ma5 / ma60.where(ma60 > 0)
+    f = np.log(ratio.where(ratio > 0))
+    f = np.clip(f, -2.5, 2.5)
+    return np.where(np.isfinite(f), f, np.nan)
+
+
+def _ts_mkt_stock_amt_z60(frame: pd.DataFrame) -> np.ndarray:
+    """全市场 60 日成交额 Z 与个股 60 日成交额 Z 的 tanh 共振水位（有界 [-1,1]）。
+
+    市场序列按交易日汇总全 frame 的 AMOUNT；个股 Z 用自身 60 日滚动均值/标准差。
+    该因子是个股粒度 N×T，不做逐日截面归零，保留市场放量/缩量的时序水位。
+    """
+    codes = frame["stock_code"].astype(str)
+    amt = pd.to_numeric(frame["AMOUNT"], errors="coerce")
+    mu = _roll(amt, codes, 60, 30, "mean")
+    sd = _roll(amt, codes, 60, 30, "std")
+    z_stock = (amt - mu) / sd.where(sd > 1e-12)
+    dates = pd.to_datetime(frame["date"])
+    daily = pd.DataFrame({"date": dates.to_numpy(), "amt": amt.to_numpy()}) \
+        .groupby("date", sort=True)["amt"].sum()
+    _rm = daily.rolling(60, min_periods=30)
+    mkt_z = (daily - _rm.mean()) / _rm.std().where(_rm.std() > 1e-12)
+    mz = dates.map(mkt_z).to_numpy(dtype=float)
+    f = np.tanh(0.5 * mz + 0.5 * z_stock.to_numpy(dtype=float))
+    return np.where(np.isfinite(f), f, np.nan)
+
+
+@register_py_factor(
+    factor_id="ts_amt_exp_5_60_raw", axis="liquidity",
+    description="个股5日均成交额/60日均成交额对数扩张比（raw 保留市场量能时序水位，clip±2.5）")
+def ts_amt_exp_5_60_raw(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _ts_amt_expansion_5_60(frame)
+
+
+@register_py_factor(
+    factor_id="ts_mkt_stock_amt_z60_raw", axis="liquidity",
+    description="市场60日成交额Z与个股60日成交额Z的tanh共振水位（有界[-1,1]，raw 不做截面归零）")
+def ts_mkt_stock_amt_z60_raw(frame: pd.DataFrame, ev) -> np.ndarray:
+    return _ts_mkt_stock_amt_z60(frame)
+

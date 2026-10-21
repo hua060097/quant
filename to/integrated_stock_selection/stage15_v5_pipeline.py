@@ -445,10 +445,11 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     train_valid = y_valid & merged["forward_ok"].to_numpy(dtype=bool)
     # 2026-10-21 A/B：old 复现旧版 valid_mask（含 forward_ok，训练/测试同口径）；
     # new 训练用 train_mask、测试用 trade_mask（恢复 2026 末段分钟回测日）。
-    _old_mask = str(getattr(args, "mask_mode", "new")) == "old"
-    # 旧版 valid_mask = y_valid（标签可算 + trade 条件，不额外剔 forward_ok）；
-    # A 组复现旧 CV 必须用它同时训练/测试；new 维持 train_mask/trade_mask。
-    test_valid = y_valid if _old_mask else trade_valid
+    _mode = str(getattr(args, "mask_mode", "new"))
+    _old_mask = _mode == "old"
+    # old: y_valid 训练/测试（复现 A2）；new: train_mask 训练 + trade 测试；
+    # fwd: train_mask(剔 forward_ok) 训练 + y_valid 评估（阶段四重搜超参）。
+    test_valid = trade_valid if _mode == "new" else y_valid
     train_out = y_valid if _old_mask else train_valid
     # 2026-10-21 修复：掩码拆分时误删了 X/dates/codes/sectors 的构建，补回。
     X = np.ascontiguousarray(merged[feature_cols].to_numpy(dtype=np.float32))
@@ -1317,7 +1318,8 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
                             test_end: str, out_dir: Path, logger: logging.Logger,
                             strategy_overrides: dict | None = None,
                             out_name: str = "minute_backtest_oos.pkl",
-                            position_schedule: list | None = None):
+                            position_schedule: list | None = None,
+                            max_concurrent_positions: int = 2):
     """直接调用 strategy_backtest_top1_gate_ma5_binary 跑 5 分钟级状态机真实回测（**仅 Rank1**）。
 
     2026-10-20 Owner 决策：
@@ -1375,7 +1377,7 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
         minute_data_path=str(min_dir),
         holding_days=3,
         enable_dynamic_rank_switch=False,
-        max_concurrent_positions=2,
+        max_concurrent_positions=int(max_concurrent_positions),
         fixed_position_pct=0.5,
         position_schedule=([0.8, 0.2] if position_schedule is None
                            else position_schedule),
@@ -1894,9 +1896,10 @@ def main():
     p.add_argument("--cps", default="",
                    help="仅评估指定 checkpoint（逗号分隔，与每超参专属网格取交集；"
                         "空=全部）。定向对拍示例：--pids H23 --cps 170,260")
-    p.add_argument("--mask_mode", choices=["new", "old"], default="new",
-                   help="掩码口径：new=训练 train_mask、测试 trade_mask（恢复 2026 末段）；"
-                        "old=旧版 valid_mask（含 forward_ok）同时用于训练/测试，复现旧 CV")
+    p.add_argument("--mask_mode", choices=["new", "old", "fwd"], default="new",
+                   help="掩码口径：new=训练 train_mask、测试 trade_mask（OOS 末段）；"
+                        "old=旧 valid_mask(y_valid) 训练/测试（复现 A2）；"
+                        "fwd=训练 train_mask(剔 forward_ok)、评估/测试 y_valid（阶段四新超参用）")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
