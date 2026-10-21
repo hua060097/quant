@@ -443,6 +443,11 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     trade_valid = merged["tradable_mask"].to_numpy(dtype=bool)
     y_valid = np.isfinite(r3) & np.isfinite(dd3) & trade_valid
     train_valid = y_valid & merged["forward_ok"].to_numpy(dtype=bool)
+    # 2026-10-21 A/B：old 复现旧版 valid_mask（含 forward_ok，训练/测试同口径）；
+    # new 训练用 train_mask、测试用 trade_mask（恢复 2026 末段分钟回测日）。
+    _old_mask = str(getattr(args, "mask_mode", "new")) == "old"
+    test_valid = train_valid if _old_mask else trade_valid
+    eval_valid = train_valid if _old_mask else y_valid
     # 2026-10-21 修复：掩码拆分时误删了 X/dates/codes/sectors 的构建，补回。
     X = np.ascontiguousarray(merged[feature_cols].to_numpy(dtype=np.float32))
     dates = merged["date"].to_numpy()
@@ -456,7 +461,8 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     )
     return {
         "X": X, "y": y_bin, "y_raw": r3, "core_pos": core_pos, "buf_pos": buf_pos,
-        "valid_mask": y_valid, "train_mask": train_valid, "trade_mask": trade_valid,
+        "valid_mask": eval_valid, "train_mask": train_valid, "trade_mask": trade_valid,
+        "test_mask": test_valid,
         "dates": dates, "codes": codes, "sectors": sectors,
         "feature_cols": feature_cols, "price_path": price_path,
     }
@@ -514,14 +520,19 @@ def _logit(p: np.ndarray) -> np.ndarray:
 LEAF_PICK2_CPS = (170, 260)
 LEAF_PICK2_TOPN = 15
 LEAF_PICK2_OVERLAP_MAX = 0.25
+LEAF_PICK2_THRESHOLDS = (0.25, 0.30, 0.35, 0.40)
+LEAF_PICK2_MIN_RANK_END = 8  # MinOverlap-Pick2 只在 Dedup Rank 2..8 中选
 
 
 def _leaf_pick2_stats(X_te, dates_te, codes_te, sectors_te, y_raw_te,
                       preds, bst_list, cp) -> dict:
-    """行业去重 Top15 内，Rank1 之后首个叶子重合率<=0.25 的候选（Pick2）。
+    """行业去重 Top15 内，Rank1 之后按叶子重合率选 Pick2（多阈值 + MinOverlap）。
 
     叶子向量 = 3 seeds × cp 棵树的叶子编号拼接；重合率 = 同叶子树数占比。
-    只返回可跨折聚合的 sum/count，主流程负责求均值。
+    除旧版 0.25 聚合外，额外保存逐日记录 daily，供离线统计：
+      - Rank2~10 与 Rank1 的叶子重合率分位数；
+      - 0.25/0.30/0.35/0.40 阈值在同一天的 Rank1/Rank2/Pick2 配对收益；
+      - MinOverlap-Pick2：Dedup Rank2..8 中与 Rank1 重合率最低者（每日满勤）。
     """
     n = len(preds)
     if n == 0 or not bst_list:
@@ -553,37 +564,160 @@ def _leaf_pick2_stats(X_te, dates_te, codes_te, sectors_te, y_raw_te,
               for bst in bst_list]
     L = np.concatenate(leaves, axis=1)
     rets_all = t["ret"].to_numpy(dtype=float)
+
+    def _f(x):
+        x = float(x)
+        return x if np.isfinite(x) else None
+
+    daily = []
     pick2_sum = 0.0
     pick2_n = 0
     pick2_win = 0
     top2_sum = 0.0
     top2_n = 0
     for _d, pos in t.groupby("date", sort=True).indices.items():
-        if len(pos) < 2:
+        if len(pos) == 0:
             continue
         rets = rets_all[pos]
         lv = L[pos]
         r1 = lv[0]
         ov = np.mean(lv == r1, axis=1)
-        pick = None
-        for r in range(1, len(pos)):
-            if ov[r] <= LEAF_PICK2_OVERLAP_MAX:
-                pick = r
-                break
-        if pick is None:
-            continue
-        r2 = rets[pick]
-        if not np.isfinite(r2):
-            continue
-        pick2_sum += r2
-        pick2_n += 1
-        pick2_win += int(r2 > 0)
-        if np.isfinite(rets[0]):
-            top2_sum += 0.5 * (rets[0] + r2)
-            top2_n += 1
+        row = {"date": str(pd.Timestamp(_d).date()),
+               "r1": _f(rets[0]),
+               "r2": _f(rets[1]) if len(pos) > 1 else None,
+               "ovs": [float(x) for x in ov[1:min(10, len(pos))]],
+               "thr": {}, "min": None}
+        if len(pos) >= 2:
+            for _thr in LEAF_PICK2_THRESHOLDS:
+                _key = f"{_thr:.2f}"
+                _pick = None
+                for _r in range(1, len(pos)):
+                    if ov[_r] <= _thr:
+                        _pick = _r
+                        break
+                row["thr"][_key] = ({"ret": _f(rets[_pick]),
+                                     "rank": int(_pick + 1)}
+                                    if _pick is not None else None)
+            _kmax = min(len(pos), LEAF_PICK2_MIN_RANK_END)
+            if _kmax >= 2:
+                _k = min(range(1, _kmax), key=lambda r: (float(ov[r]), r))
+                row["min"] = {"ret": _f(rets[_k]), "rank": int(_k + 1),
+                              "ov": float(ov[_k])}
+        daily.append(row)
+        _p = row["thr"].get("0.25")
+        if _p is not None and _p.get("ret") is not None:
+            _r2 = _p["ret"]
+            pick2_sum += _r2
+            pick2_n += 1
+            pick2_win += int(_r2 > 0)
+            if row["r1"] is not None:
+                top2_sum += 0.5 * (row["r1"] + _r2)
+                top2_n += 1
     return {"cp": int(cp), "pick2_sum": float(pick2_sum), "pick2_n": int(pick2_n),
             "pick2_win": int(pick2_win), "top2_sum": float(top2_sum),
-            "top2_n": int(top2_n), "overlap_max": float(LEAF_PICK2_OVERLAP_MAX)}
+            "top2_n": int(top2_n), "overlap_max": float(LEAF_PICK2_OVERLAP_MAX),
+            "daily": daily}
+
+
+def _leaf_daily_metrics(daily: list[dict]) -> dict:
+    """从逐日 leaf 记录计算：重合率分位数、各阈值/MinOverlap 配对均值。"""
+    def _mean(v):
+        return float(np.mean(v)) if v else float("nan")
+
+    def _q(v, p):
+        return float(np.percentile(v, p)) if v else float("nan")
+
+    all_ov = []
+    by_rank = {r: [] for r in range(2, 11)}
+    for d in daily or []:
+        for k, v in enumerate(d.get("ovs") or []):
+            if v is None:
+                continue
+            x = float(v)
+            if not np.isfinite(x):
+                continue
+            all_ov.append(x)
+            r = k + 2
+            if r in by_rank:
+                by_rank[r].append(x)
+    out = {"overlap_all": {"n": len(all_ov), "mean": _mean(all_ov),
+                           "p10": _q(all_ov, 10), "p25": _q(all_ov, 25),
+                           "p50": _q(all_ov, 50), "p75": _q(all_ov, 75)},
+           "overlap_by_rank": {}}
+    for r, vals in by_rank.items():
+        if vals:
+            out["overlap_by_rank"][str(r)] = {
+                "n": len(vals), "mean": _mean(vals), "p10": _q(vals, 10),
+                "p25": _q(vals, 25), "p50": _q(vals, 50), "p75": _q(vals, 75)}
+    for _thr in LEAF_PICK2_THRESHOLDS:
+        key = f"{_thr:.2f}"
+        picks = []
+        for d in daily or []:
+            p = (d.get("thr") or {}).get(key)
+            if p and p.get("ret") is not None and np.isfinite(p["ret"]):
+                picks.append((d, p))
+        r1s = [d["r1"] for d, _ in picks if d.get("r1") is not None]
+        r2s = [d["r2"] for d, _ in picks if d.get("r2") is not None]
+        tops = [0.5 * (d["r1"] + p["ret"]) for d, p in picks
+                if d.get("r1") is not None]
+        out[f"thr_{key}"] = {
+            "n": len(picks), "mean": _mean([p["ret"] for _, p in picks]),
+            "win": _mean([1.0 if p["ret"] > 0 else 0.0 for _, p in picks]),
+            "rank1_mean": _mean(r1s), "rank2_mean": _mean(r2s),
+            "top2_mean": _mean(tops), "top2_n": len(tops)}
+    mins = []
+    for d in daily or []:
+        p = d.get("min")
+        if p and p.get("ret") is not None and np.isfinite(p["ret"]):
+            mins.append((d, p))
+    r1s = [d["r1"] for d, _ in mins if d.get("r1") is not None]
+    r2s = [d["r2"] for d, _ in mins if d.get("r2") is not None]
+    tops = [0.5 * (d["r1"] + p["ret"]) for d, p in mins if d.get("r1") is not None]
+    out["min"] = {
+        "n": len(mins), "mean": _mean([p["ret"] for _, p in mins]),
+        "win": _mean([1.0 if p["ret"] > 0 else 0.0 for _, p in mins]),
+        "rank1_mean": _mean(r1s), "rank2_mean": _mean(r2s),
+        "top2_mean": _mean(tops), "top2_n": len(tops),
+        "mean_overlap": _mean([p.get("ov") for _, p in mins if p.get("ov") is not None])}
+    return out
+
+
+def _write_leaf_reports(out_dir: Path, tasks_dir: Path) -> None:
+    """汇总 CV 任务 leaf JSON 的 daily，输出多阈值/MinOverlap 报告。"""
+    daily_by_cp: dict[int, list[dict]] = {}
+    for fp in sorted(Path(tasks_dir).glob("*_leaf.json")):
+        try:
+            obj = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if obj.get("side") != "lgb":
+            continue
+        for cp_s, st in (obj.get("leaf") or {}).items():
+            try:
+                cp = int(cp_s)
+            except Exception:
+                continue
+            daily_by_cp.setdefault(cp, []).extend(st.get("daily") or [])
+    if not daily_by_cp:
+        return
+    rows, ovrows = [], []
+    for cp, daily in sorted(daily_by_cp.items()):
+        m = _leaf_daily_metrics(daily)
+        for _thr in LEAF_PICK2_THRESHOLDS:
+            key = f"{_thr:.2f}"
+            rows.append({"cp": cp, "method": f"thr_{key}", **m[f"thr_{key}"]})
+        rows.append({"cp": cp, "method": "min_overlap", **m["min"]})
+        for scope in ["all"] + [f"rank{r}" for r in range(2, 11)]:
+            src = (m["overlap_all"] if scope == "all"
+                   else m["overlap_by_rank"].get(scope[4:]))
+            if src:
+                ovrows.append({"cp": cp, "scope": scope, **src})
+    pd.DataFrame(rows).to_csv(out_dir / "leaf_orth_report.csv",
+                              index=False, encoding="utf-8-sig")
+    pd.DataFrame(ovrows).to_csv(out_dir / "leaf_overlap_quantiles.csv",
+                                index=False, encoding="utf-8-sig")
+    print(f"[LEAF] report -> {out_dir/'leaf_orth_report.csv'} "
+          f"/ {out_dir/'leaf_overlap_quantiles.csv'}", flush=True)
 
 
 def train_predict_fold(
@@ -1275,11 +1409,12 @@ def _cv_worker(task) -> tuple:
     dates, valid_mask = c["dates"], c["valid_mask"]
     train_mask = c.get("train_mask", valid_mask)
     trade_mask = c.get("trade_mask", valid_mask)
+    test_mask = c.get("test_mask", trade_mask)
     tr_m = ((dates >= np.datetime64(fold["train_start"]))
             & (dates <= np.datetime64(fold["train_end"])) & train_mask)
     # 测试集只用 T 日盘后可知条件（trade_mask），不剔除无标签/未来停牌日
     te_m = ((dates >= np.datetime64(fold["test_start"]))
-            & (dates <= np.datetime64(fold["test_end"])) & trade_mask)
+            & (dates <= np.datetime64(fold["test_end"])) & test_mask)
     if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
         return t_i, side, hp["pid"], fold["fold_id"], 0, [], {}
     w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
@@ -1757,6 +1892,9 @@ def main():
     p.add_argument("--cps", default="",
                    help="仅评估指定 checkpoint（逗号分隔，与每超参专属网格取交集；"
                         "空=全部）。定向对拍示例：--pids H23 --cps 170,260")
+    p.add_argument("--mask_mode", choices=["new", "old"], default="new",
+                   help="掩码口径：new=训练 train_mask、测试 trade_mask（恢复 2026 末段）；"
+                        "old=旧版 valid_mask（含 forward_ok）同时用于训练/测试，复现旧 CV")
     p.add_argument("--min-train-rows", type=int, default=50000,
                    help="单折训练样本下限（默认50000；小样本调试可调低）")
     p.add_argument("--min-test-rows", type=int, default=5000,
@@ -1799,6 +1937,7 @@ def main():
     valid_mask, dates, codes, sectors = bundle["valid_mask"], bundle["dates"], bundle["codes"], bundle["sectors"]
     train_mask = bundle["train_mask"]
     trade_mask = bundle.get("trade_mask", valid_mask)
+    test_mask = bundle.get("test_mask", trade_mask)
     uniq_days = np.unique(dates[trade_mask])
 
     if args.mode == "cv":
@@ -1809,7 +1948,8 @@ def main():
         _CV_CTX = {"X": X, "y": y, "y_raw": y_raw, "core_pos": core_pos,
                    "buf_pos": buf_pos, "valid_mask": valid_mask,
                    "train_mask": bundle["train_mask"],
-                   "trade_mask": bundle["trade_mask"], "dates": dates,
+                   "trade_mask": bundle["trade_mask"],
+                   "test_mask": bundle["test_mask"], "dates": dates,
                    "codes": codes, "sectors": sectors, "seeds": seeds,
                    "engines": engines, "num_threads": args.num_threads,
                    "min_train": args.min_train_rows, "min_test": args.min_test_rows,
@@ -1842,6 +1982,7 @@ def main():
                  "embargo_days": EMBARGO_DAYS, "seeds": seeds, "engines": engines,
                  "min_train_rows": args.min_train_rows,
                  "min_test_rows": args.min_test_rows,
+                 "mask_mode": str(getattr(args, "mask_mode", "new")),
                  "label_v51": bool(args.label_v51),
                  "enable_buffer_pos": bool(args.enable_buffer_pos),
                  "lgb_checkpoints": {hp["pid"]: list(hp.get("checkpoints", CHECKPOINTS))
@@ -2017,6 +2158,10 @@ def main():
                 json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")
             logger.info(f"[CHAMPION] 胜出配置: {champ['param']} @ cp={int(champ['cp'])} "
                         f"| plateau_score={champ['plateau_score']:.4f}")
+            try:
+                _write_leaf_reports(out_dir, _tasks_dir)
+            except Exception as _le:
+                logger.warning(f"[LEAF] 多阈值报告生成失败: {_le}")
         else:
             logger.info("[CV] 本次无 LGB 任务（纯 CatBoost 运行），跳过 LGB 主榜")
         _cb = all_df[all_df["scheme"] == "catboost"]
@@ -2054,7 +2199,7 @@ def main():
                 tr_m = ((dates >= np.datetime64(fo["train_start"]))
                         & (dates <= np.datetime64(fo["train_end"])) & train_mask)
                 te_m = ((dates >= np.datetime64(fo["test_start"]))
-                        & (dates <= np.datetime64(fo["test_end"])) & trade_mask)
+                        & (dates <= np.datetime64(fo["test_end"])) & test_mask)
                 logger.info(
                     f"[OOS-ROLL] Fold{fo['fold_id']}: Train {fo['train_start']}~"
                     f"{fo['train_end']} (样本={int(tr_m.sum()):,}) | Test "
@@ -2102,7 +2247,7 @@ def main():
             tr_start, tr_end = uniq_days[tr_start_idx], uniq_days[tr_end_idx]
 
             tr_m = (dates >= tr_start) & (dates <= tr_end) & train_mask
-            te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & trade_mask
+            te_m = (dates >= np.datetime64(pd.Timestamp(args.test_start))) & (dates <= np.datetime64(pd.Timestamp(args.test_end))) & test_mask
             logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
             logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
 
@@ -2133,33 +2278,61 @@ def main():
         logger.info("\n===== 2026 OOS 日频 Rank1 终验结果（Top2 列仅作诊断，不交易）=====")
         logger.info("\n" + summary.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
-        _leaf_oos = {"sum": 0.0, "n": 0, "win": 0, "sum2": 0.0, "n2": 0}
+        _leaf_daily = []
         for _st in _leaf_folds:
-            if not _st:
-                continue
-            _leaf_oos["sum"] += float(_st.get("pick2_sum", 0.0))
-            _leaf_oos["n"] += int(_st.get("pick2_n", 0))
-            _leaf_oos["win"] += int(_st.get("pick2_win", 0))
-            _leaf_oos["sum2"] += float(_st.get("top2_sum", 0.0))
-            _leaf_oos["n2"] += int(_st.get("top2_n", 0))
-        if _leaf_oos["n"]:
-            _leaf_pick2_mean = _leaf_oos["sum"] / _leaf_oos["n"]
-            _leaf_win = _leaf_oos["win"] / _leaf_oos["n"]
-            _leaf_top2_mean = (_leaf_oos["sum2"] / _leaf_oos["n2"]
-                               if _leaf_oos["n2"] else float("nan"))
+            if _st:
+                _leaf_daily.extend(_st.get("daily") or [])
+        _lm = _leaf_daily_metrics(_leaf_daily)
+        _m25 = _lm.get("thr_0.25", {})
+        _mmin = _lm.get("min", {})
+        if _m25.get("n", 0) or _mmin.get("n", 0):
             logger.info(
-                f"[LEAF-PICK2] cp={args.cp} 叶子正交Pick2日均={_leaf_pick2_mean:.4f} "
-                f"胜率={_leaf_win:.1%} 天数={_leaf_oos['n']} | "
-                f"Top2正交组合日均={_leaf_top2_mean:.4f} "
-                f"(重合率<={LEAF_PICK2_OVERLAP_MAX:.0%})")
+                f"[LEAF-PICK2] cp={args.cp} 0.25阈值日均={_m25.get('mean', float('nan')):.4f} "
+                f"胜率={_m25.get('win', float('nan')):.1%} 天数={int(_m25.get('n', 0))} | "
+                f"MinOverlap日均={_mmin.get('mean', float('nan')):.4f} "
+                f"胜率={_mmin.get('win', float('nan')):.1%} 天数={int(_mmin.get('n', 0))} | "
+                f"同日Rank1={_mmin.get('rank1_mean', float('nan')):.4f} "
+                f"Rank2={_mmin.get('rank2_mean', float('nan')):.4f}")
+            _payload = {
+                "pid": hp["pid"], "cp": int(args.cp),
+                "pick2_leaf_orth_mean": _m25.get("mean", float("nan")),
+                "top2_leaf_orth_mean": _m25.get("top2_mean", float("nan")),
+                "pick2_leaf_win": _m25.get("win", float("nan")),
+                "pick2_leaf_days": int(_m25.get("n", 0)),
+                "overlap_max": LEAF_PICK2_OVERLAP_MAX,
+                "pick2_030_mean": _lm.get("thr_0.30", {}).get("mean", float("nan")),
+                "pick2_035_mean": _lm.get("thr_0.35", {}).get("mean", float("nan")),
+                "pick2_040_mean": _lm.get("thr_0.40", {}).get("mean", float("nan")),
+                "pick2_min_mean": _mmin.get("mean", float("nan")),
+                "pick2_min_days": int(_mmin.get("n", 0)),
+                "pick2_min_win": _mmin.get("win", float("nan")),
+                "top2_min_mean": _mmin.get("top2_mean", float("nan")),
+                "rank1_same_day_mean": _mmin.get("rank1_mean", float("nan")),
+                "rank2_same_day_mean": _mmin.get("rank2_mean", float("nan")),
+                "min_mean_overlap": _mmin.get("mean_overlap", float("nan")),
+                "overlap_p10": _lm["overlap_all"]["p10"],
+                "overlap_p25": _lm["overlap_all"]["p25"],
+                "overlap_p50": _lm["overlap_all"]["p50"],
+                "overlap_p75": _lm["overlap_all"]["p75"],
+            }
             (out_dir / "oos2026_leaf_pick2.json").write_text(
-                json.dumps({"pid": hp["pid"], "cp": int(args.cp),
-                            "pick2_leaf_orth_mean": _leaf_pick2_mean,
-                            "top2_leaf_orth_mean": _leaf_top2_mean,
-                            "pick2_leaf_win": _leaf_win,
-                            "pick2_leaf_days": int(_leaf_oos["n"]),
-                            "overlap_max": LEAF_PICK2_OVERLAP_MAX},
-                           ensure_ascii=False, indent=2), encoding="utf-8")
+                json.dumps(_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            if _leaf_daily:
+                _rows = []
+                for _d in _leaf_daily:
+                    _row = {"cp": int(args.cp), "date": _d.get("date"),
+                            "r1": _d.get("r1"), "r2": _d.get("r2")}
+                    _mn = _d.get("min") or {}
+                    _row.update({"min_rank": _mn.get("rank"), "min_ov": _mn.get("ov"),
+                                 "min_ret": _mn.get("ret")})
+                    for _thr in LEAF_PICK2_THRESHOLDS:
+                        _key = f"{_thr:.2f}"
+                        _pp = (_d.get("thr") or {}).get(_key) or {}
+                        _row[f"thr_{_key}_rank"] = _pp.get("rank")
+                        _row[f"thr_{_key}_ret"] = _pp.get("ret")
+                    _rows.append(_row)
+                pd.DataFrame(_rows).to_csv(out_dir / "oos2026_leaf_daily.csv",
+                                           index=False, encoding="utf-8-sig")
 
         # 分钟回测基准 = 纯模型（行业去重，**无风控否决**）；否决仅用于日频对照，
         # 需要时用 --veto_minute_bt 另跑一份（2026-10-20 P0：防止 -inf 污染）。

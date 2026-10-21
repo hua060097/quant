@@ -44,6 +44,7 @@ def cs_rank_centered(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 _BOUNDED_TECH_OPS = frozenset({
     'RSI', 'WR', 'PSY', 'KDJ_K', 'KDJ_D', 'KDJ_J', 'MASS',
     'COUNT', 'EVERY', 'EXIST', 'RANK', 'SCALE', 'ZSCORE', 'TS_RANK',
+    'BOLL_WIDTH',
 })
 _GATE_ROOT_OPS = frozenset({'IF', 'GT', 'GE', 'LT', 'LE'})
 
@@ -53,9 +54,9 @@ def is_bounded_or_gated_formula(formula_str: str) -> bool:
 
     规则：根节点为条件门/计数/已标准化算子，或子树含 RSI/WR/PSY/KDJ
     等有界技术指标。解析失败 → False（走标准化分支）。
-    2026-10-21：移除 BOLL_WIDTH——其输入可能为绝对金额（如
-    BOLL_WIDTH(TS_MEAN(AMOUNT,60),5)），输出随价格量纲变化，并非天然有界，
-    必须走逐日截面 MAD 标准化（22f1b27a3fdf 的人民币量纲 Bug）。
+    2026-10-21 实验 B：恢复 BOLL_WIDTH 为 raw——A/B 显示对
+    BOLL_WIDTH(TS_MEAN(AMOUNT,60),5) 做 MAD 会把 H23 CV r1_mean 从 1.307%
+    降到 0.882%；该列是矩阵中唯一的全市场绝对成交额水位锚点，先保留 raw。
     """
     try:
         from grammar import walk
