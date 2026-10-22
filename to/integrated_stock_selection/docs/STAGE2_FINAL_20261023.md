@@ -59,11 +59,27 @@
    - 已改为纳入所在 `.py` 文件全文哈希，避免 helper 改动后命中旧 `value_cache`。
    - A2 84 不含 wq，本次 A2 结论不受影响；后续 build_top 评估 wq 需使用新 hash/清旧缓存。
 
-## 未完成
+## Diagnosis B：2026 Q2 vs Q3 Rank1 SHAP
 
-- **2026 Q2 vs Q3 Rank1 SHAP 对比**：本地有 A2 booster（`a2_models`），但本地没有 84 列特征矩阵 `lgb_features.parquet`；无法在本地对 Q2/Q3 Rank1 样本调用 `pred_contrib`。需要该矩阵（服务器数据盘 2.8G）或由服务器导出 Q2/Q3 Rank1 特征切片。该诊断尚未闭环。
+- 数据：2026 Q2 60 个 Rank1 样本、Q3 55 个；Q2 Precision@1 23.33%，Q3 5.45%。
+- 模型：本地 `a2_models/lgb_H23_Fold11_seed*_cp170.txt` 三 seed 平均（Fold11 代理，不是未保存的 OOS 8-seed 模型）。
+- Q3 正贡献增加最多的特征：
+  - `191b2f2c49b2`：Q2 `0.1235` -> Q3 `0.1961`（+0.0726）
+  - `5beb4eba2fb5`：`0.0128` -> `0.0238`（+0.0110）
+  - `17d85010d6d8`：`0.0473` -> `0.0522`（+0.0048）
+  - `612257d8115c`：`0.0066` -> `0.0109`（+0.0043）
+  - `log_price_slope_20d`：`0.0007` -> `0.0050`（+0.0043）
+  - `AMIHUD20`：`0.0007` -> `0.0038`（+0.0031）
+  - `2e7e20eff971`：`0.0038` -> `0.0067`（+0.0029）
+- 原始均值：Q3 的 `191b2`（1.067 vs 1.231）、`5beb`（2.916 vs 3.325）、`log_price_slope_20d`（2.158 vs 3.237）均低于 Q2；模型在 Q3 对更低原始值的这些旧反转/流动性/成交额因子给出更高正贡献。
+- 11 个 `*__GM_newhigh_ratio_chg__gain` 不在 Q3 增量前列；只有 `R081/R345` 的增量约 `0.0008/0.0006`。
+- 结论：Q3 Rank1 的错配主要来自 **191b2/5beb/17d/log_price_slope/2e7e** 等旧因子的非线性放大；不是 11 个 GM gain 门控列。Fold11 是代理模型，若要严格 OOS SHAP，需要保存 OOS 8-seed booster 后重跑。
+
+## 未完成/限制
+
+- Q2/Q3 SHAP 使用 Fold11 CV 模型代理；OOS 8-seed 模型未保存，非严格 OOS 归因。
 - 全市场标签审计已完成：`results/server_save_20261022/full_market_label_audit_20261023.csv`。
-- Q3 全市场 MDD/Precision 已与分钟 pkl 对齐；分钟 pkl 本地已保存。
+- Q3 分钟 pkl 已保存并与全市场精度对齐。
 
 ## 关键文件
 
