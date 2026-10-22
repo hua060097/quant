@@ -318,10 +318,161 @@ def _scan_value_worker(args) -> tuple:
         return idx, None
 
 
+def _quality_scan_positions(df: pd.DataFrame, max_scan: int,
+                            min_abs_rankic: float, min_lgb: float,
+                            quality_gate: bool = True) -> list[int]:
+    n = len(df)
+    if n <= 0:
+        return []
+    if max_scan <= 0:
+        pos = set(range(n))
+    else:
+        pos = set(range(min(max_scan, n)))
+    if quality_gate:
+        ri = pd.to_numeric(df['rank_ic'], errors='coerce').to_numpy(dtype=float)
+        lgb = pd.to_numeric(df['LGB'], errors='coerce').to_numpy(dtype=float)
+        ok = (np.isfinite(ri) & np.isfinite(lgb)
+              & (np.abs(ri) >= float(min_abs_rankic))
+              & (lgb >= float(min_lgb)))
+        pos.update(np.flatnonzero(ok).tolist())
+    return sorted(pos)
+
+
+def _fmt_window_date(value: str) -> str:
+    s = str(value)
+    if len(s) == 8 and s.isdigit():
+        return f'{s[:4]}-{s[4:6]}-{s[6:]}'
+    return s
+
+
+def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
+                             seat_order: list[int], seat_detail: list[dict],
+                             hab_pool: list[dict], payload: dict,
+                             manifest_path: str):
+    stats = {'manifest': str(manifest_path), 'frozen_n': 0,
+             'class1_added': 0, 'pool_added': 0, 'seat_added': 0,
+             'missing_rows': [], 'uncovered_frozen': 0}
+    try:
+        man = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    except Exception as exc:
+        stats['error'] = str(exc)[:200]
+        payload['incremental'] = stats
+        return picked, pool_rows, seat_order, seat_detail, hab_pool
+    by = man.get('by_class') or {}
+    frozen_class1 = [str(x) for x in (by.get('class1_stock_alpha') or [])]
+    frozen_pool = [str(x) for x in (by.get('class2_habitat_pool') or [])]
+    frozen_all = [str(x) for x in (man.get('features_all') or [])]
+    if not frozen_all:
+        frozen_all = list(dict.fromkeys(frozen_class1 + frozen_pool))
+    stats['frozen_n'] = len(frozen_all)
+    frozen_set = set(frozen_all)
+    c1_set = set(frozen_class1)
+    pool_set = set(frozen_pool)
+
+    def _keep_c1(r) -> bool:
+        fid = str(r.get('factor_id'))
+        return fid in c1_set or (str(r.get('lib')) == 'custom'
+                                 and fid not in frozen_set)
+
+    def _keep_pool(r) -> bool:
+        fid = str(r.get('factor_id'))
+        return fid in pool_set or (str(r.get('lib')) == 'custom'
+                                   and fid not in frozen_set)
+
+    _before = (len(picked), len(pool_rows), len(seat_order), len(hab_pool))
+    picked[:] = [r for r in picked if _keep_c1(r)]
+    pool_rows[:] = [r for r in pool_rows if _keep_c1(r)]
+    seat_order[:] = [sp for sp in seat_order
+                     if _keep_c1(vwap_df.iloc[sp])]
+    seat_detail[:] = [d for d in seat_detail if _keep_c1(d)]
+    hab_pool[:] = [h for h in hab_pool if _keep_pool(h)]
+    stats['new_custom_kept'] = len({
+        str(r.get('factor_id')) for r in picked + pool_rows
+        if str(r.get('lib')) == 'custom' and str(r.get('factor_id')) not in frozen_set
+    } | {
+        str(d.get('factor_id')) for d in seat_detail
+        if str(d.get('lib')) == 'custom' and str(d.get('factor_id')) not in frozen_set
+    } | {
+        str(h.get('factor_id')) for h in hab_pool
+        if str(h.get('lib')) == 'custom' and str(h.get('factor_id')) not in frozen_set
+    })
+    stats['dropped_nonfrozen'] = (_before[0] - len(picked)
+                                  + _before[1] - len(pool_rows)
+                                  + _before[2] - len(seat_order)
+                                  + _before[3] - len(hab_pool))
+    seats_path = Path(manifest_path).parent / 'habitat_seats.json'
+    if not seats_path.exists():
+        seats_path = Path(manifest_path).parent / 'habitat_seats_new.json'
+    frozen_seats = []
+    try:
+        if seats_path.exists():
+            frozen_seats = [str(x) for x in
+                            (json.loads(seats_path.read_text(encoding='utf-8')).get('seats') or [])]
+    except Exception:
+        frozen_seats = []
+    rows = {}
+    for pos in range(len(vwap_df)):
+        r = vwap_df.iloc[pos]
+        fid = str(r.get('factor_id'))
+        if fid not in rows:
+            rows[fid] = (pos, r)
+    picked_ids = {str(r.get('factor_id')) for r in picked}
+    pool_ids = {str(r.get('factor_id')) for r in pool_rows}
+    seated = set()
+    for sp in seat_order:
+        try:
+            seated.add(str(vwap_df.iloc[sp].get('factor_id')))
+        except Exception:
+            pass
+    hab_ids = {str(h.get('factor_id')) for h in hab_pool}
+    for fid in frozen_class1:
+        if fid in picked_ids or fid in pool_ids:
+            continue
+        item = rows.get(fid)
+        if item is None:
+            stats['missing_rows'].append(fid)
+            continue
+        pool_rows.append(item[1])
+        pool_ids.add(fid)
+        stats['class1_added'] += 1
+    for fid in frozen_pool:
+        if fid in hab_ids:
+            continue
+        item = rows.get(fid)
+        if item is None:
+            stats['missing_rows'].append(fid)
+            continue
+        _, r = item
+        hab_pool.append({'factor_id': fid, 'lib': str(r.get('lib', '')),
+                         'family': str(r.get('family', '')),
+                         'formula_cn': str(r.get('formula_cn', '')),
+                         'habitat_score': None})
+        hab_ids.add(fid)
+        stats['pool_added'] += 1
+    for fid in frozen_seats:
+        if fid in seated:
+            continue
+        item = rows.get(fid)
+        if item is None:
+            stats['missing_rows'].append(fid)
+            continue
+        pos, r = item
+        seat_order.append(pos)
+        seated.add(fid)
+        seat_detail.append({'factor_id': fid, 'lib': str(r.get('lib', '')),
+                            'hot5_q80_t': None})
+        stats['seat_added'] += 1
+    covered = picked_ids | pool_ids | seated | hab_ids
+    stats['missing_rows'] = sorted(set(stats['missing_rows']))
+    stats['uncovered_frozen'] = sum(1 for x in frozen_all if x not in covered)
+    payload['incremental'] = stats
+    return picked, pool_rows, seat_order, seat_detail, hab_pool
+
+
 def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
                             builder: FactorBuilder, pos_me: np.ndarray,
                             day_group: np.ndarray, specs_by_id: dict,
-                            max_scan: int = 150, keep: int = 20,
+                            max_scan: int = 400, keep: int = 20,
                             threshold: float = CORR_THRESHOLD,
                             cache_dir: Path | None = None,
                             val_store: dict | None = None,
@@ -330,7 +481,8 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
                             y_me: np.ndarray | None = None,
                             store_vals: dict | None = None,
                             twin_thr: float = 0.95,
-                            jobs: int = 1) -> tuple[list[int], dict, dict]:
+                            jobs: int = 1,
+                            scan_positions: list[int] | None = None) -> tuple[list[int], dict, dict]:
     """榜2 排序层轻量正交（2026-09-24）：按 LGB 降序扫描前 max_scan 个候选，
     逐日截面 |Spearman|>threshold 的只留 LGB 最优者（与 decorrelate_top 同判据，
     但在榜单生成时即生效，decorrelate_top 仍可独立复核）。
@@ -352,7 +504,11 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
     # 未命中排队。行序在 Phase B 合并后还原，twin 优先级顺序不变。
     _done: list = []  # (i_row, key, r, v)
     _miss: list = []  # (i_row, key, r, branch)
-    for i_row, (_, r) in enumerate(df_vwap.head(max_scan).iterrows()):
+    if scan_positions is None:
+        scan_positions = list(range(len(df_vwap))) if max_scan <= 0 \
+            else list(range(min(max_scan, len(df_vwap))))
+    for i_row in scan_positions:
+        r = df_vwap.iloc[i_row]
         key = None
         try:
             branch, key = _scan_value_key(r, specs_by_id)
@@ -534,8 +690,8 @@ def mined_prefilter(top: int, habitat_top: int = 50,
                 hcand.append((max(_hs), h))
         hcand.sort(key=lambda x: -x[0])
         picks.extend(h for _, h in hcand[:max(0, habitat_top)])
-        print(f'habitat union: +{min(max(0, habitat_top), len(hcand))} (pool {len(hcand)})',
-              flush=True)
+        print(f'habitat union: +{min(max(0, habitat_top), len(hcand))} '
+              f'(pool {len(hcand)})', flush=True)
     except Exception as exc:
         print(f'warning: habitat union 跳过 {str(exc)[:100]}', flush=True)
     uniq = list(dict.fromkeys(picks))
@@ -1022,10 +1178,10 @@ def _habx_worker(args) -> tuple:
 
 def _habitat_expand(vwap_df, val_store: dict, store_vals: dict, ev,
                     builder, frame, pos_me: np.ndarray, cache_dir,
-                    specs: dict, jobs: int = 1):
+                    specs: dict, jobs: int = 1, max_extra: int = 0):
     """habitat 估值扩面（串行/并行共用装配）。
     val_store 只含 LGB 前 scan 名；全表扫描，优先级：habitat_pick（台账豁免）
-    > store/机制家族 > 其余；上限 150。
+    > store/机制家族 > 其余；max_extra=0 不截断。
     返回 (hab_vals, extra_keys)：hab_vals 初始为 dict(val_store) 的拷贝；
     extra_keys 为扩面候选键集（seats 漏斗优先排序用）。
     求值经 _habx_worker（串行回退直接调，串并同一份代码）；命中 value_cache
@@ -1056,9 +1212,12 @@ def _habitat_expand(vwap_df, val_store: dict, store_vals: dict, ev,
                 _extra1.append((_pos, _r))
             else:
                 _extra2.append((_pos, _r))
-        _extra_all = (_extra0 + _extra1 + _extra2)[:150]
-        print(f'habitat 扩面候选：pick={len(_extra0)} fam={len(_extra1)} '
-              f'other={len(_extra2)} -> 算{len(_extra_all)} 个', flush=True)
+        _extra_all = _extra0 + _extra1 + _extra2
+        if max_extra and max_extra > 0:
+            _extra_all = _extra_all[:int(max_extra)]
+        print(f'habitat expand: pick={len(_extra0)} fam={len(_extra1)} '
+              f'other={len(_extra2)} -> eval={len(_extra_all)} cap={max_extra or 0}',
+              flush=True)
         # 预检（串行，纯查表+读缓存）：store 走内存直填；命中 value_cache 的
         # 直接复用（与 twin 扫描同键）；未命中才进求值（串行/并行）。
         _hx_tasks: list = []
@@ -1758,6 +1917,7 @@ def cond_ic_table(df: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
 def build_md(df: pd.DataFrame, out_json: dict, vwap_order: list[int] | None = None,
              vwap_rho: dict | None = None, cond_table: list[dict] | None = None,
              c2c_order: list[int] | None = None, dom_info: dict | None = None) -> str:
+    _eval_window = str(out_json.get('eval_window') or '2021-09-01~2026-08-21')
     lines = ['# 对齐口径双榜单（aligned_v1）',
              '',
              f'生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}  '
@@ -1838,6 +1998,8 @@ def build_md(df: pd.DataFrame, out_json: dict, vwap_order: list[int] | None = No
         lines.append('')
     lines.append('> 注：单因子指标无法度量多因子互补性；终审建议用现有 LightGBM 做留一/置换'
                  '重要性（ΔAUC 或 Δprecision@5）。refs 因子的平台公式翻译在 upload 时按需补。')
+    lines = [str(_line).replace('2021-09-01~2026-08-21', _eval_window)
+             for _line in lines]
     return '\n'.join(lines)
 
 
@@ -1849,8 +2011,21 @@ def main() -> int:
                     help='挖矿候选按旧证据每标签前 N 并集预筛')
     ap.add_argument('--from-flat', default='',
                     help='跳过重估，从已有 ALIGNED_TOP2_*_flat.csv 重建 MD')
-    ap.add_argument('--scan', type=int, default=150,
-                    help='榜1/榜2 正交扫描深度（按指标降序扫描前 N 个候选）')
+    ap.add_argument('--scan', type=int, default=400,
+                    help='榜1/榜2 最小扫描深度：前 N 名必进扫描；0=全表扫描')
+    ap.add_argument('--full-scan', action='store_true',
+                    help='忽略 --scan，所有候选进入正交扫描')
+    ap.add_argument('--no-quality-gate', action='store_false', dest='quality_gate',
+                    help='关闭质量门（仅扫描前 --scan 名，用于复现旧口径）')
+    ap.add_argument('--min-abs-rankic', type=float, default=0.012,
+                    help='质量门：|rank_ic| 下限（默认 0.012）')
+    ap.add_argument('--min-lgb', type=float, default=0.0015,
+                    help='质量门：LGB 下限（默认 0.0015）')
+    ap.add_argument('--habitat-max-extra', type=int, default=0,
+                    help='栖息地扩面上限；0=不截断（默认）')
+    ap.add_argument('--incremental', '--incremental-manifest',
+                    dest='incremental_manifest', default='',
+                    help='冻结清单 features_manifest.json；提供后启用增量守擂保护')
     ap.add_argument('--keep-pool', type=int, default=20,
                     help='V4.1榜2正交通道保留数（默认20保持历史行为；SOP示例80）')
     ap.add_argument('--keep-base', type=int, default=20,
@@ -1978,6 +2153,7 @@ def main() -> int:
 
     from fitness import START, END as FIT_END
     _fit_end = min(str(FIT_END), str(args.data_cut))
+    payload['eval_window'] = f'{_fmt_window_date(START)}~{_fmt_window_date(_fit_end)}'
     mask_d = ((frame['date'] >= pd.Timestamp(START))
               & (frame['date'] <= pd.Timestamp(_fit_end))).to_numpy()
     # [CORR-CALIBRATION 2026-10-02] 相关性截面由「每月最后 1 个交易日」改为「月内全部交易日」。
@@ -2010,32 +2186,47 @@ def main() -> int:
             store_vals = {}
 
     vwap_nl: dict = {}
+    _vwap_scan = _quality_scan_positions(
+        vwap_df, 0 if args.full_scan else args.scan,
+        args.min_abs_rankic, args.min_lgb, args.quality_gate)
     if len(vwap_df) > 20:
         vwap_order, vwap_rho, vwap_nl = vwap_orthogonal_indices(
             vwap_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
-            max_scan=args.scan, keep=max(args.keep_pool, args.keep_base),
+            max_scan=0 if args.full_scan else args.scan,
+            keep=max(args.keep_pool, args.keep_base),
             cache_dir=cache_dir, val_store=val_store,
             stats=cache_stats, label='vwap', y_me=y_vwap_me,
-            store_vals=store_vals or None, jobs=args.jobs)
+            store_vals=store_vals or None, jobs=args.jobs,
+            scan_positions=_vwap_scan)
         payload['vwap_orthogonal'] = bool(vwap_order)
-        payload['vwap_orth_scan'] = int(min(args.scan, len(vwap_df)))
-        print(f'榜2 正交：候选 {len(vwap_df)} → 保留 {len(vwap_order)}  '
-              f'cache hit={cache_stats.get("hit", 0)} miss={cache_stats.get("miss", 0)}',
-              flush=True)
+        payload['vwap_orth_scan'] = int(len(_vwap_scan))
+        payload['vwap_scan_mode'] = 'full' if args.full_scan else 'top+quality'
+        payload['vwap_quality_gate'] = bool(args.quality_gate)
+        payload['vwap_scan_quality_n'] = int(len(_vwap_scan))
+        print(f'榜2 正交：候选 {len(vwap_df)} → 扫描 {len(_vwap_scan)} → '
+              f'保留 {len(vwap_order)}  cache hit={cache_stats.get("hit", 0)} '
+              f'miss={cache_stats.get("miss", 0)}', flush=True)
 
     # 榜1 正交（2026-09-25）：c2c 榜也做正交去重，防数学孪生/高相关变体重复入选
     c2c_df = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False)
+    _c2c_scan = _quality_scan_positions(
+        c2c_df, 0 if args.full_scan else args.scan,
+        args.min_abs_rankic, args.min_lgb, args.quality_gate)
     if len(c2c_df) > 20:
         c2c_order, c2c_rho, _ = vwap_orthogonal_indices(
             c2c_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
-            max_scan=args.scan, cache_dir=cache_dir, val_store=val_store,
+            max_scan=0 if args.full_scan else args.scan,
+            cache_dir=cache_dir, val_store=val_store,
             stats=cache_stats, label='c2c', store_vals=store_vals or None,
-            jobs=args.jobs)
+            jobs=args.jobs, scan_positions=_c2c_scan)
         payload['c2c_orthogonal'] = bool(c2c_order)
-        payload['c2c_orth_scan'] = int(min(args.scan, len(c2c_df)))
-        print(f'榜1 正交：候选 {len(c2c_df)} → 保留 {len(c2c_order)}  '
-              f'cache hit={cache_stats.get("hit", 0)} miss={cache_stats.get("miss", 0)}',
-              flush=True)
+        payload['c2c_orth_scan'] = int(len(_c2c_scan))
+        payload['c2c_scan_mode'] = 'full' if args.full_scan else 'top+quality'
+        payload['c2c_quality_gate'] = bool(args.quality_gate)
+        payload['c2c_scan_quality_n'] = int(len(_c2c_scan))
+        print(f'c2c orthogonal: candidates={len(c2c_df)} scanned={len(_c2c_scan)} '
+              f'kept={len(c2c_order)} hit={cache_stats.get("hit", 0)} '
+              f'miss={cache_stats.get("miss", 0)}', flush=True)
     payload['value_cache'] = {'hit': cache_stats.get('hit', 0),
                               'miss': cache_stats.get('miss', 0)}
     # 非线性诊断回填（2026-09-26）：vwap 扫描候选的 MI/JSD 进 df（c2c 行保持 NaN）
@@ -2070,7 +2261,7 @@ def main() -> int:
     # 优先级：habitat_pick（台账豁免）> store/机制家族 > 其余；上限 150。
     hab_vals, _extra_keys = _habitat_expand(
         vwap_df, val_store, store_vals, ev, builder, frame, pos_me,
-        cache_dir, _specs, jobs=args.jobs)
+        cache_dir, _specs, jobs=args.jobs, max_extra=args.habitat_max_extra)
     try:
         from cond_ic import build_cond_prep
         _prep_me_full = build_cond_prep(frame)
@@ -2183,6 +2374,13 @@ def main() -> int:
                 break
         _pool_rows = list(vwap_df.iloc[(vwap_order or [])[:max(0, args.keep_pool)]].iterrows())
         _pool_rows = [r for _, r in _pool_rows]
+        if getattr(args, 'incremental_manifest', ''):
+            _picked, _pool_rows, seat_order, seat_detail, hab_pool = \
+                _apply_incremental_guard(
+                    vwap_df, _picked, _pool_rows, seat_order, seat_detail,
+                    hab_pool, payload, args.incremental_manifest)
+            payload['habitat_seats'] = seat_detail
+            payload['habitat_pool_n'] = len(hab_pool)
         _seen_panel = set()
         _panel_rows = []
         for _r in _picked + _pool_rows + [vwap_df.iloc[_sp] for _sp in seat_order] \

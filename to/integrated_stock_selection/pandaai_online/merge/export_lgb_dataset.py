@@ -181,7 +181,7 @@ def main() -> int:
 
     def _split_raw(cols: list[str]) -> tuple[list[str], list[str]]:
         # store 存量列与有界/条件门公式同列处理：保持原值（见 is_raw_formula）。
-        _raw = [c for c in cols if c in _RAW_CUSTOM_IDS
+        _raw = [c for c in cols if c in _RAW_CUSTOM_IDS or c.endswith('_raw')
                 or (c in _fmap and is_raw_formula(_fmap[c]))]
         _norm = [c for c in cols if c not in _raw]
         return _raw, _norm
