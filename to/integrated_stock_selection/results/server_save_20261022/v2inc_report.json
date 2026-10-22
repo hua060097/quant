@@ -1,0 +1,47 @@
+{
+  "base_features": 84,
+  "candidates": [
+    "ts_amt_exp_5_60_raw",
+    "cyc_profit_ratio_20",
+    "wq012_vol_ret_asym5"
+  ],
+  "max_rho": 0.7,
+  "min_abs_rankic": 0.012,
+  "min_lgb": 0.0015,
+  "accepted": [
+    {
+      "factor": "ts_amt_exp_5_60_raw",
+      "max_rho": 0.656654,
+      "max_rho_vs": "mass_index_reversal",
+      "rank_ic": -0.035082054400188,
+      "LGB": 0.0039079635352826
+    },
+    {
+      "factor": "wq012_vol_ret_asym5",
+      "max_rho": 0.587402,
+      "max_rho_vs": "alpha_001",
+      "rank_ic": -0.0275283097253799,
+      "LGB": 0.0018688312533103
+    }
+  ],
+  "rejected": [
+    {
+      "factor": "cyc_profit_ratio_20",
+      "max_rho": 0.755896,
+      "max_rho_vs": "price_ma60_ratio",
+      "rank_ic": -0.0307076640110981,
+      "LGB": 0.0028517488714854,
+      "reason": "rho_challenge"
+    }
+  ],
+  "cs_norm": "mad",
+  "raw_candidates": [
+    "ts_amt_exp_5_60_raw"
+  ],
+  "normalized_candidates": [
+    "wq012_vol_ret_asym5"
+  ],
+  "n_base": 84,
+  "n_accepted": 2,
+  "n_total": 86
+}

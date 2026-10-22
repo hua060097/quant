@@ -304,7 +304,7 @@ def _load_ret5(df: pd.DataFrame, features_dir: Path):
             continue
         try:
             frames.append(pd.read_parquet(
-                fp, columns=['stock_code', 'date', 'close']))
+                fp, columns=['stock_code', 'date', 'close', 'turnover_rate']))
         except Exception:
             continue
     if not frames:
@@ -312,6 +312,9 @@ def _load_ret5(df: pd.DataFrame, features_dir: Path):
     feat = pd.concat(frames, ignore_index=True)
     feat['stock_code'] = feat['stock_code'].astype(str)
     feat['date'] = pd.to_datetime(feat['date'])
+    turn_p30 = feat.groupby('date', sort=False)['turnover_rate'].quantile(0.30)
+    turn_p30 = turn_p30.rename('turn_p30').reset_index()
+    feat = feat.merge(turn_p30, on='date', how='left')
     idx = {pd.Timestamp(d): i for i, d in enumerate(dates)}
     prev5 = {d: (dates[idx[d] - 5] if idx[d] >= 5 else pd.NaT) for d in dates}
     r1['stock_code'] = r1['stock_code'].astype(str)
@@ -322,8 +325,10 @@ def _load_ret5(df: pd.DataFrame, features_dir: Path):
         columns={'date': 'd5', 'close': 'close5'})
     r1 = r1.merge(close5, on=['stock_code', 'd5'], how='left')
     r1['ret5'] = r1['close'] / r1['close5'] - 1.0
+    r1['turn_low'] = r1['turnover_rate'] <= r1['turn_p30']
     return r1.groupby(['date', 'fold_id'], sort=False).agg(
-        ret5=('ret5', 'mean')).reset_index()
+        ret5=('ret5', 'mean'), turnover=('turnover_rate', 'mean'),
+        turn_low=('turn_low', 'mean')).reset_index()
 
 
 def _perf(x: pd.Series) -> dict:
@@ -336,6 +341,58 @@ def _perf(x: pd.Series) -> dict:
     return {'n': int(len(r)), 'mean_daily': float(r.mean()),
             'win': float((r > 0).mean()), 'nav_end': float(nav[-1]),
             'total_return': float(nav[-1] - 1.0), 'mdd': mdd}
+
+
+def _perf_eq3(r1: pd.Series, weight: np.ndarray,
+              cost: float = 0.0016) -> dict:
+    r = pd.to_numeric(r1, errors='coerce').to_numpy(dtype=float)
+    w = np.asarray(weight, dtype=float)
+    ok = np.isfinite(r) & np.isfinite(w)
+    r, w = r[ok], w[ok]
+    if len(r) == 0:
+        return {}
+    ret_day = w * r - w * cost
+    eq_ret = ret_day / 3.0
+    nav = np.cumprod(1.0 + eq_ret)
+    mdd = float(np.min(nav / np.maximum.accumulate(nav) - 1.0))
+    sd = float(np.std(eq_ret, ddof=1)) if len(eq_ret) > 1 else float('nan')
+    sharpe = float(np.mean(eq_ret) / sd * np.sqrt(252.0)) \
+        if np.isfinite(sd) and sd > 0 else float('nan')
+    return {'n': int(len(r)), 'mean_daily': float(np.mean(eq_ret)),
+            'win': float((eq_ret > 0).mean()), 'nav_end': float(nav[-1]),
+            'total_return': float(nav[-1] - 1.0), 'mdd': mdd,
+            'sharpe': sharpe}
+
+
+def _rank2_collapse(df: pd.DataFrame) -> dict:
+    m = _gap_daily(df)
+    if m.empty or 'p2' not in m.columns:
+        return {}
+    x = m['gap12'].to_numpy(dtype=float)
+    ok = np.isfinite(x)
+    if ok.sum() < 10:
+        return {}
+    qs = np.quantile(x[ok], [0.2, 0.4, 0.6, 0.8])
+    m['gap_bucket'] = np.digitize(x, qs)
+    p2 = m['p2'].to_numpy(dtype=float)
+    roll_q = np.full(len(m), np.nan, dtype=float)
+    for i in range(60, len(m)):
+        hist = p2[i - 60:i]
+        hist = hist[np.isfinite(hist)]
+        if len(hist) < 20 or not np.isfinite(p2[i]):
+            continue
+        qq = np.quantile(hist, [0.2, 0.4, 0.6, 0.8])
+        roll_q[i] = float(np.digitize(p2[i], qq) + 1)
+    m['p2_roll_q'] = roll_q
+    q5 = m[m['gap_bucket'] == 4]
+    other = m[m['gap_bucket'] < 4]
+    return {
+        'n_q5': int(len(q5)),
+        'q5_p2_mean': float(q5['p2'].mean()),
+        'q1q4_p2_mean': float(other['p2'].mean()),
+        'q5_p2_roll_q_mean': float(q5['p2_roll_q'].mean()),
+        'q1q4_p2_roll_q_mean': float(other['p2_roll_q'].mean()),
+    }
 
 
 def _overlay_strategies(df: pd.DataFrame, features_dir: Path,
@@ -378,18 +435,30 @@ def _overlay_strategies(df: pd.DataFrame, features_dir: Path,
     panel['q'] = q
     high = panel['q'].to_numpy() == 4
     weak = panel['ret5'].to_numpy(dtype=float) <= 0
+    turn_low = panel.get('turn_low', pd.Series(np.nan, index=panel.index))
+    turn_low = turn_low.to_numpy(dtype=float) >= 0.5
     scale_a = np.where(high, 0.5, 1.0)
+    scale_a_skip = np.where(high, 0.0, 1.0)
     scale_b = np.where(high & weak, 0.5, 1.0)
     scale_b_skip = np.where(high & weak, 0.0, 1.0)
+    scale_c_half = np.where(weak, 0.5, 1.0)
+    scale_c_skip = np.where(weak, 0.0, 1.0)
+    scale_d_half = np.where(turn_low, 0.5, 1.0)
+    scale_d_skip = np.where(turn_low, 0.0, 1.0)
     out = {}
     for name, sc in (('baseline', np.ones(len(panel))),
-                     ('A_half', scale_a), ('B_half', scale_b),
-                     ('B_skip', scale_b_skip)):
+                     ('A_half', scale_a), ('A_skip', scale_a_skip),
+                     ('B_half', scale_b), ('B_skip', scale_b_skip),
+                     ('C_ret5_half', scale_c_half), ('C_ret5_skip', scale_c_skip),
+                     ('D_turnlow_half', scale_d_half), ('D_turnlow_skip', scale_d_skip)):
         out[name + '_rank1'] = _perf(panel['r1'] * sc)
         out[name + '_3slot'] = _perf(panel['top3'] + (sc - 1.0) * panel['r1'] / 3.0)
+        out[name + '_eq3'] = _perf_eq3(panel['r1'], sc)
     out['n_dates'] = int(len(panel))
     out['n_signal_A'] = int(high.sum())
     out['n_signal_B'] = int((high & weak).sum())
+    out['n_signal_C'] = int(weak.sum())
+    out['n_signal_D'] = int(turn_low.sum())
     out['by_fold'] = {}
     if fold_unique:
         for fold, g in panel.groupby('fold_id', sort=False):
@@ -419,15 +488,28 @@ def _overlay_strategies(df: pd.DataFrame, features_dir: Path,
             sca = np.where(hi, 0.5, 1.0)
             scb = np.where(hi & wk, 0.5, 1.0)
             scs = np.where(hi & wk, 0.0, 1.0)
+            gtl = g.get('turn_low', pd.Series(np.nan, index=g.index))
+            gtl = gtl.to_numpy(dtype=float) >= 0.5
+            sca_skip = np.where(hi, 0.0, 1.0)
+            scc = np.where(wk, 0.5, 1.0)
+            scd = np.where(gtl, 0.5, 1.0)
             out['period_' + label] = {
                 'baseline_rank1': _perf(g['r1']),
                 'A_half_rank1': _perf(g['r1'] * sca),
+                'A_skip_rank1': _perf(g['r1'] * sca_skip),
                 'B_half_rank1': _perf(g['r1'] * scb),
                 'B_skip_rank1': _perf(g['r1'] * scs),
+                'C_ret5_half_rank1': _perf(g['r1'] * scc),
+                'D_turnlow_half_rank1': _perf(g['r1'] * scd),
                 'baseline_3slot': _perf(g['top3']),
                 'A_half_3slot': _perf(g['top3'] + (sca - 1.0) * g['r1'] / 3.0),
                 'B_half_3slot': _perf(g['top3'] + (scb - 1.0) * g['r1'] / 3.0),
                 'B_skip_3slot': _perf(g['top3'] + (scs - 1.0) * g['r1'] / 3.0),
+                'baseline_eq3': _perf_eq3(g['r1'], np.ones(len(g))),
+                'A_half_eq3': _perf_eq3(g['r1'], sca),
+                'A_skip_eq3': _perf_eq3(g['r1'], sca_skip),
+                'C_ret5_half_eq3': _perf_eq3(g['r1'], scc),
+                'D_turnlow_half_eq3': _perf_eq3(g['r1'], scd),
             }
     return out
 
@@ -487,6 +569,8 @@ def main() -> int:
                                      periods=False) if args.features_dir else {}
     oos_overlay = _overlay_strategies(oos_all, Path(args.features_dir),
                                       periods=True) if args.features_dir else {}
+    cv_rank2 = _rank2_collapse(cv_all)
+    oos_rank2 = _rank2_collapse(oos_all)
     report = {
         'cp': args.cp,
         'bootstrap': args.bootstrap,
@@ -494,11 +578,12 @@ def main() -> int:
                'diagnostics': _diag_a(cv_all, 'CV_H23_11fold_3seed', args.bootstrap),
                'buckets': cv_buckets, 'gap_q5': cv_gap,
                'rolling': cv_rolling, 'q5_features': cv_feature,
-               'overlay': cv_overlay},
+               'overlay': cv_overlay, 'rank2_collapse': cv_rank2},
         'oos': {'rows': int(len(oos_all)), 'dates': int(oos_all['date'].nunique()),
                 'diagnostics': _diag_a(oos_all, 'OOS_2026', args.bootstrap),
                 'buckets': oos_buckets, 'gap_q5': oos_gap,
-                'rolling': oos_rolling, 'overlay': oos_overlay},
+                'rolling': oos_rolling, 'overlay': oos_overlay,
+                'rank2_collapse': oos_rank2},
     }
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -622,6 +707,44 @@ def main() -> int:
                              f"{(s3.get('total_return', float('nan'))):.2%} | "
                              f"{(s3.get('mdd', float('nan'))):.2%} |")
             lines.append('')
+    lines += ['## G. 修正口径验证（Stage15 Rank1-only 3槽；成本 0.16%/次）', '']
+    for sec in ('cv', 'oos'):
+        rc = report[sec].get('rank2_collapse') or {}
+        o = report[sec].get('overlay') or {}
+        if rc:
+            lines += [f"### {sec.upper()} Rank2 坍塌检查", '',
+                      f"- Q5 日 Rank2 pred 均值={rc['q5_p2_mean']:.6f} vs "
+                      f"Q1-Q4={rc['q1q4_p2_mean']:.6f}",
+                      f"- Q5 日 Rank2 60日滚动分位均值={rc['q5_p2_roll_q_mean']:.3f} vs "
+                      f"Q1-Q4={rc['q1q4_p2_roll_q_mean']:.3f}",
+                      f"- n_q5={rc['n_q5']}", '']
+        if o:
+            lines += [f"### {sec.upper()} 3槽净值", '',
+                      '| strategy | n | mean/day | total | MDD | Sharpe |',
+                      '|---|---:|---:|---:|---:|---:|']
+            for name in ('baseline', 'A_half', 'A_skip',
+                         'C_ret5_half', 'C_ret5_skip',
+                         'D_turnlow_half', 'D_turnlow_skip'):
+                v = o.get(name + '_eq3') or {}
+                if not v:
+                    continue
+                lines.append(f"| {name} | {v['n']} | {v['mean_daily']:.4%} | "
+                             f"{v['total_return']:.2%} | {v['mdd']:.2%} | "
+                             f"{v['sharpe']:+.2f} |")
+            lines.append('')
+            for period in ('H1', 'Q3'):
+                g = o.get('period_' + period) or {}
+                if not g:
+                    continue
+                lines += [f"#### {sec.upper()} {period} 3槽净值", '',
+                          '| strategy | total | MDD | Sharpe |',
+                          '|---|---:|---:|---:|']
+                for name in ('baseline', 'A_half', 'A_skip'):
+                    v = g.get(name + '_eq3') or {}
+                    if v:
+                        lines.append(f"| {name} | {v['total_return']:.2%} | "
+                                     f"{v['mdd']:.2%} | {v['sharpe']:+.2f} |")
+                lines.append('')
     (out / 'diagnostics.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('\n'.join(lines))
     return 0

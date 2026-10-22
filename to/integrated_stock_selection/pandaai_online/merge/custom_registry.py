@@ -50,7 +50,15 @@ class CustomFactorSpec:
             payload = f"formula|{self.factor_id}|{self.formula_str.strip()}"
         else:
             src = inspect.getsource(self.fn) if self.fn is not None else self.factor_id
-            payload = f"python|{self.factor_id}|{src}"
+            file_hash = ''
+            if self.fn is not None:
+                try:
+                    fp = inspect.getsourcefile(self.fn) or inspect.getfile(self.fn)
+                    with open(fp, 'rb') as f:
+                        file_hash = hashlib.sha1(f.read()).hexdigest()[:16]
+                except Exception:
+                    file_hash = ''
+            payload = f"python|{self.factor_id}|{src}|file:{file_hash}"
         return hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]
 
 

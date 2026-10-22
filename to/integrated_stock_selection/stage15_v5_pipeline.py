@@ -728,7 +728,8 @@ def train_predict_fold(
     X_te: np.ndarray, dates_te: np.ndarray,
     hp: dict, checkpoints: list[int], seeds: list[int],
     engines: list[str], num_threads: int, leaf_ctx: dict | None = None,
-    want_train: bool = False
+    want_train: bool = False, save_model_dir: str | None = None,
+    save_name: str = '', save_cp: int | None = None
 ) -> dict:
     """训练并返回三套独立预测（2026-10-19 定版，Owner 批准）：
 
@@ -759,6 +760,14 @@ def train_predict_fold(
             "deterministic": True, "force_col_wise": True, "num_threads": num_threads, "verbosity": -1,
         }
         bst = lgb.train(params, dtr, num_boost_round=max_cp, callbacks=[lgb.log_evaluation(period=0)])
+        if save_model_dir and save_cp is not None and save_cp in checkpoints:
+            try:
+                _md = Path(save_model_dir)
+                _md.mkdir(parents=True, exist_ok=True)
+                _mp = _md / f"{save_name}_seed{sd}_cp{int(save_cp)}.txt"
+                bst.save_model(str(_mp), num_iteration=int(save_cp))
+            except Exception as _e:
+                print(f'warning: save model failed {str(_e)[:120]}', flush=True)
         for cp in checkpoints:
             p = bst.predict(X_te, num_iteration=cp)
             lgb_by_cp[cp] += _logit(p) / len(seeds)
@@ -1371,7 +1380,10 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
     sf["stock_code"] = sf["stock_code"].astype(str)
     sf = sf[(sf["date"] >= pd.Timestamp(test_start)) & (sf["date"] <= pd.Timestamp(test_end))].copy()
 
-    bt_df = sf.merge(pred_df[["date", "stock_code", "predicted_return"]], on=["date", "stock_code"], how="left")
+    _pred_cols = ["date", "stock_code", "predicted_return"]
+    _pred_cols += [c for c in ("regime_skip_buy", "regime_position_scale")
+                   if c in pred_df.columns]
+    bt_df = sf.merge(pred_df[_pred_cols], on=["date", "stock_code"], how="left")
     bt_df["predicted_return"] = bt_df["predicted_return"].fillna(-np.inf)
 
     # 自动定位 5 分钟数据目录（前复权优先，见 pick_backtest_min_dir）
@@ -1401,6 +1413,9 @@ def run_minute_backtest_oos(pred_df: pd.DataFrame, price_path: Path, test_start:
                     f"夏普={v.get('sharpe_ratio', 0):.2f} | 胜率={v.get('win_rate', 0):.1f}% | "
                     f"交易笔数={v.get('total_trades', 0)}"
                 )
+
+
+    return res
 
 
 # ==================== CV 折级并行（fork 继承大数组，串行/并行同一 worker） ====================
@@ -1438,7 +1453,10 @@ def _cv_worker(task) -> tuple:
                          "y_raw": c["y_raw"][te_m], "cps": LEAF_PICK2_CPS}
         _out = train_predict_fold(
             c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
-            hp, _cps, c["seeds"], ["lgb"], c["num_threads"], leaf_ctx=_leaf_ctx)
+            hp, _cps, c["seeds"], ["lgb"], c["num_threads"], leaf_ctx=_leaf_ctx,
+            save_model_dir=c.get("save_model_dir"),
+            save_name=f"{side}_{hp['pid']}_Fold{int(fold['fold_id']):02d}",
+            save_cp=c.get("save_cp"))
         preds = _out["lgb"]
         _leaf = _out.get("leaf", {})
     else:
@@ -1902,6 +1920,10 @@ def main():
     p.add_argument("--cps", default="",
                    help="仅评估指定 checkpoint（逗号分隔，与每超参专属网格取交集；"
                         "空=全部）。定向对拍示例：--pids H23 --cps 170,260")
+    p.add_argument("--save_model_dir", default="",
+                   help="CV 模式保存 LightGBM booster 的目录（供 SHAP 归因）")
+    p.add_argument("--save_model_cp", type=int, default=0,
+                   help="保存哪个 checkpoint 的 booster；0=不保存")
     p.add_argument("--mask_mode", choices=["new", "old", "fwd"], default="new",
                    help="掩码口径：new=训练 train_mask、测试 trade_mask（OOS 末段）；"
                         "old=旧 valid_mask(y_valid) 训练/测试（复现 A2）；"
@@ -1964,7 +1986,9 @@ def main():
                    "codes": codes, "sectors": sectors, "seeds": seeds,
                    "engines": engines, "num_threads": args.num_threads,
                    "min_train": args.min_train_rows, "min_test": args.min_test_rows,
-                   "collect_leaf": True}
+                   "collect_leaf": True,
+                   "save_model_dir": getattr(args, "save_model_dir", ""),
+                   "save_cp": getattr(args, "save_model_cp", None)}
         # 任务：LGB 6 组 × 11 折 +（可选）CB 4 组 × 11 折（2026-10-19 双引擎解耦）
         _only = {x.strip() for x in str(args.pids).split(",") if x.strip()}
         tasks = []
