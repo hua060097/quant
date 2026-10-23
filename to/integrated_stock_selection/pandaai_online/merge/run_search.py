@@ -122,6 +122,19 @@ def _search_fast_worker(i: int):
         return i, {'reason': 'error', 'error': str(exc)[:160]}
 
 
+_SEARCH_DIAG_CTX = None
+_SEARCH_DIAG_TASKS = None
+_SEARCH_DIAG_PAYLOAD = None
+
+
+def _search_diag_worker(i: int):
+    try:
+        rec, kind = _SEARCH_DIAG_TASKS[i]
+        return i, _SEARCH_DIAG_CTX._run_diag(kind, rec, _SEARCH_DIAG_PAYLOAD)
+    except Exception as exc:
+        return i, {'error': str(exc)[:160]}
+
+
 def resolve_search_profile(args) -> tuple[str, str, list[str]]:
     """返回 (profile, primary_label, labels)，C2C 上传能力不参与本地搜索 profile 解析。
 
@@ -749,12 +762,14 @@ class SearchRun:
         self.seen_fp.add(fp)
         return self._commit_fast(self._measure_fast(family, node, source))
 
-    def _eval_fast_many(self, tasks: list[tuple[str, object, str]]) -> list[dict]:
+    def _eval_fast_many(self, tasks: list[tuple[str, object, str]],
+                        keep_all: bool = False) -> list[dict | None]:
         """Batch fast-path: parent owns dedup/ledger, POSIX workers measure."""
         if not tasks:
             return []
         clean = []
-        for family, node, source in tasks:
+        positions = []
+        for pos, (family, node, source) in enumerate(tasks):
             h = expression_hash(node)
             if h in self.seen_hash:
                 self.stats['dup'] += 1
@@ -766,12 +781,15 @@ class SearchRun:
             self.seen_hash.add(h)
             self.seen_fp.add(fp)
             clean.append((family, node, source))
+            positions.append(pos)
+        out: list[dict | None] = [None] * len(tasks)
         if not clean:
-            return []
+            return out if keep_all else []
         nj = self.jobs
         if nj <= 1 or len(clean) <= 1 or os.name != 'posix':
-            return [r for family, node, source in clean
-                    if (r := self._commit_fast(self._measure_fast(family, node, source)))]
+            for pos, (family, node, source) in zip(positions, clean):
+                out[pos] = self._commit_fast(self._measure_fast(family, node, source))
+            return out if keep_all else [r for r in out if r]
         import concurrent.futures as cf
         global _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS
         _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS = self, clean
@@ -782,12 +800,63 @@ class SearchRun:
                 got = list(ex.map(_search_fast_worker, range(len(clean))))
         finally:
             _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS = None, None
-        out = []
-        for _, res in sorted(got, key=lambda x: x[0]):
-            rec = self._commit_fast(res)
-            if rec:
-                out.append(rec)
-        return out
+        for (_, res), pos in zip(sorted(got, key=lambda x: x[0]), positions):
+            out[pos] = self._commit_fast(res)
+        return out if keep_all else [r for r in out if r]
+
+    def _run_diag(self, kind: str, rec: dict, payload=None) -> dict:
+        try:
+            if kind == 'decay':
+                from fitness import decay_metrics as _dm, field_dominance as _fd
+                vals = self.ctx.values(rec['node'])
+                dec = {self.primary: _dm(self.ctx, vals)}
+                dom = _fd(self.ctx, vals)
+                if self.secondary:
+                    sec = self.ctxs[self.secondary]
+                    dec[self.secondary] = _dm(sec, sec.values(rec['node']))
+                return {'decay': dec, 'field_dom': dom}
+            if kind == 'resid':
+                from resid import resid_metrics as _rm
+                rm2 = _rm(self.ctx, rec['node'], name=rec['name'], context=True)
+                return {'drop_ind': rm2.get('drop_ind'),
+                        'resid_ctx_sia': rm2.get('resid_ctx_sia'),
+                        'resid_ctx_rank_ic': rm2.get('resid_ctx_rank_ic')}
+            if kind == 'offset':
+                from offset_diag import offset_scan as _oscan
+                main_ric = {lab: (rec['labels'].get(lab) or {}).get('rank_ic')
+                            for lab in self.labels}
+                dirs = rec.get('label_directions') or {
+                    lab: int(rec['direction']) for lab in self.labels}
+                return _oscan(rec['node'], payload, main_ric, dirs,
+                              labels=self.labels, name=rec['name'])
+            if kind == 'cond':
+                from cond_ic import cond_ic_metrics
+                return {lab: cond_ic_metrics(self.ctxs[lab], rec['node'],
+                                             payload, name=rec['name'])
+                        for lab in self.labels}
+            return {'error': f'unknown diag kind {kind}'}
+        except Exception as exc:
+            return {'error': str(exc)[:160]}
+
+    def _diag_many(self, recs: list[dict], kind: str, payload=None) -> list[dict]:
+        if not recs:
+            return []
+        if self.jobs <= 1 or len(recs) <= 1 or os.name != 'posix':
+            return [self._run_diag(kind, rec, payload) for rec in recs]
+        import concurrent.futures as cf
+        global _SEARCH_DIAG_CTX, _SEARCH_DIAG_TASKS, _SEARCH_DIAG_PAYLOAD
+        _SEARCH_DIAG_CTX = self
+        _SEARCH_DIAG_TASKS = [(rec, kind) for rec in recs]
+        _SEARCH_DIAG_PAYLOAD = payload
+        nw = min(self.jobs, len(recs))
+        print(f'  post-full {kind} diagnostics: {len(recs)} candidates x {nw} workers',
+              flush=True)
+        try:
+            with cf.ProcessPoolExecutor(max_workers=nw) as ex:
+                got = list(ex.map(_search_diag_worker, range(len(recs))))
+        finally:
+            _SEARCH_DIAG_CTX = _SEARCH_DIAG_TASKS = _SEARCH_DIAG_PAYLOAD = None
+        return [res for _, res in sorted(got, key=lambda x: x[0])]
 
     def _eval_full_many(self, recs: list[dict]) -> list[dict]:
         """Evaluate slow-path candidates serially or via fork ProcessPool.
@@ -1260,6 +1329,7 @@ class SearchRun:
             for rec in fast_rows:
                 elites.setdefault(rec['family'], []).append(rec)
             stopped = False
+            refine_tasks, refine_meta = [], []
             for fam, recs in sorted(elites.items()):
                 recs.sort(key=lambda r: -r['fast_score'])
                 for elite in recs[:args.refine_elites]:
@@ -1272,7 +1342,7 @@ class SearchRun:
                                               allow_documented=args.allow_documented)
                             branch = 'crossover'
                         elif _ci == 0:
-                            # T5：窗口邻域精调优先（围绕精英现值的局部收敛）
+                            # T5: window-neighbor refinement around elite values
                             child = mutate_window_neighbor(elite['node'], self.rng)
                             branch = 'win_neighbor'
                         else:
@@ -1283,26 +1353,26 @@ class SearchRun:
                         ok, _ = validate(child, allow_documented=args.allow_documented)
                         if not ok:
                             continue
-                        rec = self.evaluate_fast(fam, child, 'refine')
-                        if rec:
-                            _st = mut_stats.setdefault(branch, {'n': 0, 'sum_gain': 0.0})
-                            _st['n'] += 1
-                            _st['sum_gain'] += float(rec['fast_score']) - float(elite['fast_score'])
-                        if rec:
-                            fast_rows.append(rec)
-                            self._progress(
-                                f'[refine] {rec["name"]} fscore={rec["fast_score"]:.4f} '
-                                f'{label_search_metric(self.primary)}={rec["fast_search_value"]:.4f} '
-                                f'dual={rec.get("pass_dual")} '
-                                f'elapsed={time.time() - t0:.0f}s')
-                            if self._note_score(rec['fast_score']):
-                                self._progress(f'stall stop at refine ({self.stall})')
-                                stopped = True
-                                break
-                    if stopped:
+                        refine_tasks.append((fam, child, 'refine'))
+                        refine_meta.append((branch, elite))
+            if refine_tasks:
+                refine_recs = self._eval_fast_many(refine_tasks, keep_all=True)
+                for (branch, elite), rec in zip(refine_meta, refine_recs):
+                    if not rec:
+                        continue
+                    _st = mut_stats.setdefault(branch, {'n': 0, 'sum_gain': 0.0})
+                    _st['n'] += 1
+                    _st['sum_gain'] += float(rec['fast_score']) - float(elite['fast_score'])
+                    fast_rows.append(rec)
+                    self._progress(
+                        f'[refine] {rec["name"]} fscore={rec["fast_score"]:.4f} '
+                        f'{label_search_metric(self.primary)}={rec["fast_search_value"]:.4f} '
+                        f'dual={rec.get("pass_dual")} '
+                        f'elapsed={time.time() - t0:.0f}s')
+                    if self._note_score(rec['fast_score']):
+                        self._progress(f'stall stop at refine ({self.stall})')
+                        stopped = True
                         break
-                if stopped:
-                    break
 
         dual_ok = (lambda r: bool(r.get('pass_dual', True))) if self.dual_gate \
             else (lambda r: True)
@@ -1383,20 +1453,16 @@ class SearchRun:
             dual_rejected = [r for r in valid if not r.get('pass_dual', False)]
         else:
             dual_pass, dual_rejected = valid, []
-        # T2/T3（2026-09-25）：衰减诊断 + 可选硬门槛（在截断前应用，避免被淘汰者占名额）
+        # T2/T3: decay diagnostics and optional hard gate before truncation
         if dual_pass:
-            from fitness import decay_metrics as _dm, field_dominance as _fd
-            for r in dual_pass[:max(args.top * 3, 30)]:
-                try:
-                    _vals = self.ctx.values(r['node'])
-                    _dec = {self.primary: _dm(self.ctx, _vals)}
-                    r['field_dom'] = _fd(self.ctx, _vals)
-                    if self.secondary:
-                        _sec = self.ctxs[self.secondary]
-                        _dec[self.secondary] = _dm(_sec, _sec.values(r['node']))
-                    r['decay'] = _dec
-                except Exception as exc:
-                    r['decay'] = {'error': str(exc)[:120]}
+            _diag_targets = dual_pass[:max(args.top * 3, 30)]
+            _diag_res = self._diag_many(_diag_targets, 'decay')
+            for r, res in zip(_diag_targets, _diag_res):
+                if res.get('error'):
+                    r['decay'] = {'error': res['error']}
+                else:
+                    r['decay'] = res.get('decay') or {}
+                    r['field_dom'] = res.get('field_dom')
             if getattr(args, 'max_decay', None) is not None:
                 _md = float(args.max_decay)
                 _before = len(dual_pass)
@@ -1439,29 +1505,19 @@ class SearchRun:
                         break
         # 层1（2026-09-24）：终选成员的行业/beta 中性化诊断（仅报告，不进 rank_score）
         if args.resid and final:
-            from resid import resid_metrics as _rm
-            for r in final:
-                try:
-                    rm2 = _rm(self.ctx, r['node'], name=r['name'], context=True)
-                    r['resid_ind'] = {'drop_ind': rm2.get('drop_ind'),
-                                      'resid_ctx_sia': rm2.get('resid_ctx_sia'),
-                                      'resid_ctx_rank_ic': rm2.get('resid_ctx_rank_ic')}
-                except Exception as exc:
-                    r['resid_ind'] = {'error': str(exc)[:120]}
+            _resid_res = self._diag_many(final, 'resid')
+            for r, res in zip(final, _resid_res):
+                r['resid_ind'] = res
         # 采样稳健性（2026-09-24）：cycle=3 锚点 offset 0/1/2 三组错位截面 RankIC
         # 一致性（方向按主口径冻结）——检验"因子是否在挑调仓时点"
         if final and not getattr(args, 'no_offset_diag', False):
             try:
-                from offset_diag import build_offset_ctxs, offset_scan as _oscan
+                from offset_diag import build_offset_ctxs
                 octxs = build_offset_ctxs(self.evaluator.frame, self.evaluator,
                                           cycle=args.cycle, labels=self.labels)
-                for r in final:
-                    main_ric = {lab: (r['labels'].get(lab) or {}).get('rank_ic')
-                                for lab in self.labels}
-                    dirs = r.get('label_directions') or {lab: int(r['direction'])
-                                                         for lab in self.labels}
-                    r['offset_diag'] = _oscan(r['node'], octxs, main_ric, dirs,
-                                              labels=self.labels, name=r['name'])
+                _offset_res = self._diag_many(final, 'offset', octxs)
+                for r, res in zip(final, _offset_res):
+                    r['offset_diag'] = res
                 n_sign = sum(1 for r in final if all(
                     (r.get('offset_diag') or {}).get(lab, {}).get('sign_consistent')
                     for lab in self.labels))
@@ -1470,18 +1526,15 @@ class SearchRun:
             except Exception as exc:
                 self._progress(f'warning: offset 诊断失败 {exc}')
         # 条件 RankIC（2026-09-24）：热点子集（主管线 COND-IC 同口径）+ 市场状态族；
-        # 栖息地内区分力诊断，不进 rank_score
+        # Habitat conditional-IC diagnostics; not used in rank_score
         if final and not getattr(args, 'no_cond_ic', False):
             try:
-                from cond_ic import build_cond_prep, cond_ic_metrics
-                self._progress('条件 RankIC：构建条件掩码（hot5/hot2/mkt）...')
+                from cond_ic import build_cond_prep
+                self._progress('���� RankIC�������������루hot5/hot2/mkt��...')
                 cond_prep = build_cond_prep(self.evaluator.frame)
-                for r in final:
-                    per = {}
-                    for lab in self.labels:
-                        per[lab] = cond_ic_metrics(self.ctxs[lab], r['node'],
-                                                   cond_prep, name=r['name'])
-                    r['cond_ic'] = per
+                _cond_res = self._diag_many(final, 'cond', cond_prep)
+                for r, res in zip(final, _cond_res):
+                    r['cond_ic'] = res
                 self._progress(f'条件 RankIC：{len(final)} 个候选 × {len(self.labels)} '
                                f'标签 × 10 掩码族完成（详见下方条件表）')
             except Exception as exc:
@@ -2558,8 +2611,8 @@ def main() -> None:
     sp.add_argument('--include-custom', action='store_true', default=False,
                     help='纳入custom_registry自定义因子（公式型走全量，Python型走custom通道并计入检验分母）')
     sp.add_argument('--jobs', default='auto',
-                    help='慢路径全量求值进程数；auto=按核数/内存，POSIX 用 fork，'
-                         'Windows 退化为串行')
+                    help='fast/full/post-full 求值进程数；auto=按核数/内存，'
+                         'POSIX 用 fork，Windows 退化为串行')
     sp.add_argument('--gate-focus', type=float, default=0.0,
                     help='0~1: 额外生成含 MKT_GATE1/2 或 SEC_GATE1/2 的种子占比')
     sp.add_argument('--fast', action='store_true', default=True)
