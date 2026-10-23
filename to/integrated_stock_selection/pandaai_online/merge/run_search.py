@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -54,7 +55,7 @@ from grammar import (
     mutate_window_neighbor, random_tree, render, structural_fingerprint, validate,
 )
 from intake import INTAKE_MAX_DEPTH, SPARSE_UNIQUE, sparse_unique_median
-from ledger import Ledger
+from ledger import Ledger, set_write_lock
 from lint import dust_errors, has_errors, lint
 from nonlinear import nonlinear_for_ctxs
 from parser import ParseError, parse_formula
@@ -65,6 +66,50 @@ OUT_DIR = Path(__file__).resolve().parent / 'out'
 
 def node_name(family: str, node) -> str:
     return f"MG-{family.split('_')[0]}-{expression_hash(node)[:8]}"
+
+
+def _auto_jobs_search() -> int:
+    """Slow-path worker count: leave two cores and cap by available memory."""
+    cores = os.cpu_count() or 4
+    mem_gb = None
+    try:
+        with open('/proc/meminfo', 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    mem_gb = int(line.split()[1]) / 1048576.0
+                    break
+    except Exception:
+        pass
+    if mem_gb is None:
+        try:
+            import psutil
+            mem_gb = psutil.virtual_memory().available / 1073741824.0
+        except Exception:
+            mem_gb = 8.0
+    return max(1, min(max(1, cores - 2), max(1, int(0.6 * mem_gb / 4.0))))
+
+
+def _par_jobs(n) -> int:
+    """Parallelism gate: fork only on POSIX; Windows stays serial."""
+    try:
+        nj = _auto_jobs_search() if str(n).strip().lower() == 'auto' else max(1, int(n or 1))
+    except Exception:
+        return 1
+    if nj > 1 and os.name != 'posix':
+        print('  [warn] non-POSIX platform: --jobs degraded to serial', flush=True)
+        return 1
+    return nj
+
+
+_SEARCH_FULL_CTX = None
+_SEARCH_FULL_RECS = None
+
+
+def _search_full_worker(i: int):
+    try:
+        return i, _SEARCH_FULL_CTX.evaluate_full(_SEARCH_FULL_RECS[i])
+    except Exception:
+        return i, None
 
 
 def resolve_search_profile(args) -> tuple[str, str, list[str]]:
@@ -338,6 +383,7 @@ def habitat_fast_score(vals: np.ndarray, labels: np.ndarray,
 class SearchRun:
     def __init__(self, args):
         self.args = args
+        self.jobs = _par_jobs(getattr(args, 'jobs', 'auto'))
         self.ledger = _ledger_with_cut(args)
         # 数据截止日（2026-10-11）：候选身份 = 公式 × 数据截止日，且**同时是评估窗上界**
         # （指纹记的截止日必须与实际用到的数据一致，否则记录说谎）。
@@ -675,6 +721,40 @@ class SearchRun:
                 'stability': stability, 'sparse_tie_median': sparse_median,
                 'sparse_hit': sparse_hit, **dual, **hab}
 
+    def _eval_full_many(self, recs: list[dict]) -> list[dict]:
+        """Evaluate slow-path candidates serially or via fork ProcessPool.
+
+        Full evaluation mutates the ledger; workers share the parent's
+        ``multiprocessing.Lock`` through ``ledger.set_write_lock``.  The
+        parent owns stats/full_hashes so worker-local counters do not leak.
+        """
+        if not recs:
+            return []
+        nj = self.jobs
+        if nj <= 1 or len(recs) <= 1 or os.name != 'posix':
+            return [r for rec in recs if (r := self.evaluate_full(rec))]
+        import concurrent.futures as cf
+        import multiprocessing as mp
+        global _SEARCH_FULL_CTX, _SEARCH_FULL_RECS
+        lock = mp.Lock()
+        set_write_lock(lock)
+        _SEARCH_FULL_CTX, _SEARCH_FULL_RECS = self, recs
+        nw = min(nj, len(recs))
+        print(f'  slow-path full eval: {len(recs)} candidates x {nw} workers', flush=True)
+        try:
+            with cf.ProcessPoolExecutor(max_workers=nw) as ex:
+                got = list(ex.map(_search_full_worker, range(len(recs))))
+        finally:
+            _SEARCH_FULL_CTX, _SEARCH_FULL_RECS = None, None
+        rows = [r for _, r in sorted(got, key=lambda x: x[0]) if r]
+        self.stats['full'] += len(rows)
+        for r in rows:
+            h = r.get('expression_hash')
+            if h:
+                self.full_hashes.add(h)
+        self.ledger._summary = None
+        return rows
+
     def evaluate_full(self, rec: dict) -> dict:
         args = self.args
         node = rec['node']
@@ -982,9 +1062,31 @@ class SearchRun:
             if added:
                 print(f'context seeding: +{added} M14_context（本地上下文候选）',
                       flush=True)
+        gate_frac = float(getattr(args, 'gate_focus', 0.0) or 0.0)
+        if gate_frac > 0:
+            n_gate = max(1, int(round(args.n * min(1.0, gate_frac))))
+            added_gate = 0
+            for _ in range(n_gate * 30):
+                if added_gate >= n_gate:
+                    break
+                _fam = self.rng.choice(('M14_context', 'M16_ctx_interaction'))
+                _, _node = random_tree(self.rng, family=_fam,
+                                       allow_documented=True)
+                _txt = render(_node)
+                if not any(g in _txt for g in
+                           ('MKT_GATE1', 'MKT_GATE2', 'SEC_GATE1', 'SEC_GATE2')):
+                    continue
+                _fp = structural_fingerprint(_node)
+                if _fp in local_fp or expression_hash(_node) in self.seen_hash:
+                    continue
+                local_fp.add(_fp)
+                seeds.append((_fam, _node))
+                added_gate += 1
+            if added_gate:
+                print(f'gate focus: +{added_gate} MKT/SEC gate seeds', flush=True)
         if n_elite:
             print(f'elite seeding: {n_elite}/{len(seeds)} seeds from ledger winners '
-                  f'(frac={elite_frac})', flush=True)
+                  f'(frac={elite_frac})')
         return seeds
 
     def run(self) -> dict:
@@ -1044,8 +1146,9 @@ class SearchRun:
             self._progress(f'proposal scope: skipped {n_profile_mismatch} explicitly tagged for another profile')
 
         fast_rows = []
-        seed_total = args.n
-        for i, (fam, node) in enumerate(self._seeds(), 1):
+        seeds = self._seeds()
+        seed_total = len(seeds)
+        for i, (fam, node) in enumerate(seeds, 1):
             rec = self.evaluate_fast(fam, node, 'seed')
             if rec:
                 fast_rows.append(rec)
@@ -1165,30 +1268,26 @@ class SearchRun:
                        f'-> full {len(survivors)}+{len(proposal_nodes)} '
                        f'elapsed={time.time() - t0:.0f}s')
 
-        full_rows = []
-        full_total = len(proposal_nodes) + len(survivors)
-        full_done = 0
+        full_recs = []
+        seen_full = set()
         for _fam, node, _hyp in proposal_nodes:
             rec = {'name': node_name('proposal', node), 'family': 'proposal',
                    'formula': render(node), 'expression_hash': expression_hash(node),
                    'node': node, 'source': 'proposal'}
-            row = self.evaluate_full(rec)
-            full_done += 1
-            if row:
-                full_rows.append(row)
-                self._progress(f'[full {full_done}/{full_total}] {row["name"]} '
-                               f'sia={row["sia"]:.4f} turn={row["turnover"] * 100:.1f} '
-                               f'net={row["net"]:+.2f} dual={row.get("pass_dual")} '
-                               f'elapsed={time.time() - t0:.0f}s')
+            if rec['expression_hash'] not in seen_full:
+                seen_full.add(rec['expression_hash'])
+                full_recs.append(rec)
         for rec in survivors:
-            row = self.evaluate_full(rec)
-            full_done += 1
-            if row:
-                full_rows.append(row)
-                self._progress(f'[full {full_done}/{full_total}] {row["name"]} '
-                               f'sia={row["sia"]:.4f} turn={row["turnover"] * 100:.1f} '
-                               f'net={row["net"]:+.2f} dual={row.get("pass_dual")} '
-                               f'elapsed={time.time() - t0:.0f}s')
+            if rec['expression_hash'] not in seen_full:
+                seen_full.add(rec['expression_hash'])
+                full_recs.append(rec)
+        full_total = len(full_recs)
+        full_rows = self._eval_full_many(full_recs)
+        for full_done, row in enumerate(full_rows, 1):
+            self._progress(f'[full {full_done}/{full_total}] {row["name"]} '
+                           f'sia={row["sia"]:.4f} turn={row["turnover"] * 100:.1f} '
+                           f'net={row["net"]:+.2f} dual={row.get("pass_dual")} '
+                           f'elapsed={time.time() - t0:.0f}s')
 
         for r in full_rows:
             # 本地能力与竞赛上传能力分开记录。C2C field/operator 限制只由 export/upload 消费。
@@ -2376,6 +2475,11 @@ def main() -> None:
                     help='把台账中 proposed 但未评估的候选纳入全量评估')
     sp.add_argument('--include-custom', action='store_true', default=False,
                     help='纳入custom_registry自定义因子（公式型走全量，Python型走custom通道并计入检验分母）')
+    sp.add_argument('--jobs', default='auto',
+                    help='慢路径全量求值进程数；auto=按核数/内存，POSIX 用 fork，'
+                         'Windows 退化为串行')
+    sp.add_argument('--gate-focus', type=float, default=0.0,
+                    help='0~1: 额外生成含 MKT_GATE1/2 或 SEC_GATE1/2 的种子占比')
     sp.add_argument('--fast', action='store_true', default=True)
     sp.add_argument('--no-fast', dest='fast', action='store_false')
     sp.add_argument('--fast-stocks', type=int, default=2500)

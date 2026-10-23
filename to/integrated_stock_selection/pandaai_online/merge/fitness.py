@@ -21,12 +21,13 @@ import numpy as np
 import pandas as pd
 
 import _paths  # noqa: F401
+import windows as W
 from evaluator import Evaluator, load_panel
 from factor_screen_cycle5 import ONE_WAY_COST, screen_one
 from grammar import Node, render, walk
 
 START = '20210901'
-END = '20260821'
+END = W.DEFAULT_DATA_CUT
 HOLDOUT_START = '20250701'
 WINSOR = 'z2'
 DEFAULT_TURNOVER_REF = 0.3

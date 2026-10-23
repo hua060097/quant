@@ -398,7 +398,7 @@ def load_and_prepare(main, args, logger):
             "n_features": int(len(avail)),
             "features_sha1": hashlib.sha1("|".join(sorted(map(str, avail))).encode("utf-8")).hexdigest(),
             "train_months": int(args.train_months),
-            "cv_end": str(CV_END),
+            "cv_end": str(getattr(args, "cv_end", CV_END)),
             "lgb_seed": int(LGB_SEED),
             "main_src_mtime": int(MAIN_SRC.stat().st_mtime) if MAIN_SRC.exists() else 0,
             "label_family": str(getattr(main, "CS_LABEL_FAMILY", "")),
@@ -1160,6 +1160,8 @@ def parse_args():
     p.add_argument("--mode", choices=["all", "quick", "full"], default="all",
                    help="all=quick+full / quick=只搜索 / full=只全量验证")
     p.add_argument("--factors_path", default=None, help="因子parquet路径")
+    p.add_argument("--cv_end", default=CV_END,
+                   help="CV folds upper bound (default %s; use 2025-12-31 for strict V6 A/B)" % CV_END)
     p.add_argument("--train_months", type=int, default=TRAIN_MONTHS, help="训练窗口月数(默认18)")
     p.add_argument("--quick_dir", default=None, help="full 模式读取冠军/复用来源的 quick 目录(含 champion.json 与 hp_*.csv)")
     p.add_argument("--force_pid", default=None, help="full 模式强制指定超参pid(跳过champion.json；仍会自动寻找可复用quick目录)")
@@ -1216,7 +1218,8 @@ def main_flow(args):
     data_bundle = load_and_prepare(main, args, logger)
 
     uniq_days = np.unique(data_bundle["dates"])
-    folds = build_forward_folds(uniq_days, train_months=args.train_months, logger=logger)
+    folds = build_forward_folds(uniq_days, train_months=args.train_months,
+                                cv_end=args.cv_end, logger=logger)
     if not folds:
         raise RuntimeError("无法构建任何折")
 

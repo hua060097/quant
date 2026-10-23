@@ -650,11 +650,13 @@ def m14_context(rng: random.Random) -> Node:
                                  mp=default_mp('TS_REGRESS_RESID', wb)), w2)
     elif form == 10:
         # V4.3d 模式A：市场门控翻转（牛市做动量、熊市做反转的原生进化形）
-        node = Node('MUL', (field('MKT_GATE1'),
+        _gate = 'MKT_GATE1' if rng.random() < 0.5 else 'MKT_GATE2'
+        node = Node('MUL', (field(_gate),
                             Node('RANK', (ts('TS_MEAN', ret, w2),))))
     elif form == 11:
         # V4.3d 模式A：行业门控条件加权（高状态行业放大个股腿）
-        node = Node('MUL', (field('SEC_GATE1'),
+        _gate = 'SEC_GATE1' if rng.random() < 0.5 else 'SEC_GATE2'
+        node = Node('MUL', (field(_gate),
                             Node('RANK', (ts('TS_MEAN', ret, w2),))))
     else:
         # 相对行业残量信息比：IND_EXCESS 的均值/波动（V4.3 扩展字段腿）
@@ -811,10 +813,12 @@ def m16_ctx_interaction(rng: random.Random) -> Node:
     w = _win(rng, (10, 20, 40))
     if form == 8:
         # V4.3d 模式A：市场门控翻转（原生进化形 flip）
-        node = Node('MUL', (field('MKT_GATE1'), Node('RANK', (b,))))
+        _gate = 'MKT_GATE1' if rng.random() < 0.5 else 'MKT_GATE2'
+        node = Node('MUL', (field(_gate), Node('RANK', (b,))))
     elif form == 9:
         # V4.3d 模式A：行业门控条件加权（原生进化形 sector-gain）
-        node = Node('MUL', (field('SEC_GATE1'), Node('RANK', (b,))))
+        _gate = 'SEC_GATE1' if rng.random() < 0.5 else 'SEC_GATE2'
+        node = Node('MUL', (field(_gate), Node('RANK', (b,))))
     elif form == 0:
         cond = Node('GT', (a, ts('TS_MEAN', a, w)))
         node = ts('TS_MEAN', Node('IF', (cond, b, const(0))), w)

@@ -329,6 +329,47 @@ def _market_cand_score(p) -> float:
     return _t * _hd
 
 
+def _quota_select(sub: list, gates: list[str], total_cap: int,
+                  per_min: int = 2, per_max: int = 5) -> list:
+    """Per-gate quota: reserve min seats, never exceed max, then fill by score."""
+    cap = max(0, int(total_cap))
+    pmin = max(0, int(per_min))
+    pmax = max(pmin, int(per_max))
+    by: dict[str, list] = {}
+    for p in sub:
+        by.setdefault(str(p.get("gate", "")), []).append(p)
+    for rows in by.values():
+        rows.sort(key=_market_cand_score, reverse=True)
+    chosen, used = [], set()
+    per_gate: dict[str, int] = {}
+    for gid in gates:
+        for p in by.get(str(gid), [])[:pmin]:
+            if len(chosen) >= cap:
+                break
+            fid = str(p.get("factor_id"))
+            if fid in used:
+                continue
+            chosen.append(p)
+            used.add(fid)
+            per_gate[str(gid)] = per_gate.get(str(gid), 0) + 1
+    if len(chosen) < cap:
+        pool = []
+        for gid in gates:
+            pool.extend(by.get(str(gid), []))
+        pool.sort(key=lambda p: -_market_cand_score(p))
+        for p in pool:
+            if len(chosen) >= cap:
+                break
+            gid = str(p.get("gate", ""))
+            fid = str(p.get("factor_id"))
+            if fid in used or per_gate.get(gid, 0) >= pmax:
+                continue
+            chosen.append(p)
+            used.add(fid)
+            per_gate[gid] = per_gate.get(gid, 0) + 1
+    return chosen
+
+
 def _select_sector_cands(sub: list, sec_gates: list, cap: int, scand_fn) -> list:
     """行业桶装配：按 |t_sec| 降序 + |t|>=2.0 过滤 + Top 上限（分门控）。
     绝不用日均门控 gmean。缺 t_sec 的门控无候选。返回 cand 记录列表。"""
@@ -414,9 +455,12 @@ def main() -> int:
                     help="扫描上限（默认 400 覆盖 #1~#400 全窗，释放 #151~#400 "
                          "的 flip 富集区；旧 150 会把无条件 LGB≈0 的 flip 全截掉）")
     ap.add_argument("--max-switch", type=int, default=12)
-    ap.add_argument("--max-market-cands", type=int, default=20,
-                    help="单 form 市场桶容量上限：超限时按 |t_slope|*|hi-lo| "
-                         "降序截断（防 FDR 分母膨胀；flip 同口径）")
+    ap.add_argument("--max-market-cands", type=int, default=30,
+                    help="gain/flip total cap (default 30; switch is extra)")
+    ap.add_argument("--per-gate-min", type=int, default=2,
+                    help="minimum candidates per certified bank gate")
+    ap.add_argument("--per-gate-max", type=int, default=5,
+                    help="maximum candidates per certified bank gate")
     ap.add_argument("--max-sector-cands", type=int, default=15,
                     help="单行业门控单 form 容量上限：按 |t_sec| 降序截断 "
                          "（使 sector 检验族 M<=15*门控数）")
@@ -714,15 +758,19 @@ def main() -> int:
 
     for form in ("gain", "flip"):
         sub = [p for p in sel if p["suggested_form"] == form]
-        _cap = max(0, int(a.max_market_cands))
-        if len(sub) > _cap:
-            sub = sorted(sub, key=_market_cand_score, reverse=True)[:_cap]
-            print(f"specialist_cands_{form}.json: Top-{_cap} 按|t|*|hdiff|截断",
-                  flush=True)
+        sub = _quota_select(
+            sub, [str(g["gate_id"]) for g in gates],
+            total_cap=int(a.max_market_cands),
+            per_min=int(getattr(a, "per_gate_min", 2)),
+            per_max=int(getattr(a, "per_gate_max", 5)))
         with open(os.path.join(RESULTS, f"specialist_cands_{form}.json"), "w",
                    encoding="utf-8") as f:
             json.dump([_cand(p, form) for p in sub], f, ensure_ascii=False, indent=1)
-        print(f"specialist_cands_{form}.json: {len(sub)}", flush=True)
+        _counts = {str(g["gate_id"]): 0 for g in gates}
+        for p in sub:
+            _counts[str(p["gate"])] = _counts.get(str(p["gate"]), 0) + 1
+        print(f"specialist_cands_{form}.json: {len(sub)} "
+              f"per-gate={ {k: v for k, v in _counts.items() if v} }", flush=True)
     sw = []
     for sp in switch_pairs:
         sw.append({"name": f"{sp['off']}__{sp['def']}__{sp['gate']}__switch",
