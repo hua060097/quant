@@ -72,7 +72,6 @@ def main() -> int:
     print(f"备份 → {bk}", flush=True)
     rbk = os.path.join(a.backup_dir, f"roles.csv.{ts}.bak")
     shutil.copy2(ROLES, rbk)
-    mg.to_parquet(FACTORS, index=False)
     roles = pd.read_csv(ROLES)
     add = pd.DataFrame([{"name": r["name"], "group": r.get("group", "promoted"),
                           "role": r["role"], "nunique_med": np.nan, "coverage": np.nan,
@@ -81,7 +80,20 @@ def main() -> int:
                           "label_available_max": "", "evidence": "promote"}
                          for r in roles_new])
     roles = pd.concat([roles, add], ignore_index=True)
-    roles.to_csv(ROLES, index=False)
+    tmp_factors = f"{FACTORS}.tmp.{os.getpid()}"
+    tmp_roles = f"{ROLES}.tmp.{os.getpid()}"
+    try:
+        mg.to_parquet(tmp_factors, index=False)
+        roles.to_csv(tmp_roles, index=False)
+        os.replace(tmp_factors, FACTORS)
+        os.replace(tmp_roles, ROLES)
+    finally:
+        for tmp in (tmp_factors, tmp_roles):
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
     # 作废 store_vfps 缓存（sha 已变，下次自动重算）
     import glob as _g
     for p in _g.glob(os.path.join(RESULTS, "store_vfps_*.json")):

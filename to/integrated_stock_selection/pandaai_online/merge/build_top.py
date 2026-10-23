@@ -466,6 +466,10 @@ def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
     stats['missing_rows'] = sorted(set(stats['missing_rows']))
     stats['uncovered_frozen'] = sum(1 for x in frozen_all if x not in covered)
     payload['incremental'] = stats
+    if stats['missing_rows']:
+        raise RuntimeError(
+            'frozen factors are missing from the current vwap candidate pool: '
+            + ', '.join(stats['missing_rows']))
     return picked, pool_rows, seat_order, seat_detail, hab_pool
 
 
@@ -587,7 +591,9 @@ def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Eval
         return [], {}, nl_map
     corr = month_end_spearman_matrix(np.column_stack(cols), day_group)
     if corr is None:
-        return idxs[:keep], {}, nl_map
+        raise RuntimeError(
+            f'[{label}] correlation matrix is empty: {len(cols)} candidates, '
+            f'{len(np.unique(day_group))} day groups; refusing to skip dedup')
     # 孪生公平单遍（串味修复后的公平版）：按 LGB 降序单遍扫描，谁分高谁先审；
     # 非 store 候选若与任一已扫描 store 孪生（|ρ|>=twin_thr，即已入库列的
     # 数学孪生体），由 store 列顶替入池（能进才进）或直接丢弃——低分 store

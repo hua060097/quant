@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from evaluator import Evaluator, ensure_extended_fields, ensure_local_fields
+from field_catalog import sw2_mapping
 from parser import parse_formula
 
 
@@ -90,6 +91,40 @@ def register_py_factor(factor_id: str, axis: str = 'custom', description: str = 
     return _decorator
 
 
+def _pit_sample_codes(codes, n_codes: int = 200, seed: int = 7) -> list[str]:
+    """按 SW2 行业分层抽取 PIT 审计股票，保证每个行业都有代表。"""
+    uniq = pd.Series(pd.unique(pd.Series(codes).astype(str)))
+    if len(uniq) <= n_codes:
+        return uniq.tolist()
+    try:
+        sectors = uniq.map(sw2_mapping()).fillna('__NA__')
+    except Exception:
+        sectors = pd.Series('__NA__', index=uniq.index)
+    groups: dict[str, list[str]] = {}
+    for code, sector in zip(uniq.tolist(), sectors.tolist()):
+        groups.setdefault(str(sector), []).append(code)
+    rng = np.random.default_rng(seed)
+    for vals in groups.values():
+        rng.shuffle(vals)
+    order = sorted(groups, key=lambda s: (-len(groups[s]), s))
+    out: list[str] = []
+    for sector in order:
+        if len(out) >= n_codes or not groups[sector]:
+            break
+        out.append(groups[sector].pop())
+    while len(out) < n_codes:
+        progressed = False
+        for sector in order:
+            if len(out) >= n_codes:
+                break
+            if groups[sector]:
+                out.append(groups[sector].pop())
+                progressed = True
+        if not progressed:
+            break
+    return out
+
+
 def _evaluate_core(spec: CustomFactorSpec, frame: pd.DataFrame,
                    ev: Evaluator | None = None) -> np.ndarray:
     """求值内核（audit_pit内部复用，不触发审计，避免递归）。"""
@@ -121,7 +156,7 @@ def evaluate_custom_factor(spec: CustomFactorSpec, frame: pd.DataFrame,
             aframe = frame
             _codes = pd.Series(frame["stock_code"].unique())
             if len(frame) > 200000 and len(_codes) > 200:
-                _pick = set(_codes.sample(200, random_state=7).astype(str))
+                _pick = set(_pit_sample_codes(_codes, n_codes=200, seed=7))
                 aframe = frame[frame["stock_code"].astype(str).isin(_pick)].copy()
             rep = audit_pit(spec, aframe)
             if not rep.get("passed"):
@@ -151,6 +186,9 @@ def audit_pit(spec: CustomFactorSpec, frame: pd.DataFrame,
     cands = rng.choice(np.arange(1, len(dates) - 1),
                        size=min(n_probes, len(dates) - 2), replace=False)
     base = _evaluate_core(spec, frame, None)
+    if not np.isfinite(base).any():
+        return {"passed": False, "failed_dates": [{"date": "all_nan"}],
+                "note": "all factor values are NaN"}
     base_dates = pd.to_datetime(frame["date"]).to_numpy()
     # 真实面板为大写列（load_panel映射），兼容两种写法；为空即拒测，避免静默通过
     price_cols = [c for c in ("OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "AMOUNT",

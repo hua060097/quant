@@ -242,8 +242,9 @@ def main() -> int:
               '计算逐日截面相关矩阵 ...', flush=True)
         corr = month_end_spearman_matrix(vals, day_group)
         if corr is None:
-            print(f'[{lab}] 无有效日截面，相关矩阵不可用，跳过该标签', flush=True)
-            continue
+            raise RuntimeError(
+                f'[{lab}] correlation matrix is empty: {vals.shape[1]} candidates, '
+                f'{len(np.unique(day_group))} day groups; refusing to skip dedup')
         kept: list[int] = []
         dropped = []
         for j, i_row in enumerate(row_idx):
