@@ -103,6 +103,8 @@ def _par_jobs(n) -> int:
 
 _SEARCH_FULL_CTX = None
 _SEARCH_FULL_RECS = None
+_SEARCH_FAST_CTX = None
+_SEARCH_FAST_TASKS = None
 
 
 def _search_full_worker(i: int):
@@ -110,6 +112,14 @@ def _search_full_worker(i: int):
         return i, _SEARCH_FULL_CTX.evaluate_full(_SEARCH_FULL_RECS[i])
     except Exception:
         return i, None
+
+
+def _search_fast_worker(i: int):
+    try:
+        family, node, source = _SEARCH_FAST_TASKS[i]
+        return i, _SEARCH_FAST_CTX._measure_fast(family, node, source)
+    except Exception as exc:
+        return i, {'reason': 'error', 'error': str(exc)[:160]}
 
 
 def resolve_search_profile(args) -> tuple[str, str, list[str]]:
@@ -627,50 +637,26 @@ class SearchRun:
         """
         return nonlinear_for_ctxs(self.ctxs, self.labels, node)
 
-    def evaluate_fast(self, family: str, node, source: str = 'seed'):
-        h = expression_hash(node)
-        if h in self.seen_hash:
-            self.stats['dup'] += 1
-            return None
-        fp = structural_fingerprint(node)
-        if fp in self.seen_fp:
-            self.stats['fp_skip'] += 1
-            return None
-        self.seen_hash.add(h)
-        self.seen_fp.add(fp)
+    def _measure_fast(self, family: str, node, source: str = 'seed') -> dict:
+        """Pure fast-path measurement; no dedup/state/ledger mutation."""
         name = node_name(family, node)
-        # 语义 lint（2026-09-25）：量纲错误等 error 级问题在快评前拦截——此前只有
-        # intake 跑 lint，grammar 变异（子树替换/换字段）能造出 CLOSE−AMOUNT 这类
-        # 量纲错误的退化表达式（数值上 ≈ −AMOUNT，"碰巧能用"但字面无金融含义）
         _lint = lint(node)
         if has_errors(_lint):
-            self.stats['lint_reject'] = self.stats.get('lint_reject', 0) + 1
-            return None
+            return {'reason': 'lint'}
         ctxs = self.fast_ctxs or self.ctxs
         _pri = ctxs[self.primary]
-        # 数值尘埃（2026-09-25）：ADD/SUB 两侧实测数量级差 ≥100× → 小项为装饰
-        _de = dust_errors(node, _pri.evaluator.magnitude)
-        if _de:
-            self.stats['dust_reject'] = self.stats.get('dust_reject', 0) + 1
-            return None
-        # 腿间冗余（2026-09-25）：复合结构逐对腿截面秩相关过高 → 冗余堆叠，拒绝
+        if dust_errors(node, _pri.evaluator.magnitude):
+            return {'reason': 'dust'}
         _legs = _composite_legs(node)
         if _legs and len(_legs) >= 2:
             try:
                 _leg_vals = [_pri.values(leg) for leg in _legs]
                 _maxp, _meanp = self._leg_redundancy(_pri, _leg_vals)
                 if np.isfinite(_meanp) and (_meanp > 0.7 or _maxp > 0.9):
-                    self.stats['redundant_legs'] = self.stats.get('redundant_legs', 0) + 1
-                    return None
+                    return {'reason': 'redundant_legs'}
             except Exception:
                 pass
-        # 值分布指纹（2026-09-25）：数学/仿射/镜像等价 → 同指纹，dup 预杀
         vfp = value_fingerprint(_pri.values(node))
-        if vfp:
-            if vfp in self.seen_vfp:
-                self.stats['vfp_dup'] = self.stats.get('vfp_dup', 0) + 1
-                return None
-            self.seen_vfp.add(vfp)
         screens = self._screens(ctxs, node, name)
         tiers = {lab: tier1(m) for lab, m in screens.items()}
         dual = self._dual(tiers)
@@ -678,14 +664,10 @@ class SearchRun:
         pri = ctxs[self.primary]
         sparse_median = sparse_unique_median(pri.values(node), pri.row_dates)
         sparse_hit = 0 < sparse_median < SPARSE_UNIQUE
-        if sparse_hit:
-            self.stats['sparse_tie'] += 1
         primary_search_value = label_search_value(tiers[self.primary], self.primary)
         score_tier = {**tiers[self.primary], 'sia': primary_search_value}
-        score = rank_score(score_tier, node,
-                           turnover_ref=self.turnover_ref)
+        score = rank_score(score_tier, node, turnover_ref=self.turnover_ref)
         score_nopen = rank_score(score_tier, node, turnover_ref=None)
-        # V4.3c Class2 栖息地快评通道：线性 SiA 外的第二晋级依据（尾部发散+市况反差）。
         hab = {'habitat_score': float('nan'), 'habitat_jsd': float('nan'),
                'habitat_contrast': float('nan')}
         if getattr(self.args, 'habitat_track', False):
@@ -697,29 +679,115 @@ class SearchRun:
                 hab = habitat_fast_score(_hv[_pos], _pri.labels, _mk)
             except Exception:
                 pass
+        rec = {'name': name, 'family': family, 'formula': render(node),
+               'expression_hash': expression_hash(node), 'node': node,
+               'source': source, 'vfp': vfp,
+               'fast': tiers[self.primary], 'fast_labels': tiers,
+               'fast_search_value': primary_search_value,
+               'fast_score': score, 'fast_score_nopen': score_nopen,
+               'stability': stability, 'sparse_tie_median': sparse_median,
+               'sparse_hit': sparse_hit, **dual, **hab}
+        return {'ok': True, 'rec': rec, 'screens': screens, 'tiers': tiers,
+                'vfp': vfp, 'sparse_hit': sparse_hit,
+                'family': family, 'name': name, 'source': source}
+
+    def _commit_fast(self, res: dict | None):
+        if not res:
+            return None
+        reason = res.get('reason')
+        if reason is not None:
+            key = {'lint': 'lint_reject', 'dust': 'dust_reject',
+                   'redundant_legs': 'redundant_legs'}.get(reason)
+            if key:
+                self.stats[key] = self.stats.get(key, 0) + 1
+            return None
+        vfp = res.get('vfp')
+        if vfp:
+            if vfp in self.seen_vfp:
+                self.stats['vfp_dup'] = self.stats.get('vfp_dup', 0) + 1
+                return None
+            self.seen_vfp.add(vfp)
+        name = res['name']
+        family = res['family']
+        screens = res['screens']
+        tiers = res['tiers']
         for lab in self.labels:
             search_value = label_search_value(tiers[lab], lab)
-            self.ledger.log('fast', node, int(screens[lab].get('direction', 1)),
-                            family=family, label=lab, struct_fp=fp,
+            self.ledger.log('fast', res['rec']['node'],
+                            int(screens[lab].get('direction', 1)),
+                            family=family, label=lab,
+                            struct_fp=structural_fingerprint(res['rec']['node']),
                             data_cut=self.data_cut,
                             data={'fast': screens[lab], 'tier1': tiers[lab],
                                   'search_value': search_value,
                                   'search_metric': label_search_metric(lab),
-                                  'source': source, 'dual': dual,
-                                  'stability': stability, 'vfp': vfp,
-                                  'sparse_tie_median': sparse_median,
-                                  'sparse_hit': sparse_hit})
+                                  'source': res['source'],
+                                  'dual': {k: res['rec'].get(k) for k in
+                                           ('pass_dual', 'dual_sia', 'dual_ratio')},
+                                  'stability': res['rec']['stability'],
+                                  'vfp': res['vfp'],
+                                  'sparse_tie_median': res['rec']['sparse_tie_median'],
+                                  'sparse_hit': res['rec']['sparse_hit']})
         self.stats['fast'] += 1
-        if sparse_hit and self.sparse_gate:
-            self.stats['sparse_gate'] += 1
+        if res['sparse_hit']:
+            self.stats['sparse_tie'] = self.stats.get('sparse_tie', 0) + 1
+            if self.sparse_gate:
+                self.stats['sparse_gate'] = self.stats.get('sparse_gate', 0) + 1
+                return None
+        return res['rec']
+
+    def evaluate_fast(self, family: str, node, source: str = 'seed'):
+        h = expression_hash(node)
+        if h in self.seen_hash:
+            self.stats['dup'] += 1
             return None
-        return {'name': name, 'family': family, 'formula': render(node),
-                'expression_hash': h, 'node': node, 'source': source, 'vfp': vfp,
-                'fast': tiers[self.primary], 'fast_labels': tiers,
-                'fast_search_value': primary_search_value,
-                'fast_score': score, 'fast_score_nopen': score_nopen,
-                'stability': stability, 'sparse_tie_median': sparse_median,
-                'sparse_hit': sparse_hit, **dual, **hab}
+        fp = structural_fingerprint(node)
+        if fp in self.seen_fp:
+            self.stats['fp_skip'] += 1
+            return None
+        self.seen_hash.add(h)
+        self.seen_fp.add(fp)
+        return self._commit_fast(self._measure_fast(family, node, source))
+
+    def _eval_fast_many(self, tasks: list[tuple[str, object, str]]) -> list[dict]:
+        """Batch fast-path: parent owns dedup/ledger, POSIX workers measure."""
+        if not tasks:
+            return []
+        clean = []
+        for family, node, source in tasks:
+            h = expression_hash(node)
+            if h in self.seen_hash:
+                self.stats['dup'] += 1
+                continue
+            fp = structural_fingerprint(node)
+            if fp in self.seen_fp:
+                self.stats['fp_skip'] += 1
+                continue
+            self.seen_hash.add(h)
+            self.seen_fp.add(fp)
+            clean.append((family, node, source))
+        if not clean:
+            return []
+        nj = self.jobs
+        if nj <= 1 or len(clean) <= 1 or os.name != 'posix':
+            return [r for family, node, source in clean
+                    if (r := self._commit_fast(self._measure_fast(family, node, source)))]
+        import concurrent.futures as cf
+        global _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS
+        _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS = self, clean
+        nw = min(nj, len(clean))
+        print(f'  fast-path batch: {len(clean)} candidates x {nw} workers', flush=True)
+        try:
+            with cf.ProcessPoolExecutor(max_workers=nw) as ex:
+                got = list(ex.map(_search_fast_worker, range(len(clean))))
+        finally:
+            _SEARCH_FAST_CTX, _SEARCH_FAST_TASKS = None, None
+        out = []
+        for _, res in sorted(got, key=lambda x: x[0]):
+            rec = self._commit_fast(res)
+            if rec:
+                out.append(rec)
+        return out
 
     def _eval_full_many(self, recs: list[dict]) -> list[dict]:
         """Evaluate slow-path candidates serially or via fork ProcessPool.
@@ -964,12 +1032,41 @@ class SearchRun:
             out[axis] = rows[:per_axis]
         return out
 
+    def _append_gate_focus(self, seeds: list[tuple]) -> list[tuple]:
+        args = self.args
+        gate_frac = float(getattr(args, 'gate_focus', 0.0) or 0.0)
+        if gate_frac <= 0:
+            return seeds
+        n_gate = max(1, int(round(args.n * min(1.0, gate_frac))))
+        local_fp = {structural_fingerprint(n) for _, n in seeds}
+        added_gate = 0
+        for _ in range(n_gate * 30):
+            if added_gate >= n_gate:
+                break
+            _fam = self.rng.choice(('M14_context', 'M16_ctx_interaction'))
+            _, _node = random_tree(self.rng, family=_fam,
+                                   allow_documented=True)
+            _txt = render(_node)
+            if not any(g in _txt for g in
+                       ('MKT_GATE1', 'MKT_GATE2', 'SEC_GATE1', 'SEC_GATE2')):
+                continue
+            _fp = structural_fingerprint(_node)
+            if _fp in local_fp or expression_hash(_node) in self.seen_hash:
+                continue
+            local_fp.add(_fp)
+            seeds.append((_fam, _node))
+            added_gate += 1
+        if added_gate:
+            print(f'gate focus: +{added_gate} MKT/SEC gate seeds', flush=True)
+        return seeds
+
     def _seeds(self) -> list[tuple]:
         args = self.args
         if args.strategy == 'random':
-            return [(fam, node) for fam, node in
-                    generate_population(args.n, args.seed, exclude=self.seen_hash,
-                                        allow_documented=args.allow_documented)]
+            return self._append_gate_focus(
+                [(fam, node) for fam, node in
+                 generate_population(args.n, args.seed, exclude=self.seen_hash,
+                                     allow_documented=args.allow_documented)])
         quotas, counts = _axis_plan(
             self.ledger, args.n, allow_documented=args.allow_documented,
             ucb_c=float(getattr(args, 'ucb_c', 0.3)),
@@ -1062,28 +1159,7 @@ class SearchRun:
             if added:
                 print(f'context seeding: +{added} M14_context（本地上下文候选）',
                       flush=True)
-        gate_frac = float(getattr(args, 'gate_focus', 0.0) or 0.0)
-        if gate_frac > 0:
-            n_gate = max(1, int(round(args.n * min(1.0, gate_frac))))
-            added_gate = 0
-            for _ in range(n_gate * 30):
-                if added_gate >= n_gate:
-                    break
-                _fam = self.rng.choice(('M14_context', 'M16_ctx_interaction'))
-                _, _node = random_tree(self.rng, family=_fam,
-                                       allow_documented=True)
-                _txt = render(_node)
-                if not any(g in _txt for g in
-                           ('MKT_GATE1', 'MKT_GATE2', 'SEC_GATE1', 'SEC_GATE2')):
-                    continue
-                _fp = structural_fingerprint(_node)
-                if _fp in local_fp or expression_hash(_node) in self.seen_hash:
-                    continue
-                local_fp.add(_fp)
-                seeds.append((_fam, _node))
-                added_gate += 1
-            if added_gate:
-                print(f'gate focus: +{added_gate} MKT/SEC gate seeds', flush=True)
+        self._append_gate_focus(seeds)
         if n_elite:
             print(f'elite seeding: {n_elite}/{len(seeds)} seeds from ledger winners '
                   f'(frac={elite_frac})')
@@ -1148,9 +1224,12 @@ class SearchRun:
         fast_rows = []
         seeds = self._seeds()
         seed_total = len(seeds)
-        for i, (fam, node) in enumerate(seeds, 1):
-            rec = self.evaluate_fast(fam, node, 'seed')
-            if rec:
+        batch = max(1, self.jobs * 8)
+        stalled = False
+        for start in range(0, seed_total, batch):
+            chunk = seeds[start:start + batch]
+            recs = self._eval_fast_many([(fam, node, 'seed') for fam, node in chunk])
+            for i, rec in enumerate(recs, start + 1):
                 fast_rows.append(rec)
                 self._progress(
                     f'[seed {i}/{seed_total}] {rec["name"]} fscore={rec["fast_score"]:.4f} '
@@ -1159,7 +1238,10 @@ class SearchRun:
                     f'elapsed={time.time() - t0:.0f}s')
                 if self._note_score(rec['fast_score']):
                     self._progress(f'stall stop at seeds ({self.stall})')
+                    stalled = True
                     break
+            if stalled:
+                break
         mut_stats: dict = {}
         if args.strategy == 'mechanism' and fast_rows and args.refine_children > 0:
             # T6（2026-09-25）：编辑分支成败统计（mini-AlphaMemo）——持久化于
