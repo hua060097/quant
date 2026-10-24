@@ -27,8 +27,11 @@ from evaluator import ensure_local_fields, load_panel
 HERE = Path(__file__).resolve().parent
 RESULTS = HERE.parent.parent / 'results' / 'merge_v2'
 
-#: Class 2 个股栖息地/风险状态固定底座（ensure_local_fields 原4字段 + 扩展2字段按需）
-HABITAT_COLS = ('BETA60', 'BETA20', 'IVOL20', 'AMIHUD20', 'TURNOVER', 'MARKET_CAP')
+#: Class 2 个股栖息地/风险状态固定底座（包含 V6 新增时序扩张比与 252 日长窗锚定列）
+HABITAT_COLS = (
+    'BETA60', 'BETA20', 'IVOL20', 'AMIHUD20', 'TURNOVER', 'MARKET_CAP',
+    'TURN_RATIO_5_60', 'IVOL_RATIO_20_120', 'IVOL20_MKT_Z252'
+)
 
 
 def cs_rank_centered(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:

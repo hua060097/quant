@@ -78,6 +78,9 @@ def main() -> int:
     ap.add_argument("--gates-sector", default=os.path.join(SPACE, "gate_search_sector.parquet"))
     ap.add_argument("--label-max", default=W.FACTOR_SCREEN_MAX)
     ap.add_argument("--out", default=os.path.join(RESULTS, "approved_interactions.parquet"))
+    ap.add_argument("--interact-norm", choices=("mad_zscore_soft", "centered_u"),
+                    default="mad_zscore_soft",
+                    help="底座因子标准化模式（默认 mad_zscore_soft 保留右尾极值峰度；centered_u 为旧均匀秩）")
     ap.add_argument("--dry-run", action="store_true", help="只打印将落盘的列与行数，不写盘")
     a = ap.parse_args()
 
@@ -121,11 +124,16 @@ def main() -> int:
             dmap[_cc["base_off"]] = int(_cc.get("d_off", 1))
         if _cc.get("base_def"):
             dmap[_cc["base_def"]] = int(_cc.get("d_def", 1))
+    interact_norm = getattr(a, "interact_norm", "mad_zscore_soft")
     u_of: dict[str, np.ndarray] = {}
     for col in need:
         d = int(dmap.get(col, 1))
         xv = pd.to_numeric(m[col], errors="coerce").to_numpy(dtype=float)
-        u_of[col] = _centered_u(xv, day, nd, d)
+        if interact_norm == "mad_zscore_soft":
+            from fastranks import mad_directed
+            u_of[col] = mad_directed(xv, day, d, soft_cap=5.0)
+        else:
+            u_of[col] = _centered_u(xv, day, nd, d)
 
     mgates = pd.read_parquet(a.gates_market)
     mgates["date"] = pd.to_datetime(mgates["date"])

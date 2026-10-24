@@ -22,7 +22,10 @@ LOCAL_ONLY_FIELDS = ('MKT_RET', 'IND_RET', 'BETA60', 'DISP')
 # 扩展本地字段（V4.3 Class2）：ensure_extended_fields() 产物；求值/解析/上传闸门
 # 与 LOCAL_ONLY_FIELDS 同规则（本地可算、禁上平台）。ensure_local_fields 原 4 字段
 # 不动（历史指纹/台账可比性）；扩展列走独立惰性分支。
-EXTENDED_ONLY_FIELDS = ('VWAP', 'IND_EXCESS', 'BETA20', 'IVOL20', 'AMIHUD20')
+EXTENDED_ONLY_FIELDS = (
+    'VWAP', 'IND_EXCESS', 'BETA20', 'IVOL20', 'AMIHUD20',
+    'TURN_RATIO_5_60', 'IVOL_RATIO_20_120', 'IVOL20_MKT_Z252'
+)
 
 # 认证门控注入字段（V4.3d 模式A）：bank Top2 市场/行业门控的只读映射，
 # 值域 [-1, 1]（市场 panel _g 列本已中心化；行业 p 现场转 2p-1）。

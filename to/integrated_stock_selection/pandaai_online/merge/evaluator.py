@@ -215,6 +215,74 @@ def ensure_extended_fields(frame: pd.DataFrame) -> pd.DataFrame:
         ill_mean20 = ill.groupby(codes, sort=False).rolling(20, min_periods=15) \
             .mean().reset_index(level=0, drop=True)
         frame['AMIHUD20'] = np.log1p(ill_mean20.clip(lower=0.0))
+
+    # V6 新增无漂移个股时序扩张与长窗市场锚定栖息地特征（对数软压缩保序，禁硬截断削峰）
+    def _soft_cap_signed(z_arr: np.ndarray, cap: float = 5.0) -> np.ndarray:
+        az = np.abs(z_arr)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            _soft = np.sign(z_arr) * (cap + np.log1p(np.maximum(az - cap, 0.0)))
+        res = np.where(az <= cap, z_arr, _soft)
+        res[~np.isfinite(z_arr)] = np.nan
+        return res
+
+    def _soft_cap_pos(r_arr: np.ndarray, cap: float = 5.0) -> np.ndarray:
+        r_pos = np.maximum(r_arr, 0.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            _soft = cap + np.log1p(np.maximum(r_pos - cap, 0.0))
+        res = np.where(r_pos <= cap, r_pos, _soft)
+        res[~np.isfinite(r_arr)] = np.nan
+        return res
+
+    if 'TURN_RATIO_5_60' not in frame.columns and 'TURNOVER' in frame.columns:
+        to = frame['TURNOVER']
+        to_5 = to.groupby(codes, sort=False).rolling(5, min_periods=3) \
+            .mean().reset_index(level=0, drop=True)
+        to_60 = to.groupby(codes, sort=False).rolling(60, min_periods=20) \
+            .mean().reset_index(level=0, drop=True)
+        r_to = to_5 / to_60.replace(0, np.nan)
+        frame['TURN_RATIO_5_60'] = pd.Series(
+            _soft_cap_pos(r_to.to_numpy(dtype=float), cap=5.0),
+            index=r_to.index,
+            dtype=np.float32,
+        )
+
+    if 'IVOL_RATIO_20_120' not in frame.columns and 'IVOL20' in frame.columns:
+        iv = frame['IVOL20']
+        iv_120 = iv.groupby(codes, sort=False).rolling(120, min_periods=40) \
+            .mean().reset_index(level=0, drop=True)
+        r_iv = iv.reindex(iv_120.index) / iv_120.replace(0, np.nan)
+        frame['IVOL_RATIO_20_120'] = pd.Series(
+            _soft_cap_pos(r_iv.to_numpy(dtype=float), cap=5.0),
+            index=iv_120.index,
+            dtype=np.float32,
+        )
+
+    if 'IVOL20_MKT_Z252' not in frame.columns and 'IVOL20' in frame.columns:
+        iv_s = frame['IVOL20'].to_numpy(dtype=float)
+        d_codes, _ = pd.factorize(frame['date'], sort=True)
+        s_iv = pd.Series(iv_s)
+        g_d = s_iv.groupby(d_codes, sort=False)
+        cs_med = g_d.transform('median')
+        cs_mad = (s_iv - cs_med).abs().groupby(d_codes, sort=False).transform('median')
+
+        u_dates = pd.to_datetime(frame['date']).drop_duplicates().sort_values().reset_index(drop=True)
+        date_df = pd.DataFrame({'date': pd.to_datetime(frame['date']),
+                                'cs_med': cs_med, 'cs_mad': cs_mad}).drop_duplicates('date').sort_values('date').reset_index(drop=True)
+        date_df = date_df.set_index('date').reindex(u_dates)
+
+        roll_med = date_df['cs_med'].rolling(252, min_periods=40).median()
+        roll_mad = date_df['cs_mad'].rolling(252, min_periods=40).median().clip(lower=1e-5)
+        roll_scale = 1.4826 * roll_mad
+
+        med_map = roll_med.to_dict()
+        scale_map = roll_scale.to_dict()
+        d_ts = pd.to_datetime(frame['date'])
+        m_med = d_ts.map(med_map).to_numpy(dtype=float)
+        m_scale = d_ts.map(scale_map).to_numpy(dtype=float)
+
+        z = (iv_s - m_med) / m_scale
+        frame['IVOL20_MKT_Z252'] = _soft_cap_signed(z, cap=5.0).astype(np.float32)
+
     return frame
 
 

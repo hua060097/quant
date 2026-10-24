@@ -51,7 +51,8 @@ def _centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndar
 
 
 def build_reference_ubar(m, day: np.ndarray, nd: int,
-                         roster_path: str | None = None):
+                         roster_path: str | None = None,
+                         interact_norm: str = "mad_zscore_soft"):
     """固定参考底仓（V4.3x 修复）：vwap_top20 roster 在 m 中的列的有向居中秩均值。
 
     替代按 batch base_cols 求平均——同质偏科桶自求平均会把交互信号吸进底仓
@@ -61,6 +62,7 @@ def build_reference_ubar(m, day: np.ndarray, nd: int,
     返回 (Ubar_or_None, {"n_bases": int, "hash": str})；hash 进 pair_fp，
     build_top 重跑（roster 变更）后旧缓存自动失效，无需手动删库。
     """
+    import fastranks as FR
     _rp = roster_path or os.path.join(RESULTS, "vwap_top20.json")
     try:
         _items = json.load(open(_rp, encoding="utf-8")).get("base20", [])
@@ -75,14 +77,19 @@ def build_reference_ubar(m, day: np.ndarray, nd: int,
     _us = []
     for _bc in _cols:
         _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
-        _us.append(_centered_u(_xv, day, nd, int(_dd.get(_bc, 1))))
-    _h = hashlib.sha1("|".join(f"{c}:{_dd.get(c, 1)}" for c in _cols
-                               ).encode()).hexdigest()[:12]
+        _d = int(_dd.get(_bc, 1))
+        if interact_norm == "mad_zscore_soft":
+            _us.append(FR.mad_directed(_xv, day, _d, soft_cap=5.0))
+        else:
+            _us.append(_centered_u(_xv, day, nd, _d))
+    _h = hashlib.sha1(("|".join(f"{c}:{_dd.get(c, 1)}" for c in _cols)
+                       + f"|norm:{interact_norm}").encode()).hexdigest()[:12]
     return np.nanmean(np.column_stack(_us), axis=1), {"n_bases": len(_cols),
                                                       "hash": _h}
 
 
-def build_market_bundle(m, base_cols_all: list[str], d_map: dict) -> dict:
+def build_market_bundle(m, base_cols_all: list[str], d_map: dict,
+                        interact_norm: str = "mad_zscore_soft") -> dict:
     """批内共享预计算（提速）：day/yrk/u_cols/Ubar 只算一次。
 
     前提：m 已按 date 稳定排序（main 保证），则 _prepared 的 day 码与
@@ -94,22 +101,27 @@ def build_market_bundle(m, base_cols_all: list[str], d_map: dict) -> dict:
     u_cols: dict[str, np.ndarray] = {}
     for bcol in base_cols_all:
         xv = pd.to_numeric(m[bcol], errors="coerce").to_numpy(dtype=float)
-        u_cols[bcol] = _centered_u(xv, day, nd, int(d_map.get(bcol, 1)))
-    Ubar, _uinfo = build_reference_ubar(m, day, nd)
+        d = int(d_map.get(bcol, 1))
+        if interact_norm == "mad_zscore_soft":
+            from fastranks import mad_directed
+            u_cols[bcol] = mad_directed(xv, day, d, soft_cap=5.0)
+        else:
+            u_cols[bcol] = _centered_u(xv, day, nd, d)
+    Ubar, _uinfo = build_reference_ubar(m, day, nd, interact_norm=interact_norm)
     if Ubar is None:
         print(f"  [warn] 参考底仓不可用（{_uinfo}），回退 batch Ubar（批次相关！）",
               flush=True)
         Ubar = np.nanmean(np.column_stack([u_cols[b] for b in base_cols_all]),
                           axis=1)
         _uinfo = {"n_bases": len(base_cols_all),
-                  "hash": "batch:" + hashlib.sha1(
-                      ",".join(sorted(base_cols_all)).encode()
-                      ).hexdigest()[:8]}
+                  "hash": f"batch:{hashlib.sha1(','.join(sorted(base_cols_all)).encode()).hexdigest()[:8]}_{interact_norm}"}
     else:
         print(f"  参考底仓：roster {_uinfo['n_bases']} 列 hash={_uinfo['hash']}",
               flush=True)
     return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar,
-            "ubar_info": _uinfo}
+            "ubar_info": _uinfo, "interact_norm": interact_norm}
+    return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar,
+            "ubar_info": _uinfo, "interact_norm": interact_norm}
 
 
 def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
@@ -227,10 +239,20 @@ def run_one_market_switch(m, base_cols_all: list[str], d_map: dict,
         prep = build_market_bundle(m, base_cols_all, d_map)
     day, nd, yrk = prep["day"], prep["nd"], prep["yrk"]
     u_cols, Ubar = prep["u_cols"], prep["Ubar"]
-    xoff = pd.to_numeric(m[off_col], errors="coerce").to_numpy(dtype=float)
-    xdef = pd.to_numeric(m[def_col], errors="coerce").to_numpy(dtype=float)
-    u_off = _centered_u(xoff, day, nd, int(d_map.get(off_col, 1)))
-    u_def = _centered_u(xdef, day, nd, int(d_map.get(def_col, 1)))
+    inorm = prep.get("interact_norm", "mad_zscore_soft")
+    if off_col in u_cols:
+        u_off = u_cols[off_col]
+    else:
+        xoff = pd.to_numeric(m[off_col], errors="coerce").to_numpy(dtype=float)
+        d_off = int(d_map.get(off_col, 1))
+        u_off = FR.mad_directed(xoff, day, d_off, soft_cap=5.0) if inorm == "mad_zscore_soft" else _centered_u(xoff, day, nd, d_off)
+
+    if def_col in u_cols:
+        u_def = u_cols[def_col]
+    else:
+        xdef = pd.to_numeric(m[def_col], errors="coerce").to_numpy(dtype=float)
+        d_def = int(d_map.get(def_col, 1))
+        u_def = FR.mad_directed(xdef, day, d_def, soft_cap=5.0) if inorm == "mad_zscore_soft" else _centered_u(xdef, day, nd, d_def)
     g = np.asarray(gate_series, dtype=float)
     p = np.clip((g + 1.0) / 2.0, 0.0, 1.0)
     p[~np.isfinite(g)] = np.nan
@@ -396,6 +418,9 @@ def main():
     ap.add_argument("--jobs", type=int, default=1,
                     help="未命中缓存候选的并行进程数（12 核建议 8；"
                          "结果与串行逐值一致，非 posix 平台自动退化串行）")
+    ap.add_argument("--interact-norm", choices=("mad_zscore_soft", "centered_u"),
+                    default="mad_zscore_soft",
+                    help="底座因子标准化模式（默认 mad_zscore_soft 保留右尾极值峰度；centered_u 为旧均匀秩）")
     a = ap.parse_args()
     label_max = a.label_max
     if a.gates_parquet:
@@ -502,7 +527,7 @@ def main():
             ic_cache[bcol] = E._daily_corr(xr, yr, day, nd)
         print(f"[{a.tag}] base IC cached", flush=True)
     # 三式共享预计算（提速）：day/yrk/u_cols/Ubar 全批一次，逐候选复用。
-    _prep = build_market_bundle(m, base_cols, b20) \
+    _prep = build_market_bundle(m, base_cols, b20, interact_norm=a.interact_norm) \
         if a.form in ("gain", "flip", "switch") else None
     if _prep is not None:
         print(f"[{a.tag}] market bundle ready ({len(base_cols)} bases) "

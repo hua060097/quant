@@ -67,6 +67,9 @@ def main() -> int:
     ap.add_argument("--data-cut", default="2026-09-18")
     ap.add_argument("--extend-from", default="2025-12-31")
     ap.add_argument("--out-dir", default=os.path.join(M2, "lgb_ready"))
+    ap.add_argument("--interact-norm", choices=("mad_zscore_soft", "centered_u"),
+                    default="mad_zscore_soft",
+                    help="底座因子标准化模式（默认 mad_zscore_soft 保留右尾极值峰度；centered_u 为旧均匀秩）")
     ap.add_argument("--no-parity", action="store_true",
                     help="跳过 2025 断面回放校验")
     args = ap.parse_args()
@@ -314,10 +317,17 @@ def main() -> int:
                 b_def = str(cc.get("base_def", base))
                 d_off = int(cc.get("d_off", dmap.get(b_off, 1)))
                 d_def = int(cc.get("d_def", dmap.get(b_def, 1)))
-                u_off = _centered_u(pd.to_numeric(sp[b_off], errors="coerce")
-                                    .to_numpy(dtype=float), day, nd, d_off)
-                u_def = _centered_u(pd.to_numeric(sp[b_def], errors="coerce")
-                                    .to_numpy(dtype=float), day, nd, d_def)
+                if getattr(args, "interact_norm", "mad_zscore_soft") == "mad_zscore_soft":
+                    from fastranks import mad_directed
+                    u_off = mad_directed(pd.to_numeric(sp[b_off], errors="coerce")
+                                         .to_numpy(dtype=float), day, d_off, soft_cap=5.0)
+                    u_def = mad_directed(pd.to_numeric(sp[b_def], errors="coerce")
+                                         .to_numpy(dtype=float), day, d_def, soft_cap=5.0)
+                else:
+                    u_off = _centered_u(pd.to_numeric(sp[b_off], errors="coerce")
+                                        .to_numpy(dtype=float), day, nd, d_off)
+                    u_def = _centered_u(pd.to_numeric(sp[b_def], errors="coerce")
+                                        .to_numpy(dtype=float), day, nd, d_def)
                 if gtype == "market":
                     key = f"{gate}_g"
                     if key not in gate_cache:
@@ -351,8 +361,13 @@ def main() -> int:
                 icols[name] = H.build_switch_blend(p, u_off, u_def)
             else:
                 d = int(cc.get("d", dmap.get(base, int(r.get("d", 1)))))
-                u = _centered_u(pd.to_numeric(sp[base], errors="coerce")
-                                .to_numpy(dtype=float), day, nd, d)
+                if getattr(args, "interact_norm", "mad_zscore_soft") == "mad_zscore_soft":
+                    from fastranks import mad_directed
+                    u = mad_directed(pd.to_numeric(sp[base], errors="coerce")
+                                     .to_numpy(dtype=float), day, d, soft_cap=5.0)
+                else:
+                    u = _centered_u(pd.to_numeric(sp[base], errors="coerce")
+                                    .to_numpy(dtype=float), day, nd, d)
                 if gtype == "market":
                     key = f"{gate}_g"
                     if key not in gate_cache:

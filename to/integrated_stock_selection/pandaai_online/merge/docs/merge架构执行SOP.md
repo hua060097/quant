@@ -1,6 +1,6 @@
 # Merge 因子搜索与特征矩阵构建标准执行手册 (SOP)
 
-## 0. 执行前硬性代码检查（必做）
+## 0. 执行前硬性代码检查与 V6 架构升级要点（必做）
 
 1. **质量门语义**：`build_top.py::_quality_scan_positions` 默认是 `top + quality` 并集，不是交集；`--full-scan` 仍表示全表。
    V6 要“只扫过线因子”时，必须显式传 **`--quality-only`**（与 `--full-scan` 配合）。
@@ -10,10 +10,35 @@
    `fast_seats/fast_detail`，不能只过滤 picked/pool/seats/habitat。
 4. **台账隔离**：V6 建议使用新台账
    `results/merge_v2/v6_clean/ledger_v6.jsonl`，旧 `ledger.jsonl` 保留不删。
+5. **Class 4 门控交互峰度保留（V6 核心升级）**：
+   `f1_batch.py`、`f1_sector.py`、`materialize_interactions.py` 与 `export_2026_extension.py`
+   默认全部采用 **`--interact-norm mad_zscore_soft`**，保留极端右尾 $+3\sigma \sim +5\sigma$ 的梯度与峰度，
+   彻底终结了历史用 `_centered_u` 强行压成均匀秩（峰度 -1.2）导致无法拉开 Rank 1 差距的缺陷。
+6. **Class 2 栖息地特征无漂移升级（V6 核心升级）**：
+   `HABITAT_COLS` 扩充为 9 列，新增：
+   - `TURN_RATIO_5_60`（个股 5 日均换手 / 60 日均换手，捕捉放量突破异动倍数）；
+   - `IVOL_RATIO_20_120`（个股 20 日特质波动 / 120 日均特质波动，捕捉波动率突破扩张）；
+   - `IVOL20_MKT_Z252`（锚定过去 252 日全市场滚动中位数与 IQR 的特质波动率水位）；
+   - 这 3 列自动被纳入 `skip_daily_cs_norm_cols` 保护原值入模，严禁做日内截面 Z-score。
+7. **市场门控快反应算子（V6 核心升级）**：
+   `gate_search_space.py` 为核心退潮与突破基础量（`nh60_prem`、`newhigh_ratio`、`limit_ratio`、`xs_disp`、`vol_med`）
+   新增了无下划线快窗算子 `flevel`（5日均值）、`fchg`（5日差分）、`fratio`（5日/60日均值比），
+   既防止了下游 `rpartition('_')` 拆分错误，又彻底解决了旧 20 日均线面对急跌退潮反应慢半拍的硬伤。
 
 ---
 
-## Step 1：V4.3d GP 因子搜索
+## Step 1：门控搜索空间与 V4.3d GP 因子搜索
+
+### 1.1 生成含快窗算子的门控候选空间
+
+```bash
+python3 -B -u pandaai_online/merge/gate_search_space.py \
+  --out-dir results/merge_v2/gates_search \
+  --qwin 252
+```
+*自动生成 89 个门控候选（含 fast 快窗门控），用于 Step 3 门控交互与认证。*
+
+### 1.2 V4.3d GP 因子搜索
 
 > 严格 `data_cut=2025-12-31`；`--ledger` 与 `--data-cut` 是全局参数，必须放在 `search` 之前。
 > `--gate-focus` 会在基础 seed 之外追加含 `MKT_GATE1/2`、`SEC_GATE1/2` 的 M14/M16 种子。
@@ -99,7 +124,7 @@ python3 -B -u pandaai_online/merge/select_specialists.py \
 > `--bank` 必须是本次 V4.3d 对应的 **bank-v2**（10 个市场门控）。
 > 本地主 `certified_gate_bank.json` 可能是旧 bank-v1（3 个市场门控）；先确认/备份，否则 F1 会按错 bank 过滤。
 
-### 3.2 F1 批量检验与 FDR
+### 3.2 F1 批量检验与 FDR（保留峰度口径）
 
 ```bash
 python3 -B -u pandaai_online/merge/f1_batch.py \
@@ -107,6 +132,7 @@ python3 -B -u pandaai_online/merge/f1_batch.py \
   --out results/merge_v2/gates_search/f1_specialist_gain.csv \
   --form gain --base-panel specialist \
   --gate-bank results/merge_v2/gates_search/certified_gate_bank.json \
+  --interact-norm mad_zscore_soft \
   --label-max 2025-12-31 --jobs 16
 
 python3 -B -u pandaai_online/merge/f1_batch.py \
@@ -114,6 +140,7 @@ python3 -B -u pandaai_online/merge/f1_batch.py \
   --out results/merge_v2/gates_search/f1_specialist_switch.csv \
   --form switch --base-panel specialist \
   --gate-bank results/merge_v2/gates_search/certified_gate_bank.json \
+  --interact-norm mad_zscore_soft \
   --label-max 2025-12-31 --jobs 16
 
 python3 -B -u pandaai_online/merge/judge_f1.py \
@@ -125,7 +152,7 @@ python3 -B -u pandaai_online/merge/judge_f1.py \
   results/merge_v2/gates_search/f1_specialist_switch.csv
 ```
 
-### 3.3 实例化 Class 4 交互列
+### 3.3 实例化 Class 4 交互列（保留峰度口径）
 
 `materialize_interactions.py` 每次只接受一个 `--judged`，**不要用同一个 `--out` 连续覆盖**。先分别产出，再按键合并：
 
@@ -134,12 +161,14 @@ python3 -B -u pandaai_online/merge/materialize_interactions.py \
   --judged results/merge_v2/gates_search/f1_specialist_gain_judged.csv \
   --cands results/merge_v2/specialist_cands_gain.json \
   --base-panel specialist \
+  --interact-norm mad_zscore_soft \
   --out results/merge_v2/approved_interactions_gain.parquet
 
 python3 -B -u pandaai_online/merge/materialize_interactions.py \
   --judged results/merge_v2/gates_search/f1_specialist_switch_judged.csv \
   --cands results/merge_v2/specialist_cands_switch.json \
   --base-panel specialist \
+  --interact-norm mad_zscore_soft \
   --out results/merge_v2/approved_interactions_switch.parquet
 
 python3 - <<'PY'
@@ -152,7 +181,7 @@ print(c.shape)
 PY
 ```
 
-行业 switch 继续走 `f1_sector.py` + 对应 judge/materialize，再按同样方式合并；不要只跑 market 就导出 Class 4。
+行业 switch 继续走 `f1_sector.py`（传 `--interact-norm mad_zscore_soft`）+ 对应 judge/materialize，再按同样方式合并；不要只跑 market 就导出 Class 4。
 
 ---
 
@@ -160,6 +189,7 @@ PY
 
 > V6 显式开启 interact 相关性去重与 Class1 家族/主字段均衡。
 > 当前 `--max-family-frac` 会把 `family=store` 细分为 `store:<roles.csv group>`。
+> HABITAT_COLS 自动收录 9 列底座，含新增无漂移比率列与长窗锚定列。
 
 ```bash
 python3 -B -u pandaai_online/merge/export_lgb_dataset.py \
@@ -177,6 +207,7 @@ python3 -B -u pandaai_online/merge/export_lgb_dataset.py \
 python3 -B -u pandaai_online/merge/export_2026_extension.py \
   --data-cut 2026-09-18 \
   --extend-from 2025-12-31 \
+  --interact-norm mad_zscore_soft \
   --out-dir results/merge_v2/lgb_ready_v6
 ```
 
@@ -185,4 +216,10 @@ python3 -B -u pandaai_online/merge/export_2026_extension.py \
 - `diversity_report.json` 的 family/field counts 与被裁剪列；
 - `lgb_features.parquet` 的非 NaN 覆盖率。
 
-本 SOP 只覆盖 merge 搜索到矩阵导出；Stage15 11 折 A/B 不在本 SOP 内，必须另跑同 fold 表对照。
+---
+
+## Step 5：Stage15 滚动 CV 与 OOS 回测（基线铁律）
+
+在下游训练与回测时，严格对齐 A2 基线铁律：
+- **评估参数**：必须锁死 `--mask_mode old --engines lgb --label_mode classic --weight_mode tail --spw_mode fixed`；
+- **回测风控**：启用 `A_skip` 机制，在 Rank 1 与 Rank 2 预测分差达到 60 日 Q5（断崖异常高分）时自动空仓避险，彻底阻断极端逆风期的假突破踩踏。

@@ -94,7 +94,16 @@ OPS = (
     ("ratio", "20 日 / 120 日", lambda s: s.rolling(20, min_periods=20).mean()
      / s.rolling(120, min_periods=120).mean().replace(0, np.nan)),
     ("accel", "差分再差分", lambda s: (s - s.shift(10)) - (s.shift(10) - s.shift(20))),
+    # V6 快窗算子：5日均值/差分/扩张比（无下划线算子名，防下游 rpartition('_') 切错 base）
+    ("flevel", "5 日均值", lambda s: s.rolling(5, min_periods=5).mean()),
+    ("fchg", "5 日差分", lambda s: s - s.shift(5)),
+    ("fratio", "5 日 / 60 日", lambda s: s.rolling(5, min_periods=5).mean()
+     / s.rolling(60, min_periods=60).mean().replace(0, np.nan)),
 )
+
+#: 支持快窗操作化的核心市场基础量（突破与情绪敏锐度最高的基础量）
+FAST_OP_BASES = frozenset({"nh60_prem", "newhigh_ratio", "limit_ratio", "xs_disp", "vol_med"})
+FAST_OP_NAMES = frozenset({"flevel", "fchg", "fratio"})
 
 #: 分位窗（归一化用）
 QWINS = (63, 126, 252)
@@ -183,16 +192,20 @@ def sector_base_from_raw(c: pd.DataFrame) -> pd.DataFrame:
     return sb
 
 
-def generate_space() -> list[dict]:
+def generate_space(include_fast: bool = True) -> list[dict]:
     """产出空间清单（spec 列表）。"""
     specs = []
     for key, zh, note in MARKET_BASES:
         for op, opzh, _ in OPS:
+            if op in FAST_OP_NAMES and (not include_fast or key not in FAST_OP_BASES):
+                continue
             specs.append({"gate_id": f"GM_{key}_{op}", "level": "market",
                           "base": key, "base_zh": zh, "op": op, "op_zh": opzh,
                           "note": note})
     for key, zh, note in SECTOR_BASES:
         for op, opzh, fn in OPS:
+            if op in FAST_OP_NAMES:
+                continue  # 行业门控维持既有口径
             if key in ("sec_ret_xrank", "sec_amt_share_chg", "sec_mom_xrank",
                        "sec_nh60_ratio", "sec_mom_snr", "sec_crowd_div") \
                     and op != "level":
@@ -215,12 +228,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="门控搜索空间生成")
     ap.add_argument("--out-dir", default=os.path.join(RESULTS, "gates_search"))
     ap.add_argument("--list", action="store_true", help="只列空间清单")
+    ap.add_argument("--no-fast-ops", action="store_true", help="不生成快窗算子（仅旧20日）")
     ap.add_argument("--qwin", type=int, default=252, help="归一化分位窗")
     a = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    specs = generate_space()
+    specs = generate_space(include_fast=not a.no_fast_ops)
     mk = [s for s in specs if s["level"] == "market"]
     sc = [s for s in specs if s["level"] == "sector"]
     print(f"搜索空间：{len(specs)} 个门控候选（market {len(mk)} / sector {len(sc)}）")

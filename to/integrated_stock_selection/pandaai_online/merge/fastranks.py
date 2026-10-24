@@ -68,6 +68,16 @@ def mad_zscore_soft(values: np.ndarray, day, soft_cap: float = 5.0) -> np.ndarra
     return out
 
 
+def mad_directed(values: np.ndarray, day, d: int, soft_cap: float = 5.0) -> np.ndarray:
+    """有向 MAD 鲁棒 Z-score：保留极端右尾峰度（Rank 1 选股专属，V6 升级）。
+
+    约定：先按截面做 mad_zscore_soft（保持线性极值梯度，超 cap 对数软压缩），
+    再乘有向符号 d（+1 正向、-1 逆向）。缺失保持 NaN。
+    """
+    z = mad_zscore_soft(values, day, soft_cap=soft_cap)
+    return int(d) * z
+
+
 def centered_u(values: np.ndarray, day: np.ndarray, nd: int, d: int) -> np.ndarray:
     """有向居中百分位秩 u = d*(RankPct-0.5) ∈ [-0.5, 0.5]（F1v3 全族统一定义）。
 

@@ -114,6 +114,17 @@ EXCESS_DELTA_MIN = 0.060           # 跑赢当日市场中位数至少 +6.0%
 EXCESS_R3_FLOOR = 0.035            # 绝对涨幅底线 +3.5%
 
 DRIFT_NORM_COLS = ("LOG_MV", "AMIHUD20")
+
+
+def resolve_drift_cols(spec: str | None = None) -> tuple[str, ...]:
+    raw = str(spec).strip() if spec is not None else ""
+    if not raw:
+        return DRIFT_NORM_COLS
+    cols = tuple(dict.fromkeys(
+        c.strip() for c in raw.split(",") if c.strip()))
+    if not cols:
+        raise SystemExit("[特征] --drift_cols 不能为空")
+    return cols
 # 槽位净值模拟参数（2026-10-20 P0-2 定版）：3 槽轮动、每日投入 1/SLOT 资金、
 # 双边成本 0.16%；mdd/净值一律按此口径，禁止对 3 日持有收益做 100% 满仓 cumprod。
 COST_PER_TRADE = 0.0016
@@ -432,9 +443,10 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     if "pct_chg" in pdf.columns:
         pdf["vol20"] = compute_vol20(pdf)
     else:
-        if str(getattr(args, "weight_mode", "tail")) == "snr":
+        if str(getattr(args, "weight_mode", "tail")) in (
+                "snr", "tail_snr_max", "snr_inv", "highvol_up"):
             raise SystemExit(
-                "[标签] --weight_mode snr 需要行情缓存含 pct_chg 列，"
+                f"[标签] --weight_mode {args.weight_mode} 需要行情缓存含 pct_chg 列，"
                 f"当前缓存缺列: {price_path.name}")
         logger.warning("[标签] 行情缓存缺 pct_chg，vol20 全置 NaN（tail 模式不受影响）")
         pdf["vol20"] = np.nan
@@ -502,9 +514,15 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     del fdf, pdf
 
     day_codes, _ = pd.factorize(merged["date"].to_numpy(), sort=True)
-    for col in DRIFT_NORM_COLS:
-        if col in merged.columns:
-            merged[col] = mad_zscore_by_day(merged[col].to_numpy(dtype=float), day_codes)
+    drift_cols = resolve_drift_cols(getattr(args, "drift_cols", None))
+    _missing_drift = [c for c in drift_cols if c not in merged.columns]
+    if _missing_drift:
+        raise SystemExit(
+            f"[特征] --drift_cols 含缺失列: {_missing_drift}")
+    for col in drift_cols:
+        merged[col] = mad_zscore_by_day(
+            merged[col].to_numpy(dtype=float), day_codes)
+    logger.info(f"[特征] 日内漂移标准化: {','.join(drift_cols)}")
 
     ret_t2 = merged["ret_t2"].to_numpy(dtype=np.float64)
     close_t2_ret = merged["close_t2_ret"].to_numpy(dtype=np.float64)
@@ -613,6 +631,7 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
         "test_mask": test_valid,
         "dates": dates, "codes": codes, "sectors": sectors,
         "feature_cols": feature_cols, "price_path": price_path,
+        "drift_cols": list(drift_cols),
     }
 
 
@@ -633,15 +652,23 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
         （0.8σ→0.7x，2.5σ→1.5x），压低"高波常态噪音碰巧过阈"的伪正
         样本、抬高"低波收敛后高信噪比爆发"的真突破；缓冲正样本仍 0.5x，
         负样本仍 1.0x。vol20 缺失的正样本取中性 1.0x（不奖不罚）。
-      两种模式最终都叠加海啸日正样本总量线性封顶（不改 y、不碰负样本）。
+      - "tail_snr_max"（2026-10-24）：核心正样本逐样本取 max(tail, snr)，
+        保留高波赢家的 tail 权重，同时额外抬高低波突破权重。
+      - "snr_inv"（2026-10-24）：snr 的反向权重，低信噪比（高波）给 1.5x，
+        高信噪比（低波）给 0.7x，用于检验波动方向反转。
+      - "highvol_up"（2026-10-24）：只抬高波正样本，低波保持 1.0x 不降权。
+      五种模式最终都叠加海啸日正样本总量线性封顶（不改 y、不碰负样本）。
 
     weight_raw / weight_r0:
       - 默认 weight_raw=y_raw、weight_r0=R3_CORE_MIN(7%)，即历史绝对涨幅口径；
       - label_mode=excess 时由调用方传 weight_raw=r3_excess、
         weight_r0=EXCESS_DELTA_MIN(6%)，使权重也按截面超额幅度计算。
     """
-    if weight_mode not in ("tail", "snr"):
-        raise ValueError(f"未知 weight_mode={weight_mode!r}（可选 tail/snr）")
+    if weight_mode not in (
+            "tail", "snr", "tail_snr_max", "snr_inv", "highvol_up"):
+        raise ValueError(
+            f"未知 weight_mode={weight_mode!r}"
+            "（可选 tail/snr/tail_snr_max/snr_inv/highvol_up）")
     _wr = (np.asarray(y_raw, dtype=np.float64) if weight_raw is None
            else np.asarray(weight_raw, dtype=np.float64))
     if _wr.shape[0] != len(y_raw):
@@ -668,6 +695,62 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
             _w = np.clip(_w, SNR_W_LO, SNR_W_HI)
             _w[~np.isfinite(_snr)] = 1.0
             w[core_pos] = _w.astype(np.float32)
+        elif weight_mode == "snr_inv":
+            if vol20 is None:
+                raise ValueError("weight_mode='snr_inv' 需要提供 vol20 数组")
+            _v_all = np.asarray(vol20, dtype=np.float64)
+            if _v_all.shape[0] != len(y_raw):
+                raise ValueError(
+                    f"vol20 长度 {_v_all.shape[0]} 与 y_raw 长度 {len(y_raw)} 不一致")
+            _v = _v_all[core_pos]
+            if not np.isfinite(_v).any():
+                raise ValueError("weight_mode='snr_inv' 但核心正样本 vol20 全缺失")
+            _snr = _wr[core_pos] / (np.maximum(_v, VOL20_FLOOR) * np.sqrt(3.0))
+            _w = (SNR_W_HI - (SNR_W_HI - SNR_W_LO)
+                  * (_snr - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+            _w = np.clip(_w, SNR_W_LO, SNR_W_HI)
+            _w[~np.isfinite(_snr)] = 1.0
+            w[core_pos] = _w.astype(np.float32)
+        elif weight_mode == "highvol_up":
+            if vol20 is None:
+                raise ValueError("weight_mode='highvol_up' 需要提供 vol20 数组")
+            _v_all = np.asarray(vol20, dtype=np.float64)
+            if _v_all.shape[0] != len(y_raw):
+                raise ValueError(
+                    f"vol20 长度 {_v_all.shape[0]} 与 y_raw 长度 {len(y_raw)} 不一致")
+            _v = _v_all[core_pos]
+            if not np.isfinite(_v).any():
+                raise ValueError("weight_mode='highvol_up' 但核心正样本 vol20 全缺失")
+            _snr = _wr[core_pos] / (np.maximum(_v, VOL20_FLOOR) * np.sqrt(3.0))
+            _w = (SNR_W_HI - (SNR_W_HI - SNR_W_LO)
+                  * (_snr - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+            _w = np.clip(_w, SNR_W_LO, SNR_W_HI)
+            _w = np.maximum(_w, 1.0)
+            _w[~np.isfinite(_snr)] = 1.0
+            w[core_pos] = _w.astype(np.float32)
+        elif weight_mode == "tail_snr_max":
+            if vol20 is None:
+                raise ValueError(
+                    "weight_mode='tail_snr_max' 需要提供 vol20 数组")
+            _v_all = np.asarray(vol20, dtype=np.float64)
+            if _v_all.shape[0] != len(y_raw):
+                raise ValueError(
+                    f"vol20 长度 {_v_all.shape[0]} 与 y_raw 长度 {len(y_raw)} 不一致")
+            _v = _v_all[core_pos]
+            if not np.isfinite(_v).any():
+                raise ValueError(
+                    "weight_mode='tail_snr_max' 但核心正样本 vol20 全缺失")
+            _snr = _wr[core_pos] / (np.maximum(_v, VOL20_FLOOR) * np.sqrt(3.0))
+            _w_snr = (SNR_W_LO + (SNR_W_HI - SNR_W_LO)
+                      * (_snr - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+            _w_snr = np.clip(_w_snr, SNR_W_LO, SNR_W_HI)
+            _w_snr[~np.isfinite(_snr)] = 1.0
+            r_pos = _wr[core_pos]
+            q95 = float(np.nanpercentile(r_pos, 95)) if len(r_pos) > 10 else 0.20
+            q95 = max(q95, _r0 + 0.02)
+            g = np.clip((_wr - _r0) / (q95 - _r0), 0.0, 1.0)
+            _w_tail = 1.0 + TAIL_WEIGHT_ALPHA * g[core_pos]
+            w[core_pos] = np.maximum(_w_snr, _w_tail).astype(np.float32)
         else:
             r_pos = _wr[core_pos]
             q95 = float(np.nanpercentile(r_pos, 95)) if len(r_pos) > 10 else 0.20
@@ -1732,7 +1815,9 @@ def _cv_worker(task) -> tuple:
     _weight_all = c.get("y_weight_raw", c["y_raw"])
     _weight_tr = _weight_all[tr_m]
     _weight_r0 = EXCESS_DELTA_MIN if _label_mode == "excess" else R3_CORE_MIN
-    _base_spw = (float(hp["scale_pos_weight"]) if side == "lgb"
+    _spw_override = c.get("base_spw")
+    _base_spw = (float(_spw_override) if side == "lgb" and _spw_override is not None
+                 else float(hp["scale_pos_weight"]) if side == "lgb"
                  else float(_CB_SCALE_POS_WEIGHT))
     w_tr, _spw_eff = build_train_weights(
         c["core_pos"][tr_m], c["buf_pos"][tr_m], c["y_raw"][tr_m], dates[tr_m],
@@ -2364,16 +2449,28 @@ def main():
                    help="标签口径：classic=经典 r3>=7%%（默认）；v51=旧 --label_v51；"
                         "excess=截面超额 (r3-r3_med_day>=6%%) 且绝对 r3>=3.5%%；"
                         "不传时按 --label_v51 兼容旧行为。评估 y_raw 始终为绝对 r3")
-    p.add_argument("--weight_mode", choices=["tail", "snr"], default="tail",
+    p.add_argument("--weight_mode",
+                   choices=["tail", "snr", "tail_snr_max", "snr_inv",
+                            "highvol_up"],
+                   default="tail",
                    help="核心正样本权重口径：tail=绝对涨幅尾部加权 1.0~1.5x"
                         "（默认，逐值复现历史结果）；snr=波动率调整信噪比加权 "
-                        "0.7~1.5x（低波真突破重奖、高波噪音降权；负样本恒 1.0x）")
+                        "0.7~1.5x（低波真突破重奖、高波噪音降权；负样本恒 1.0x）；"
+                        "tail_snr_max=逐样本取 max(tail,snr)，不降高波赢家；"
+                        "snr_inv=snr 反向，低波降权、高波加权；"
+                        "highvol_up=只抬高波，低波保持 1.0x 不降权")
     p.add_argument("--spw_mode", choices=["fixed", "match_tail", "adaptive"],
                    default="fixed",
                    help="有效 scale_pos_weight 口径：fixed=沿用 HP_GRID（默认）；"
                         "match_tail=按当折正样本总质量匹配到 tail（隔离正样本内部"
                         "重分配效果）；adaptive=按当折 N+/N- 与正样本均权相对基准"
                         "动态校准并 clip 到 [5,50]")
+    p.add_argument("--base_spw", type=float, default=None,
+                   help="实验用：覆盖 LGB HP_GRID 的 base scale_pos_weight；"
+                        "不传则使用各 pid 原值；仅影响 LGB，不改变默认配置")
+    p.add_argument("--drift_cols", default=",".join(DRIFT_NORM_COLS),
+                   help="按日做 MAD Z-score 的漂移列，逗号分隔；"
+                        "默认 LOG_MV,AMIHUD20；实验可加 IVOL20,TURNOVER")
     p.add_argument("--num_threads", type=int, default=4)
     p.add_argument("--jobs", default="1",
                    help="CV 折级并行进程数：整数或 auto（按服务器核数+可用内存自动定，"
@@ -2459,6 +2556,12 @@ def main():
         f"weight_mode={args.weight_mode} spw_mode={args.spw_mode} "
         + ("核心正样本 snr=weight_raw/(max(vol20,1.5%)*sqrt3) → 0.7~1.5x，负样本 1.0x"
            if args.weight_mode == "snr" else
+           "核心正样本 max(tail,snr)，tail 1.0~1.5x 且不低于 tail，负样本 1.0x"
+           if args.weight_mode == "tail_snr_max" else
+           "核心正样本 snr_inv 反向权重，低信噪比 1.5x、高信噪比 0.7x，负样本 1.0x"
+           if args.weight_mode == "snr_inv" else
+           "核心正样本 highvol_up，只抬高波，低波保持 1.0x，负样本 1.0x"
+           if args.weight_mode == "highvol_up" else
            "核心正样本 weight_raw 尾部 1.0~1.5x，负样本 1.0x"))
 
     X, y, y_raw = bundle["X"], bundle["y"], bundle["y_raw"]
@@ -2483,6 +2586,7 @@ def main():
                    "buf_pos": buf_pos, "vol20": vol20,
                    "weight_mode": str(args.weight_mode),
                    "spw_mode": str(args.spw_mode),
+                   "base_spw": getattr(args, "base_spw", None),
                    "valid_mask": valid_mask,
                    "train_mask": bundle["train_mask"],
                    "trade_mask": bundle["trade_mask"],
@@ -2516,6 +2620,7 @@ def main():
         _tasks_dir.mkdir(parents=True, exist_ok=True)
         _meta = {"features_parquet": str(args.features_parquet),
                  "n_features": len(bundle["feature_cols"]),
+                 "drift_cols": list(bundle.get("drift_cols", DRIFT_NORM_COLS)),
                  "data_start": args.data_start, "cv_end": args.cv_end,
                  "train_months": args.train_months, "test_months": args.test_months,
                  "embargo_days": EMBARGO_DAYS, "seeds": seeds, "engines": engines,
@@ -2533,6 +2638,7 @@ def main():
                                     "snr_anchor": [SNR_ANCHOR_LO, SNR_ANCHOR_HI],
                                     "w_range": [SNR_W_LO, SNR_W_HI]},
                  "spw_mode": str(args.spw_mode),
+                 "base_spw": getattr(args, "base_spw", None),
                  "spw_adapt_cfg": {"r0": SPW_ADAPT_R0, "w0": SPW_ADAPT_W0,
                                    "clip": [SPW_ADAPT_MIN, SPW_ADAPT_MAX]},
                  "lgb_checkpoints": {hp["pid"]: list(hp.get("checkpoints", CHECKPOINTS))
@@ -2561,6 +2667,7 @@ def main():
                     "delta_min": EXCESS_DELTA_MIN,
                     "r3_floor": EXCESS_R3_FLOOR,
                 })
+                _old_meta.setdefault("drift_cols", list(DRIFT_NORM_COLS))
                 _old_meta.setdefault("weight_mode", "tail")
                 _old_meta.setdefault("snr_weight_cfg", {
                     "vol20_floor": VOL20_FLOOR,
@@ -2569,6 +2676,7 @@ def main():
                     "w_range": [SNR_W_LO, SNR_W_HI],
                 })
                 _old_meta.setdefault("spw_mode", "fixed")
+                _old_meta.setdefault("base_spw", None)
                 _old_meta.setdefault("spw_adapt_cfg", {
                     "r0": SPW_ADAPT_R0, "w0": SPW_ADAPT_W0,
                     "clip": [SPW_ADAPT_MIN, SPW_ADAPT_MAX],

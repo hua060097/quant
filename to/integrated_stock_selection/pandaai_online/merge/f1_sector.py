@@ -101,19 +101,23 @@ def _run_f1_sector_one(c: dict, idx: int, rec: dict, ctx: dict) -> dict:
         _is_switch = (form == "switch")
         if _is_switch and (not c.get("base_off") or not c.get("base_def")):
             raise SystemExit("switch候选须带 base_off/base_def（见select_specialists输出）")
+        _inorm = ctx.get("interact_norm", "mad_zscore_soft")
         if _is_gain or _is_flip:
-            # F1v3_gain/flip：有向居中秩u（与f1_batch._centered_u逐字同定义：
-            # 对**原始值**排名再乘一次d。旧代码对已乘d的z排名后再乘d，
-            # d=-1时负负得正方向全反——base20有16/20个d=-1）。
-            from f1_batch import _centered_u as _cu
-            u_row = _cu(xv, day, nd, int(c["d"]))
+            if _inorm == "mad_zscore_soft":
+                u_row = FR.mad_directed(xv, day, int(c["d"]), soft_cap=5.0)
+            else:
+                from f1_batch import _centered_u as _cu
+                u_row = _cu(xv, day, nd, int(c["d"]))
         elif _is_switch:
             # switch legs方向：cands自带d_off/d_def（缺省1）；统一调公共定义。
             u_off_row, u_def_row = None, None
             for _cc, _dd, _slot in ((c["base_off"], int(c.get("d_off", 1)), 0),
                                     (c["base_def"], int(c.get("d_def", 1)), 1)):
                 _xv = pd.to_numeric(m[_cc], errors="coerce").to_numpy(dtype=float)
-                _u = FR.centered_u(_xv, day, nd, _dd)
+                if _inorm == "mad_zscore_soft":
+                    _u = FR.mad_directed(_xv, day, _dd, soft_cap=5.0)
+                else:
+                    _u = FR.centered_u(_xv, day, nd, _dd)
                 if _slot == 0:
                     u_off_row = _u
                 else:
@@ -290,6 +294,9 @@ def main():
                     help=">0 时按固定种子抽样 N 只股票（**仅粗筛用**，"
                          "不得用于正式判定；见 gate_search_report §4.1）")
     ap.add_argument("--sample-seed", type=int, default=0)
+    ap.add_argument("--interact-norm", choices=("mad_zscore_soft", "centered_u"),
+                    default="mad_zscore_soft",
+                    help="底座因子标准化模式（默认 mad_zscore_soft 保留右尾极值峰度；centered_u 为旧均匀秩）")
     a = ap.parse_args()
     label_max = a.label_max
     win = {"search_start": W.FACTORS_FIRST_SIGNAL_DATE, "search_end": label_max,
@@ -397,7 +404,7 @@ def main():
     # 同质偏科桶自求平均会把交互信号吸进底仓（方差主导致边际 tilt 归零），
     # 且使 pair 缓存带批次依赖。roster 缺失/可用列不足时回退 batch 口径+告警。
     from f1_batch import build_reference_ubar
-    _Ubar, _ubar_info = build_reference_ubar(m, day, nd)
+    _Ubar, _ubar_info = build_reference_ubar(m, day, nd, interact_norm=a.interact_norm)
     if _Ubar is None:
         print(f"  [warn] 参考底仓不可用（{_ubar_info}），回退 batch Ubar"
               f"（批次相关！）", flush=True)
@@ -415,7 +422,10 @@ def main():
         _u_all: dict[str, np.ndarray] = {}
         for _bc in base_cols:
             _xv = pd.to_numeric(m[_bc], errors="coerce").to_numpy(dtype=float)
-            _u_all[_bc] = FR.centered_u(_xv, day, nd, int(_dmap.get(_bc, 1)))
+            if getattr(a, "interact_norm", "mad_zscore_soft") == "mad_zscore_soft":
+                _u_all[_bc] = FR.mad_directed(_xv, day, int(_dmap.get(_bc, 1)), soft_cap=5.0)
+            else:
+                _u_all[_bc] = FR.centered_u(_xv, day, nd, int(_dmap.get(_bc, 1)))
         _Ubar = np.nanmean(np.column_stack(list(_u_all.values())), axis=1) \
             if _u_all else np.full(len(m), np.nan)
     # gate 面板矩阵 G[date_idx, sec_idx]，按 uniq 日期顺序
@@ -476,7 +486,7 @@ def main():
             _ctx1 = {"m": m, "sg": sg, "uniq": uniq, "day": day, "nd": nd,
                      "n_dates": n_dates, "sec_ids": sec_ids, "sec_uniq": sec_uniq,
                      "yrk": yrk, "date_idx": date_idx, "Ubar": _Ubar,
-                     "form": a.form, "tag": a.tag}
+                     "form": a.form, "tag": a.tag, "interact_norm": a.interact_norm}
             _run_f1_sector_one(c, i, rec, _ctx1)
             _n_new += _post(i, rec, _fp, t1)
     else:
@@ -485,7 +495,7 @@ def main():
         _F1S_CTX = {"m": m, "sg": sg, "uniq": uniq, "day": day, "nd": nd,
                     "n_dates": n_dates, "sec_ids": sec_ids, "sec_uniq": sec_uniq,
                     "yrk": yrk, "date_idx": date_idx, "Ubar": _Ubar,
-                    "form": a.form, "tag": a.tag}
+                    "form": a.form, "tag": a.tag, "interact_norm": a.interact_norm}
         _nj = min(_nj, len(_miss))
         print(f"[{a.tag}] 并行计算：{len(_miss)} 候选 × {_nj} 进程 …", flush=True)
         _t1_all = {i: time.time() for i, _, _, _ in _miss}
