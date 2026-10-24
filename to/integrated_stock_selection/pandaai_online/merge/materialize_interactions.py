@@ -164,7 +164,9 @@ def main() -> int:
                 out[col] = f
             elif form == "switch":
                 c = cands.get(r["name"], {})
-                p = np.clip((gt + 1.0) / 2.0, 0.0, 1.0)
+                # 2026-10-21：s 必须参与方向（s=-1 时进攻/防守腿对调）；
+                # 当前 8 个入选 switch 均 s=1，历史值不变。
+                p = np.clip((float(s) * gt + 1.0) / 2.0, 0.0, 1.0)
                 p[~np.isfinite(gt)] = np.nan
                 out[col] = H.build_switch_blend(
                     p, u_of[c.get("base_off", r["base"])],
@@ -210,6 +212,8 @@ def main() -> int:
                 pv = np.full(len(m), np.nan)
                 pv[okrow] = Pv[di[okrow], ci[okrow]]
                 pv = np.clip(pv, 0.0, 1.0)
+                if s < 0:
+                    pv = 1.0 - pv
                 out[col] = H.build_switch_blend(
                     pv, u_of[c.get("base_off", r["base"])],
                     u_of[c.get("base_def", r["base"])])

@@ -4,16 +4,31 @@
 Stage15 V5.1 终极独立训练、CV选参与 2026 OOS 分钟级回测一体管线
 ===================================================================
 本次升级重点：
-1. 标签口径（2026-10-19 定版）：
-   - 默认**经典 multihorizon_35**：等权 TP=(O+H+L+C)/4，core = r3>=7% & (r5>=r3-3% 或 NaN)
-     & dd3>=-5%；无 T+2 硬底线、无缓冲正样本（正类率~2%，匹配 scale_pos_weight 30~38）。
-   - `--label_v51` 可恢复 V5.1 口径（TP_real 收盘加权 + T+2 硬底线 + r5 绝对涨幅豁免），
-     仅用于与上一轮结果对拍；两种口径的 r1_mean 不可直接比较。
+1. 标签口径（2026-10-24 扩展，`--label_mode {classic,v51,excess}`）：
+   - `classic`（默认，原经典 multihorizon_35）：等权 TP=(O+H+L+C)/4，
+     core = r3>=7% & (r5>=r3-3% 或 NaN) & dd3>=-5%；无 T+2 硬底线、
+     无缓冲正样本（正类率~2%，匹配 scale_pos_weight 30~38）。
+   - `v51`（或旧 `--label_v51`）：TP_real 收盘加权 + T+2 硬底线 +
+     r5 绝对涨幅豁免，仅用于与上一轮结果对拍。
+   - `excess`（2026-10-24）：classic 量尺 + 截面超额双锚点
+     `r3_excess = r3 - 当日可交易有效样本 r3 中位数`，
+     core = (r3_excess>=6%) & (r3>=3.5%) & r5_ok & (dd3>=-5%)；
+     弱市靠 3.5% 绝对底线防死水股，牛市随中位数自动抬高门槛过滤跟风股。
+     训练标签/权重用 r3_excess，但 `y_raw` 始终是绝对 r3，测试集同尺评估。
 2. 预测与选参（2026-10-19 定版）：
    - 主评估 = 纯 LightGBM（多 seed 在 logit 空间平均）；CatBoost/XGBoost 仅作
      aux/blend 平行对照表输出（cv_summary_<scheme>.csv），不再混入主预测；
    - CHECKPOINTS 加密至 12 档（150~800），提升平台平滑分辨率；HP_GRID 增补 H23（23叶）。
-3. 完整支持 3 种模式：
+3. 正样本权重口径（2026-10-24，`--weight_mode` / `--spw_mode`）：
+   - `tail`（默认）：核心正样本按绝对超额涨幅给 1.0~1.5x，历史结果逐值复现；
+   - `snr`：核心正样本按波动率调整爆发信噪比
+     `snr = r3 / (max(vol20, 1.5%) * sqrt(3))` 给 0.7~1.5x
+     （0.8σ→0.7x，2.5σ→1.5x），其中 `vol20` 为 T 日盘后可知的过去 20 个
+     交易日日收益标准差（PIT）。负样本恒 1.0x，绝不加权；缓冲正样本仍 0.5x。
+   - `--spw_mode fixed`（默认）沿用 HP_GRID 的 scale_pos_weight；
+     `match_tail` 按当折正样本总质量把 spw 匹配到 tail；
+     `adaptive` 按当折 N+/N- 与正样本均权相对基准动态校准（clip [5,50]）。
+4. 完整支持 3 种模式：
    - `--mode cv`       : 2021-06 ~ 2025-12 全量 11 个季度折滚动 CV 选参（双核 + 3 Seeds + 三邻域平滑）；
    - `--mode oos_2026` : 用 <=2025-12 数据训练 8-Seed 终极模型，在 2026 年纯 OOS 上跑日频 & 5分钟级状态机回测！
 
@@ -23,6 +38,13 @@ Stage15 V5.1 终极独立训练、CV选参与 2026 OOS 分钟级回测一体管�
 
   # 2. 跑 2026 年纯样本外 OOS + 5分钟级状态机真实回测
   python stage15_v5_pipeline.py --mode oos_2026 --features_parquet results/merge_v2/lgb_ready/lgb_features.parquet --pid H15 --cp 350 --with_minute_backtest
+
+  # 3. 波动率调整正样本权重 A/B（务必与 tail 用不同 --out_dir）
+  #    match_tail：把 snr 的当折正样本总质量匹配到 tail，隔离正样本内部重分配
+  python stage15_v5_pipeline.py --mode cv --features_parquet results/merge_v2/lgb_ready/lgb_features.parquet --weight_mode snr --spw_mode match_tail --out_dir results/stage15_v5_cv_snr
+
+  # 4. 截面超额标签 A/B（训练标签用 r3_excess，评估仍用绝对 r3）
+  python stage15_v5_pipeline.py --mode cv --features_parquet results/merge_v2/lgb_ready/lgb_features.parquet --label_mode excess --out_dir results/stage15_v5_cv_excess
 """
 from __future__ import annotations
 
@@ -63,6 +85,33 @@ R3_BUF_MIN = 0.045                 # 缓冲稳健正样本 4.5% <= R3 < 7.0%（�
 DD3_BUF_MIN = -0.035               # 缓冲正样本最大回撤 > -3.5%
 BUF_POS_WEIGHT = 0.50              # 缓冲正样本赋予 0.5 倍半权
 TAIL_WEIGHT_ALPHA = 0.50           # 核心正样本尾部加权系数 (1.0 ~ 1.5x，从 R0=7% 起算)
+
+# 波动率调整正样本权重（2026-10-24，--weight_mode snr 时启用）：
+# 目标 = 低波收敛后突然高信噪比爆发（真突破）重奖，高波常态噪音碰巧过 7% 降权。
+# snr = r3 / (max(vol20, VOL20_FLOOR) * sqrt(3))，vol20 为 T 日盘后可知的
+# 过去 20 个交易日日收益标准差（PIT，不含未来信息）。
+VOL20_FLOOR = 0.015                # 日波动率下限 1.5%（防低波票 SNR 爆炸）
+VOL20_RET_CLIP = 0.30              # 估计 vol20 时单日收益截断 ±30%（防复牌/除权异常值）
+SNR_ANCHOR_LO = 0.80               # snr<=0.8σ → SNR_W_LO（高波噪音伪正样本）
+SNR_ANCHOR_HI = 2.50               # snr>=2.5σ → SNR_W_HI（低波真突破；避免1.5σ顶格拥挤）
+SNR_W_LO = 0.70                    # 核心正样本最低权重
+SNR_W_HI = 1.50                    # 核心正样本最高权重
+
+# 有效 scale_pos_weight 解析（2026-10-24，--spw_mode）：
+# fixed=原样使用 HP_GRID；match_tail=把当前权重的当折正样本总质量匹配到 tail；
+# adaptive=按当折 N+/N- 与正样本平均权重相对基准动态校准（clip 到 [5,50]）。
+SPW_ADAPT_R0 = 0.032               # 基准正负样本比 N+/N-（经典标签 ~3.1% 正类率）
+SPW_ADAPT_W0 = 1.15                # 基准正样本平均权重（tail 口径实测 ~1.14）
+SPW_ADAPT_MIN = 5.0                # 自适应 spw 下限
+SPW_ADAPT_MAX = 50.0               # 自适应 spw 上限
+
+# 截面超额标签（2026-10-24，--label_mode excess）：
+# r3_excess = r3 - 当日可交易有效样本 r3 中位数；
+# core = (r3_excess >= 6.0%) & (r3 >= 3.5%) & r5_ok & (dd3 >= -5%)。
+# 3.5% 绝对底线防止弱市把下跌/死水股标成正样本；牛市随中位数自动抬高
+# 绝对门槛（M_t+6%），过滤靠 Beta 混过 7% 的跟风股。
+EXCESS_DELTA_MIN = 0.060           # 跑赢当日市场中位数至少 +6.0%
+EXCESS_R3_FLOOR = 0.035            # 绝对涨幅底线 +3.5%
 
 DRIFT_NORM_COLS = ("LOG_MV", "AMIHUD20")
 # 槽位净值模拟参数（2026-10-20 P0-2 定版）：3 槽轮动、每日投入 1/SLOT 资金、
@@ -164,6 +213,29 @@ def mad_zscore_by_day(values: np.ndarray, day_codes: np.ndarray, clip_cap: float
     out = np.where(az <= clip_cap, z, z_soft)
     out[~np.isfinite(v)] = np.nan
     return out.astype(np.float32)
+
+
+def compute_vol20(pdf: pd.DataFrame) -> np.ndarray:
+    """PIT 日波动率：过去 20 个交易日日收益（pct_chg）的标准差。
+
+    2026-10-24（--weight_mode snr）：T 日盘后选股、T+1 开盘买入，故含 T 日
+    收盘收益合法可得。pct_chg 为百分数，先 /100 转小数；单日收益截断
+    ±VOL20_RET_CLIP，防止复牌/除权等单点异常值污染 20 日波动率估计；
+    停牌日（volume/amount<=0）按缺失处理而不是 0 收益（0 会系统性低估波动）。
+    每只股票至少 10 个有效收益才输出，否则 NaN。
+
+    返回与 pdf 行对齐的 float64 数组。
+    """
+    ret = pd.to_numeric(pdf["pct_chg"], errors="coerce").to_numpy(dtype=np.float64) / 100.0
+    ret = np.clip(ret, -VOL20_RET_CLIP, VOL20_RET_CLIP)
+    if "volume" in pdf.columns and "amount" in pdf.columns:
+        halted = ((pdf["volume"].fillna(0) <= 0)
+                  | (pdf["amount"].fillna(0) <= 0)).to_numpy(dtype=bool)
+        ret[halted] = np.nan
+    s = pd.Series(ret)
+    vol = s.groupby(pdf["stock_code"].to_numpy(), sort=False).transform(
+        lambda x: x.rolling(20, min_periods=10).std(ddof=1))
+    return vol.to_numpy(dtype=np.float64)
 
 
 def find_best_price_cache(start_date: str) -> Path:
@@ -314,6 +386,17 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
         raise FileNotFoundError(f"特征文件不存在: {feat_path}")
 
     t0 = time.time()
+    _explicit_label_mode = getattr(args, "label_mode", None)
+    if (_explicit_label_mode not in (None, "", "v51")
+            and getattr(args, "label_v51", False)):
+        raise SystemExit(
+            "--label_v51 与 label_mode 冲突：--label_v51 等价于 --label_mode v51")
+    label_mode = str(_explicit_label_mode or
+                     ("v51" if getattr(args, "label_v51", False) else "classic"))
+    if label_mode not in ("classic", "v51", "excess"):
+        raise SystemExit(
+            f"[标签] 未知 label_mode={label_mode!r}（可选 classic/v51/excess）")
+    logger.info(f"[标签] label_mode={label_mode}")
     logger.info(f"[1/4] 读取特征矩阵: {feat_path}")
     fdf = pd.read_parquet(feat_path)
     fdf["date"] = pd.to_datetime(fdf["date"]).dt.normalize()
@@ -343,6 +426,19 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     pdf["stock_code"] = pdf["stock_code"].astype(str)
     pdf = pdf.sort_values(["stock_code", "date"]).drop_duplicates(["stock_code", "date"], keep="last").reset_index(drop=True)
 
+    # PIT 波动率（--weight_mode snr 用）：过去 20 个交易日日收益标准差，含 T 日
+    # 收盘（T 日盘后可知）；行情缓存起始日早于 data_start，data_start 附近样本
+    # 仍有完整 20 日预热。默认 tail 模式下仅随 bundle 透传，不参与权重。
+    if "pct_chg" in pdf.columns:
+        pdf["vol20"] = compute_vol20(pdf)
+    else:
+        if str(getattr(args, "weight_mode", "tail")) == "snr":
+            raise SystemExit(
+                "[标签] --weight_mode snr 需要行情缓存含 pct_chg 列，"
+                f"当前缓存缺列: {price_path.name}")
+        logger.warning("[标签] 行情缓存缺 pct_chg，vol20 全置 NaN（tail 模式不受影响）")
+        pdf["vol20"] = np.nan
+
     g_code = pdf.groupby("stock_code", sort=False)
     pdf["listed_days"] = g_code.cumcount() + 1
     is_susp = (pdf["volume"].fillna(0) <= 0) | (pdf["amount"].fillna(0) <= 0)
@@ -355,10 +451,11 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     logger.info(f"[标签] 前向停牌窗剔除 {int((~_fw_ok).sum()):,} 行"
                 f"（占 {float((~_fw_ok).mean()):.2%}）")
 
-    # 标签口径（2026-10-19 定版）：默认**经典 multihorizon_35**（等权 TP，与历史
-    # 基准同尺可比）；`--label-v51` 恢复 V5.1 口径（收盘加权 TP_real，压低最高价
-    # 权重改变量尺，r1_mean 与经典不可直接比）。
-    if args.label_v51:
+    # 标签口径（2026-10-24 扩展）：classic=经典 multihorizon_35（等权 TP）；
+    # v51=旧 --label_v51（收盘加权 TP_real，压低最高价权重改变量尺）；
+    # excess=classic 等权 TP + 截面超额门槛（不改变 TP 量尺，r1_mean 可与
+    # classic 同尺比较，但训练标签的正类构成不同）。
+    if label_mode == "v51":
         tp_real = 0.15 * pdf["open"] + 0.15 * pdf["high"] + 0.20 * pdf["low"] + 0.50 * pdf["close"]
     else:
         tp_real = (pdf["open"] + pdf["high"] + pdf["low"] + pdf["close"]) / 4.0
@@ -398,7 +495,7 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
 
     merged = fdf.merge(
         pdf[["stock_code", "date", "ret_t2", "close_t2_ret", "r3", "r5", "dd3",
-             "tradable_mask", "forward_ok"]],
+             "vol20", "tradable_mask", "forward_ok"]],
         on=["stock_code", "date"], how="inner"
     )
     merged = merged.sort_values(["date", "stock_code"]).reset_index(drop=True)
@@ -414,12 +511,21 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     r3 = merged["r3"].to_numpy(dtype=np.float64)
     r5 = merged["r5"].to_numpy(dtype=np.float64)
     dd3 = merged["dd3"].to_numpy(dtype=np.float64)
+    vol20 = merged["vol20"].to_numpy(dtype=np.float64)
 
-    # 正样本口径（2026-10-19 定版，Owner 批准）：
-    # 默认经典 multihorizon_35：core = r3>=7% & (r5>=r3-3% 或 NaN) & dd3>=-5%，
-    #   无 T+2 硬底线（不误杀 T+2 缩量洗盘、T+3 反包的真牛股）、无缓冲正样本；
-    # --label-v51：附加 r5>=+10% 豁免、T+2 硬底线、可选缓冲正样本。
-    if args.label_v51:
+    # 正样本口径：
+    # classic（默认）：core = r3>=7% & (r5>=r3-3% 或 NaN) & dd3>=-5%，
+    #   无 T+2 硬底线、无缓冲正样本；
+    # v51：附加 r5>=+10% 豁免、T+2 硬底线、可选缓冲正样本；
+    # excess（2026-10-24）：classic 量尺 + 截面超额双锚点
+    #   r3_excess = r3 - 当日可交易有效样本 r3 中位数；
+    #   core = (r3_excess>=6%) & (r3>=3.5%) & r5_ok & (dd3>=-5%)，
+    #   无 T+2 硬底线、无缓冲正样本。r3_excess 只用于训练标签与权重，
+    #   bundle["y_raw"] 仍保持绝对 r3，供测试集同尺评估。
+    y_weight_raw = r3
+    r3_excess = None
+    r3_med_day = None
+    if label_mode == "v51":
         r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE)) | (r5 >= 0.10)
         t2_ok = (ret_t2 >= T2_FLOOR_MIN) & (close_t2_ret > 0.0)
         core_pos = (r3 >= R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_CORE_MIN)
@@ -427,6 +533,19 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
             buf_pos = (~core_pos) & (r3 >= R3_BUF_MIN) & (r3 < R3_CORE_MIN) & t2_ok & r5_ok & (dd3 >= DD3_BUF_MIN)
         else:
             buf_pos = np.zeros_like(core_pos, dtype=bool)
+    elif label_mode == "excess":
+        _med_mask = (merged["tradable_mask"].to_numpy(dtype=bool)
+                     & np.isfinite(r3))
+        _r3_for_med = np.where(_med_mask, r3, np.nan)
+        r3_med_day = pd.Series(_r3_for_med).groupby(
+            day_codes, sort=False).transform("median").to_numpy(dtype=np.float64)
+        r3_excess = r3 - r3_med_day
+        r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE))
+        core_pos = ((r3_excess >= EXCESS_DELTA_MIN)
+                    & (r3 >= EXCESS_R3_FLOOR)
+                    & r5_ok & (dd3 >= DD3_CORE_MIN))
+        buf_pos = np.zeros_like(core_pos, dtype=bool)
+        y_weight_raw = r3_excess
     else:
         r5_ok = np.isnan(r5) | (r5 >= (r3 - R5_TOLERANCE))
         core_pos = (r3 >= R3_CORE_MIN) & r5_ok & (dd3 >= DD3_CORE_MIN)
@@ -456,14 +575,40 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
     dates = merged["date"].to_numpy()
     codes = merged["stock_code"].to_numpy()
     sectors = np.array([sw_map.get(c, "__NA__") for c in codes], dtype=object)
+    if label_mode == "excess":
+        _thr_day = np.maximum(EXCESS_R3_FLOOR, r3_med_day + EXCESS_DELTA_MIN)
+        _mf = r3_med_day[np.isfinite(r3_med_day)]
+        _tf = _thr_day[np.isfinite(_thr_day)]
+        if len(_mf) and len(_tf):
+            _mq = np.percentile(_mf, [10, 50, 90])
+            _tq = np.percentile(_tf, [10, 50, 90])
+            logger.info(
+                f"[标签] excess 日度中位数 P10/P50/P90="
+                f"{_mq[0]:+.2%}/{_mq[1]:+.2%}/{_mq[2]:+.2%} | "
+                f"绝对门槛 P10/P50/P90="
+                f"{_tq[0]:.2%}/{_tq[1]:.2%}/{_tq[2]:.2%}")
+        _ex = r3_excess[np.isfinite(r3_excess) & y_valid]
+        if len(_ex):
+            _eq = np.percentile(_ex, [10, 50, 90])
+            logger.info(
+                f"[标签] r3_excess(有效样本) P10/P50/P90="
+                f"{_eq[0]:+.2%}/{_eq[1]:+.2%}/{_eq[2]:+.2%}")
+    _core_vol_na = float(np.mean(~np.isfinite(vol20[core_pos]))) if core_pos.any() else 0.0
     logger.info(
-        f"[3/4] 数据准备就绪 ({time.time()-t0:.0f}s): 交易有效行={int(trade_valid.sum()):,}/{len(merged):,} "
+        f"[3/4] 数据准备就绪 ({time.time()-t0:.0f}s): label_mode={label_mode} "
+        f"交易有效行={int(trade_valid.sum()):,}/{len(merged):,} "
         f"| 评估有效行(标签可算)={int(y_valid.sum()):,} "
         f"| 训练有效行(前向停牌窗剔除)={int(train_valid.sum()):,} "
-        f"| 核心正类率={core_pos[y_valid].mean():.2%} 缓冲正类率={buf_pos[y_valid].mean():.2%}"
+        f"| 核心正类率={core_pos[y_valid].mean():.2%} 缓冲正类率={buf_pos[y_valid].mean():.2%} "
+        f"| vol20 缺失率={float(np.mean(~np.isfinite(vol20))):.2%}"
+        f"(核心正样本内 {_core_vol_na:.2%})"
     )
     return {
-        "X": X, "y": y_bin, "y_raw": r3, "core_pos": core_pos, "buf_pos": buf_pos,
+        "X": X, "y": y_bin, "y_raw": r3, "y_weight_raw": y_weight_raw,
+        "label_mode": label_mode,
+        "r3_excess": r3_excess, "r3_med_day": r3_med_day,
+        "core_pos": core_pos, "buf_pos": buf_pos,
+        "vol20": vol20,
         "valid_mask": y_valid, "train_mask": train_out, "trade_mask": trade_valid,
         "test_mask": test_valid,
         "dates": dates, "codes": codes, "sectors": sectors,
@@ -473,16 +618,62 @@ def load_dataset_and_labels(args, logger: logging.Logger) -> dict:
 
 def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
                            y_raw: np.ndarray,
-                           dates: np.ndarray | None = None) -> np.ndarray:
+                           dates: np.ndarray | None = None,
+                           weight_mode: str = "tail",
+                           vol20: np.ndarray | None = None,
+                           weight_raw: np.ndarray | None = None,
+                           weight_r0: float | None = None) -> np.ndarray:
+    """构造训练样本权重（负样本恒 1.0，绝不加权）。
+
+    weight_mode:
+      - "tail"（默认，历史定版）：核心正样本按 weight_raw 超出 weight_r0
+        的幅度 g=clip((weight_raw-r0)/(q95-r0),0,1) 给 1.0~1.5x；缓冲 0.5x。
+      - "snr"（2026-10-24）：核心正样本按波动率调整爆发信噪比
+        snr=weight_raw/(max(vol20,1.5%)*sqrt(3)) 线性给 0.7~1.5x
+        （0.8σ→0.7x，2.5σ→1.5x），压低"高波常态噪音碰巧过阈"的伪正
+        样本、抬高"低波收敛后高信噪比爆发"的真突破；缓冲正样本仍 0.5x，
+        负样本仍 1.0x。vol20 缺失的正样本取中性 1.0x（不奖不罚）。
+      两种模式最终都叠加海啸日正样本总量线性封顶（不改 y、不碰负样本）。
+
+    weight_raw / weight_r0:
+      - 默认 weight_raw=y_raw、weight_r0=R3_CORE_MIN(7%)，即历史绝对涨幅口径；
+      - label_mode=excess 时由调用方传 weight_raw=r3_excess、
+        weight_r0=EXCESS_DELTA_MIN(6%)，使权重也按截面超额幅度计算。
+    """
+    if weight_mode not in ("tail", "snr"):
+        raise ValueError(f"未知 weight_mode={weight_mode!r}（可选 tail/snr）")
+    _wr = (np.asarray(y_raw, dtype=np.float64) if weight_raw is None
+           else np.asarray(weight_raw, dtype=np.float64))
+    if _wr.shape[0] != len(y_raw):
+        raise ValueError(
+            f"weight_raw 长度 {_wr.shape[0]} 与 y_raw 长度 {len(y_raw)} 不一致")
+    _r0 = R3_CORE_MIN if weight_r0 is None else float(weight_r0)
     w = np.ones(len(y_raw), dtype=np.float32)
     if buf_pos.any():
         w[buf_pos] = BUF_POS_WEIGHT
     if core_pos.any():
-        r_pos = y_raw[core_pos]
-        q95 = float(np.nanpercentile(r_pos, 95)) if len(r_pos) > 10 else 0.20
-        q95 = max(q95, R3_CORE_MIN + 0.02)
-        g = np.clip((y_raw - R3_CORE_MIN) / (q95 - R3_CORE_MIN), 0.0, 1.0)
-        w[core_pos] = (1.0 + TAIL_WEIGHT_ALPHA * g[core_pos]).astype(np.float32)
+        if weight_mode == "snr":
+            if vol20 is None:
+                raise ValueError("weight_mode='snr' 需要提供 vol20 数组")
+            _v_all = np.asarray(vol20, dtype=np.float64)
+            if _v_all.shape[0] != len(y_raw):
+                raise ValueError(
+                    f"vol20 长度 {_v_all.shape[0]} 与 y_raw 长度 {len(y_raw)} 不一致")
+            _v = _v_all[core_pos]
+            if not np.isfinite(_v).any():
+                raise ValueError("weight_mode='snr' 但核心正样本 vol20 全缺失")
+            _snr = _wr[core_pos] / (np.maximum(_v, VOL20_FLOOR) * np.sqrt(3.0))
+            _w = (SNR_W_LO + (SNR_W_HI - SNR_W_LO)
+                  * (_snr - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+            _w = np.clip(_w, SNR_W_LO, SNR_W_HI)
+            _w[~np.isfinite(_snr)] = 1.0
+            w[core_pos] = _w.astype(np.float32)
+        else:
+            r_pos = _wr[core_pos]
+            q95 = float(np.nanpercentile(r_pos, 95)) if len(r_pos) > 10 else 0.20
+            q95 = max(q95, _r0 + 0.02)
+            g = np.clip((_wr - _r0) / (q95 - _r0), 0.0, 1.0)
+            w[core_pos] = (1.0 + TAIL_WEIGHT_ALPHA * g[core_pos]).astype(np.float32)
     # 极端普涨海啸日软封顶（V5.1）：2024-09-24~30 等单日数千正样本的极值日会在
     # 损失函数里绑架整折正类梯度。纪律：绝不改 y=1 标签（改标签=特征认知错乱），
     # 只对"单日正样本数 > max(300, P95)"的极少数海啸日，把当日**正样本**权重乘
@@ -508,6 +699,98 @@ def compute_sample_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
                         _sc = scale[day_codes]
                         w[_pos] = (w[_pos] * _sc[_pos]).astype(np.float32)
     return w
+
+
+def resolve_effective_spw(y_train: np.ndarray, w_train: np.ndarray,
+                          base_spw: float,
+                          tail_w_train: np.ndarray | None = None,
+                          spw_mode: str = "fixed") -> float:
+    """解析当折训练集实际使用的 scale_pos_weight。
+
+    - fixed（默认）：原样返回 base_spw，历史行为逐值不变。
+    - match_tail：`spw_eff = base_spw * sum(tail_w[pos]) / sum(w[pos])`。
+      使当前权重口径与 tail 口径在该折上的**正样本总梯度质量严格相等**，
+      从而把 tail→snr 的对比隔离为"正样本内部重分配"，不混杂正类总推力
+      变化。海啸日封顶对两种口径按同一 cap/npos 缩放，故封顶前后比值一致；
+      但 tail_w_train 必须与 w_train 在同一训练子集上、用同一 dates 构造。
+    - adaptive：`spw_eff = base_spw * (r0/(N+/N-)) * (w0/mean_w_pos)`，
+      其中 r0=SPW_ADAPT_R0、w0=SPW_ADAPT_W0，结果 clip 到
+      [SPW_ADAPT_MIN, SPW_ADAPT_MAX]。用于抑制跨折正样本率/平均权重波动
+      带来的有效正类梯度占比漂移。
+
+    负样本权重不参与任何缩放；本函数只决定 LightGBM/CatBoost 的正类乘数。
+    """
+    if spw_mode not in ("fixed", "match_tail", "adaptive"):
+        raise ValueError(
+            f"未知 spw_mode={spw_mode!r}（可选 fixed/match_tail/adaptive）")
+    base = float(base_spw)
+    if not np.isfinite(base) or base <= 0:
+        raise ValueError(f"base_spw 必须为正有限数，得到 {base_spw!r}")
+    if spw_mode == "fixed":
+        return base
+
+    y = np.asarray(y_train)
+    w = np.asarray(w_train, dtype=np.float64)
+    if y.shape[0] != w.shape[0]:
+        raise ValueError(
+            f"y_train 长度 {y.shape[0]} 与 w_train 长度 {w.shape[0]} 不一致")
+    pos = y > 0.5
+    n_pos = int(pos.sum())
+    n_neg = int((~pos).sum())
+    if n_pos == 0 or n_neg == 0:
+        raise ValueError(
+            f"spw_mode={spw_mode} 需要训练集同时含正负样本"
+            f"（n_pos={n_pos}, n_neg={n_neg}）")
+    pos_mass = float(w[pos].sum())
+    if not np.isfinite(pos_mass) or pos_mass <= 0:
+        raise ValueError(f"正样本权重和非法: {pos_mass!r}")
+
+    if spw_mode == "match_tail":
+        if tail_w_train is None:
+            raise ValueError("spw_mode='match_tail' 需要提供 tail_w_train")
+        tw = np.asarray(tail_w_train, dtype=np.float64)
+        if tw.shape[0] != w.shape[0]:
+            raise ValueError(
+                f"tail_w_train 长度 {tw.shape[0]} 与 w_train 长度 {w.shape[0]} 不一致")
+        tail_pos_mass = float(tw[pos].sum())
+        if not np.isfinite(tail_pos_mass) or tail_pos_mass <= 0:
+            raise ValueError(f"tail 正样本权重和非法: {tail_pos_mass!r}")
+        return base * (tail_pos_mass / pos_mass)
+
+    # adaptive
+    ratio = n_pos / n_neg
+    mean_w_pos = pos_mass / n_pos
+    raw = base * (SPW_ADAPT_R0 / ratio) * (SPW_ADAPT_W0 / mean_w_pos)
+    return float(np.clip(raw, SPW_ADAPT_MIN, SPW_ADAPT_MAX))
+
+
+def build_train_weights(core_pos: np.ndarray, buf_pos: np.ndarray,
+                        y_raw: np.ndarray, dates: np.ndarray,
+                        y_train: np.ndarray, base_spw: float,
+                        weight_mode: str = "tail",
+                        spw_mode: str = "fixed",
+                        vol20: np.ndarray | None = None,
+                        weight_raw: np.ndarray | None = None,
+                        weight_r0: float | None = None) -> tuple[np.ndarray, float]:
+    """构造单个训练子集的样本权重与有效 spw（CV/OOS 共用，避免口径漂移）。
+
+    match_tail 时在同一子集上额外重算 tail 权重，保证两种口径的正样本
+    总梯度质量严格匹配；fixed/adaptive 不额外重算。
+    weight_raw/weight_r0 透传给 compute_sample_weights（excess 模式传
+    r3_excess / 6%，classic/v51 保持默认绝对 r3 / 7%）。
+    """
+    w = compute_sample_weights(core_pos, buf_pos, y_raw, dates,
+                               weight_mode=weight_mode, vol20=vol20,
+                               weight_raw=weight_raw, weight_r0=weight_r0)
+    tail_w = None
+    if spw_mode == "match_tail":
+        tail_w = compute_sample_weights(core_pos, buf_pos, y_raw, dates,
+                                        weight_mode="tail", vol20=None,
+                                        weight_raw=weight_raw,
+                                        weight_r0=weight_r0)
+    spw = resolve_effective_spw(y_train, w, base_spw,
+                                tail_w_train=tail_w, spw_mode=spw_mode)
+    return w, spw
 
 
 # ==================== 双核异构多 Seed 训练器 ====================
@@ -846,16 +1129,18 @@ def train_predict_fold(
 
 def train_predict_cb(
     X_tr: np.ndarray, y_tr: np.ndarray, w_tr: np.ndarray,
-    X_te: np.ndarray, hp: dict, seeds: list[int], num_threads: int
+    X_te: np.ndarray, hp: dict, seeds: list[int], num_threads: int,
+    scale_pos_weight: float = _CB_SCALE_POS_WEIGHT
 ) -> dict:
     """CatBoost 独立对称树训练（2026-10-20 P2 定版，与 LGB 完全对称）：
 
     - 多 Seed 遍历，RawFormulaVal 逐 seed 求平均（与 LGB 的 logit 均值同口径）；
     - rsm=0.75 列采样（对齐 LGB feature_fraction=0.75）；
     - Bernoulli 子采样 0.80；单次训至 CB 最大轮，ntree_end 切片全套 cp。
+    - scale_pos_weight 由 resolve_effective_spw 按折解析（默认 _CB_SCALE_POS_WEIGHT）。
     """
     from catboost import CatBoostClassifier
-    cb_w = w_tr * np.where(y_tr > 0.5, _CB_SCALE_POS_WEIGHT, 1.0)
+    cb_w = w_tr * np.where(y_tr > 0.5, float(scale_pos_weight), 1.0)
     out = {int(cp): np.zeros(len(X_te), dtype=np.float64) for cp in CB_CHECKPOINTS}
     for _sd in seeds:
         cb = CatBoostClassifier(
@@ -1442,18 +1727,32 @@ def _cv_worker(task) -> tuple:
             & (dates <= np.datetime64(fold["test_end"])) & test_mask)
     if tr_m.sum() < c["min_train"] or te_m.sum() < c["min_test"]:
         return t_i, side, hp["pid"], fold["fold_id"], 0, [], {}
-    w_tr = compute_sample_weights(c["core_pos"][tr_m], c["buf_pos"][tr_m],
-                                  c["y_raw"][tr_m], dates[tr_m])
+    _vol_tr = c["vol20"][tr_m] if c.get("vol20") is not None else None
+    _label_mode = str(c.get("label_mode", "classic"))
+    _weight_all = c.get("y_weight_raw", c["y_raw"])
+    _weight_tr = _weight_all[tr_m]
+    _weight_r0 = EXCESS_DELTA_MIN if _label_mode == "excess" else R3_CORE_MIN
+    _base_spw = (float(hp["scale_pos_weight"]) if side == "lgb"
+                 else float(_CB_SCALE_POS_WEIGHT))
+    w_tr, _spw_eff = build_train_weights(
+        c["core_pos"][tr_m], c["buf_pos"][tr_m], c["y_raw"][tr_m], dates[tr_m],
+        c["y"][tr_m], _base_spw,
+        weight_mode=c.get("weight_mode", "tail"),
+        spw_mode=c.get("spw_mode", "fixed"),
+        vol20=_vol_tr, weight_raw=_weight_tr, weight_r0=_weight_r0)
+    # 浅拷贝避免把当折有效 spw 写回共享 HP_GRID（串行路径多折复用同一 dict）
+    hp_eff = dict(hp)
+    hp_eff["scale_pos_weight"] = _spw_eff
     _leaf = {}
     if side == "lgb":
-        _cps = hp.get("checkpoints", CHECKPOINTS)
+        _cps = hp_eff.get("checkpoints", CHECKPOINTS)
         _leaf_ctx = None
         if c.get("collect_leaf"):
             _leaf_ctx = {"codes": c["codes"][te_m], "sectors": c["sectors"][te_m],
                          "y_raw": c["y_raw"][te_m], "cps": LEAF_PICK2_CPS}
         _out = train_predict_fold(
             c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m], dates[te_m],
-            hp, _cps, c["seeds"], ["lgb"], c["num_threads"], leaf_ctx=_leaf_ctx,
+            hp_eff, _cps, c["seeds"], ["lgb"], c["num_threads"], leaf_ctx=_leaf_ctx,
             save_model_dir=c.get("save_model_dir"),
             save_name=f"{side}_{hp['pid']}_Fold{int(fold['fold_id']):02d}",
             save_cp=c.get("save_cp"))
@@ -1462,12 +1761,17 @@ def _cv_worker(task) -> tuple:
     else:
         preds = train_predict_cb(
             c["X"][tr_m], c["y"][tr_m], w_tr, c["X"][te_m],
-            hp, c["seeds"], c["num_threads"])
+            hp_eff, c["seeds"], c["num_threads"],
+            scale_pos_weight=_spw_eff)
     rows = evaluate_predictions(
         preds, dates[te_m], c["codes"][te_m], c["sectors"][te_m],
-        c["y_raw"][te_m], fold["fold_id"], hp["pid"])
+        c["y_raw"][te_m], fold["fold_id"], hp_eff["pid"])
     for r in rows:
         r["scheme"] = side
+    if rows:
+        # 仅挂在首行供父进程写任务标记/日志；_persist_task 会按 _ROWS_COLS
+        # reindex 自动丢弃，不改变 parquet 行 schema。
+        rows[0]["spw_eff"] = float(_spw_eff)
     return t_i, side, hp["pid"], fold["fold_id"], len(rows), rows, _leaf
 
 
@@ -1512,7 +1816,8 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     """标签与权重全景诊断（2026-10-19 定版，无模型训练）。
 
     在全量可交易样本（data_start ~ cv_end，特征∩行情同域）上输出：
-      A. L0~L4 五种标签组合漏斗：正样本数/率、真实等权 r3/r5/dd3 均值与中位数；
+      A. L0~L5 六种标签组合漏斗：正样本数/率、真实等权 r3/r5/dd3 均值与中位数；
+         L5=截面超额 (r3_excess>=6% & r3>=3.5%)，收益统计仍用绝对 r3/r5/dd3；
       B. 各标签每日正样本数分布、Top10 海啸日、P95 软封顶前后海啸日权重占比；
       C. spw ∈ {15,20,25,30,38} 有效正类梯度质量占比（目标区间 35%~42%）。
     """
@@ -1541,8 +1846,8 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     price_path = find_best_price_cache(args.data_start)
     logger.info(f"[diag] 行情缓存: {price_path.name}")
     want_cols = ["stock_code", "date", "open", "high", "low", "close", "volume",
-                 "amount", "is_st", "is_limit_up", "is_limit_down", "is_zhaban",
-                 "is_can_buy"]
+                 "amount", "pct_chg", "is_st", "is_limit_up", "is_limit_down",
+                 "is_zhaban", "is_can_buy"]
     import pyarrow.parquet as pq
     avail_pcols = [c for c in want_cols if c in set(pq.read_schema(price_path).names)]
     pdf = pd.read_parquet(price_path, columns=avail_pcols)
@@ -1550,6 +1855,10 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     pdf["stock_code"] = pdf["stock_code"].astype(str)
     pdf = pdf.sort_values(["stock_code", "date"]).drop_duplicates(
         ["stock_code", "date"], keep="last").reset_index(drop=True)
+    if "pct_chg" not in pdf.columns:
+        raise SystemExit(
+            f"[diag] 行情缓存缺 pct_chg，无法输出 D 节 vol20/SNR 诊断: {price_path.name}")
+    pdf["vol20"] = compute_vol20(pdf)
     g_code = pdf.groupby("stock_code", sort=False)
     pdf["listed_days"] = g_code.cumcount() + 1
     is_susp = (pdf["volume"].fillna(0) <= 0) | (pdf["amount"].fillna(0) <= 0)
@@ -1601,7 +1910,8 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         "stock_code": pdf["stock_code"].to_numpy(), "date": pdf["date"].to_numpy(),
         "tradable": tradable.to_numpy(), "r3_eq": r3_eq, "r5_eq": r5_eq,
         "r3_r": r3_r, "r5_r": r5_r, "dd3": dd3,
-        "ret_t2_r": ret_t2_r, "close_t2_ret": close_t2_ret})
+        "ret_t2_r": ret_t2_r, "close_t2_ret": close_t2_ret,
+        "vol20": pdf["vol20"].to_numpy()})
     merged = fkeys.merge(pdf_sub, on=["stock_code", "date"], how="inner")
     merged = merged[merged["date"] <= pd.Timestamp(args.cv_end)]
 
@@ -1612,6 +1922,7 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     _dd = merged["dd3"].to_numpy(dtype=float)
     _t2 = merged["ret_t2_r"].to_numpy(dtype=float)
     _c2 = merged["close_t2_ret"].to_numpy(dtype=float)
+    _vol = merged["vol20"].to_numpy(dtype=float)
     _dates = merged["date"].to_numpy()
     base = (merged["tradable"].to_numpy(dtype=bool)
             & np.isfinite(_r3) & np.isfinite(_dd))
@@ -1635,6 +1946,46 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     buf4 = base & (~core0) & (_r3 >= R3_BUF_MIN) & (_r3 < R3_CORE_MIN) \
         & t2_ok & r5_ok & (_dd >= DD3_BUF_MIN)
 
+    # ---- 正样本权重倍数（与 compute_sample_weights 同口径，供 C/D 节对照）----
+    _q95_core = (float(np.percentile(_r3[core0], 95)) if int(core0.sum()) > 10
+                 else 0.20)
+    _q95_core = max(_q95_core, R3_CORE_MIN + 0.02)
+    _tail_mult = np.ones(len(core0), dtype=float)
+    _g_core = np.clip((_r3[core0] - R3_CORE_MIN) / (_q95_core - R3_CORE_MIN),
+                      0.0, 1.0)
+    _tail_mult[core0] = 1.0 + TAIL_WEIGHT_ALPHA * _g_core
+    _snr_core = _r3[core0] / (np.maximum(_vol[core0], VOL20_FLOOR) * np.sqrt(3.0))
+    _snr_mult = np.ones(len(core0), dtype=float)
+    _w_core = (SNR_W_LO + (SNR_W_HI - SNR_W_LO)
+               * (_snr_core - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+    _w_core = np.clip(_w_core, SNR_W_LO, SNR_W_HI)
+    _w_core[~np.isfinite(_snr_core)] = 1.0
+    _snr_mult[core0] = _w_core
+
+    # L5 截面超额标签（2026-10-24）：按日可交易有效样本的 r3 中位数；
+    # 只改训练标签，A 节收益统计仍用绝对 r3/r5/dd3，与 L0 同尺可比。
+    _r3_med_base = pd.Series(_r3[base]).groupby(
+        day_codes, sort=False).transform("median").to_numpy(dtype=float)
+    _r3_med = np.full(len(_r3), np.nan, dtype=float)
+    _r3_med[base] = _r3_med_base
+    _r3_excess = _r3 - _r3_med
+    core5 = (base & (_r3_excess >= EXCESS_DELTA_MIN)
+             & (_r3 >= EXCESS_R3_FLOOR) & r5_ok & dd_ok)
+    _q95_core5 = (float(np.percentile(_r3_excess[core5], 95)) if int(core5.sum()) > 10
+                  else 0.15)
+    _q95_core5 = max(_q95_core5, EXCESS_DELTA_MIN + 0.02)
+    _tail_mult5 = np.ones(len(core5), dtype=float)
+    _g_core5 = np.clip((_r3_excess[core5] - EXCESS_DELTA_MIN) / (_q95_core5 - EXCESS_DELTA_MIN),
+                       0.0, 1.0)
+    _tail_mult5[core5] = 1.0 + TAIL_WEIGHT_ALPHA * _g_core5
+    _snr_core5 = _r3_excess[core5] / (np.maximum(_vol[core5], VOL20_FLOOR) * np.sqrt(3.0))
+    _snr_mult5 = np.ones(len(core5), dtype=float)
+    _w_core5 = (SNR_W_LO + (SNR_W_HI - SNR_W_LO)
+                * (_snr_core5 - SNR_ANCHOR_LO) / (SNR_ANCHOR_HI - SNR_ANCHOR_LO))
+    _w_core5 = np.clip(_w_core5, SNR_W_LO, SNR_W_HI)
+    _w_core5[~np.isfinite(_snr_core5)] = 1.0
+    _snr_mult5[core5] = _w_core5
+
     _md: list[str] = []
 
     def _emit(line: str = ""):
@@ -1649,7 +2000,7 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         return f"{np.mean(v):+.4f} / {np.median(v):+.4f}"
 
     # ---- A. 标签变体漏斗对照 ----
-    _emit("\n## A. 标签变体漏斗对照（L0~L4；收益统计=等权 TP 真实前向）")
+    _emit("\n## A. 标签变体漏斗对照（L0~L5；收益统计=等权 TP 真实前向绝对收益）")
     _emit("| 变体 | 正样本数 | 正类率 | r3_eq 均值/中位 | r5_eq 均值/中位 | dd3 均值/中位 |")
     _emit("|---|---|---|---|---|---|")
     _rows = [
@@ -1658,12 +2009,25 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         ("L2 TP_real", core2),
         ("L3 L0+t2_ok", core3),
         ("L4 L0+buf4.5~7%", core0 | buf4),
+        ("L5 截面超额(r3_ex>=6% & r3>=3.5%)", core5),
     ]
     for _name, _pos in _rows:
         _np_ = int(_pos.sum())
         _emit(f"| {_name} | {_np_:,} | {_np_ / n_valid:.2%} | {_stat(_r3, _pos)} | "
               f"{_stat(_r5, _pos)} | {_stat(_dd, _pos)} |")
     _n0 = int(core0.sum())
+    _n5 = int(core5.sum())
+    _thr_day = np.maximum(EXCESS_R3_FLOOR, _r3_med + EXCESS_DELTA_MIN)
+    # 门槛按"日"取分位（每日常数），避免大截面日重复计数
+    _base_pos = np.flatnonzero(base)
+    _, _first_day = np.unique(_dates[_base_pos], return_index=True)
+    _thr_days = _thr_day[_base_pos[_first_day]]
+    _thr_days = _thr_days[np.isfinite(_thr_days)]
+    if len(_thr_days):
+        _tq = np.percentile(_thr_days, [10, 50, 90])
+        _emit(f"- L5 相对 L0：正样本 {_n5:,} vs {_n0:,}（{_n5 / max(_n0, 1):.2f}×），"
+              f"正类率 {_n5 / n_valid:.2%}；每日绝对门槛 P10/P50/P90 = "
+              f"{_tq[0]:.2%}/{_tq[1]:.2%}/{_tq[2]:.2%}")
     _emit(f"\n- L1 相对 L0 减少 {_n0 - int(core1.sum()):,} 行（r5 容差 -3% 的贡献）")
     _emit(f"- L2 相对 L0 减少 {_n0 - int(core2.sum()):,} 行；L2 自身 r3_real 均值/中位 = "
           f"{_stat(_r3r, core2)}（量尺变化）")
@@ -1692,12 +2056,13 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
     _emit("|---|---|---|---|---|---|---|---|---|---|---|")
     _specs = []
     for _name, _pos, _w in (
-            ("L0", core0, np.ones(len(_pos), dtype=float)),
-            ("L1", core1, np.ones(len(_pos), dtype=float)),
-            ("L2", core2, np.ones(len(_pos), dtype=float)),
-            ("L3", core3, np.ones(len(_pos), dtype=float)),
+            ("L0", core0, np.ones(len(core0), dtype=float)),
+            ("L1", core1, np.ones(len(core1), dtype=float)),
+            ("L2", core2, np.ones(len(core2), dtype=float)),
+            ("L3", core3, np.ones(len(core3), dtype=float)),
             ("L4", core0 | buf4,
-             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0)))):
+             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0))),
+            ("L5", core5, np.ones(len(core5), dtype=float))):
         _pos_b = _pos[base]  # _pos 为全行掩码；day_codes 是 valid 行域 → 取子集
         _cnt = np.bincount(day_codes[_pos_b], minlength=nd).astype(float)
         _q = np.percentile(_cnt, [10, 25, 50, 75, 90, 95, 99])
@@ -1731,26 +2096,126 @@ def run_label_diagnostics(args, out_dir: Path, logger: logging.Logger) -> None:
         _emit(f"- {_name}: 封顶前 {_before:.2%} → 封顶后 {_after:.2%}"
               f"（超限日 {int(_over.sum())} 天）")
 
-    # ---- C. 有效正类梯度质量占比（spw 选择） ----
-    _emit("\n## C. 有效正类梯度质量占比（L0 / L4 标签，目标区间 35%~42%）")
-    for _name, _pos, _w in (
-            ("L0", core0, np.ones(len(core0), dtype=float)),
+    # ---- C. 有效正类梯度质量占比（spw 选择；tail / snr 两口径并列） ----
+    _spw_mode = str(getattr(args, "spw_mode", "fixed"))
+    _base_spw = float(HP_GRID[0].get("scale_pos_weight", 20.0)) if HP_GRID else 20.0
+    _emit("\n## C. 有效正类梯度质量占比（L0 / L4 / L5 标签，目标区间 35%~42%）")
+    _emit(f"（q95_L0={_q95_core:.4f}，q95_L5={_q95_core5:.4f}，base_spw={_base_spw:.2f}，spw_mode={_spw_mode}；"
+          f"正类权重口径 tail=绝对/超额涨幅 1.0~1.5x；snr=波动率调整 0.7~1.5x）")
+    for _name, _pos, _w, _tmult, _smult in (
+            ("L0", core0, np.ones(len(core0), dtype=float), _tail_mult, _snr_mult),
             ("L4", core0 | buf4,
-             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0)))):
-        _r = _r3[_pos]
-        _q95 = float(np.percentile(_r, 95)) if len(_r) > 10 else 0.20
-        _q95 = max(_q95, R3_CORE_MIN + 0.02)
-        _g = np.clip((_r - R3_CORE_MIN) / (_q95 - R3_CORE_MIN), 0.0, 1.0)
-        _wpos = _w[_pos] * (1.0 + TAIL_WEIGHT_ALPHA * _g)
+             np.where(core0, 1.0, np.where(buf4, BUF_POS_WEIGHT, 0.0)), _tail_mult, _snr_mult),
+            ("L5", core5, np.ones(len(core5), dtype=float), _tail_mult5, _snr_mult5)):
         _n_neg = n_valid - int(_pos.sum())
-        _lines = []
-        for _spw in (15, 20, 25, 30, 38):
-            _pm = float(_wpos.sum()) * _spw
-            _share = _pm / (_pm + _n_neg) if (_pm + _n_neg) > 0 else 0.0
-            _mark = " ✓" if 0.35 <= _share <= 0.42 else ""
-            _lines.append(f"spw={_spw}: {_share:.1%}{_mark}")
-        _emit(f"- {_name}（q95={_q95:.4f}, n_pos={int(_pos.sum()):,}, n_neg={_n_neg:,}）："
-              + " | ".join(_lines))
+        _n_pos = int(_pos.sum())
+        for _mode, _mult in (("tail", _tmult), ("snr", _smult)):
+            _wpos = _w[_pos] * _mult[_pos]
+            _pos_mass = float(_wpos.sum())
+            _lines = []
+            for _spw in (15, 20, 25, 30, 38):
+                _pm = _pos_mass * _spw
+                _share = _pm / (_pm + _n_neg) if (_pm + _n_neg) > 0 else 0.0
+                _mark = " [OK]" if 0.35 <= _share <= 0.42 else ""
+                _lines.append(f"spw={_spw}: {_share:.1%}{_mark}")
+            _emit(f"- {_name}/{_mode}（n_pos={_n_pos:,}, n_neg={_n_neg:,}）："
+                  + " | ".join(_lines))
+            # 当折 spw_mode 的实际解析值（诊断用全样本参考；CV 中逐折重算）
+            _eff_line = None
+            if _spw_mode == "match_tail" and _mode != "tail":
+                _tail_mass = float((_w[_pos] * _tail_mult[_pos]).sum())
+                if _pos_mass > 0:
+                    _spw_eff = _base_spw * (_tail_mass / _pos_mass)
+                    _pm = _pos_mass * _spw_eff
+                    _share = _pm / (_pm + _n_neg) if (_pm + _n_neg) > 0 else 0.0
+                    _eff_line = (f"match_tail spw_eff={_spw_eff:.2f} → "
+                                 f"{_share:.1%}")
+            elif _spw_mode == "adaptive" and _n_pos > 0 and _n_neg > 0:
+                _ratio = _n_pos / _n_neg
+                _mean_w = _pos_mass / _n_pos
+                _spw_eff = float(np.clip(
+                    _base_spw * (SPW_ADAPT_R0 / _ratio)
+                    * (SPW_ADAPT_W0 / _mean_w),
+                    SPW_ADAPT_MIN, SPW_ADAPT_MAX))
+                _pm = _pos_mass * _spw_eff
+                _share = _pm / (_pm + _n_neg) if (_pm + _n_neg) > 0 else 0.0
+                _eff_line = (f"adaptive spw_eff={_spw_eff:.2f} → "
+                             f"{_share:.1%}（全样本参考）")
+            if _eff_line:
+                _emit(f"  - {_name}/{_mode}: {_eff_line}")
+
+    # ---- D. 波动率调整权重诊断（验证"高波噪音 vs 低波真突破"假设） ----
+    _emit("\n## D. 波动率调整正样本权重（snr = r3/(max(vol20,1.5%)*sqrt3)）")
+    _emit(f"- vol20 缺失率：可交易有效样本 {float(np.mean(~np.isfinite(_vol[base]))):.2%}；"
+          f"核心正样本内 {float(np.mean(~np.isfinite(_vol[core0]))):.2%}"
+          "（缺失样本按中性 1.0x）")
+    _csnr = _snr_core[np.isfinite(_snr_core)]
+    if len(_csnr):
+        _q = np.percentile(_csnr, [10, 25, 50, 75, 90])
+        _emit(f"- 核心正样本 SNR 分位：P10 {_q[0]:.2f} | P25 {_q[1]:.2f} | "
+              f"P50 {_q[2]:.2f} | P75 {_q[3]:.2f} | P90 {_q[4]:.2f}")
+        _edges = [(-np.inf, SNR_ANCHOR_LO), (SNR_ANCHOR_LO, 1.0),
+                  (1.0, 1.5), (1.5, 2.0), (2.0, SNR_ANCHOR_HI),
+                  (SNR_ANCHOR_HI, np.inf)]
+        _parts = []
+        for _lo, _hi in _edges:
+            _m = (_csnr >= _lo) if np.isinf(_hi) else ((_csnr > _lo) & (_csnr <= _hi))
+            _lab = (f"<{SNR_ANCHOR_LO:.1f}σ" if _hi == SNR_ANCHOR_LO else
+                    f"{_lo:.1f}~{_hi:.1f}σ" if np.isfinite(_hi) else
+                    f">={SNR_ANCHOR_HI:.1f}σ")
+            _parts.append(f"{_lab}: {float(_m.mean()):.1%}")
+        _emit("- SNR 分布：" + " | ".join(_parts))
+        _emit(f"- 核心正样本权重：tail 均值 {float(_tail_mult[core0].mean()):.3f}"
+              f" / 中位 {float(np.median(_tail_mult[core0])):.3f}；"
+              f"snr 均值 {float(_snr_mult[core0].mean()):.3f}"
+              f" / 中位 {float(np.median(_snr_mult[core0])):.3f}"
+              f" / P10 {float(np.percentile(_snr_mult[core0], 10)):.3f}"
+              f" / P90 {float(np.percentile(_snr_mult[core0], 90)):.3f}")
+    else:
+        _emit("- 核心正样本 SNR 全缺失，无法统计")
+    _emit("\n### vol20 五分位 × 核心正样本质量（高波票是否更差）")
+    _emit("| vol20 五分位 | 正样本数 | 占正样本 | r3_eq 均值/中位 | r5_eq 均值/中位 | "
+          "dd3 均值/中位 | SNR 中位 | snr 权重均值 |")
+    _emit("|---|---|---|---|---|---|---|---|")
+    _vc = _vol[core0]
+    _ok_v = np.isfinite(_vc)
+    if int(_ok_v.sum()) > 100:
+        _qs = np.percentile(_vc[_ok_v], [20, 40, 60, 80])
+        _qedges = [-np.inf, *_qs.tolist(), np.inf]
+        _qidx = np.digitize(_vc, _qs, right=True)
+        _core_idx = np.flatnonzero(core0)
+        _snr_all_pos = np.full(len(_vc), np.nan)
+        _snr_all_pos[_ok_v] = _snr_core[_ok_v]
+        _w_all_pos = np.full(len(_vc), np.nan)
+        _w_all_pos[_ok_v] = _w_core[_ok_v]
+
+        def _mstat(x, m):
+            v = x[m]
+            v = v[np.isfinite(v)]
+            if not len(v):
+                return "n/a"
+            return f"{np.mean(v):+.4f} / {np.median(v):+.4f}"
+
+        for _qi in range(5):
+            _m = (_qidx == _qi) & _ok_v
+            _n = int(_m.sum())
+            if not _n:
+                continue
+            _rows_full = _core_idx[_m]
+            _snr_med = (float(np.median(_snr_all_pos[_m]))
+                        if np.isfinite(_snr_all_pos[_m]).any() else float("nan"))
+            _w_mean = (float(np.mean(_w_all_pos[_m]))
+                       if np.isfinite(_w_all_pos[_m]).any() else float("nan"))
+            _lo = _qedges[_qi]
+            _hi = _qedges[_qi + 1]
+            _lab = (f"<{_hi:.2%}" if not np.isfinite(_lo) else
+                    f">={_lo:.2%}" if not np.isfinite(_hi) else
+                    f"{_lo:.2%}~{_hi:.2%}")
+            _emit(f"| {_lab} | {_n:,} | {_n / max(int(core0.sum()), 1):.1%} | "
+                  f"{_mstat(_r3, _rows_full)} | {_mstat(_r5, _rows_full)} | "
+                  f"{_mstat(_dd, _rows_full)} | {_snr_med:.2f} | {_w_mean:.3f} |")
+    else:
+        _emit("| n/a | 有效 vol20 核心正样本不足 | | | | | | |")
     _emit(f"\n[diag] 完成 {time.time() - t0:.0f}s")
 
     # 落盘 markdown
@@ -1887,13 +2352,28 @@ def main():
     p.add_argument("--train_months", type=int, default=TRAIN_MONTHS)
     p.add_argument("--test_months", type=int, default=TEST_MONTHS)
     p.add_argument("--seeds", default="42,2024,777", help="CV默认3种子；oos_2026建议传8种子")
-    p.add_argument("--engines", default="lgb,catboost", help="模型核: lgb,catboost 或 lgb,xgboost 或 lgb")
+    p.add_argument("--engines", default="lgb", help="模型核: lgb (默认，严格对齐A2) 或 lgb,catboost 或 lgb,xgboost")
     p.add_argument("--enable_buffer_pos", action="store_true", default=False,
                    help="缓冲稳健正样本 4.5%%<=R3<7%%（仅 --label-v51 生效；"
                         "2026-10-19 定版默认关闭：正类率~2%%与 scale_pos_weight 30~38 匹配）")
     p.add_argument("--label_v51", action="store_true", default=False,
-                   help="V5.1 标签口径（TP_real 收盘加权 + T+2 硬底线 + r5 绝对涨幅豁免）；"
-                        "默认关闭 = 经典 multihorizon_35（等权 TP、r3>=7%%、r5>=r3-3%%、dd3>=-5%%）")
+                   help="[兼容别名] 等价于 --label_mode v51；两者冲突时终止。"
+                        "V5.1 口径=TP_real 收盘加权 + T+2 硬底线 + r5 绝对涨幅豁免")
+    p.add_argument("--label_mode", choices=["classic", "v51", "excess"],
+                   default=None,
+                   help="标签口径：classic=经典 r3>=7%%（默认）；v51=旧 --label_v51；"
+                        "excess=截面超额 (r3-r3_med_day>=6%%) 且绝对 r3>=3.5%%；"
+                        "不传时按 --label_v51 兼容旧行为。评估 y_raw 始终为绝对 r3")
+    p.add_argument("--weight_mode", choices=["tail", "snr"], default="tail",
+                   help="核心正样本权重口径：tail=绝对涨幅尾部加权 1.0~1.5x"
+                        "（默认，逐值复现历史结果）；snr=波动率调整信噪比加权 "
+                        "0.7~1.5x（低波真突破重奖、高波噪音降权；负样本恒 1.0x）")
+    p.add_argument("--spw_mode", choices=["fixed", "match_tail", "adaptive"],
+                   default="fixed",
+                   help="有效 scale_pos_weight 口径：fixed=沿用 HP_GRID（默认）；"
+                        "match_tail=按当折正样本总质量匹配到 tail（隔离正样本内部"
+                        "重分配效果）；adaptive=按当折 N+/N- 与正样本均权相对基准"
+                        "动态校准并 clip 到 [5,50]")
     p.add_argument("--num_threads", type=int, default=4)
     p.add_argument("--jobs", default="1",
                    help="CV 折级并行进程数：整数或 auto（按服务器核数+可用内存自动定，"
@@ -1924,7 +2404,7 @@ def main():
                    help="CV 模式保存 LightGBM booster 的目录（供 SHAP 归因）")
     p.add_argument("--save_model_cp", type=int, default=0,
                    help="保存哪个 checkpoint 的 booster；0=不保存")
-    p.add_argument("--mask_mode", choices=["new", "old", "fwd"], default="new",
+    p.add_argument("--mask_mode", choices=["new", "old", "fwd"], default="old",
                    help="掩码口径：new=训练 train_mask、测试 trade_mask（OOS 末段）；"
                         "old=旧 valid_mask(y_valid) 训练/测试（复现 A2）；"
                         "fwd=训练 train_mask(剔 forward_ok)、评估/测试 y_valid（阶段四新超参用）")
@@ -1938,6 +2418,16 @@ def main():
     p.add_argument("--cv_dir", default="",
                    help="fuse_champions 模式读取的 CV 输出目录（默认同 --out_dir）")
     args = p.parse_args()
+
+    # label_mode 解析（必须在 diag_labels 分支之前，供标签诊断/训练共用）：
+    # 未显式传 --label_mode 时，按旧 --label_v51 兼容；显式传 v51 则自动置位
+    # args.label_v51，保持下游 run_meta/日志字段一致。
+    if getattr(args, "label_mode", None) is None:
+        args.label_mode = "v51" if args.label_v51 else "classic"
+    elif args.label_v51 and args.label_mode != "v51":
+        raise SystemExit(
+            "--label_v51 与 --label_mode 冲突：--label_v51 等价于 --label_mode v51")
+    args.label_v51 = (args.label_mode == "v51")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else (RESULTS_ROOT / f"stage15_v5_{args.mode}_{ts}")
@@ -1964,9 +2454,18 @@ def main():
             if not CB_CHECKPOINTS:
                 engines = [e for e in engines if e != "catboost"]
     bundle = load_dataset_and_labels(args, logger)
+    logger.info(
+        f"[权重] label_mode={bundle.get('label_mode', 'classic')} "
+        f"weight_mode={args.weight_mode} spw_mode={args.spw_mode} "
+        + ("核心正样本 snr=weight_raw/(max(vol20,1.5%)*sqrt3) → 0.7~1.5x，负样本 1.0x"
+           if args.weight_mode == "snr" else
+           "核心正样本 weight_raw 尾部 1.0~1.5x，负样本 1.0x"))
 
     X, y, y_raw = bundle["X"], bundle["y"], bundle["y_raw"]
+    y_weight_raw = bundle.get("y_weight_raw")
+    label_mode = str(bundle.get("label_mode", "classic"))
     core_pos, buf_pos = bundle["core_pos"], bundle["buf_pos"]
+    vol20 = bundle.get("vol20")
     valid_mask, dates, codes, sectors = bundle["valid_mask"], bundle["dates"], bundle["codes"], bundle["sectors"]
     train_mask = bundle["train_mask"]
     trade_mask = bundle.get("trade_mask", valid_mask)
@@ -1978,8 +2477,13 @@ def main():
                                     embargo_days=EMBARGO_DAYS, cv_end=args.cv_end, logger=logger)
         # 折级并行（fork 继承 X 等大数组；串行路径直调同一 worker，逐值一致）
         global _CV_CTX
-        _CV_CTX = {"X": X, "y": y, "y_raw": y_raw, "core_pos": core_pos,
-                   "buf_pos": buf_pos, "valid_mask": valid_mask,
+        _CV_CTX = {"X": X, "y": y, "y_raw": y_raw,
+                   "y_weight_raw": y_weight_raw, "label_mode": label_mode,
+                   "core_pos": core_pos,
+                   "buf_pos": buf_pos, "vol20": vol20,
+                   "weight_mode": str(args.weight_mode),
+                   "spw_mode": str(args.spw_mode),
+                   "valid_mask": valid_mask,
                    "train_mask": bundle["train_mask"],
                    "trade_mask": bundle["trade_mask"],
                    "test_mask": bundle["test_mask"], "dates": dates,
@@ -2018,8 +2522,19 @@ def main():
                  "min_train_rows": args.min_train_rows,
                  "min_test_rows": args.min_test_rows,
                  "mask_mode": str(getattr(args, "mask_mode", "new")),
+                 "label_mode": str(args.label_mode),
                  "label_v51": bool(args.label_v51),
                  "enable_buffer_pos": bool(args.enable_buffer_pos),
+                 "excess_label_cfg": {"delta_min": EXCESS_DELTA_MIN,
+                                      "r3_floor": EXCESS_R3_FLOOR},
+                 "weight_mode": str(args.weight_mode),
+                 "snr_weight_cfg": {"vol20_floor": VOL20_FLOOR,
+                                    "vol20_ret_clip": VOL20_RET_CLIP,
+                                    "snr_anchor": [SNR_ANCHOR_LO, SNR_ANCHOR_HI],
+                                    "w_range": [SNR_W_LO, SNR_W_HI]},
+                 "spw_mode": str(args.spw_mode),
+                 "spw_adapt_cfg": {"r0": SPW_ADAPT_R0, "w0": SPW_ADAPT_W0,
+                                   "clip": [SPW_ADAPT_MIN, SPW_ADAPT_MAX]},
                  "lgb_checkpoints": {hp["pid"]: list(hp.get("checkpoints", CHECKPOINTS))
                                      for hp in HP_GRID},
                  "cb_checkpoints": list(CB_CHECKPOINTS),
@@ -2033,6 +2548,31 @@ def main():
                 _old_meta = json.loads(_meta_path.read_text(encoding="utf-8"))
             except Exception:
                 _old_meta = None
+            if isinstance(_old_meta, dict):
+                # 兼容 2026-10-24 之前的断点目录：旧 meta 无权重/标签模式字段，
+                # 等价于 tail/classic（或旧 label_v51）；注入默认值后，历史
+                # 口径续跑仍与逐值一致。
+                _old_meta.setdefault(
+                    "label_mode",
+                    "v51" if _old_meta.get("label_v51") else "classic")
+                _old_meta.setdefault("label_v51",
+                                     _old_meta.get("label_mode") == "v51")
+                _old_meta.setdefault("excess_label_cfg", {
+                    "delta_min": EXCESS_DELTA_MIN,
+                    "r3_floor": EXCESS_R3_FLOOR,
+                })
+                _old_meta.setdefault("weight_mode", "tail")
+                _old_meta.setdefault("snr_weight_cfg", {
+                    "vol20_floor": VOL20_FLOOR,
+                    "vol20_ret_clip": VOL20_RET_CLIP,
+                    "snr_anchor": [SNR_ANCHOR_LO, SNR_ANCHOR_HI],
+                    "w_range": [SNR_W_LO, SNR_W_HI],
+                })
+                _old_meta.setdefault("spw_mode", "fixed")
+                _old_meta.setdefault("spw_adapt_cfg", {
+                    "r0": SPW_ADAPT_R0, "w0": SPW_ADAPT_W0,
+                    "clip": [SPW_ADAPT_MIN, SPW_ADAPT_MAX],
+                })
             if _old_meta != _meta:
                 logger.error(f"[CV] 断点目录 {_tasks_dir} 的 run_meta 与本次配置不一致，"
                              "拒绝续跑（换 --out_dir 或删除该目录以全新开跑）")
@@ -2070,6 +2610,11 @@ def main():
                     "return": pd.Series(dtype="float64"),
                     "scheme": pd.Series(dtype="object"),
                     "universe": pd.Series(dtype="object")})
+            _spw_eff = None
+            if "spw_eff" in _df.columns and len(_df):
+                _v = _df["spw_eff"].iloc[0]
+                if pd.notna(_v):
+                    _spw_eff = float(_v)
             _df = _df.reindex(columns=_ROWS_COLS)
             _f = _tasks_dir / f"{side}_{pid}_Fold{int(fid):02d}_rows.parquet"
             _df.to_parquet(_f, index=False)
@@ -2077,7 +2622,8 @@ def main():
             _tmp = _mark.with_name(_mark.name + ".tmp")
             _tmp.write_text(json.dumps({"side": side, "pid": pid,
                                         "fold_id": int(fid),
-                                        "nrows": int(len(rows))},
+                                        "nrows": int(len(rows)),
+                                        "spw_eff": _spw_eff},
                                        ensure_ascii=False), encoding="utf-8")
             _tmp.replace(_mark)
             if leaf:
@@ -2113,8 +2659,10 @@ def main():
                     _ti, _side, _pid, _fid, _nrows, _rows, _leaf = _cv_worker(task)
                     _persist_task(_side, _pid, _fid, _rows, _leaf)
                     _done += 1
-                    logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 rows={_nrows} "
-                                f"{time.time()-_t0:.0f}s")
+                    _spw_log = (f" spw_eff={float(_rows[0]['spw_eff']):.3f}"
+                                if _rows and "spw_eff" in _rows[0] else "")
+                    logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 rows={_nrows}"
+                                f"{_spw_log} {time.time()-_t0:.0f}s")
             else:
                 import concurrent.futures as _cf
                 logger.info(f"[CV] 并行：{len(todo)} 个(side×超参×折)任务 × {_nj} 进程 "
@@ -2124,8 +2672,10 @@ def main():
                             _cv_worker, todo):
                         _persist_task(_side, _pid, _fid, _rows, _leaf)
                         _done += 1
+                        _spw_log = (f" spw_eff={float(_rows[0]['spw_eff']):.3f}"
+                                    if _rows and "spw_eff" in _rows[0] else "")
                         logger.info(f"[CV] {_side} {_pid} Fold{_fid:02d} 完成 "
-                                    f"rows={_nrows} [{_done}/{len(todo)}] "
+                                    f"rows={_nrows}{_spw_log} [{_done}/{len(todo)}] "
                                     f"{time.time()-_t0:.0f}s")
 
         # 汇总以任务文件为准（含续跑前完成的），保证任意中断后重跑结果一致
@@ -2243,10 +2793,21 @@ def main():
                         or te_m.sum() < args.min_test_rows):
                     logger.warning(f"[OOS-ROLL] Fold{fo['fold_id']} 样本不足，跳过")
                     continue
-                w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m],
-                                              y_raw[tr_m], dates[tr_m])
+                _weight_tr = (y_weight_raw[tr_m] if y_weight_raw is not None
+                              else y_raw[tr_m])
+                w_tr, _spw_eff = build_train_weights(
+                    core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m], dates[tr_m],
+                    y[tr_m], float(hp["scale_pos_weight"]),
+                    weight_mode=args.weight_mode,
+                    spw_mode=args.spw_mode,
+                    vol20=(vol20[tr_m] if vol20 is not None else None),
+                    weight_raw=_weight_tr,
+                    weight_r0=(EXCESS_DELTA_MIN if label_mode == "excess"
+                               else R3_CORE_MIN))
+                _hp = dict(hp)
+                _hp["scale_pos_weight"] = _spw_eff
                 _r = train_predict_fold(
-                    X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m], hp,
+                    X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m], _hp,
                     [args.cp], seeds, ["lgb"], args.num_threads,
                     leaf_ctx={"codes": codes[te_m], "sectors": sectors[te_m],
                               "y_raw": y_raw[te_m], "cps": (args.cp,)})
@@ -2286,11 +2847,22 @@ def main():
             logger.info(f"[OOS-2026] 训练窗: {pd.Timestamp(tr_start).date()} ~ {pd.Timestamp(tr_end).date()} (样本={int(tr_m.sum()):,})")
             logger.info(f"[OOS-2026] 测试窗: {args.test_start} ~ {args.test_end} (样本={int(te_m.sum()):,})")
 
-            w_tr = compute_sample_weights(core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m],
-                                          dates[tr_m])
+            _weight_tr = (y_weight_raw[tr_m] if y_weight_raw is not None
+                          else y_raw[tr_m])
+            w_tr, _spw_eff = build_train_weights(
+                core_pos[tr_m], buf_pos[tr_m], y_raw[tr_m], dates[tr_m],
+                y[tr_m], float(hp["scale_pos_weight"]),
+                weight_mode=args.weight_mode,
+                spw_mode=args.spw_mode,
+                vol20=(vol20[tr_m] if vol20 is not None else None),
+                weight_raw=_weight_tr,
+                weight_r0=(EXCESS_DELTA_MIN if label_mode == "excess"
+                           else R3_CORE_MIN))
+            _hp = dict(hp)
+            _hp["scale_pos_weight"] = _spw_eff
             _res = train_predict_fold(
                 X[tr_m], y[tr_m], w_tr, X[te_m], dates[te_m],
-                hp, [args.cp], seeds, ["lgb"], args.num_threads,
+                _hp, [args.cp], seeds, ["lgb"], args.num_threads,
                 leaf_ctx={"codes": codes[te_m], "sectors": sectors[te_m],
                           "y_raw": y_raw[te_m], "cps": (args.cp,)})
             _leaf_folds.append(_res.get("leaf", {}).get(int(args.cp), {}))
