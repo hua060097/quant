@@ -104,11 +104,119 @@ def cs_mad_norm(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def _family_map() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for p, keys in ((RESULTS / 'vwap_top20.json', ('base20',)),
+                    (RESULTS / 'vwap_habitat_pool.json', ('members', 'base20'))):
+        try:
+            d = json.load(open(p, encoding='utf-8'))
+        except Exception:
+            continue
+        items = []
+        for k in keys:
+            items = d.get(k) or []
+            if items:
+                break
+        for it in items:
+            fid = str(it.get('factor', it.get('factor_id', '')))
+            if fid:
+                out[fid] = str(it.get('family', 'unknown') or 'unknown')
+    return out
+
+
+def _field_dominance(adf: pd.DataFrame, panel: pd.DataFrame,
+                     cols: list[str], fields=('CLOSE', 'VOLUME', 'AMOUNT',
+                                               'MARKET_CAP', 'TURNOVER')):
+    """Max |daily-rank correlation| of each alpha column vs raw fields."""
+    use = adf[['stock_code', 'date'] + cols].merge(
+        panel[['stock_code', 'date'] + list(fields)],
+        on=['stock_code', 'date'], how='inner')
+    out = {}
+    for c in cols:
+        v = pd.to_numeric(use[c], errors='coerce')
+        rv = v.groupby(use['date'], sort=False).rank(pct=True)
+        best = ('', float('nan'))
+        for f in fields:
+            if f not in use.columns:
+                continue
+            fv = pd.to_numeric(use[f], errors='coerce')
+            rf = fv.groupby(use['date'], sort=False).rank(pct=True)
+            ok = np.isfinite(rv) & np.isfinite(rf)
+            if int(ok.sum()) < 100:
+                continue
+            r = float(rv[ok].corr(rf[ok]))
+            if np.isfinite(r) and (not np.isfinite(best[1]) or abs(r) > abs(best[1])):
+                best = (f, abs(r))
+        out[c] = {'field': best[0], 'max': best[1]}
+    return out
+
+
+def _diversity_select(cols: list[str], mandatory: list[str],
+                      family_of: dict[str, str],
+                      field_dom: dict[str, dict],
+                      max_family_frac: float, max_field_frac: float):
+    """Greedy family/dominant-field quota; mandatory seats are kept first."""
+    n = max(1, len(cols))
+    fam_lim = n if max_family_frac >= 1 else max(1, int(np.ceil(n * max_family_frac)))
+    fld_lim = n if max_field_frac >= 1 else max(1, int(np.ceil(n * max_field_frac)))
+    keep = []
+    seen = set()
+    fam_cnt: dict[str, int] = {}
+    fld_cnt: dict[str, int] = {}
+    for c in list(mandatory) + [x for x in cols if x not in set(mandatory)]:
+        if c in seen:
+            continue
+        f = str(family_of.get(c, 'unknown') or 'unknown')
+        dom = (field_dom.get(c) or {}).get('field') or ''
+        if c not in mandatory:
+            if max_family_frac < 1 and fam_cnt.get(f, 0) >= fam_lim:
+                continue
+            if max_field_frac < 1 and dom and fld_cnt.get(dom, 0) >= fld_lim:
+                continue
+        keep.append(c)
+        seen.add(c)
+        fam_cnt[f] = fam_cnt.get(f, 0) + 1
+        if dom:
+            fld_cnt[dom] = fld_cnt.get(dom, 0) + 1
+    return keep
+
+
+def _rho_prune(df: pd.DataFrame, cols: list[str], max_rho: float):
+    if max_rho >= 1.0 or len(cols) <= 1:
+        return cols, []
+    x = df[cols].apply(pd.to_numeric, errors='coerce')
+    corr = x.corr(method='spearman')
+    keep, drop = [], []
+    for c in cols:
+        bad = None
+        for k in keep:
+            try:
+                r = float(corr.loc[c, k])
+            except Exception:
+                r = float('nan')
+            if np.isfinite(r) and abs(r) > max_rho:
+                bad = (k, abs(r))
+                break
+        if bad is None:
+            keep.append(c)
+        else:
+            drop.append({'column': c, 'against': bad[0], 'abs_rho': bad[1]})
+    return keep, drop
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--data-cut', default=W.DEFAULT_DATA_CUT)
     ap.add_argument('--max-alpha', type=int, default=80, help='Class 1 正交个股Alpha上限')
     ap.add_argument('--max-interact', type=int, default=25, help='Class 4 门控交互因子上限')
+    ap.add_argument('--interaction-rho-max', type=float, default=1.0,
+                    help='Class4 interaction |rho| prune; 1.0=off, 0.70=recommended')
+    ap.add_argument('--max-family-frac', type=float, default=1.0,
+                    help='Class1 max family share; 1.0=off, 0.30=recommended')
+    ap.add_argument('--max-field-frac', type=float, default=1.0,
+                    help='Class1 max dominant-field share; 1.0=off, 0.30=recommended')
+    ap.add_argument('--diversity-report', default='',
+                    help='optional path for diversity_report.json')
     ap.add_argument('--max-sector', type=int, default=2,
                     help='Class 3 行业广播状态上限（默认2：Owner D8 豁免已批，最多3；'
                          '传 0 显式关闭）')
@@ -122,6 +230,7 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    diversity_report = {'class1': {}, 'class4': {}}
 
     # 1. 加载底层面板与 Class 2 个股栖息地底座（只读，不改历史指纹语义）
     panel = load_panel(data_cut=args.data_cut)
@@ -204,6 +313,25 @@ def main() -> int:
         _seats = [c for c in seat_cols if c in _all]
         _rest = [c for c in _all if c not in set(_seats)][:args.max_alpha]
         acols = _seats + _rest
+        diversity_report['class1']['n_before'] = len(acols)
+        if args.max_family_frac < 1 or args.max_field_frac < 1:
+            family_of = _family_map()
+            field_dom = (_field_dominance(adf, panel, acols)
+                         if args.max_field_frac < 1 else {})
+            acols = _diversity_select(
+                acols, _seats, family_of, field_dom,
+                args.max_family_frac, args.max_field_frac)
+            fam_cnt: dict[str, int] = {}
+            fld_cnt: dict[str, int] = {}
+            for c in acols:
+                fam_cnt[str(family_of.get(c, 'unknown'))] = \
+                    fam_cnt.get(str(family_of.get(c, 'unknown')), 0) + 1
+                dom = (field_dom.get(c) or {}).get('field')
+                if dom:
+                    fld_cnt[dom] = fld_cnt.get(dom, 0) + 1
+            diversity_report['class1'].update({
+                'n_after': len(acols), 'family_counts': fam_cnt,
+                'field_counts': fld_cnt})
         alpha_raw, _anorm = _split_raw(acols)
         adf_norm = _norm_frame(adf, _anorm)
         if alpha_raw:
@@ -258,7 +386,12 @@ def main() -> int:
         idf = pd.read_parquet(inter_path)
         idf['date'] = pd.to_datetime(idf['date'])
         idf = idf[idf['date'] <= pd.Timestamp(args.data_cut)]
-        icols = [c for c in idf.columns if c not in ('stock_code', 'date')][:args.max_interact]
+        icols = [c for c in idf.columns if c not in ('stock_code', 'date')]
+        _pruned, _dropped = _rho_prune(idf, icols, args.interaction_rho_max)
+        icols = _pruned[:args.max_interact]
+        diversity_report['class4'] = {
+            'n_before': len(_pruned) + len(_dropped),
+            'n_after': len(icols), 'dropped': _dropped}
         base_df = base_df.merge(idf[['stock_code', 'date'] + icols],
                                 on=['stock_code', 'date'], how='left')
         interact_features = icols
@@ -313,6 +446,18 @@ def main() -> int:
     }
     man_file = out_dir / 'features_manifest.json'
     man_file.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    if args.diversity_report:
+        rp = Path(args.diversity_report)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        diversity_report['thresholds'] = {
+            'interaction_rho_max': args.interaction_rho_max,
+            'max_family_frac': args.max_family_frac,
+            'max_field_frac': args.max_field_frac}
+        diversity_report['final_counts'] = {
+            'class1': len(alpha_features), 'class4': len(interact_features)}
+        rp.write_text(json.dumps(diversity_report, ensure_ascii=False, indent=2),
+                      encoding='utf-8')
+        print(f'Diversity report -> {rp}')
     print(f"导出完成: {len(all_features)} 列特征 -> {feat_file}")
     print(f"Manifest -> {man_file}")
     return 0
