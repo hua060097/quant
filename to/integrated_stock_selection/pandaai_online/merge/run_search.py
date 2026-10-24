@@ -40,8 +40,8 @@ import windows as W
 import pool_legacy as pool_mod
 from dedup import max_abs_corr, monthly_spearman
 from cache_utils import find_stock_features
-from evaluator import (Evaluator, ensure_extended_fields, ensure_local_fields,
-                         load_panel, value_fingerprint)
+from evaluator import (Evaluator, ensure_extended_fields, ensure_gate_fields,
+                         ensure_local_fields, load_panel, value_fingerprint)
 from executor import competition_status, estimate_credits, validate_file, write_candidates
 from field_catalog import formula_uses_local
 from explain import explain
@@ -466,6 +466,10 @@ class SearchRun:
                 args.allow_documented = True
                 print('note: local context enabled: 本地 evaluator 可计算的上下文/文档模板进入搜索；'
                       'C2C 上传能力仅在 export/upload 校验')
+        # Prewarm lazy gate fields before forking fast/full workers. Otherwise
+        # each worker would materialize the columns independently, causing COW
+        # memory spikes on gate-containing formulas.
+        ensure_gate_fields(frame)
         # 评估窗上界 = 数据截止日（2026-10-11）：指纹记的截止日必须与实际用到的
         # 数据一致，否则记录说谎。全量/快评两个 context 与 fast 面板都用该上界。
         _cut_ts = pd.Timestamp(self.data_cut)

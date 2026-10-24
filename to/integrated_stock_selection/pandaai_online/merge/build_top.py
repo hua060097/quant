@@ -31,7 +31,8 @@ import _paths  # noqa: F401
 import windows as W
 from cache_utils import find_stock_features
 from decorrelate_top import factor_full_values, load_all_specs, month_end_spearman_matrix
-from evaluator import Evaluator, load_panel
+from evaluator import (Evaluator, ensure_extended_fields, ensure_gate_fields,
+                       load_panel)
 from fitness import DataContext, build_label_series, sia_of, tier1
 from grammar import expression_hash
 from ledger import Ledger
@@ -321,6 +322,12 @@ def _scan_value_worker(args) -> tuple:
 def _quality_scan_positions(df: pd.DataFrame, max_scan: int,
                             min_abs_rankic: float, min_lgb: float,
                             quality_gate: bool = True) -> list[int]:
+    """Return top-N candidates PLUS all rows passing the quality gate.
+
+    This is an intentional union ("top+quality"), not an intersection:
+    --full-scan means every row (and therefore disables the implicit top-N
+    cap), matching the CLI contract and payload['*_scan_mode'].
+    """
     n = len(df)
     if n <= 0:
         return []
@@ -348,7 +355,9 @@ def _fmt_window_date(value: str) -> str:
 def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
                              seat_order: list[int], seat_detail: list[dict],
                              hab_pool: list[dict], payload: dict,
-                             manifest_path: str):
+                             manifest_path: str,
+                             fast_seats: list[int] | None = None,
+                             fast_detail: list[dict] | None = None):
     stats = {'manifest': str(manifest_path), 'frozen_n': 0,
              'class1_added': 0, 'pool_added': 0, 'seat_added': 0,
              'missing_rows': [], 'uncovered_frozen': 0}
@@ -379,13 +388,19 @@ def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
         return fid in pool_set or (str(r.get('lib')) == 'custom'
                                    and fid not in frozen_set)
 
-    _before = (len(picked), len(pool_rows), len(seat_order), len(hab_pool))
+    _before = (len(picked), len(pool_rows), len(seat_order), len(hab_pool),
+               len(fast_seats or []))
     picked[:] = [r for r in picked if _keep_c1(r)]
     pool_rows[:] = [r for r in pool_rows if _keep_c1(r)]
     seat_order[:] = [sp for sp in seat_order
                      if _keep_c1(vwap_df.iloc[sp])]
     seat_detail[:] = [d for d in seat_detail if _keep_c1(d)]
     hab_pool[:] = [h for h in hab_pool if _keep_pool(h)]
+    if fast_seats is not None:
+        fast_seats[:] = [sp for sp in fast_seats
+                         if _keep_c1(vwap_df.iloc[sp])]
+    if fast_detail is not None:
+        fast_detail[:] = [d for d in fast_detail if _keep_c1(d)]
     stats['new_custom_kept'] = len({
         str(r.get('factor_id')) for r in picked + pool_rows
         if str(r.get('lib')) == 'custom' and str(r.get('factor_id')) not in frozen_set
@@ -395,11 +410,15 @@ def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
     } | {
         str(h.get('factor_id')) for h in hab_pool
         if str(h.get('lib')) == 'custom' and str(h.get('factor_id')) not in frozen_set
+    } | {
+        str(d.get('factor_id')) for d in (fast_detail or [])
+        if str(d.get('lib')) == 'custom' and str(d.get('factor_id')) not in frozen_set
     })
     stats['dropped_nonfrozen'] = (_before[0] - len(picked)
                                   + _before[1] - len(pool_rows)
                                   + _before[2] - len(seat_order)
-                                  + _before[3] - len(hab_pool))
+                                  + _before[3] - len(hab_pool)
+                                  + _before[4] - len(fast_seats or []))
     seats_path = Path(manifest_path).parent / 'habitat_seats.json'
     if not seats_path.exists():
         seats_path = Path(manifest_path).parent / 'habitat_seats_new.json'
@@ -462,7 +481,13 @@ def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
         seat_detail.append({'factor_id': fid, 'lib': str(r.get('lib', '')),
                             'hot5_q80_t': None})
         stats['seat_added'] += 1
-    covered = picked_ids | pool_ids | seated | hab_ids
+    fast_ids = set()
+    for sp in (fast_seats or []):
+        try:
+            fast_ids.add(str(vwap_df.iloc[sp].get('factor_id')))
+        except Exception:
+            pass
+    covered = picked_ids | pool_ids | seated | hab_ids | fast_ids
     stats['missing_rows'] = sorted(set(stats['missing_rows']))
     stats['uncovered_frozen'] = sum(1 for x in frozen_all if x not in covered)
     payload['incremental'] = stats
@@ -470,7 +495,9 @@ def _apply_incremental_guard(vwap_df, picked: list, pool_rows: list,
         raise RuntimeError(
             'frozen factors are missing from the current vwap candidate pool: '
             + ', '.join(stats['missing_rows']))
-    return picked, pool_rows, seat_order, seat_detail, hab_pool
+    return (picked, pool_rows, seat_order, seat_detail, hab_pool,
+            fast_seats if fast_seats is not None else [],
+            fast_detail if fast_detail is not None else [])
 
 
 def vwap_orthogonal_indices(df_vwap: pd.DataFrame, frame: pd.DataFrame, ev: Evaluator,
@@ -2092,6 +2119,10 @@ def main() -> int:
 
     # V4.3c data-cut 铁律：面板/评估/pos_me/因子读取全部钳制在 cut 内。
     frame = load_panel(data_cut=args.data_cut)
+    # Prewarm lazy columns once in the parent so forked scan/twin/habitat
+    # workers share them read-only instead of each worker re-materializing.
+    ensure_extended_fields(frame)
+    ensure_gate_fields(frame)
     ev = Evaluator(frame, cache_size=32)
     builder = FactorBuilder(frame)
     refs_df = norm_refs(load_refs_rows())
@@ -2381,12 +2412,14 @@ def main() -> int:
         _pool_rows = list(vwap_df.iloc[(vwap_order or [])[:max(0, args.keep_pool)]].iterrows())
         _pool_rows = [r for _, r in _pool_rows]
         if getattr(args, 'incremental_manifest', ''):
-            _picked, _pool_rows, seat_order, seat_detail, hab_pool = \
-                _apply_incremental_guard(
-                    vwap_df, _picked, _pool_rows, seat_order, seat_detail,
-                    hab_pool, payload, args.incremental_manifest)
+            (_picked, _pool_rows, seat_order, seat_detail, hab_pool,
+             fast_seats, fast_detail) = _apply_incremental_guard(
+                vwap_df, _picked, _pool_rows, seat_order, seat_detail,
+                hab_pool, payload, args.incremental_manifest,
+                fast_seats=fast_seats, fast_detail=fast_detail)
             payload['habitat_seats'] = seat_detail
             payload['habitat_pool_n'] = len(hab_pool)
+            payload['fast_trigger_seats'] = fast_detail
         _seen_panel = set()
         _panel_rows = []
         for _r in _picked + _pool_rows + [vwap_df.iloc[_sp] for _sp in seat_order] \
