@@ -321,16 +321,22 @@ def _scan_value_worker(args) -> tuple:
 
 def _quality_scan_positions(df: pd.DataFrame, max_scan: int,
                             min_abs_rankic: float, min_lgb: float,
-                            quality_gate: bool = True) -> list[int]:
+                            quality_gate: bool = True,
+                            quality_only: bool = False) -> list[int]:
     """Return top-N candidates PLUS all rows passing the quality gate.
 
     This is an intentional union ("top+quality"), not an intersection:
     --full-scan means every row (and therefore disables the implicit top-N
     cap), matching the CLI contract and payload['*_scan_mode'].
+
+    quality_only=True changes the contract: return only rows satisfying both
+    quality thresholds, regardless of max_scan/full_scan.
     """
     n = len(df)
     if n <= 0:
         return []
+    if quality_only and not quality_gate:
+        raise ValueError('quality_only requires quality_gate=True')
     if max_scan <= 0:
         pos = set(range(n))
     else:
@@ -341,6 +347,8 @@ def _quality_scan_positions(df: pd.DataFrame, max_scan: int,
         ok = (np.isfinite(ri) & np.isfinite(lgb)
               & (np.abs(ri) >= float(min_abs_rankic))
               & (lgb >= float(min_lgb)))
+        if quality_only:
+            return sorted(np.flatnonzero(ok).tolist())
         pos.update(np.flatnonzero(ok).tolist())
     return sorted(pos)
 
@@ -2050,6 +2058,9 @@ def main() -> int:
                     help='忽略 --scan，所有候选进入正交扫描')
     ap.add_argument('--no-quality-gate', action='store_false', dest='quality_gate',
                     help='关闭质量门（仅扫描前 --scan 名，用于复现旧口径）')
+    ap.add_argument('--quality-only', action='store_true', default=False,
+                    help='only scan rows passing min-abs-rankic / min-lgb '
+                         '(use with --full-scan for V6)')
     ap.add_argument('--min-abs-rankic', type=float, default=0.012,
                     help='质量门：|rank_ic| 下限（默认 0.012）')
     ap.add_argument('--min-lgb', type=float, default=0.0015,
@@ -2225,7 +2236,8 @@ def main() -> int:
     vwap_nl: dict = {}
     _vwap_scan = _quality_scan_positions(
         vwap_df, 0 if args.full_scan else args.scan,
-        args.min_abs_rankic, args.min_lgb, args.quality_gate)
+        args.min_abs_rankic, args.min_lgb, args.quality_gate,
+        quality_only=args.quality_only)
     if len(vwap_df) > 20:
         vwap_order, vwap_rho, vwap_nl = vwap_orthogonal_indices(
             vwap_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
@@ -2237,7 +2249,8 @@ def main() -> int:
             scan_positions=_vwap_scan)
         payload['vwap_orthogonal'] = bool(vwap_order)
         payload['vwap_orth_scan'] = int(len(_vwap_scan))
-        payload['vwap_scan_mode'] = 'full' if args.full_scan else 'top+quality'
+        payload['vwap_scan_mode'] = ('quality-only' if args.quality_only
+                                     else ('full' if args.full_scan else 'top+quality'))
         payload['vwap_quality_gate'] = bool(args.quality_gate)
         payload['vwap_scan_quality_n'] = int(len(_vwap_scan))
         print(f'榜2 正交：候选 {len(vwap_df)} → 扫描 {len(_vwap_scan)} → '
@@ -2248,7 +2261,8 @@ def main() -> int:
     c2c_df = df[(df['label'] == 'c2c')].sort_values('A_official', ascending=False)
     _c2c_scan = _quality_scan_positions(
         c2c_df, 0 if args.full_scan else args.scan,
-        args.min_abs_rankic, args.min_lgb, args.quality_gate)
+        args.min_abs_rankic, args.min_lgb, args.quality_gate,
+        quality_only=args.quality_only)
     if len(c2c_df) > 20:
         c2c_order, c2c_rho, _ = vwap_orthogonal_indices(
             c2c_df, frame, ev, builder, pos_me, day_group, specs_by_id=_specs,
@@ -2258,7 +2272,8 @@ def main() -> int:
             jobs=args.jobs, scan_positions=_c2c_scan)
         payload['c2c_orthogonal'] = bool(c2c_order)
         payload['c2c_orth_scan'] = int(len(_c2c_scan))
-        payload['c2c_scan_mode'] = 'full' if args.full_scan else 'top+quality'
+        payload['c2c_scan_mode'] = ('quality-only' if args.quality_only
+                                     else ('full' if args.full_scan else 'top+quality'))
         payload['c2c_quality_gate'] = bool(args.quality_gate)
         payload['c2c_scan_quality_n'] = int(len(_c2c_scan))
         print(f'c2c orthogonal: candidates={len(c2c_df)} scanned={len(_c2c_scan)} '

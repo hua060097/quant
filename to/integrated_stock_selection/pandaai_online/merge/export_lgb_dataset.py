@@ -106,8 +106,17 @@ def cs_mad_norm(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 def _family_map() -> dict[str, str]:
     out: dict[str, str] = {}
+    roles: dict[str, str] = {}
+    try:
+        rdf = pd.read_csv(RESULTS / 'roles.csv', usecols=['name', 'group'])
+        roles = {str(n): str(g) for n, g in zip(rdf['name'], rdf['group'])}
+    except Exception:
+        roles = {}
+    archive = RESULTS.parent / 'from_server_20261020'
     for p, keys in ((RESULTS / 'vwap_top20.json', ('base20',)),
-                    (RESULTS / 'vwap_habitat_pool.json', ('members', 'base20'))):
+                    (RESULTS / 'vwap_habitat_pool.json', ('members', 'base20')),
+                    (archive / 'vwap_top20.json', ('base20',)),
+                    (archive / 'vwap_habitat_pool.json', ('members', 'base20'))):
         try:
             d = json.load(open(p, encoding='utf-8'))
         except Exception:
@@ -119,8 +128,12 @@ def _family_map() -> dict[str, str]:
                 break
         for it in items:
             fid = str(it.get('factor', it.get('factor_id', '')))
-            if fid:
-                out[fid] = str(it.get('family', 'unknown') or 'unknown')
+            if not fid:
+                continue
+            fam = str(it.get('family', 'unknown') or 'unknown')
+            if fam == 'store' and roles.get(fid):
+                fam = f'store:{roles[fid]}'
+            out[fid] = fam
     return out
 
 
