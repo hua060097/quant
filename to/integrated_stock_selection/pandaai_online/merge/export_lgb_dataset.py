@@ -144,16 +144,19 @@ def _field_dominance(adf: pd.DataFrame, panel: pd.DataFrame,
     use = adf[['stock_code', 'date'] + cols].merge(
         panel[['stock_code', 'date'] + list(fields)],
         on=['stock_code', 'date'], how='inner')
+    # Precompute each raw field's daily rank once, not once per alpha column.
+    field_ranks = {}
+    for f in fields:
+        if f not in use.columns:
+            continue
+        fv = pd.to_numeric(use[f], errors='coerce')
+        field_ranks[f] = fv.groupby(use['date'], sort=False).rank(pct=True)
     out = {}
     for c in cols:
         v = pd.to_numeric(use[c], errors='coerce')
         rv = v.groupby(use['date'], sort=False).rank(pct=True)
         best = ('', float('nan'))
-        for f in fields:
-            if f not in use.columns:
-                continue
-            fv = pd.to_numeric(use[f], errors='coerce')
-            rf = fv.groupby(use['date'], sort=False).rank(pct=True)
+        for f, rf in field_ranks.items():
             ok = np.isfinite(rv) & np.isfinite(rf)
             if int(ok.sum()) < 100:
                 continue
@@ -197,16 +200,20 @@ def _diversity_select(cols: list[str], mandatory: list[str],
 def _rho_prune(df: pd.DataFrame, cols: list[str], max_rho: float):
     if max_rho >= 1.0 or len(cols) <= 1:
         return cols, []
-    x = df[cols].apply(pd.to_numeric, errors='coerce')
-    corr = x.corr(method='spearman')
+    from decorrelate_top import month_end_spearman_matrix
+    vals = np.column_stack([
+        pd.to_numeric(df[c], errors='coerce').to_numpy(dtype=np.float32)
+        for c in cols])
+    day_group = pd.to_datetime(df['date']).to_numpy()
+    corr = month_end_spearman_matrix(vals, day_group)
+    if corr is None:
+        return cols, []
+    pos = {c: i for i, c in enumerate(cols)}
     keep, drop = [], []
     for c in cols:
         bad = None
         for k in keep:
-            try:
-                r = float(corr.loc[c, k])
-            except Exception:
-                r = float('nan')
+            r = float(corr[pos[c], pos[k]])
             if np.isfinite(r) and abs(r) > max_rho:
                 bad = (k, abs(r))
                 break
