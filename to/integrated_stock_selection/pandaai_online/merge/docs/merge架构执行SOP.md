@@ -76,19 +76,25 @@ python3 -B -u pandaai_online/merge/build_top.py \
 
 ### 3.1 Per-Gate Quota 配对
 
-> 每个认证 market gate 至少 2 个、最多 5 个候选；gain/flip 总上限 35，switch 另算。
+> V6 新口径：只从 **#1~#120 过质量门** 的因子里选；默认关闭单腿 gain，集中做 switch。
+> 每个认证 market gate 仍保留 min=2 / max=5 的配额。
 
 ```bash
 python3 -B -u pandaai_online/merge/select_specialists.py \
   --data-cut 2025-12-31 \
   --bank results/merge_v2/gates_search/certified_gate_bank.json \
+  --rank-hi 120 \
+  --min-abs-rankic 0.012 \
+  --min-lgb 0.0015 \
   --per-gate-min 2 \
   --per-gate-max 5 \
-  --max-market-cands 35 \
+  --max-gain-cands 0 \
+  --max-switch 12 \
   --jobs 16
 ```
 
-实际 active bank gate 只有 7 个有 selected 候选时，gain 约为 28 个，加 switch 4 个，合计约 32 个。
+- `--max-gain-cands 0` 是 V6 默认：不再用后排弱因子乘门控造单腿 gain。
+- 若仍想保留少量 gain 对照，可显式设 `--max-gain-cands 3~5`；不要恢复 `#150~#400` 全域扫描。
 
 > `--bank` 必须是本次 V4.3d 对应的 **bank-v2**（10 个市场门控）。
 > 本地主 `certified_gate_bank.json` 可能是旧 bank-v1（3 个市场门控）；先确认/备份，否则 F1 会按错 bank 过滤。

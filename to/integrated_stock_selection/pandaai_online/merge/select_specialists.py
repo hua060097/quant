@@ -446,17 +446,24 @@ def main() -> int:
     ap.add_argument("--label", default="vwap")
     ap.add_argument("--rank-lo", type=int, default=1,
                     help="V4.3d双模：起点放宽至#1，允许主力强因子参与gain降回撤")
-    ap.add_argument("--rank-hi", type=int, default=400,
-                    help="断路3修复：flip 型正负抵消因子 LGB≈0 排在 #200 之后，"
-                         "150 会系统漏杀；默认扫到 #400（flat 全覆盖）")
+    ap.add_argument("--rank-hi", type=int, default=120,
+                    help="扫描名次上限（默认120；V6 不再扫 #150~#400 弱因子）")
+    ap.add_argument("--min-abs-rankic", type=float, default=0.012,
+                    help="quality gate: |rank_ic| lower bound")
+    ap.add_argument("--min-lgb", type=float, default=0.0015,
+                    help="quality gate: LGB lower bound")
+    ap.add_argument("--no-quality-gate", dest="quality_gate", action="store_false",
+                    default=True, help="disable rank_ic/LGB quality filter")
     ap.add_argument("--t-min", type=float, default=2.5)
     ap.add_argument("--uncond-max", type=float, default=0.05)
     ap.add_argument("--max-factors", type=int, default=400,
                     help="扫描上限（默认 400 覆盖 #1~#400 全窗，释放 #151~#400 "
                          "的 flip 富集区；旧 150 会把无条件 LGB≈0 的 flip 全截掉）")
     ap.add_argument("--max-switch", type=int, default=12)
+    ap.add_argument("--max-gain-cands", type=int, default=0,
+                    help="single-leg gain cap (default 0: use switch-only; >0 to enable)")
     ap.add_argument("--max-market-cands", type=int, default=30,
-                    help="gain/flip total cap (default 30; switch is extra)")
+                    help="flip total cap (gain uses --max-gain-cands; switch is extra)")
     ap.add_argument("--per-gate-min", type=int, default=2,
                     help="minimum candidates per certified bank gate")
     ap.add_argument("--per-gate-max", type=int, default=5,
@@ -479,9 +486,17 @@ def main() -> int:
     df = pd.read_csv(flat, encoding="utf-8-sig")
     vdf = df[df["label"] == a.label].sort_values("LGB", ascending=False).reset_index(drop=True)
     vdf["_rank"] = np.arange(1, len(vdf) + 1)
+    if a.quality_gate:
+        ri = pd.to_numeric(vdf["rank_ic"], errors="coerce")
+        lgb = pd.to_numeric(vdf["LGB"], errors="coerce")
+        ok = (np.isfinite(ri) & np.isfinite(lgb)
+              & (np.abs(ri) >= float(a.min_abs_rankic))
+              & (lgb >= float(a.min_lgb)))
+        vdf = vdf[ok].copy()
     window = vdf[(vdf["_rank"] >= a.rank_lo) & (vdf["_rank"] <= a.rank_hi)].copy()
-    print(f"flat {os.path.basename(flat)} vwap={len(vdf)} window[#{a.rank_lo}~#{a.rank_hi}]={len(window)}",
-          flush=True)
+    print(f"flat {os.path.basename(flat)} vwap={len(vdf)} "
+          f"quality_gate={bool(a.quality_gate)} "
+          f"window[#{a.rank_lo}~#{a.rank_hi}]={len(window)}", flush=True)
 
     bank = json.load(open(a.bank, encoding="utf-8"))
     gates = [e for e in bank.get("entries", []) if e.get("level") == "market"]
@@ -758,9 +773,10 @@ def main() -> int:
 
     for form in ("gain", "flip"):
         sub = [p for p in sel if p["suggested_form"] == form]
+        _cap = int(a.max_gain_cands) if form == "gain" else int(a.max_market_cands)
         sub = _quota_select(
             sub, [str(g["gate_id"]) for g in gates],
-            total_cap=int(a.max_market_cands),
+            total_cap=_cap,
             per_min=int(getattr(a, "per_gate_min", 2)),
             per_max=int(getattr(a, "per_gate_max", 5)))
         with open(os.path.join(RESULTS, f"specialist_cands_{form}.json"), "w",
