@@ -120,8 +120,6 @@ def build_market_bundle(m, base_cols_all: list[str], d_map: dict,
               flush=True)
     return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar,
             "ubar_info": _uinfo, "interact_norm": interact_norm}
-    return {"day": day, "nd": nd, "yrk": yrk, "u_cols": u_cols, "Ubar": Ubar,
-            "ubar_info": _uinfo, "interact_norm": interact_norm}
 
 
 def run_one_market_gain(m, base_cols_all: list[str], d_map: dict, k_col: str,
